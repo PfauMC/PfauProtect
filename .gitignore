@@ -1,6 +1,9 @@
 .gradle/
 build/
 run/
+# Booting the server registries in tests writes these into the project root.
+config/
+logs/
 .idea/
 *.iml
 .DS_Store
