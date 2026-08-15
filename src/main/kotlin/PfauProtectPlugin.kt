@@ -41,6 +41,7 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         server.pluginManager.registerEvents(BlockMechanismListener(codec, mechanisms, origins), this)
+        server.pluginManager.registerEvents(NestedCaptureListener(ledger, codec, mechanisms), this)
         server.pluginManager.registerEvents(inspector, this)
         server.globalRegionScheduler.runAtFixedRate(this, {
             origins.sweep()

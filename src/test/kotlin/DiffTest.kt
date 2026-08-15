@@ -113,6 +113,9 @@ class DiffTest {
         assertEquals(Cause.CURSOR_PLACE, causeOf(edge(cursor, bag(0))))
         assertEquals(Cause.CURSOR_TAKE, causeOf(edge(bag(0), cursor)))
         assertEquals(Cause.QUICK_MOVE, causeOf(edge(bag(0), bag(1))))
+        val inside = Nested(UUID.randomUUID(), 0)
+        assertEquals(Cause.BUNDLE_INSERT, causeOf(edge(bag(0), inside)))
+        assertEquals(Cause.BUNDLE_EXTRACT, causeOf(edge(inside, chest(0))))
     }
 
     @Test

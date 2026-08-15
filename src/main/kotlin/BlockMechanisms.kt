@@ -7,6 +7,7 @@ import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.Campfire
+import org.bukkit.block.ShulkerBox
 import org.bukkit.block.data.Levelled
 import org.bukkit.craftbukkit.entity.CraftLivingEntity
 import org.bukkit.craftbukkit.inventory.CraftItemStack
@@ -139,6 +140,8 @@ class BlockMechanismListener(
     // readable slot by slot while the entities carrying it already exist.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockDrop(event: BlockDropItemEvent) {
+        // A shulker keeps what it held inside the item it drops, and that move is written elsewhere.
+        if (event.blockState is ShulkerBox) return
         val inventory = (event.blockState as? ContainerBlock)?.inventory ?: return
         val block = event.block
         val actor = event.player.uniqueId

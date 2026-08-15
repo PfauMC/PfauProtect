@@ -29,20 +29,30 @@ class ItemFormCodec(
 ) {
     private val registryOps by lazy { registryAccess.createSerializationContext(NbtOps.INSTANCE) }
 
+    // What a container holds is never part of what it is: those items are rows of their own, filed
+    // under the container's name wherever it travels, so a box that changes hands reads as the same
+    // box whether it is full or empty.
     fun encode(stack: ItemStack): EncodedItem {
         val patch = stack.componentsPatch
         val damage = patch.entrySet().firstOrNull { it.key === DataComponents.DAMAGE }?.value?.orElse(null) as Int?
+        val drop = ArrayList<DataComponentType<*>>(3)
         // Clearing an absent value would also drop an explicit-removal marker, which is a third state.
-        val formPatch = if (damage == null) {
+        if (damage != null) drop += DataComponents.DAMAGE
+        if (holdsValue(patch, DataComponents.CONTAINER)) drop += DataComponents.CONTAINER
+        if (holdsValue(patch, DataComponents.BUNDLE_CONTENTS)) drop += DataComponents.BUNDLE_CONTENTS
+        val formPatch = if (drop.isEmpty()) {
             patch
         } else {
             DataComponentPatch.builder().apply {
                 copy(patch)
-                clear(DataComponents.DAMAGE)
+                for (type in drop) clear(type)
             }.build()
         }
         return EncodedItem(form(stack.item, formPatch), stack.count, damage)
     }
+
+    private fun holdsValue(patch: DataComponentPatch, type: DataComponentType<*>) =
+        patch.entrySet().any { it.key === type && it.value.isPresent }
 
     fun decode(form: ByteArray, count: Int, damage: Int?): ItemStack {
         val r = ByteReader(form)

@@ -1,0 +1,101 @@
+package io.pfaumc.pfauprotect
+
+import net.minecraft.core.UUIDUtil
+import net.minecraft.core.component.DataComponents
+import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.component.CustomData
+import org.bukkit.Material
+import org.bukkit.block.Block
+import org.bukkit.block.ShulkerBox
+import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.entity.Player
+import org.bukkit.event.EventHandler
+import org.bukkit.event.EventPriority
+import org.bukkit.event.Listener
+import org.bukkit.event.block.BlockDropItemEvent
+import org.bukkit.event.block.BlockPlaceEvent
+import java.util.UUID
+import kotlin.jvm.optionals.getOrNull
+
+private const val OWNER_TAG = "pfauprotect_owner"
+
+// Items inside a container item are filed under the container rather than under the slot it happens
+// to sit in, so carrying it around moves nothing. That needs a name the container keeps wherever it
+// goes, and the only place that travels with an item is the item itself. Writing to it is safe
+// because everything that holds items — shulker box, bundle, crossbow — never stacks.
+object NestedItems {
+    fun contents(stack: ItemStack): List<Pair<Int, ItemStack>> {
+        stack.get(DataComponents.CONTAINER)?.let { container ->
+            return container.items.withIndex().mapNotNull { (index, item) ->
+                item.getOrNull()?.let { index to it.create() }
+            }
+        }
+        stack.get(DataComponents.BUNDLE_CONTENTS)?.let { bundle ->
+            return bundle.items().mapIndexed { index, item -> index to item.create() }
+        }
+        return emptyList()
+    }
+
+    fun ownerOf(stack: ItemStack): UUID? =
+        stack.get(DataComponents.CUSTOM_DATA)?.copyTag()?.read(OWNER_TAG, UUIDUtil.CODEC)?.getOrNull()
+
+    fun own(stack: ItemStack): UUID = ownerOf(stack) ?: UUID.randomUUID().also { mark(stack, it) }
+
+    fun mark(stack: ItemStack, owner: UUID) {
+        CustomData.update(DataComponents.CUSTOM_DATA, stack) { it.store(OWNER_TAG, UUIDUtil.CODEC, owner) }
+    }
+}
+
+// While a shulker box stands as a block its contents are addressed by the block, and as an item they
+// are addressed by its own name. Both ends of that switch are written so the chain of custody runs
+// through the cycle instead of ending at it.
+class NestedCaptureListener(
+    private val owners: NestedOwners,
+    private val codec: ItemFormCodec,
+    private val pending: TickCoalescer,
+) : Listener {
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPlace(event: BlockPlaceEvent) {
+        val block = event.block
+        if (!isShulkerBox(block.type)) return
+        val placed = CraftItemStack.asNMSCopy(event.itemInHand)
+        val owner = NestedItems.ownerOf(placed) ?: UUID.randomUUID()
+        owners.setOwnerAt(block.world.uid, block.x, block.y, block.z, owner)
+        for ((index, child) in NestedItems.contents(placed)) {
+            move(Nested(owner, index), holder(block, index), Cause.CONTAINER_PLACE_UNPACK, child, event.player)
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onBreak(event: BlockDropItemEvent) {
+        val state = event.blockState as? ShulkerBox ?: return
+        val block = event.block
+        val world = block.world.uid
+        val owner = owners.ownerAt(world, block.x, block.y, block.z) ?: UUID.randomUUID()
+        owners.clearOwnerAt(world, block.x, block.y, block.z)
+        val inventory = state.inventory
+        for (slot in 0 until inventory.size) {
+            val item = CraftItemStack.asNMSCopy(inventory.getItem(slot) ?: continue)
+            if (item.isEmpty) continue
+            move(holder(block, slot), Nested(owner, slot), Cause.CONTAINER_BREAK_PACK, item, event.player)
+        }
+        // The loot table of a shulker copies a fixed handful of components onto the dropped item and
+        // the name is not one of them, so it is written back here or the chain ends at the break.
+        for (dropped in event.items) {
+            if (!isShulkerBox(dropped.itemStack.type)) continue
+            val stack = CraftItemStack.asNMSCopy(dropped.itemStack)
+            NestedItems.mark(stack, owner)
+            dropped.itemStack = CraftItemStack.asBukkitCopy(stack)
+        }
+    }
+
+    private fun move(from: Holder, to: Holder, cause: Cause, item: ItemStack, actor: Player) {
+        val encoded = codec.encode(item)
+        pending.add(from, to, cause, ItemKey(encoded.form, encoded.damage), encoded.count, actor.uniqueId)
+    }
+
+    private fun holder(block: Block, slot: Int) = Container(block.world.uid, block.x, block.y, block.z, slot)
+
+    private fun isShulkerBox(material: Material) = material.name.endsWith("SHULKER_BOX")
+}

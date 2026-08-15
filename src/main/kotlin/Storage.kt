@@ -50,6 +50,15 @@ interface ItemLog : AutoCloseable {
     fun drain()
 }
 
+// A shulker's loot table copies a handful of components onto the dropped item and the owner mark is
+// not among them, so a box loses its name every time it is broken. This remembers the name for as
+// long as the box stands, and hands it back at the break so the chain of custody survives the cycle.
+interface NestedOwners {
+    fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID?
+    fun setOwnerAt(world: UUID, x: Int, y: Int, z: Int, owner: UUID)
+    fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int)
+}
+
 private const val SCHEMA_VERSION = 1L
 private const val MAX_REGION_CHUNKS = 1024
 private const val MAX_BATCH = 256
@@ -66,6 +75,7 @@ private val ENTRIES_CF = "entries".toByteArray()
 private val ITEM_FORMS_CF = "item_forms".toByteArray()
 private val REGISTRY_CF = "registry".toByteArray()
 private val META_CF = "meta".toByteArray()
+private val NESTED_OWNERS_CF = "nested_owners".toByteArray()
 
 private val META_SCHEMA = "schema".toByteArray()
 private val META_TX_ID = "tx_id".toByteArray()
@@ -83,7 +93,7 @@ private class FormKey(private val bytes: ByteArray) {
     override fun hashCode(): Int = bytes.contentHashCode()
 }
 
-class RocksItemLog(dir: Path) : ItemLog, RegistryStore {
+class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
     private val dbOptions = DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true)
     private val cfOptions = ColumnFamilyOptions()
     private val writeOptions = WriteOptions()
@@ -93,6 +103,7 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore {
     private val itemFormsCf: ColumnFamilyHandle
     private val registryCf: ColumnFamilyHandle
     private val metaCf: ColumnFamilyHandle
+    private val nestedOwnersCf: ColumnFamilyHandle
 
     private val queue = LinkedBlockingQueue<Transfer>()
     private val submitted = AtomicLong()
@@ -117,13 +128,16 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore {
     init {
         RocksDB.loadLibrary()
         Files.createDirectories(dir)
-        val descriptors = listOf(RocksDB.DEFAULT_COLUMN_FAMILY, ENTRIES_CF, ITEM_FORMS_CF, REGISTRY_CF, META_CF)
+        val descriptors = listOf(
+            RocksDB.DEFAULT_COLUMN_FAMILY, ENTRIES_CF, ITEM_FORMS_CF, REGISTRY_CF, META_CF, NESTED_OWNERS_CF,
+        )
             .map { ColumnFamilyDescriptor(it, cfOptions) }
         db = RocksDB.open(dbOptions, dir.toAbsolutePath().toString(), descriptors, cfHandles)
         entriesCf = cfHandles[1]
         itemFormsCf = cfHandles[2]
         registryCf = cfHandles[3]
         metaCf = cfHandles[4]
+        nestedOwnersCf = cfHandles[5]
 
         val schema = db.get(metaCf, META_SCHEMA)
         if (schema == null) {
@@ -228,6 +242,24 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore {
     }
 
     override fun form(itemFormId: Long): ByteArray? = forms.formOf(itemFormId)
+
+    override fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID? = dbLock.read {
+        if (closed) return null
+        db.get(nestedOwnersCf, ownerKey(world, x, y, z))?.let { ByteReader(it).uuid() }
+    }
+
+    override fun setOwnerAt(world: UUID, x: Int, y: Int, z: Int, owner: UUID) = dbLock.read {
+        if (closed) return
+        db.put(nestedOwnersCf, ownerKey(world, x, y, z), ByteWriter(16).uuid(owner).toByteArray())
+    }
+
+    override fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int) = dbLock.read {
+        if (closed) return
+        db.delete(nestedOwnersCf, ownerKey(world, x, y, z))
+    }
+
+    private fun ownerKey(world: UUID, x: Int, y: Int, z: Int): ByteArray =
+        ByteWriter(16 + Zcode.SIZE).uuid(world).bytes(Zcode.encode(x, y, z)).toByteArray()
 
     override fun balanceOf(holder: Holder, itemFormId: Long): Nothing =
         throw UnsupportedOperationException("balances need the analytical backend; the ledger only stores raw entries")

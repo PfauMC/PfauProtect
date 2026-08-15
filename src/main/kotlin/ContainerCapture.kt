@@ -8,6 +8,8 @@ import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
+import org.bukkit.event.block.BlockBreakEvent
+import org.bukkit.event.block.BlockPlaceEvent
 import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.inventory.InventoryCloseEvent
 import org.bukkit.event.inventory.InventoryDragEvent
@@ -132,6 +134,8 @@ private fun containerAt(inventory: Inventory): Container? {
 }
 
 internal fun causeOf(edge: Edge): Cause = when {
+    edge.to is Nested -> Cause.BUNDLE_INSERT
+    edge.from is Nested -> Cause.BUNDLE_EXTRACT
     edge.to is Container || edge.to is PlayerEnder || edge.to is EntitySlot -> Cause.CONTAINER_ADD
     edge.from is Container || edge.from is PlayerEnder || edge.from is EntitySlot -> Cause.CONTAINER_REMOVE
     edge.from is PlayerCursor -> Cause.CURSOR_PLACE
@@ -213,6 +217,24 @@ class ContainerCaptureListener(
         }
     }
 
+    // Putting a block down or knocking one out moves items in and out of the hand with no window open,
+    // and that class of movement has no capture of its own yet. Diffing across it would report every
+    // placed block as a disappearance into nothing, so the line of reference is redrawn instead.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onBlockPlace(event: BlockPlaceEvent) {
+        resync(event.player)
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onBlockBreak(event: BlockBreakEvent) {
+        resync(event.player)
+    }
+
+    private fun resync(player: Player) {
+        if (!plugin.isEnabled) return
+        player.scheduler.run(plugin, { rebaseline(player) }, null)
+    }
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onClick(event: InventoryClickEvent) {
         scheduleRecompute(event.whoClicked as? Player ?: return)
@@ -290,8 +312,25 @@ class ContainerCaptureListener(
 
     // Bukkit hands out live mirrors of the server's stacks, so a snapshot has to turn every slot into
     // bytes of its own here and now; keeping the stack itself would be keeping a view of the future.
+    //
+    // A container item is recorded as itself plus a row per item it holds, filed under the container's
+    // own name rather than the slot it sits in, so carrying it around moves nothing. One level only:
+    // a container deeper down keeps its own name and its contents are already filed under it, and it
+    // cannot be reached to change without being taken out first.
     private fun record(into: MutableMap<Holder, Stack>, holder: Holder, stack: BukkitItemStack?) {
-        into[holder] = encode(stack) ?: return
+        val live = (stack as? CraftItemStack)?.handle ?: CraftItemStack.asNMSCopy(stack ?: return)
+        if (live.isEmpty) return
+        val contents = NestedItems.contents(live)
+        // Naming it has to happen before the form is taken, or the same item would read as a different
+        // one on the next pass and the diff would invent a movement out of it.
+        val owner = if (contents.isEmpty()) null else NestedItems.own(live)
+        val encoded = codec.encode(live)
+        into[holder] = Stack(ItemKey(encoded.form, encoded.damage), encoded.count)
+        if (owner == null) return
+        for ((index, child) in contents) {
+            val inside = codec.encode(child)
+            into[Nested(owner, index)] = Stack(ItemKey(inside.form, inside.damage), inside.count)
+        }
     }
 
     private fun encode(stack: BukkitItemStack?): Stack? {

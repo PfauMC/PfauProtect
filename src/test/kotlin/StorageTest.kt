@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -53,6 +54,26 @@ class StorageTest {
     @AfterEach
     fun closeLog() {
         log.close()
+    }
+
+    // A shulker loses its mark when it is broken, so the name has to outlive the box standing there,
+    // restarts included.
+    @Test
+    fun `the name of a placed container outlives the session`() {
+        val world = UUID.randomUUID()
+        val owner = UUID.randomUUID()
+        assertNull(log.ownerAt(world, 1, 2, 3))
+        log.setOwnerAt(world, 1, 2, 3, owner)
+        assertEquals(owner, log.ownerAt(world, 1, 2, 3))
+        assertNull(log.ownerAt(world, 1, 2, 4))
+        assertNull(log.ownerAt(UUID.randomUUID(), 1, 2, 3))
+
+        log.close()
+        log = RocksItemLog(dir)
+        assertEquals(owner, log.ownerAt(world, 1, 2, 3))
+
+        log.clearOwnerAt(world, 1, 2, 3)
+        assertNull(log.ownerAt(world, 1, 2, 3))
     }
 
     @Test
