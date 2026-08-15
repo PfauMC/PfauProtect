@@ -6,6 +6,7 @@ import io.papermc.paper.command.brigadier.Commands
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.server.MinecraftServer
+import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
 import java.util.logging.Level
@@ -17,6 +18,7 @@ private const val INSPECT_PERMISSION = "pfauprotect.inspect"
 class PfauProtectPlugin : JavaPlugin() {
     private var ledger: RocksItemLog? = null
     private var capture: ContainerCaptureListener? = null
+    private var mechanisms: TickCoalescer? = null
     private var lookups: Lookups? = null
     private var inspector: Inspector? = null
 
@@ -27,12 +29,17 @@ class PfauProtectPlugin : JavaPlugin() {
         val codec = ItemFormCodec(ledger.registries, MinecraftServer.getServer().registryAccess())
         val capture = ContainerCaptureListener(this, ledger, codec)
         this.capture = capture
+        val mechanisms = TickCoalescer(ledger::submit)
+        this.mechanisms = mechanisms
         val lookups = Lookups(this, ledger)
         this.lookups = lookups
         val inspector = Inspector(lookups)
         this.inspector = inspector
         server.pluginManager.registerEvents(capture, this)
+        server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         server.pluginManager.registerEvents(inspector, this)
+        server.globalRegionScheduler.runAtFixedRate(this, { mechanisms.flush() }, 1, 1)
+        warnAboutSilencedHoppers()
         registerCommand()
         logger.info(
             "ledger open, registry sizes: " +
@@ -46,6 +53,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val ledger = this.ledger ?: return
         try {
             capture?.recomputeAll()
+            mechanisms?.flush()
             ledger.drain()
         } catch (failure: Exception) {
             logger.log(Level.SEVERE, "the ledger lost entries while shutting down", failure)
@@ -53,9 +61,21 @@ class PfauProtectPlugin : JavaPlugin() {
             ledger.close()
             this.ledger = null
             this.capture = null
+            this.mechanisms = null
             this.lookups = null
             this.inspector = null
         }
+    }
+
+    // With the move event switched off the server stops telling anyone that a hopper moved anything,
+    // and the ledger goes quiet about automated transfers without a single error to show for it.
+    private fun warnAboutSilencedHoppers() {
+        val silenced = server.worlds.filter { (it as CraftWorld).handle.paperConfig().hopper.disableMoveEvent }
+        if (silenced.isEmpty()) return
+        logger.warning(
+            "hopper transfers are not logged in ${silenced.joinToString { it.name }}: " +
+                "hopper.disable-move-event is on in the paper world config"
+        )
     }
 
     private fun registerCommand() {

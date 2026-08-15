@@ -3,6 +3,7 @@ package io.pfaumc.pfauprotect
 import org.bukkit.Bukkit
 import org.bukkit.block.Block
 import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.entity.Entity
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -94,9 +95,45 @@ object Netting {
     }
 }
 
+// Both halves of a double chest keep their own position and their own slot numbering, because a row
+// has to name the block its items can be put back into.
+internal fun containerHolders(inventory: Inventory): ((Int) -> Holder)? {
+    if (inventory is DoubleChestInventory) {
+        val left = containerAt(inventory.leftSide)
+        val right = containerAt(inventory.rightSide)
+        val leftSize = inventory.leftSide.size
+        if (left != null && right != null) {
+            return { slot ->
+                if (slot < leftSize) left.copy(slot = slot) else right.copy(slot = slot - leftSize)
+            }
+        }
+    }
+    // Only the position is wanted, and a snapshot holder would copy the whole block state.
+    val holder = inventory.getHolder(false)
+    val block = (holder as? BlockInventoryHolder)?.block
+    if (block != null) {
+        val container = Container(block.world.uid, block.x, block.y, block.z, 0)
+        return { slot -> container.copy(slot = slot) }
+    }
+    // A minecart rides the rails, so only its uuid addresses it; its position is where something
+    // happened, not what it is.
+    val entity = holder as? Entity
+    if (entity != null) {
+        val uuid = entity.uniqueId
+        return { slot -> EntitySlot(uuid, slot) }
+    }
+    return null
+}
+
+private fun containerAt(inventory: Inventory): Container? {
+    val location = inventory.location ?: return null
+    val world = location.world ?: return null
+    return Container(world.uid, location.blockX, location.blockY, location.blockZ, 0)
+}
+
 internal fun causeOf(edge: Edge): Cause = when {
-    edge.to is Container || edge.to is PlayerEnder -> Cause.CONTAINER_ADD
-    edge.from is Container || edge.from is PlayerEnder -> Cause.CONTAINER_REMOVE
+    edge.to is Container || edge.to is PlayerEnder || edge.to is EntitySlot -> Cause.CONTAINER_ADD
+    edge.from is Container || edge.from is PlayerEnder || edge.from is EntitySlot -> Cause.CONTAINER_REMOVE
     edge.from is PlayerCursor -> Cause.CURSOR_PLACE
     edge.to is PlayerCursor -> Cause.CURSOR_TAKE
     else -> Cause.QUICK_MOVE
@@ -267,16 +304,6 @@ class ContainerCaptureListener(
 
     private fun topHolders(player: Player, inventory: Inventory): ((Int) -> Holder)? {
         val viewer = player.uniqueId
-        if (inventory is DoubleChestInventory) {
-            val left = containerAt(inventory.leftSide)
-            val right = containerAt(inventory.rightSide)
-            val leftSize = inventory.leftSide.size
-            if (left != null && right != null) {
-                return { slot ->
-                    if (slot < leftSize) left.copy(slot = slot) else right.copy(slot = slot - leftSize)
-                }
-            }
-        }
         // An ender chest reports the coordinates of the block being used while its contents belong to
         // the player, so it has to be recognised before anything that trusts a location.
         if (inventory.type == InventoryType.ENDER_CHEST) return { slot -> PlayerEnder(viewer, slot) }
@@ -287,21 +314,9 @@ class ContainerCaptureListener(
             val storageSize = inventory.storageContents.size
             return { slot -> if (slot < storageSize) PlayerInv(viewer, slot) else PlayerEquip(viewer, slot) }
         }
-        // Only the position is wanted, and a snapshot holder would copy the whole block state.
-        val block = (inventory.getHolder(false) as? BlockInventoryHolder)?.block
-        if (block != null) {
-            val container = Container(block.world.uid, block.x, block.y, block.z, 0)
-            return { slot -> container.copy(slot = slot) }
-        }
+        containerHolders(inventory)?.let { return it }
         // Menu types carry no number of their own yet; ordinals are stable within a server version.
         val menuType = inventory.type.ordinal
         return { slot -> MenuSlot(menuType, slot) }
     }
-
-    private fun containerAt(inventory: Inventory): Container? {
-        val location = inventory.location ?: return null
-        val world = location.world ?: return null
-        return Container(world.uid, location.blockX, location.blockY, location.blockZ, 0)
-    }
-
 }
