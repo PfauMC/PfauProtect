@@ -12,6 +12,7 @@ import org.bukkit.event.inventory.InventoryMoveItemEvent
 import org.bukkit.event.inventory.InventoryPickupItemEvent
 import org.bukkit.event.inventory.InventoryType
 import org.bukkit.inventory.Inventory
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import net.minecraft.world.Container as NmsContainer
 import net.minecraft.world.item.ItemStack as NmsItemStack
@@ -74,13 +75,19 @@ object Placement {
 // dropper on a clock, would otherwise write a transaction per item. Movements sharing both ends and
 // the form are one movement within the tick they happen in.
 class TickCoalescer(private val sink: (Transfer) -> Unit) {
-    private data class Pending(val from: Holder, val to: Holder, val cause: Cause, val item: ItemKey)
+    private data class Pending(
+        val from: Holder,
+        val to: Holder,
+        val cause: Cause,
+        val item: ItemKey,
+        val actor: UUID?,
+    )
 
     private val pending = ConcurrentHashMap<Pending, Int>()
 
-    fun add(from: Holder, to: Holder, cause: Cause, item: ItemKey, qty: Int) {
+    fun add(from: Holder, to: Holder, cause: Cause, item: ItemKey, qty: Int, actor: UUID? = null) {
         if (qty <= 0) return
-        pending.merge(Pending(from, to, cause, item), qty, Int::plus)
+        pending.merge(Pending(from, to, cause, item, actor), qty, Int::plus)
     }
 
     // Removal hands back everything the region threads had merged under the key, so a movement added
@@ -99,6 +106,7 @@ class TickCoalescer(private val sink: (Transfer) -> Unit) {
                     damage = key.item.damage,
                     qty = qty,
                     timestamp = timestamp,
+                    actor = key.actor,
                 )
             )
         }

@@ -19,6 +19,7 @@ class PfauProtectPlugin : JavaPlugin() {
     private var ledger: RocksItemLog? = null
     private var capture: ContainerCaptureListener? = null
     private var mechanisms: TickCoalescer? = null
+    private var origins: SpawnOrigins? = null
     private var lookups: Lookups? = null
     private var inspector: Inspector? = null
 
@@ -31,14 +32,20 @@ class PfauProtectPlugin : JavaPlugin() {
         this.capture = capture
         val mechanisms = TickCoalescer(ledger::submit)
         this.mechanisms = mechanisms
+        val origins = SpawnOrigins(mechanisms)
+        this.origins = origins
         val lookups = Lookups(this, ledger)
         this.lookups = lookups
         val inspector = Inspector(lookups)
         this.inspector = inspector
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
+        server.pluginManager.registerEvents(BlockMechanismListener(codec, mechanisms, origins), this)
         server.pluginManager.registerEvents(inspector, this)
-        server.globalRegionScheduler.runAtFixedRate(this, { mechanisms.flush() }, 1, 1)
+        server.globalRegionScheduler.runAtFixedRate(this, {
+            origins.sweep()
+            mechanisms.flush()
+        }, 1, 1)
         warnAboutSilencedHoppers()
         registerCommand()
         logger.info(
@@ -53,6 +60,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val ledger = this.ledger ?: return
         try {
             capture?.recomputeAll()
+            origins?.sweep()
             mechanisms?.flush()
             ledger.drain()
         } catch (failure: Exception) {
@@ -62,6 +70,7 @@ class PfauProtectPlugin : JavaPlugin() {
             this.ledger = null
             this.capture = null
             this.mechanisms = null
+            this.origins = null
             this.lookups = null
             this.inspector = null
         }
