@@ -21,35 +21,6 @@ import java.util.logging.Logger
 import kotlin.concurrent.read
 import kotlin.concurrent.write
 
-interface ItemLog : AutoCloseable {
-    fun submit(transfer: Transfer)
-    fun holderEntries(
-        holder: Holder,
-        fromTs: Long,
-        toTs: Long,
-        reverse: Boolean = false,
-        limit: Int = 100,
-    ): List<LedgerEntry>
-
-    fun regionEntries(
-        world: UUID,
-        minX: Int,
-        minZ: Int,
-        maxX: Int,
-        maxZ: Int,
-        fromTs: Long,
-        toTs: Long,
-        reverse: Boolean = false,
-        limit: Int = 100,
-    ): List<LedgerEntry>
-
-    fun form(itemFormId: Long): ByteArray?
-    fun transactionEntries(entry: LedgerEntry): List<LedgerEntry>
-    fun balanceOf(holder: Holder, itemFormId: Long): Nothing
-    fun formPath(itemFormId: Long): Nothing
-    fun drain()
-}
-
 // A shulker's loot table copies a handful of components onto the dropped item and the owner mark is
 // not among them, so a box loses its name every time it is broken. This remembers the name for as
 // long as the box stands, and hands it back at the break so the chain of custody survives the cycle.
@@ -96,7 +67,7 @@ private class FormKey(private val bytes: ByteArray) {
     override fun hashCode(): Int = bytes.contentHashCode()
 }
 
-class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
+class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners {
     private val dbOptions = DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true)
     private val cfOptions = ColumnFamilyOptions()
     private val writeOptions = WriteOptions()
@@ -167,13 +138,13 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
         writerThread.start()
     }
 
-    override fun submit(transfer: Transfer) {
+    fun submit(transfer: Transfer) {
         if (writerFailure != null) return
         submitted.incrementAndGet()
         queue.add(transfer)
     }
 
-    override fun drain() {
+    fun drain() {
         val target = submitted.get()
         val deadline = System.nanoTime() + DRAIN_TIMEOUT_NANOS
         while (written.get() < target) {
@@ -187,20 +158,18 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
         failIfWriterStopped()
     }
 
-    override fun holderEntries(
+    fun holderEntries(
         holder: Holder,
         fromTs: Long,
         toTs: Long,
-        reverse: Boolean,
-        limit: Int,
+        reverse: Boolean = false,
+        limit: Int = 100,
     ): List<LedgerEntry> = dbLock.read {
         if (closed) return emptyList()
-        val found = ArrayList<LedgerEntry>()
-        scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit, found)
-        found
+        scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit)
     }
 
-    override fun regionEntries(
+    fun regionEntries(
         world: UUID,
         minX: Int,
         minZ: Int,
@@ -208,8 +177,8 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
         maxZ: Int,
         fromTs: Long,
         toTs: Long,
-        reverse: Boolean,
-        limit: Int,
+        reverse: Boolean = false,
+        limit: Int = 100,
     ): List<LedgerEntry> {
         val chunkX = (minOf(minX, maxX) shr 4)..(maxOf(minX, maxX) shr 4)
         val chunkZ = (minOf(minZ, maxZ) shr 4)..(maxOf(minZ, maxZ) shr 4)
@@ -225,9 +194,9 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
             // more rows than the limit contributes them by position rather than by time.
             for (cx in chunkX) {
                 for (cz in chunkZ) {
-                    val chunkFound = ArrayList<LedgerEntry>()
-                    scan(EntryCodec.containerChunkPrefix(world, cx, cz, knownIds), fromTs, toTs, reverse, limit, chunkFound)
-                    found += chunkFound
+                    found += scan(
+                        EntryCodec.containerChunkPrefix(world, cx, cz, knownIds), fromTs, toTs, reverse, limit
+                    )
                 }
             }
             val byTime = compareBy<LedgerEntry>({ it.timestamp }, { it.txId })
@@ -235,16 +204,16 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
         }
     }
 
-    override fun transactionEntries(entry: LedgerEntry): List<LedgerEntry> = dbLock.read {
+    fun transactionEntries(entry: LedgerEntry): List<LedgerEntry> = dbLock.read {
         val other = entry.counterparty
-        if (closed || other === Void || other is MenuSlot) return listOf(entry)
+        if (closed || !other.addressable) return listOf(entry)
         val key = EntryCodec.key(other, entry.timestamp, entry.txId, knownIds)
         val value = db.get(entriesCf, key) ?: return listOf(entry)
         val decoded = EntryCodec.decodeOrNull(key, value, registries) ?: return listOf(entry)
         listOf(entry, decoded)
     }
 
-    override fun form(itemFormId: Long): ByteArray? = forms.formOf(itemFormId)
+    fun form(itemFormId: Long): ByteArray? = forms.formOf(itemFormId)
 
     // The standing test of the capture: an entry that does not face the void has a second half, and
     // the two cancel each other out. A half that is missing is not a dupe but a hole in the capture —
@@ -283,7 +252,7 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
 
     private fun gapOf(entry: LedgerEntry): String? {
         val other = entry.counterparty
-        if (other === Void || other is MenuSlot) return null
+        if (!other.addressable) return null
         val pair = transactionEntries(entry)
         val where = "${entry.cause} of ${entry.qty} at ${entry.holder}, transaction ${entry.txId}"
         if (pair.size < 2) return "$where: the half at $other is missing"
@@ -310,12 +279,6 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
     private fun ownerKey(world: UUID, x: Int, y: Int, z: Int): ByteArray =
         ByteWriter(16 + Zcode.SIZE).uuid(world).bytes(Zcode.encode(x, y, z)).toByteArray()
 
-    override fun balanceOf(holder: Holder, itemFormId: Long): Nothing =
-        throw UnsupportedOperationException("balances need the analytical backend; the ledger only stores raw entries")
-
-    override fun formPath(itemFormId: Long): Nothing =
-        throw UnsupportedOperationException("form paths need the analytical backend; the ledger only stores raw entries")
-
     // Reads run on any thread, so the native handles may only be freed once every reader has left.
     override fun close() {
         running = false
@@ -339,7 +302,7 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
             iter.seekToFirst()
             while (iter.isValid) {
                 val key = iter.key()
-                val ns = RegistryNamespace.entries.firstOrNull { it.id == (key[0].toInt() and 0xFF) }
+                val ns = RegistryNamespace.byId(key[0].toInt() and 0xFF)
                 if (ns != null) rows += RegistryRow(ns, key.copyOfRange(1, key.size), ByteReader(iter.value()).varInt())
                 iter.next()
             }
@@ -431,7 +394,7 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
     )
 
     private fun putEntry(batch: WriteBatch, entry: LedgerEntry) {
-        if (entry.holder === Void || entry.holder is MenuSlot) return
+        if (!entry.holder.addressable) return
         batch.put(
             entriesCf,
             EntryCodec.key(entry.holder, entry.timestamp, entry.txId, registries),
@@ -439,30 +402,33 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
         )
     }
 
+    // Each call brings back at most `limit` entries under its own prefix, so a region scan gives every
+    // chunk the same allowance rather than letting the first one it walks spend the whole budget.
     private fun scan(
         prefix: ByteArray,
         fromTs: Long,
         toTs: Long,
         reverse: Boolean,
         limit: Int,
-        into: MutableList<LedgerEntry>,
-    ) {
+    ): List<LedgerEntry> {
         // A chunk prefix stops three position bytes short of the timestamp, so no byte range under it
         // can express a time window; the window is applied to the decoded entry instead.
         val afterPrefix = ByteWriter(prefix.size + KEY_TAIL_PAD)
             .bytes(prefix)
             .bytes(ByteArray(KEY_TAIL_PAD) { 0xFF.toByte() })
             .toByteArray()
+        val found = ArrayList<LedgerEntry>()
         db.newIterator(entriesCf).use { iter ->
             if (reverse) iter.seekForPrev(afterPrefix) else iter.seek(prefix)
-            while (iter.isValid && into.size < limit) {
+            while (iter.isValid && found.size < limit) {
                 val key = iter.key()
-                if (!key.startsWith(prefix)) return
+                if (!key.startsWith(prefix)) return found
                 val entry = EntryCodec.decodeOrNull(key, iter.value(), registries)
-                if (entry != null && entry.timestamp in fromTs..toTs) into += entry
+                if (entry != null && entry.timestamp in fromTs..toTs) found += entry
                 if (reverse) iter.prev() else iter.next()
             }
         }
+        return found
     }
 
     // Registry and form rows must land in the same batch as the counter that named them, or a crash

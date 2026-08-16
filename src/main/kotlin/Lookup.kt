@@ -11,6 +11,7 @@ import com.mojang.brigadier.suggestion.SuggestionsBuilder
 import io.papermc.paper.command.brigadier.argument.CustomArgumentType
 import org.bukkit.Bukkit
 import org.bukkit.Material
+import org.bukkit.block.Block
 import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
 import java.time.Instant
@@ -59,30 +60,34 @@ internal enum class Param(vararg val keys: String) {
     }
 }
 
+// Same one-table rule as Param: the first key is what completion offers, the rest are silent aliases.
+internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
+    CONTAINER(
+        setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
+        "container", "chest", "transaction", "transactions",
+    ),
+    ADD(setOf(Cause.CONTAINER_ADD), "+container", "deposit", "deposits", "deposited"),
+    REMOVE(setOf(Cause.CONTAINER_REMOVE), "-container", "withdraw", "withdraws", "withdrew"),
+    LOOT(setOf(Cause.LOOT_GENERATE), "loot", "loot_generate"),
+    ;
+
+    companion object {
+        private val byKey = entries.flatMap { action -> action.keys.map { it to action } }.toMap()
+        val names = entries.map { it.keys.first() }
+        fun of(key: String): Action? = byKey[key]
+    }
+}
+
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
 private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")
 private val RADIUS_EXAMPLES = listOf("0", "5", "10", "20", "50", "global")
-private val ACTION_NAMES = listOf("container", "+container", "-container", "deposit", "withdraw", "loot")
 private val LIMIT_EXAMPLES = listOf("10", "25", "50", "100")
 
-private val DURATION = Regex("(\\d+)(mo|[ymwdhs])")
+// Rebuilt per keystroke otherwise: completion is asked for candidates on every character typed.
+// Lazy because reading the material registry needs a running server, and parsing does not.
+private val ITEM_NAMES: List<String> by lazy { Material.entries.filter { it.isItem }.map { it.key.key } }
 
-private val ACTIONS = mapOf(
-    "container" to setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
-    "chest" to setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
-    "transaction" to setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
-    "transactions" to setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
-    "+container" to setOf(Cause.CONTAINER_ADD),
-    "deposit" to setOf(Cause.CONTAINER_ADD),
-    "deposits" to setOf(Cause.CONTAINER_ADD),
-    "deposited" to setOf(Cause.CONTAINER_ADD),
-    "-container" to setOf(Cause.CONTAINER_REMOVE),
-    "withdraw" to setOf(Cause.CONTAINER_REMOVE),
-    "withdraws" to setOf(Cause.CONTAINER_REMOVE),
-    "withdrew" to setOf(Cause.CONTAINER_REMOVE),
-    "loot" to setOf(Cause.LOOT_GENERATE),
-    "loot_generate" to setOf(Cause.LOOT_GENERATE),
-)
+private val DURATION = Regex("(\\d+)(mo|[ymwdhs])")
 
 data class LookupQuery(
     val users: List<String> = emptyList(),
@@ -98,6 +103,14 @@ data class LookupQuery(
 
 data class LookupTarget(val world: UUID, val x: Int, val y: Int, val z: Int, val label: String)
 
+fun lookupTargetAt(block: Block) = LookupTarget(
+    block.world.uid,
+    block.x,
+    block.y,
+    block.z,
+    "${block.type.name.lowercase()} at ${block.x} ${block.y} ${block.z}",
+)
+
 private val NOT_A_PARAMETER = DynamicCommandExceptionType {
     LiteralMessage("'$it' is not a parameter, expected one of ${Param.help}")
 }
@@ -112,7 +125,7 @@ private val BAD_RADIUS = DynamicCommandExceptionType {
     LiteralMessage("'$it' is not a radius, expected 0 to $MAX_RADIUS blocks or 'global'")
 }
 private val BAD_ACTION = DynamicCommandExceptionType {
-    LiteralMessage("'$it' is not an action, expected one of ${ACTION_NAMES.joinToString(" ")}")
+    LiteralMessage("'$it' is not an action, expected one of ${Action.names.joinToString(" ")}")
 }
 private val BAD_LIMIT = DynamicCommandExceptionType {
     LiteralMessage("'$it' is not a row count between 1 and $MAX_LIMIT")
@@ -171,12 +184,12 @@ private fun causes(reader: StringReader, valueStart: Int, value: String): Set<Ca
     var offset = valueStart
     for (name in value.split(',')) {
         if (name.isNotBlank()) {
-            val mapped = ACTIONS[name.lowercase()]
+            val mapped = Action.of(name.lowercase())
             if (mapped == null) {
                 reader.cursor = offset
                 throw BAD_ACTION.createWithContext(reader, name)
             }
-            found += mapped
+            found += mapped.causes
         }
         offset += name.length + 1
     }
@@ -244,8 +257,8 @@ class LookupArgument : CustomArgumentType<LookupQuery, String> {
         Param.USER, Param.EXCLUDE -> Bukkit.getOnlinePlayers().map { it.name }
         Param.TIME -> TIME_EXAMPLES
         Param.RADIUS -> RADIUS_EXAMPLES
-        Param.ACTION -> ACTION_NAMES
-        Param.INCLUDE -> Material.entries.filter { it.isItem }.map { it.key.key }
+        Param.ACTION -> Action.names
+        Param.INCLUDE -> ITEM_NAMES
         Param.LIMIT -> LIMIT_EXAMPLES
         null -> emptyList()
     }
@@ -271,17 +284,13 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
             sender.sendMessage("A world-wide lookup needs the analytical backend; give a radius instead.")
             return
         }
-        val unknown = query.users.filter { resolve(it) == null }
+        val named = query.users.associateWith { resolve(it) }
+        val unknown = named.filterValues { it == null }.keys
         if (unknown.isNotEmpty()) {
             sender.sendMessage("Unknown player: ${unknown.joinToString(", ")}")
             return
         }
-        val entries = try {
-            filter(read(target, query), query)
-        } catch (refused: IllegalArgumentException) {
-            sender.sendMessage(refused.message ?: "That lookup was refused.")
-            return
-        }
+        val entries = filter(read(target, query), query, named.values.filterNotNull().toSet())
         val where = if (query.radius == null) target.label else "${query.radius} blocks around ${target.label}"
         if (entries.isEmpty()) {
             sender.sendMessage("No ledger entries for $where.")
@@ -322,8 +331,7 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
         }
     }
 
-    private fun filter(entries: List<LedgerEntry>, query: LookupQuery): List<LedgerEntry> {
-        val users = query.users.mapNotNull(::resolve).toSet()
+    private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
         val included = query.included.map(::normalizeItem).toSet()
         val excludedItems = query.excluded.map(::normalizeItem).toSet()
         val excludedUsers = query.excluded.mapNotNull(::resolve).toSet()
@@ -346,13 +354,7 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
     private fun normalizeItem(name: String): String =
         if (name.contains(':')) name.lowercase() else "$VANILLA_NAMESPACE:${name.lowercase()}"
 
-    private fun playerOf(holder: Holder): UUID? = when (holder) {
-        is PlayerInv -> holder.uuid
-        is PlayerEquip -> holder.uuid
-        is PlayerCursor -> holder.uuid
-        is PlayerEnder -> holder.uuid
-        else -> null
-    }
+    private fun playerOf(holder: Holder): UUID? = (holder as? PlayerHolder)?.uuid
 
     private fun describe(entry: LedgerEntry): String {
         val amount = if (entry.qty > 0) "+${entry.qty}" else entry.qty.toString()
@@ -367,7 +369,7 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
 
     private fun itemKey(itemFormId: Long): String? {
         val form = ledger.form(itemFormId) ?: return null
-        return ledger.registries.keyOf(RegistryNamespace.ITEM_TYPE, ByteReader(form).varInt())
+        return ledger.registries.keyOf(RegistryNamespace.ITEM_TYPE, itemTypeIdOf(form))
     }
 
     private fun describe(holder: Holder): String = when (holder) {

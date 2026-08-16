@@ -14,6 +14,11 @@ enum class RegistryNamespace(val id: Int, val maxId: Int) {
     ;
 
     internal val usesUuid: Boolean get() = this == WORLD || this == PLAYER
+
+    companion object {
+        private val BY_ID = entries.associateBy { it.id }
+        fun byId(id: Int): RegistryNamespace? = BY_ID[id]
+    }
 }
 
 class RegistryRow(val ns: RegistryNamespace, val keyBytes: ByteArray, val id: Int)

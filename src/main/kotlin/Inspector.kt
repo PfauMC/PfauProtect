@@ -1,6 +1,5 @@
 package io.pfaumc.pfauprotect
 
-import org.bukkit.block.Block
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -31,11 +30,12 @@ class Inspector(private val lookups: Lookups) : Listener {
         val block = event.clickedBlock ?: return
         event.isCancelled = true
         val player = event.player
+        val target = lookupTargetAt(block)
         if (block.state !is ContainerBlock) {
-            player.sendMessage("${label(block)} is not a container; only containers are in the ledger so far.")
+            player.sendMessage("${target.label} is not a container; only containers are in the ledger so far.")
             return
         }
-        lookups.run(player, target(block), LookupQuery())
+        lookups.run(player, target, LookupQuery())
     }
 
     @EventHandler
@@ -43,9 +43,4 @@ class Inspector(private val lookups: Lookups) : Listener {
         enabled -= event.player.uniqueId
     }
 
-    private fun target(block: Block) =
-        LookupTarget(block.world.uid, block.x, block.y, block.z, label(block))
-
-    private fun label(block: Block) =
-        "${block.type.name.lowercase()} at ${block.x} ${block.y} ${block.z}"
 }

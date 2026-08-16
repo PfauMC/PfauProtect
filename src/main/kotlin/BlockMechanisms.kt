@@ -145,18 +145,21 @@ class BlockMechanismListener(
         val inventory = (event.blockState as? ContainerBlock)?.inventory ?: return
         val block = event.block
         val actor = event.player.uniqueId
-        val left = IntArray(inventory.size) { inventory.getItem(it)?.amount ?: 0 }
+        // Read once: every getItem call builds a fresh mirror of the slot, and the inner loop runs
+        // for each dropped entity.
+        val contents = inventory.contents
+        val left = IntArray(contents.size) { contents[it]?.amount ?: 0 }
         for (dropped in event.items) {
             val stack = dropped.itemStack
             val key = key(stack) ?: continue
+            val entity = ItemEntityRef(dropped.uniqueId)
             var need = stack.amount
-            for (slot in 0 until inventory.size) {
+            for (slot in contents.indices) {
                 if (need <= 0) break
-                if (left[slot] <= 0 || inventory.getItem(slot)?.isSimilar(stack) != true) continue
+                if (left[slot] <= 0 || contents[slot]?.isSimilar(stack) != true) continue
                 val qty = minOf(need, left[slot])
                 left[slot] -= qty
                 need -= qty
-                val entity = ItemEntityRef(dropped.uniqueId)
                 pending.add(holder(block, slot), entity, Cause.CONTAINER_BREAK_DROP, key, qty, actor)
             }
         }
@@ -173,7 +176,7 @@ class BlockMechanismListener(
         if (fuel.amount != 1) return
         val remainder = CraftItemStack.asNMSCopy(fuel).item.craftingRemainder?.create() ?: return
         val encoded = codec.encode(remainder)
-        pending.add(Void, slot, Cause.FURNACE_FUEL_REMAINDER, ItemKey(encoded.form, encoded.damage), remainder.count)
+        pending.add(Void, slot, Cause.FURNACE_FUEL_REMAINDER, encoded.key, remainder.count)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -243,7 +246,7 @@ class BlockMechanismListener(
 
     private fun spot(at: Location) = Spot(at.world.uid, at.x, at.y, at.z)
 
-    private fun holder(block: Block, slot: Int) = Container(block.world.uid, block.x, block.y, block.z, slot)
+    private fun holder(block: Block, slot: Int) = containerAt(block, slot)
 
     private fun slotHolding(block: Block, item: BukkitItemStack): Int? {
         val inventory = (block.getState(false) as? ContainerBlock)?.inventory ?: return null
@@ -253,10 +256,5 @@ class BlockMechanismListener(
     private fun equipmentSlot(target: org.bukkit.entity.LivingEntity, item: BukkitItemStack): Int =
         (target as CraftLivingEntity).handle.getEquipmentSlotForItem(CraftItemStack.asNMSCopy(item)).ordinal
 
-    private fun key(stack: BukkitItemStack?): ItemKey? {
-        val nms = CraftItemStack.asNMSCopy(stack ?: return null)
-        if (nms.isEmpty) return null
-        val encoded = codec.encode(nms)
-        return ItemKey(encoded.form, encoded.damage)
-    }
+    private fun key(stack: BukkitItemStack?): ItemKey? = codec.encodeOrNull(stack)?.key
 }

@@ -32,7 +32,7 @@ class PfauProtectPlugin : JavaPlugin() {
         this.ledger = ledger
         fillTypeRegistries(ledger.registries)
         val codec = ItemFormCodec(ledger.registries, MinecraftServer.getServer().registryAccess())
-        val capture = ContainerCaptureListener(this, ledger, codec)
+        val capture = ContainerCaptureListener(this, ledger::submit, codec)
         this.capture = capture
         val mechanisms = TickCoalescer(ledger::submit)
         this.mechanisms = mechanisms
@@ -147,8 +147,7 @@ class PfauProtectPlugin : JavaPlugin() {
             player.sendMessage("No block within $TARGET_RANGE blocks of where you are looking.")
             return 0
         }
-        val label = "${block.type.name.lowercase()} at ${block.x} ${block.y} ${block.z}"
-        lookups.run(player, LookupTarget(block.world.uid, block.x, block.y, block.z, label), query)
+        lookups.run(player, lookupTargetAt(block), query)
         return Command.SINGLE_SUCCESS
     }
 
@@ -173,14 +172,11 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     private fun fillTypeRegistries(registries: Registries) {
-        for (item in BuiltInRegistries.ITEM) {
-            registries.idForKey(RegistryNamespace.ITEM_TYPE, BuiltInRegistries.ITEM.getKey(item).toString())
+        for (key in BuiltInRegistries.ITEM.keySet()) {
+            registries.idForKey(RegistryNamespace.ITEM_TYPE, key.toString())
         }
-        for (type in BuiltInRegistries.DATA_COMPONENT_TYPE) {
-            registries.idForKey(
-                RegistryNamespace.DATA_COMPONENT_TYPE,
-                BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type).toString(),
-            )
+        for (key in BuiltInRegistries.DATA_COMPONENT_TYPE.keySet()) {
+            registries.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, key.toString())
         }
     }
 }

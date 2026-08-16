@@ -4,8 +4,7 @@ import net.minecraft.core.UUIDUtil
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.component.CustomData
-import org.bukkit.Material
-import org.bukkit.block.Block
+import org.bukkit.Tag
 import org.bukkit.block.ShulkerBox
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Player
@@ -58,12 +57,12 @@ class NestedCaptureListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPlace(event: BlockPlaceEvent) {
         val block = event.block
-        if (!isShulkerBox(block.type)) return
+        if (!Tag.SHULKER_BOXES.isTagged(block.type)) return
         val placed = CraftItemStack.asNMSCopy(event.itemInHand)
         val owner = NestedItems.ownerOf(placed) ?: UUID.randomUUID()
         owners.setOwnerAt(block.world.uid, block.x, block.y, block.z, owner)
         for ((index, child) in NestedItems.contents(placed)) {
-            move(Nested(owner, index), holder(block, index), Cause.CONTAINER_PLACE_UNPACK, child, event.player)
+            move(Nested(owner, index), containerAt(block, index), Cause.CONTAINER_PLACE_UNPACK, child, event.player)
         }
     }
 
@@ -78,12 +77,12 @@ class NestedCaptureListener(
         for (slot in 0 until inventory.size) {
             val item = CraftItemStack.asNMSCopy(inventory.getItem(slot) ?: continue)
             if (item.isEmpty) continue
-            move(holder(block, slot), Nested(owner, slot), Cause.CONTAINER_BREAK_PACK, item, event.player)
+            move(containerAt(block, slot), Nested(owner, slot), Cause.CONTAINER_BREAK_PACK, item, event.player)
         }
         // The loot table of a shulker copies a fixed handful of components onto the dropped item and
         // the name is not one of them, so it is written back here or the chain ends at the break.
         for (dropped in event.items) {
-            if (!isShulkerBox(dropped.itemStack.type)) continue
+            if (!Tag.ITEMS_SHULKER_BOXES.isTagged(dropped.itemStack.type)) continue
             val stack = CraftItemStack.asNMSCopy(dropped.itemStack)
             NestedItems.mark(stack, owner)
             dropped.itemStack = CraftItemStack.asBukkitCopy(stack)
@@ -92,10 +91,6 @@ class NestedCaptureListener(
 
     private fun move(from: Holder, to: Holder, cause: Cause, item: ItemStack, actor: Player) {
         val encoded = codec.encode(item)
-        pending.add(from, to, cause, ItemKey(encoded.form, encoded.damage), encoded.count, actor.uniqueId)
+        pending.add(from, to, cause, encoded.key, encoded.count, actor.uniqueId)
     }
-
-    private fun holder(block: Block, slot: Int) = Container(block.world.uid, block.x, block.y, block.z, slot)
-
-    private fun isShulkerBox(material: Material) = material.name.endsWith("SHULKER_BOX")
 }

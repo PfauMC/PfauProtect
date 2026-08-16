@@ -240,10 +240,4 @@ class StorageTest {
         assertArrayEquals(cobblestone, log.form(before[0].itemFormId))
         assertArrayEquals(pickaxe, log.form(before[2].itemFormId))
     }
-
-    @Test
-    fun `analytical queries refuse instead of answering emptily`() {
-        assertThrows(UnsupportedOperationException::class.java) { log.balanceOf(aliceInv, 0) }
-        assertThrows(UnsupportedOperationException::class.java) { log.formPath(0) }
-    }
 }

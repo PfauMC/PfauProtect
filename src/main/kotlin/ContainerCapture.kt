@@ -29,13 +29,6 @@ import java.util.concurrent.ConcurrentHashMap
 import org.bukkit.block.Container as ContainerBlock
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
-class ItemKey(val form: ByteArray, val damage: Int?) {
-    override fun equals(other: Any?): Boolean =
-        other is ItemKey && damage == other.damage && form.contentEquals(other.form)
-
-    override fun hashCode(): Int = 31 * form.contentHashCode() + (damage?.hashCode() ?: 0)
-}
-
 data class Stack(val key: ItemKey, val count: Int)
 
 data class Edge(
@@ -114,7 +107,7 @@ internal fun containerHolders(inventory: Inventory): ((Int) -> Holder)? {
     val holder = inventory.getHolder(false)
     val block = (holder as? BlockInventoryHolder)?.block
     if (block != null) {
-        val container = Container(block.world.uid, block.x, block.y, block.z, 0)
+        val container = containerAt(block, 0)
         return { slot -> container.copy(slot = slot) }
     }
     // A minecart rides the rails, so only its uuid addresses it; its position is where something
@@ -133,6 +126,14 @@ private fun containerAt(inventory: Inventory): Container? {
     return Container(world.uid, location.blockX, location.blockY, location.blockZ, 0)
 }
 
+internal fun containerAt(block: Block, slot: Int) =
+    Container(block.world.uid, block.x, block.y, block.z, slot)
+
+internal fun playerHolders(uuid: UUID, inventory: PlayerInventory): (Int) -> Holder {
+    val storageSize = inventory.storageContents.size
+    return { slot -> if (slot < storageSize) PlayerInv(uuid, slot) else PlayerEquip(uuid, slot) }
+}
+
 internal fun causeOf(edge: Edge): Cause = when {
     edge.to is Nested -> Cause.BUNDLE_INSERT
     edge.from is Nested -> Cause.BUNDLE_EXTRACT
@@ -145,7 +146,7 @@ internal fun causeOf(edge: Edge): Cause = when {
 
 class ContainerCaptureListener(
     private val plugin: Plugin,
-    private val log: ItemLog,
+    private val sink: (Transfer) -> Unit,
     private val codec: ItemFormCodec,
 ) : Listener {
     private class Baseline(val view: InventoryView, val stacks: Map<Holder, Stack>)
@@ -202,11 +203,11 @@ class ContainerCaptureListener(
             val qty = minOf(left, found.count)
             if (qty <= 0) continue
             pending[found.key] = left - qty
-            log.submit(
+            sink(
                 Transfer(
                     cause = Cause.LOOT_GENERATE,
                     from = Void,
-                    to = Container(block.world.uid, block.x, block.y, block.z, slot),
+                    to = containerAt(block, slot),
                     form = found.key.form,
                     damage = found.key.damage,
                     qty = qty,
@@ -269,7 +270,7 @@ class ContainerCaptureListener(
         baselines[player.uniqueId] = Baseline(baseline.view, after)
         val timestamp = System.currentTimeMillis()
         for (edge in Netting.diff(baseline.stacks, after)) {
-            log.submit(
+            sink(
                 Transfer(
                     cause = causeOf(edge),
                     from = edge.from,
@@ -297,15 +298,8 @@ class ContainerCaptureListener(
             for (slot in 0 until top.size) record(stacks, topHolder(slot), top.getItem(slot))
         }
         val inventory = player.inventory
-        val storageSize = inventory.storageContents.size
-        for (slot in 0 until inventory.size) {
-            val holder = if (slot < storageSize) {
-                PlayerInv(player.uniqueId, slot)
-            } else {
-                PlayerEquip(player.uniqueId, slot)
-            }
-            record(stacks, holder, inventory.getItem(slot))
-        }
+        val holders = playerHolders(player.uniqueId, inventory)
+        for (slot in 0 until inventory.size) record(stacks, holders(slot), inventory.getItem(slot))
         record(stacks, PlayerCursor(player.uniqueId), player.itemOnCursor)
         return stacks
     }
@@ -325,21 +319,16 @@ class ContainerCaptureListener(
         // one on the next pass and the diff would invent a movement out of it.
         val owner = if (contents.isEmpty()) null else NestedItems.own(live)
         val encoded = codec.encode(live)
-        into[holder] = Stack(ItemKey(encoded.form, encoded.damage), encoded.count)
+        into[holder] = Stack(encoded.key, encoded.count)
         if (owner == null) return
         for ((index, child) in contents) {
             val inside = codec.encode(child)
-            into[Nested(owner, index)] = Stack(ItemKey(inside.form, inside.damage), inside.count)
+            into[Nested(owner, index)] = Stack(inside.key, inside.count)
         }
     }
 
-    private fun encode(stack: BukkitItemStack?): Stack? {
-        if (stack == null) return null
-        val nms = CraftItemStack.asNMSCopy(stack)
-        if (nms.isEmpty) return null
-        val encoded = codec.encode(nms)
-        return Stack(ItemKey(encoded.form, encoded.damage), encoded.count)
-    }
+    private fun encode(stack: BukkitItemStack?): Stack? =
+        codec.encodeOrNull(stack)?.let { Stack(it.key, it.count) }
 
     private fun topHolders(player: Player, inventory: Inventory): ((Int) -> Holder)? {
         val viewer = player.uniqueId
@@ -350,8 +339,7 @@ class ContainerCaptureListener(
             // Another player's inventory is ticked by the region that owns them, so reading it from
             // here would race with the owner and could invent an edge out of a half-applied change.
             if (inventory.holder?.uniqueId?.equals(viewer) == false) return null
-            val storageSize = inventory.storageContents.size
-            return { slot -> if (slot < storageSize) PlayerInv(viewer, slot) else PlayerEquip(viewer, slot) }
+            return playerHolders(viewer, inventory)
         }
         containerHolders(inventory)?.let { return it }
         // Menu types carry no number of their own yet; ordinals are stable within a server version.

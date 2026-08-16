@@ -3,36 +3,48 @@ package io.pfaumc.pfauprotect
 import java.util.UUID
 
 // TRANSFER and FACT must stay 0: the header byte of an ordinary entry is required to be 0x00.
-enum class Kind(val id: Int) { TRANSFER(0), MUTATE(1), CLONE(2) }
+enum class Kind(val id: Int) {
+    TRANSFER(0), MUTATE(1), CLONE(2), ;
 
-enum class Confidence(val id: Int) { FACT(0), INFERRED(1) }
+    companion object {
+        private val BY_ID = entries.associateBy { it.id }
+        fun byId(id: Int): Kind? = BY_ID[id]
+    }
+}
+
+enum class Confidence(val id: Int) {
+    FACT(0), INFERRED(1), ;
+
+    companion object {
+        private val BY_ID = entries.associateBy { it.id }
+        fun byId(id: Int): Confidence? = BY_ID[id]
+    }
+}
 
 // typeId values are written into every stored key and must never change.
-sealed interface Holder {
-    val typeId: Int
-    val slot: Int
+sealed class Holder(val typeId: Int) {
+    abstract val slot: Int
+
+    // A holder nobody can address owns no rows: it only ever appears as the other end of a movement,
+    // written into the value of the row that faces it.
+    val addressable: Boolean get() = this !is MenuSlot && this !is Void
 }
 
-data class PlayerInv(val uuid: UUID, override val slot: Int) : Holder {
-    override val typeId: Int get() = 0
+sealed class PlayerHolder(typeId: Int) : Holder(typeId) {
+    abstract val uuid: UUID
 }
 
-data class PlayerEquip(val uuid: UUID, override val slot: Int) : Holder {
-    override val typeId: Int get() = 1
-}
+data class PlayerInv(override val uuid: UUID, override val slot: Int) : PlayerHolder(0)
 
-data class PlayerCursor(val uuid: UUID) : Holder {
-    override val typeId: Int get() = 2
+data class PlayerEquip(override val uuid: UUID, override val slot: Int) : PlayerHolder(1)
+
+data class PlayerCursor(override val uuid: UUID) : PlayerHolder(2) {
     override val slot: Int get() = 0
 }
 
-data class PlayerEnder(val uuid: UUID, override val slot: Int) : Holder {
-    override val typeId: Int get() = 3
-}
+data class PlayerEnder(override val uuid: UUID, override val slot: Int) : PlayerHolder(3)
 
-data class MenuSlot(val menuType: Int, override val slot: Int) : Holder {
-    override val typeId: Int get() = 4
-}
+data class MenuSlot(val menuType: Int, override val slot: Int) : Holder(4)
 
 data class Container(
     val world: UUID,
@@ -40,26 +52,19 @@ data class Container(
     val y: Int,
     val z: Int,
     override val slot: Int,
-) : Holder {
-    override val typeId: Int get() = 5
-}
+) : Holder(5)
 
-data class EntitySlot(val uuid: UUID, override val slot: Int) : Holder {
-    override val typeId: Int get() = 6
-}
+data class EntitySlot(val uuid: UUID, override val slot: Int) : Holder(6)
 
-data class ItemEntityRef(val uuid: UUID) : Holder {
-    override val typeId: Int get() = 7
+data class ItemEntityRef(val uuid: UUID) : Holder(7) {
     override val slot: Int get() = 0
 }
 
-data class Nested(val ownerId: UUID, val index: Int) : Holder {
-    override val typeId: Int get() = 8
+data class Nested(val ownerId: UUID, val index: Int) : Holder(8) {
     override val slot: Int get() = index
 }
 
-data object Void : Holder {
-    override val typeId: Int get() = 9
+data object Void : Holder(9) {
     override val slot: Int get() = 0
 }
 

@@ -13,10 +13,8 @@ class ByteWriter(initialCapacity: Int = 32) {
         return this
     }
 
-    fun bytes(v: ByteArray): ByteWriter = bytes(v, 0, v.size)
-
-    fun bytes(v: ByteArray, off: Int, len: Int): ByteWriter {
-        out.write(v, off, len)
+    fun bytes(v: ByteArray): ByteWriter {
+        out.write(v, 0, v.size)
         return this
     }
 
@@ -52,12 +50,13 @@ class ByteWriter(initialCapacity: Int = 32) {
     fun toByteArray(): ByteArray = out.toByteArray()
 }
 
-class ByteReader(private val buf: ByteArray, private var pos: Int = 0, private val end: Int = buf.size) {
-    val remaining: Int get() = end - pos
-    val position: Int get() = pos
+class ByteReader(private val buf: ByteArray) {
+    private var pos = 0
+
+    val remaining: Int get() = buf.size - pos
 
     fun byte(): Int {
-        require(pos < end) { "read past end of buffer at position $pos" }
+        require(pos < buf.size) { "read past end of buffer at position $pos" }
         return buf[pos++].toInt() and 0xFF
     }
 
@@ -235,10 +234,10 @@ object EntryCodec {
         val header = v.byte()
         if (header and VERSION_MASK != VERSION) return null
         val kindId = (header ushr 6) and 0x03
-        val kind = Kind.entries.firstOrNull { it.id == kindId }
-            ?: throw IllegalArgumentException("unknown entry kind $kindId")
+        val kind = Kind.byId(kindId) ?: throw IllegalArgumentException("unknown entry kind $kindId")
         val confidenceId = (header ushr 5) and 0x01
-        val confidence = Confidence.entries.first { it.id == confidenceId }
+        val confidence = Confidence.byId(confidenceId)
+            ?: throw IllegalArgumentException("unknown confidence $confidenceId")
         val causeId = v.byte()
         val cause = Cause.byId(causeId) ?: throw IllegalArgumentException("unknown cause id $causeId")
         val slot = v.varInt()
@@ -269,10 +268,7 @@ object EntryCodec {
     private fun writeKeyIdentity(w: ByteWriter, holder: Holder, ids: IdResolver) {
         w.byte(holder.typeId)
         when (holder) {
-            is PlayerInv -> w.varInt(playerNo(holder.uuid, ids))
-            is PlayerEquip -> w.varInt(playerNo(holder.uuid, ids))
-            is PlayerCursor -> w.varInt(playerNo(holder.uuid, ids))
-            is PlayerEnder -> w.varInt(playerNo(holder.uuid, ids))
+            is PlayerHolder -> w.varInt(playerNo(holder.uuid, ids))
             is Container -> {
                 w.varInt(ids.id(RegistryNamespace.WORLD, holder.world))
                 w.bytes(Zcode.encode(holder.x, holder.y, holder.z))
@@ -308,10 +304,9 @@ object EntryCodec {
     private fun writeCounterparty(w: ByteWriter, holder: Holder, ids: IdResolver) {
         w.byte(holder.typeId)
         when (holder) {
-            is PlayerInv -> w.varInt(playerNo(holder.uuid, ids)).varInt(holder.slot)
-            is PlayerEquip -> w.varInt(playerNo(holder.uuid, ids)).varInt(holder.slot)
-            is PlayerEnder -> w.varInt(playerNo(holder.uuid, ids)).varInt(holder.slot)
+            // A cursor holds one stack and has no slot number of its own.
             is PlayerCursor -> w.varInt(playerNo(holder.uuid, ids))
+            is PlayerHolder -> w.varInt(playerNo(holder.uuid, ids)).varInt(holder.slot)
             is MenuSlot -> w.varInt(holder.menuType).varInt(holder.slot)
             is Container -> {
                 w.varInt(ids.id(RegistryNamespace.WORLD, holder.world))

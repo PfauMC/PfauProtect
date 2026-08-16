@@ -16,18 +16,38 @@ import net.minecraft.nbt.Tag
 import net.minecraft.resources.Identifier
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
+import org.bukkit.craftbukkit.inventory.CraftItemStack
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import org.bukkit.inventory.ItemStack as BukkitItemStack
 
-data class EncodedItem(val form: ByteArray, val count: Int, val damage: Int?)
+class ItemKey(val form: ByteArray, val damage: Int?) {
+    override fun equals(other: Any?): Boolean =
+        other is ItemKey && damage == other.damage && form.contentEquals(other.form)
+
+    override fun hashCode(): Int = 31 * form.contentHashCode() + (damage?.hashCode() ?: 0)
+}
+
+data class EncodedItem(val form: ByteArray, val count: Int, val damage: Int?) {
+    val key: ItemKey get() = ItemKey(form, damage)
+}
+
+// The item type number leads every form, so a caller that only wants to name an item never has to
+// decode the components behind it.
+fun itemTypeIdOf(form: ByteArray): Int = ByteReader(form).varInt()
 
 class ItemFormCodec(
     private val registries: Registries,
     private val registryAccess: RegistryAccess,
 ) {
     private val registryOps by lazy { registryAccess.createSerializationContext(NbtOps.INSTANCE) }
+
+    fun encodeOrNull(stack: BukkitItemStack?): EncodedItem? {
+        val nms = CraftItemStack.asNMSCopy(stack ?: return null)
+        return if (nms.isEmpty) null else encode(nms)
+    }
 
     // What a container holds is never part of what it is: those items are rows of their own, filed
     // under the container's name wherever it travels, so a box that changes hands reads as the same

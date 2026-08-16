@@ -175,8 +175,7 @@ class MechanismCaptureListener(
     }
 
     private fun submit(from: Holder, to: Holder, cause: Cause, stack: NmsItemStack, qty: Int) {
-        val encoded = codec.encode(stack)
-        pending.add(from, to, cause, ItemKey(encoded.form, encoded.damage), qty)
+        pending.add(from, to, cause, codec.encode(stack).key, qty)
     }
 
     private fun nms(inventory: Inventory): NmsContainer? = (inventory as? CraftInventory)?.inventory
