@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -54,6 +55,40 @@ class StorageTest {
     @AfterEach
     fun closeLog() {
         log.close()
+    }
+
+    @Test
+    fun `a sound ledger sweeps without a word`() {
+        val report = log.sweep(100)
+        assertTrue(report.reachedEnd)
+        assertEquals(emptyList<String>(), report.gaps)
+        assertTrue(report.checked > 0)
+    }
+
+    // Both ends of one movement landing on the same key is how half a transaction gets lost: the
+    // second write silently replaces the first, and only the sum gives it away.
+    @Test
+    fun `a movement whose ends collapse onto one row is reported`() {
+        log.submit(Transfer(Cause.CONTAINER_ADD, chest, chest, torch, null, 4, T0 + 40))
+        log.drain()
+        val report = log.sweep(100)
+        assertEquals(1, report.gaps.size)
+        assertTrue(report.gaps.single().contains("leave"), report.gaps.single())
+    }
+
+    @Test
+    fun `sweeping continues where the last pass stopped`() {
+        val first = log.sweep(2)
+        assertEquals(2, first.checked)
+        assertFalse(first.reachedEnd)
+        var passes = 0
+        var seen = first.checked
+        while (passes++ < 10) {
+            val next = log.sweep(2)
+            seen += next.checked
+            if (next.reachedEnd) break
+        }
+        assertEquals(log.sweep(100).checked, seen)
     }
 
     // A shulker loses its mark when it is broken, so the name has to outlive the box standing there,

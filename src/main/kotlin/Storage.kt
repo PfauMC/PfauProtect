@@ -59,6 +59,8 @@ interface NestedOwners {
     fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int)
 }
 
+data class SweepReport(val checked: Int, val gaps: List<String>, val reachedEnd: Boolean)
+
 private const val SCHEMA_VERSION = 1L
 private const val MAX_REGION_CHUNKS = 1024
 private const val MAX_BATCH = 256
@@ -80,6 +82,7 @@ private val NESTED_OWNERS_CF = "nested_owners".toByteArray()
 private val META_SCHEMA = "schema".toByteArray()
 private val META_TX_ID = "tx_id".toByteArray()
 private val META_ITEM_FORM_ID = "item_form_id".toByteArray()
+private val META_SWEEP_CURSOR = "sweep_cursor".toByteArray()
 
 private val LOGGER: Logger = Logger.getLogger("PfauProtect")
 
@@ -242,6 +245,52 @@ class RocksItemLog(dir: Path) : ItemLog, RegistryStore, NestedOwners {
     }
 
     override fun form(itemFormId: Long): ByteArray? = forms.formOf(itemFormId)
+
+    // The standing test of the capture: an entry that does not face the void has a second half, and
+    // the two cancel each other out. A half that is missing is not a dupe but a hole in the capture —
+    // two ends of one movement that collapsed onto one key, or a write that never landed — and it is
+    // worth hearing about now rather than in the middle of an investigation years later. Each pass
+    // picks up where the last one stopped, so the whole ledger is covered over time at a fixed cost.
+    fun sweep(limit: Int): SweepReport = dbLock.read {
+        if (closed) return SweepReport(0, emptyList(), false)
+        val gaps = ArrayList<String>()
+        var checked = 0
+        var last: ByteArray? = null
+        var reachedEnd = false
+        db.newIterator(entriesCf).use { iter ->
+            val cursor = db.get(metaCf, META_SWEEP_CURSOR)
+            if (cursor == null) {
+                iter.seekToFirst()
+            } else {
+                iter.seek(cursor)
+                if (iter.isValid && iter.key().contentEquals(cursor)) iter.next()
+                if (!iter.isValid) iter.seekToFirst()
+            }
+            while (iter.isValid && checked < limit) {
+                val key = iter.key()
+                EntryCodec.decodeOrNull(key, iter.value(), registries)?.let { entry ->
+                    checked++
+                    gapOf(entry)?.let { gaps += it }
+                }
+                last = key
+                iter.next()
+            }
+            reachedEnd = !iter.isValid
+        }
+        if (reachedEnd || last == null) db.delete(metaCf, META_SWEEP_CURSOR) else db.put(metaCf, META_SWEEP_CURSOR, last)
+        SweepReport(checked, gaps, reachedEnd)
+    }
+
+    private fun gapOf(entry: LedgerEntry): String? {
+        val other = entry.counterparty
+        if (other === Void || other is MenuSlot) return null
+        val pair = transactionEntries(entry)
+        val where = "${entry.cause} of ${entry.qty} at ${entry.holder}, transaction ${entry.txId}"
+        if (pair.size < 2) return "$where: the half at $other is missing"
+        if (pair[0].itemFormId != pair[1].itemFormId) return "$where: the halves name different items"
+        val sum = pair.sumOf { it.qty }
+        return if (sum == 0) null else "$where: the halves leave $sum behind"
+    }
 
     override fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID? = dbLock.read {
         if (closed) return null

@@ -9,9 +9,13 @@ import net.minecraft.server.MinecraftServer
 import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
+import java.util.concurrent.TimeUnit
 import java.util.logging.Level
 
 private const val TARGET_RANGE = 6
+private const val SWEEP_ENTRIES = 2000
+private const val SWEEP_MINUTES = 5L
+private const val SWEEP_GAPS_LOGGED = 5
 private const val LOOKUP_PERMISSION = "pfauprotect.lookup"
 private const val INSPECT_PERMISSION = "pfauprotect.inspect"
 
@@ -47,6 +51,13 @@ class PfauProtectPlugin : JavaPlugin() {
             origins.sweep()
             mechanisms.flush()
         }, 1, 1)
+        server.asyncScheduler.runAtFixedRate(
+            this,
+            { sweepLedger(ledger) },
+            SWEEP_MINUTES,
+            SWEEP_MINUTES,
+            TimeUnit.MINUTES,
+        )
         warnAboutSilencedHoppers()
         registerCommand()
         logger.info(
@@ -74,6 +85,19 @@ class PfauProtectPlugin : JavaPlugin() {
             this.origins = null
             this.lookups = null
             this.inspector = null
+        }
+    }
+
+    // A gap means one end of a movement was written and the other was not, which is a hole in the
+    // capture rather than anything a player did. Reported as it is found, not once the ledger is
+    // already being read in anger.
+    private fun sweepLedger(ledger: RocksItemLog) {
+        val report = ledger.sweep(SWEEP_ENTRIES)
+        for (gap in report.gaps.take(SWEEP_GAPS_LOGGED)) logger.warning("ledger gap: $gap")
+        val unlisted = report.gaps.size - SWEEP_GAPS_LOGGED
+        if (unlisted > 0) logger.warning("and $unlisted more ledger gaps in this pass")
+        if (report.reachedEnd && report.checked > 0) {
+            logger.info("ledger swept to the end, ${report.checked} entries in this pass, ${report.gaps.size} gaps")
         }
     }
 
