@@ -40,6 +40,8 @@ class ByteWriter(initialCapacity: Int = 32) {
 
     fun zigZagInt(v: Int): ByteWriter = varInt((v shl 1) xor (v shr 31))
 
+    fun shortBE(v: Int): ByteWriter = byte((v ushr 8) and 0xFF).byte(v and 0xFF)
+
     fun longBE(v: Long): ByteWriter {
         for (shift in 56 downTo 0 step 8) byte((v ushr shift).toInt() and 0xFF)
         return this
@@ -95,6 +97,8 @@ class ByteReader(private val buf: ByteArray) {
         val v = varInt()
         return (v ushr 1) xor -(v and 1)
     }
+
+    fun shortBE(): Int = (byte() shl 8) or byte()
 
     fun longBE(): Long {
         var result = 0L
@@ -180,6 +184,20 @@ fun interface IdLookup {
 object EntryCodec {
     const val VERSION = 0
 
+    // Fixed width rather than a varint: the registry caps a world number at 0xFFFF anyway, and a
+    // varint would make the length of everything after it depend on how many worlds the server has.
+    const val WORLD_NO_SIZE = 2
+
+    // Every key that addresses a position opens with the holder type, a fixed-width world number and
+    // the chunk part of the position, so a chunk is a fixed-length prefix and the store can size a
+    // prefix extractor for it. Widening the world number to two bytes is what buys the fixed length.
+    const val CHUNK_PREFIX_SIZE = 1 + WORLD_NO_SIZE + Zcode.CHUNK_PREFIX_SIZE
+
+    // Postings of one transaction are numbered from zero in the order they are written, which is what
+    // keeps two postings on one holder — a stack moved between two slots, both sides of a mutation —
+    // in rows of their own.
+    const val MAX_ORDINAL = 0xFF
+
     private const val VERSION_MASK = 0x07
 
     // The upper reserved bit flags an actor; the lower one stays next to the version so that field
@@ -189,10 +207,11 @@ object EntryCodec {
     fun header(kind: Kind, confidence: Confidence, actor: Boolean = false): Int =
         (kind.id shl 6) or (confidence.id shl 5) or (if (actor) ACTOR_FLAG else 0) or VERSION
 
-    fun key(holder: Holder, timestamp: Long, txId: Long, ids: IdResolver): ByteArray {
+    fun key(holder: Holder, timestamp: Long, txId: Long, ordinal: Int, ids: IdResolver): ByteArray {
+        require(ordinal in 0..MAX_ORDINAL) { "posting ordinal $ordinal does not fit in a byte" }
         val w = ByteWriter(40)
         writeKeyIdentity(w, holder, ids)
-        return w.longBE(timestamp).longBE(txId).toByteArray()
+        return w.longBE(timestamp).longBE(txId).byte(ordinal).toByteArray()
     }
 
     fun holderPrefix(holder: Holder, ids: IdResolver): ByteArray {
@@ -201,12 +220,15 @@ object EntryCodec {
         return w.toByteArray()
     }
 
-    fun containerChunkPrefix(world: UUID, chunkX: Int, chunkZ: Int, ids: IdResolver): ByteArray =
-        ByteWriter(16)
-            .byte(5)
-            .varInt(ids.id(RegistryNamespace.WORLD, world))
-            .bytes(Zcode.chunkPrefix(chunkX, chunkZ))
-            .toByteArray()
+    // Two holder types address a block position and their keys differ only in the leading byte, so a
+    // scan of one prefix answers with half the rows and looks complete doing it.
+    fun blockChunkPrefixes(world: UUID, chunkX: Int, chunkZ: Int, ids: IdResolver): List<ByteArray> {
+        val worldNo = ids.id(RegistryNamespace.WORLD, world)
+        val chunk = Zcode.chunkPrefix(chunkX, chunkZ)
+        return listOf(5, 10).map { typeId ->
+            ByteWriter(CHUNK_PREFIX_SIZE).byte(typeId).shortBE(worldNo).bytes(chunk).toByteArray()
+        }
+    }
 
     // The trailing damage varint carries no presence flag, so it is only decodable while nothing can
     // follow it. Writing provenanceId here would need a new record version with a presence flag in
@@ -253,6 +275,7 @@ object EntryCodec {
             holder = holder,
             timestamp = k.longBE(),
             txId = k.longBE(),
+            ordinal = k.byte(),
             kind = kind,
             cause = cause,
             confidence = confidence,
@@ -269,11 +292,8 @@ object EntryCodec {
         w.byte(holder.typeId)
         when (holder) {
             is PlayerHolder -> w.varInt(playerNo(holder.uuid, ids))
-            is Container -> {
-                w.varInt(ids.id(RegistryNamespace.WORLD, holder.world))
-                w.bytes(Zcode.encode(holder.x, holder.y, holder.z))
-            }
-
+            is Container -> writePosition(w, holder.world, holder.x, holder.y, holder.z, ids)
+            is WorldBlock -> writePosition(w, holder.world, holder.x, holder.y, holder.z, ids)
             is EntitySlot -> w.uuid(holder.uuid)
             is ItemEntityRef -> w.uuid(holder.uuid)
             is Nested -> w.uuid(holder.ownerId)
@@ -298,6 +318,12 @@ object EntryCodec {
             6 -> EntitySlot(k.uuid(), slot)
             7 -> ItemEntityRef(k.uuid())
             8 -> Nested(k.uuid(), slot)
+            10 -> {
+                val world = worldUuid(k, names)
+                val pos = Zcode.decode(k.bytes(Zcode.SIZE))
+                WorldBlock(world, pos[0], pos[1], pos[2])
+            }
+
             else -> throw IllegalArgumentException("holder type $typeId produces no ledger rows of its own")
         }
 
@@ -309,10 +335,12 @@ object EntryCodec {
             is PlayerHolder -> w.varInt(playerNo(holder.uuid, ids)).varInt(holder.slot)
             is MenuSlot -> w.varInt(holder.menuType).varInt(holder.slot)
             is Container -> {
-                w.varInt(ids.id(RegistryNamespace.WORLD, holder.world))
-                w.bytes(Zcode.encode(holder.x, holder.y, holder.z))
+                writePosition(w, holder.world, holder.x, holder.y, holder.z, ids)
                 w.varInt(holder.slot)
             }
+
+            // A block position holds one thing and needs no slot of its own.
+            is WorldBlock -> writePosition(w, holder.world, holder.x, holder.y, holder.z, ids)
 
             is EntitySlot -> w.uuid(holder.uuid).varInt(holder.slot)
             is ItemEntityRef -> w.uuid(holder.uuid)
@@ -338,8 +366,19 @@ object EntryCodec {
             7 -> ItemEntityRef(v.uuid())
             8 -> Nested(v.uuid(), v.varInt())
             9 -> Void
+            10 -> {
+                val world = worldUuid(v, names)
+                val pos = Zcode.decode(v.bytes(Zcode.SIZE))
+                WorldBlock(world, pos[0], pos[1], pos[2])
+            }
+
             else -> throw IllegalArgumentException("unknown holder type $typeId")
         }
+
+    private fun writePosition(w: ByteWriter, world: UUID, x: Int, y: Int, z: Int, ids: IdResolver) {
+        w.shortBE(ids.id(RegistryNamespace.WORLD, world))
+        w.bytes(Zcode.encode(x, y, z))
+    }
 
     private fun playerNo(uuid: UUID, ids: IdResolver): Int = ids.id(RegistryNamespace.PLAYER, uuid)
 
@@ -349,7 +388,7 @@ object EntryCodec {
     }
 
     private fun worldUuid(r: ByteReader, names: IdLookup): UUID {
-        val no = r.varInt()
+        val no = r.shortBE()
         return names.uuid(RegistryNamespace.WORLD, no) ?: throw IllegalArgumentException("unknown world number $no")
     }
 }

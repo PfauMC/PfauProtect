@@ -54,6 +54,13 @@ data class Container(
     override val slot: Int,
 ) : Holder(5)
 
+// A placed block still holds the item it was made from. Writing the placement as a loss into Void
+// instead would cut the chain in two at every build: the stolen blocks laid into a floor would
+// vanish from the graph when placed and reappear from nowhere hours later when mined back out.
+data class WorldBlock(val world: UUID, val x: Int, val y: Int, val z: Int) : Holder(10) {
+    override val slot: Int get() = 0
+}
+
 data class EntitySlot(val uuid: UUID, override val slot: Int) : Holder(6)
 
 data class ItemEntityRef(val uuid: UUID) : Holder(7) {
@@ -72,6 +79,9 @@ data class LedgerEntry(
     val holder: Holder,
     val timestamp: Long,
     val txId: Long,
+    // Where this posting sits among the postings of its transaction. It is the tail of the stored key
+    // and the only thing keeping two postings on one holder apart, since the slot lives in the value.
+    val ordinal: Int = 0,
     val kind: Kind,
     val cause: Cause,
     val confidence: Confidence,

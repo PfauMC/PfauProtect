@@ -30,6 +30,12 @@ class ItemKey(val form: ByteArray, val damage: Int?) {
     override fun hashCode(): Int = 31 * form.contentHashCode() + (damage?.hashCode() ?: 0)
 }
 
+// Identity without the wear: a pickaxe is the same pickaxe at 1523 and at 1524.
+class FormKey(val form: ByteArray) {
+    override fun equals(other: Any?): Boolean = other is FormKey && form.contentEquals(other.form)
+    override fun hashCode(): Int = form.contentHashCode()
+}
+
 data class EncodedItem(val form: ByteArray, val count: Int, val damage: Int?) {
     val key: ItemKey get() = ItemKey(form, damage)
 }

@@ -9,7 +9,11 @@ enum class RegistryNamespace(val id: Int, val maxId: Int) {
     ENCHANTMENT(2, 0xFFFF),
     DATA_COMPONENT_TYPE(3, 0xFFFF),
     POTION(4, 0xFFFF),
-    WORLD(5, 0xFFFF),
+
+    // One short of the two bytes a world number is stored in. A scan for a world nobody registered
+    // has to find nothing, and it says so by putting -1 through those two bytes, which lands on
+    // 0xFFFF; handing that number to a real world would point such a scan at that world's rows.
+    WORLD(5, 0xFFFE),
     PLAYER(6, Int.MAX_VALUE),
     ;
 

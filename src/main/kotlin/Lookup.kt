@@ -223,6 +223,15 @@ private fun radiusOrNull(value: String): Int? {
 
 private fun limitOrNull(value: String): Int? = value.toIntOrNull()?.takeIf { it in 1..MAX_LIMIT }
 
+private fun playerOf(holder: Holder): UUID? = (holder as? PlayerHolder)?.uuid
+
+// A row names a player in three columns, not two: holding one end, standing at the other, or as the
+// actor behind a movement between two things that are neither. Breaking a block writes the block
+// losing its item to nowhere and the breaker only as the actor, so a filter that reads the two ends
+// alone hides exactly the rows an investigation of that player is looking for.
+internal fun namesUser(entry: LedgerEntry, users: Set<UUID>): Boolean =
+    playerOf(entry.holder) in users || playerOf(entry.counterparty) in users || entry.actor in users
+
 class LookupArgument : CustomArgumentType<LookupQuery, String> {
     override fun getNativeType(): ArgumentType<String> = StringArgumentType.greedyString()
 
@@ -308,13 +317,12 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
     private fun read(target: LookupTarget, query: LookupQuery): List<LedgerEntry> {
         val fromTs = query.secondsBack?.let { System.currentTimeMillis() - it * 1000 } ?: 0
         val fetch = minOf(query.limit * FETCH_FACTOR, MAX_FETCH)
-        val radius = query.radius ?: return ledger.holderEntries(
-            holder = Container(target.world, target.x, target.y, target.z, 0),
-            fromTs = fromTs,
-            toTs = Long.MAX_VALUE,
-            reverse = true,
-            limit = fetch,
-        )
+        val radius = query.radius ?: return listOf(
+            Container(target.world, target.x, target.y, target.z, 0),
+            WorldBlock(target.world, target.x, target.y, target.z),
+        ).flatMap { holder ->
+            ledger.holderEntries(holder, fromTs, Long.MAX_VALUE, reverse = true, limit = fetch)
+        }.sortedByDescending { it.timestamp }
         return ledger.regionEntries(
             world = target.world,
             minX = target.x - radius,
@@ -326,8 +334,8 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
             reverse = true,
             limit = fetch,
         ).filter { entry ->
-            val holder = entry.holder
-            holder !is Container || holder.y in (target.y - radius)..(target.y + radius)
+            val height = (entry.holder as? Container)?.y ?: (entry.holder as? WorldBlock)?.y
+            height == null || height in (target.y - radius)..(target.y + radius)
         }
     }
 
@@ -337,12 +345,12 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
         val excludedUsers = query.excluded.mapNotNull(::resolve).toSet()
         return entries.asSequence()
             .filter { query.causes == null || it.cause in query.causes }
-            .filter { users.isEmpty() || playerOf(it.holder) in users || playerOf(it.counterparty) in users }
+            .filter { users.isEmpty() || namesUser(it, users) }
             .filter { entry ->
                 val item = itemKey(entry.itemFormId)
                 (included.isEmpty() || item in included) && item !in excludedItems
             }
-            .filter { playerOf(it.holder) !in excludedUsers && playerOf(it.counterparty) !in excludedUsers }
+            .filter { !namesUser(it, excludedUsers) }
             .take(query.limit)
             .toList()
     }
@@ -353,8 +361,6 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
 
     private fun normalizeItem(name: String): String =
         if (name.contains(':')) name.lowercase() else "$VANILLA_NAMESPACE:${name.lowercase()}"
-
-    private fun playerOf(holder: Holder): UUID? = (holder as? PlayerHolder)?.uuid
 
     private fun describe(entry: LedgerEntry): String {
         val amount = if (entry.qty > 0) "+${entry.qty}" else entry.qty.toString()
@@ -379,6 +385,7 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
         is PlayerEnder -> "${playerName(holder.uuid)} ender chest slot ${holder.slot}"
         is MenuSlot -> "menu ${holder.menuType} slot ${holder.slot}"
         is Container -> "container ${holder.x} ${holder.y} ${holder.z} slot ${holder.slot}"
+        is WorldBlock -> "block ${holder.x} ${holder.y} ${holder.z}"
         is EntitySlot -> "entity ${holder.uuid} slot ${holder.slot}"
         is ItemEntityRef -> "dropped item ${holder.uuid}"
         is Nested -> "inside ${holder.ownerId} at ${holder.index}"

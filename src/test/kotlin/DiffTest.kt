@@ -16,11 +16,14 @@ class DiffTest {
     private fun bag(slot: Int) = PlayerInv(player, slot)
     private val cursor = PlayerCursor(player)
 
+    private fun seen(vararg rows: Pair<Holder, Stack>, containers: Set<UUID> = emptySet()) =
+        Snapshot(mapOf(*rows), containers)
+
     @Test
     fun `a whole stack moves as one edge`() {
         val edges = Netting.diff(
-            mapOf(chest(0) to stack("stone", 64)),
-            mapOf(bag(0) to stack("stone", 64)),
+            seen(chest(0) to stack("stone", 64)),
+            seen(bag(0) to stack("stone", 64)),
         )
         assertEquals(listOf(Edge(chest(0), bag(0), key("stone"), 64, Confidence.FACT)), edges)
     }
@@ -28,8 +31,8 @@ class DiffTest {
     @Test
     fun `a partial stack moves only the taken amount`() {
         val edges = Netting.diff(
-            mapOf(chest(0) to stack("stone", 64)),
-            mapOf(chest(0) to stack("stone", 40), bag(0) to stack("stone", 24)),
+            seen(chest(0) to stack("stone", 64)),
+            seen(chest(0) to stack("stone", 40), bag(0) to stack("stone", 24)),
         )
         assertEquals(listOf(Edge(chest(0), bag(0), key("stone"), 24, Confidence.FACT)), edges)
     }
@@ -37,8 +40,8 @@ class DiffTest {
     @Test
     fun `a cursor swap trades both stacks`() {
         val edges = Netting.diff(
-            mapOf(cursor to stack("stone", 1), chest(0) to stack("dirt", 1)),
-            mapOf(cursor to stack("dirt", 1), chest(0) to stack("stone", 1)),
+            seen(cursor to stack("stone", 1), chest(0) to stack("dirt", 1)),
+            seen(cursor to stack("dirt", 1), chest(0) to stack("stone", 1)),
         )
         assertEquals(
             setOf(
@@ -53,8 +56,8 @@ class DiffTest {
     @Test
     fun `a slot left holding a zero counter is empty`() {
         val edges = Netting.diff(
-            mapOf(chest(0) to stack("stone", 64), bag(0) to stack("dirt", 1)),
-            mapOf(bag(0) to stack("stone", 0), bag(1) to stack("dirt", 1)),
+            seen(chest(0) to stack("stone", 64), bag(0) to stack("dirt", 1)),
+            seen(bag(0) to stack("stone", 0), bag(1) to stack("dirt", 1)),
         )
         assertEquals(
             setOf(
@@ -69,36 +72,61 @@ class DiffTest {
 
     @Test
     fun `an unchanged snapshot yields no edges`() {
-        val snapshot = mapOf(chest(0) to stack("stone", 64), bag(0) to stack("dirt", 3))
-        assertEquals(emptyList<Edge>(), Netting.diff(snapshot, snapshot))
+        val both = seen(chest(0) to stack("stone", 64), bag(0) to stack("dirt", 3))
+        assertEquals(emptyList<Edge>(), Netting.diff(both, both))
+    }
+
+    // A pass now runs after every block broken, so a pickaxe losing a point of durability between two
+    // of them must not read as one pickaxe vanishing and another appearing.
+    @Test
+    fun `wearing a tool down in place moves nothing`() {
+        val edges = Netting.diff(
+            seen(bag(0) to stack("pickaxe", 1, damage = 3)),
+            seen(bag(0) to stack("pickaxe", 1, damage = 4)),
+        )
+        assertEquals(emptyList<Edge>(), edges)
     }
 
     @Test
-    fun `damage is part of the item key`() {
+    fun `a worn tool that moves is one edge carrying the wear it arrived with`() {
         val edges = Netting.diff(
-            mapOf(bag(0) to stack("pickaxe", 1, damage = 3)),
-            mapOf(bag(1) to stack("pickaxe", 1, damage = 4)),
+            seen(bag(0) to stack("pickaxe", 1, damage = 3)),
+            seen(bag(1) to stack("pickaxe", 1, damage = 4)),
         )
-        assertEquals(
-            setOf(
-                Edge(bag(0), Void, key("pickaxe", 3), 1, Confidence.INFERRED),
-                Edge(Void, bag(1), key("pickaxe", 4), 1, Confidence.INFERRED),
-            ),
-            edges.toSet(),
+        assertEquals(listOf(Edge(bag(0), bag(1), key("pickaxe", 4), 1, Confidence.FACT)), edges)
+    }
+
+    // The price of leaving durability out of identity, named rather than discovered later: two tools
+    // of one form trading places cancel each other and leave no trace of the swap.
+    @Test
+    fun `two tools of one form swapping places cancel out`() {
+        val edges = Netting.diff(
+            seen(bag(0) to stack("pickaxe", 1, damage = 3), bag(1) to stack("pickaxe", 1, damage = 900)),
+            seen(bag(0) to stack("pickaxe", 1, damage = 900), bag(1) to stack("pickaxe", 1, damage = 3)),
         )
+        assertEquals(emptyList<Edge>(), edges)
+    }
+
+    @Test
+    fun `an unpaired worn tool still names its wear`() {
+        val edges = Netting.diff(
+            seen(bag(0) to stack("pickaxe", 1, damage = 3)),
+            seen(),
+        )
+        assertEquals(listOf(Edge(bag(0), Void, key("pickaxe", 3), 1, Confidence.INFERRED)), edges)
     }
 
     @Test
     fun `an unpaired loss goes to the void as inferred`() {
         val vanished = Netting.diff(
-            mapOf(bag(0) to stack("stone", 10)),
-            emptyMap(),
+            seen(bag(0) to stack("stone", 10)),
+            seen(),
         )
         assertEquals(listOf(Edge(bag(0), Void, key("stone"), 10, Confidence.INFERRED)), vanished)
 
         val appeared = Netting.diff(
-            emptyMap(),
-            mapOf(bag(0) to stack("stone", 4)),
+            seen(),
+            seen(bag(0) to stack("stone", 4)),
         )
         assertEquals(listOf(Edge(Void, bag(0), key("stone"), 4, Confidence.INFERRED)), appeared)
     }
@@ -121,12 +149,12 @@ class DiffTest {
     @Test
     fun `a quick move spread over several slots nets into real edges`() {
         val edges = Netting.diff(
-            mapOf(
+            seen(
                 chest(0) to stack("stone", 64),
                 bag(0) to stack("stone", 20),
                 bag(1) to stack("stone", 30),
             ),
-            mapOf(
+            seen(
                 chest(0) to stack("stone", 0),
                 bag(0) to stack("stone", 64),
                 bag(1) to stack("stone", 50),
@@ -141,5 +169,174 @@ class DiffTest {
         )
         assertEquals(2, edges.size)
         assertEquals(64, edges.sumOf { it.qty })
+    }
+
+    // Placing one cobblestone out of a stack while three more are picked up into another slot: paired
+    // by form first, the loss marries the unrelated gain and asserts a move between two slots that
+    // never exchanged anything, while the position is credited nothing and the entity only part of
+    // what it handed over.
+    @Test
+    fun `an intent claims its share before an unrelated gain can be married to the loss`() {
+        val entity = ItemEntityRef(UUID.randomUUID())
+        val placed = WorldBlock(world, 10, 65, -3)
+        val intents = listOf(
+            Intent(Cause.BLOCK_PLACE, to = placed, qty = 1),
+            Intent(Cause.PICKUP, from = entity, qty = 3),
+        )
+        val edges = Netting.diff(
+            seen(bag(0) to stack("cobble", 5)),
+            seen(bag(0) to stack("cobble", 4), bag(9) to stack("cobble", 3)),
+            intents,
+            player,
+        )
+        assertEquals(
+            listOf(
+                Move(bag(0), placed, key("cobble"), 1, Cause.BLOCK_PLACE, Confidence.FACT),
+                Move(entity, bag(9), key("cobble"), 3, Cause.PICKUP, Confidence.FACT),
+            ),
+            Intents.explain(edges, intents, player),
+        )
+    }
+
+    // An intent explains at most what the pass actually found, because the event only ever saw what it
+    // meant to do.
+    @Test
+    fun `an intent claims no more than the pass found`() {
+        val entity = ItemEntityRef(UUID.randomUUID())
+        val intents = listOf(Intent(Cause.PICKUP, from = entity, qty = 64))
+        val edges = Netting.diff(
+            seen(),
+            seen(bag(0) to stack("cobble", 3)),
+            intents,
+            player,
+        )
+        assertEquals(listOf(Edge(Void, bag(0), key("cobble"), 3, Confidence.INFERRED)), edges)
+    }
+
+    // A loss nobody claimed is still married to a gain of its form: that is the ordinary move.
+    @Test
+    fun `what no intent claimed is still paired loss to gain`() {
+        val placed = WorldBlock(world, 10, 65, -3)
+        val intents = listOf(Intent(Cause.BLOCK_PLACE, to = placed, qty = 1))
+        val edges = Netting.diff(
+            seen(bag(0) to stack("cobble", 5)),
+            seen(bag(0) to stack("cobble", 1), bag(1) to stack("cobble", 3)),
+            intents,
+            player,
+        )
+        assertEquals(
+            setOf(
+                Edge(bag(0), bag(1), key("cobble"), 3, Confidence.FACT),
+                Edge(bag(0), Void, key("cobble"), 1, Confidence.INFERRED),
+            ),
+            edges.toSet(),
+        )
+    }
+
+    // One cobblestone laid into the world out of the held slot and one taken off the ground back into
+    // it inside a tick. The slot reads 64 on both sides, so the pass finds nothing at all and the two
+    // intents left over are the only account of what the slot hid.
+    @Test
+    fun `two movements that cancelled in one slot still reach the ends they touched`() {
+        val entity = ItemEntityRef(UUID.randomUUID())
+        val placed = WorldBlock(world, 10, 65, -3)
+        val intents = listOf(
+            Intent(Cause.BLOCK_PLACE, to = placed, form = "cobble".toByteArray(), qty = 1, holder = bag(0)),
+            Intent(Cause.PICKUP, from = entity, form = "cobble".toByteArray(), qty = 1),
+        )
+        val held = seen(bag(0) to stack("cobble", 64))
+        val edges = Netting.diff(held, held, intents, player)
+        assertEquals(emptyList<Edge>(), edges)
+        assertEquals(
+            listOf(
+                Move(bag(0), placed, key("cobble"), 1, Cause.BLOCK_PLACE, Confidence.FACT),
+                Move(entity, bag(0), key("cobble"), 1, Cause.PICKUP, Confidence.FACT),
+            ),
+            Intents.explain(edges, intents, player),
+        )
+    }
+
+    @Test
+    fun `a container item leaving the view moves nothing it holds`() {
+        val box = UUID.randomUUID()
+        val edges = Netting.diff(
+            seen(
+                bag(0) to stack("shulker", 1),
+                Nested(box, 0) to stack("stone", 5),
+                containers = setOf(box),
+            ),
+            seen(),
+        )
+        assertEquals(listOf(Edge(bag(0), Void, key("shulker"), 1, Confidence.INFERRED)), edges)
+    }
+
+    @Test
+    fun `a container item coming back into view mints nothing it holds`() {
+        val box = UUID.randomUUID()
+        val edges = Netting.diff(
+            seen(),
+            seen(
+                bag(0) to stack("shulker", 1),
+                Nested(box, 0) to stack("stone", 5),
+                containers = setOf(box),
+            ),
+        )
+        assertEquals(listOf(Edge(Void, bag(0), key("shulker"), 1, Confidence.INFERRED)), edges)
+    }
+
+    // A box is one item wherever it goes and what it holds rides along inside it. Laid down as a block
+    // or taken off the body by a death, the rows filed under it leave the snapshot with it, and read
+    // as movements they write off a whole box of stone at every placement and mint it back later.
+    @Test
+    fun `a full shulker box leaving the player moves nothing that is inside it`() {
+        val box = UUID.randomUUID()
+        val carried = seen(
+            bag(0) to stack("shulker", 1),
+            Nested(box, 0) to stack("stone", 27),
+            containers = setOf(box),
+        )
+        val placed = WorldBlock(world, 10, 65, -3)
+        val place = Intent(Cause.BLOCK_PLACE, to = placed, form = "shulker".toByteArray(), qty = 1)
+        assertEquals(
+            listOf(Move(bag(0), placed, key("shulker"), 1, Cause.BLOCK_PLACE, Confidence.FACT)),
+            Intents.explain(Netting.diff(carried, seen(), listOf(place), player), listOf(place), player),
+        )
+
+        // The death wrote the box's own row where the slot it came out of was still known, so the pass
+        // swallows that loss; what was inside the box was never a row of this pass at all.
+        val died = Intent(
+            Cause.DEATH_DROP,
+            form = "shulker".toByteArray(),
+            qty = 1,
+            recorded = true,
+            holder = bag(0),
+        )
+        assertEquals(
+            emptyList<Move>(),
+            Intents.explain(Netting.diff(carried, seen(), listOf(died), player), listOf(died), player),
+        )
+    }
+
+    @Test
+    fun `a bundle that stays in view still moves what goes in and out of it`() {
+        val bundle = UUID.randomUUID()
+        val empty = seen(
+            bag(0) to stack("bundle", 1),
+            bag(1) to stack("stone", 5),
+            containers = setOf(bundle),
+        )
+        val filled = seen(
+            bag(0) to stack("bundle", 1),
+            Nested(bundle, 0) to stack("stone", 5),
+            containers = setOf(bundle),
+        )
+        assertEquals(
+            listOf(Edge(bag(1), Nested(bundle, 0), key("stone"), 5, Confidence.FACT)),
+            Netting.diff(empty, filled),
+        )
+        assertEquals(
+            listOf(Edge(Nested(bundle, 0), bag(1), key("stone"), 5, Confidence.FACT)),
+            Netting.diff(filled, empty),
+        )
     }
 }

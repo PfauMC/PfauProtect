@@ -19,6 +19,7 @@ private const val T0 = 1_700_000_000_000L
 class StorageTest {
     private val world = UUID.fromString("00000000-0000-4000-8000-000000000001")
     private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
+    private val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
     private val chest = Container(world, 100, 64, -200, 0)
     private val chestUpperSlot = Container(world, 100, 64, -200, 5)
     private val aliceInv = PlayerInv(alice, 9)
@@ -57,6 +58,11 @@ class StorageTest {
         log.close()
     }
 
+    // A holder prefix covers every slot its owner has, so this is every row of one form alice holds.
+    private fun aliceRows(form: ByteArray): List<LedgerEntry> =
+        log.holderEntries(PlayerInv(alice, 0), 0, Long.MAX_VALUE, limit = 1000)
+            .filter { it.itemFormId == log.formId(form) }
+
     @Test
     fun `a sound ledger sweeps without a word`() {
         val report = log.sweep(100)
@@ -65,15 +71,125 @@ class StorageTest {
         assertTrue(report.checked > 0)
     }
 
-    // Both ends of one movement landing on the same key is how half a transaction gets lost: the
-    // second write silently replaces the first, and only the sum gives it away.
+    // The slot lives in the value and not in the key, so both ends of a movement inside one holder
+    // would address the same key were the posting ordinal not there to part them. Neither of them
+    // may be given a timestamp of its own for it: that would be a claim about when it happened.
     @Test
-    fun `a movement whose ends collapse onto one row is reported`() {
+    fun `a movement whose ends share a holder keeps both rows`() {
         log.submit(Transfer(Cause.CONTAINER_ADD, chest, chest, torch, null, 4, T0 + 40))
         log.drain()
-        val report = log.sweep(100)
-        assertEquals(1, report.gaps.size)
-        assertTrue(report.gaps.single().contains("leave"), report.gaps.single())
+
+        val moved = log.holderEntries(chest, 0, Long.MAX_VALUE).filter { it.itemFormId == log.formId(torch) }
+        assertEquals(listOf(-4, 4), moved.map { it.qty })
+        assertEquals(listOf(T0 + 40, T0 + 40), moved.map { it.timestamp })
+        assertEquals(listOf(0, 1), moved.map { it.ordinal })
+        assertEquals(emptyList<String>(), log.sweep(100).gaps)
+    }
+
+    // A stack moved between two slots of one inventory is the commonest movement there is, and both
+    // of its ends address the same player.
+    @Test
+    fun `a move between two slots of one player leaves two rows that cancel`() {
+        log.submit(Transfer(Cause.QUICK_MOVE, PlayerInv(alice, 0), PlayerInv(alice, 9), torch, null, 32, T0 + 40))
+        log.drain()
+
+        val moved = aliceRows(torch)
+        assertEquals(listOf(-32, 32), moved.map { it.qty })
+        assertEquals(listOf(PlayerInv(alice, 0), PlayerInv(alice, 9)), moved.map { it.holder })
+        assertEquals(listOf(PlayerInv(alice, 9), PlayerInv(alice, 0)), moved.map { it.counterparty })
+        assertEquals(listOf(T0 + 40, T0 + 40), moved.map { it.timestamp })
+        assertEquals(1, moved.map { it.txId }.distinct().size)
+        assertEquals(0, moved.sumOf { it.qty })
+    }
+
+    @Test
+    fun `shuffling a stack between slots leaves the balance alone`() {
+        val before = log.formBalance(alice)
+        log.submit(
+            Transfer(Cause.QUICK_MOVE, PlayerInv(alice, 0), PlayerInv(alice, 9), cobblestone, null, 32, T0 + 40)
+        )
+        log.drain()
+        assertEquals(before, log.formBalance(alice))
+    }
+
+    @Test
+    fun `a move inside one inventory is whole from either half`() {
+        log.submit(Transfer(Cause.QUICK_MOVE, PlayerInv(alice, 0), PlayerInv(alice, 9), torch, null, 32, T0 + 40))
+        log.drain()
+
+        val (debit, credit) = aliceRows(torch)
+        val whole = log.transactionEntries(debit)
+        assertEquals(2, whole.size)
+        assertEquals(0, whole.sumOf { it.qty })
+        assertEquals(setOf(PlayerInv(alice, 0), PlayerInv(alice, 9)), whole.map { it.holder }.toSet())
+        assertEquals(whole.toSet(), log.transactionEntries(credit).toSet())
+        assertEquals(emptyList<String>(), log.sweep(100).gaps)
+    }
+
+    // An item changing in place is one holder losing the old form and taking on the new one, written
+    // as two movements through the Void under a single transaction. Both of them land on the same
+    // holder at the same instant, so the ordinal is the only thing keeping them from being one row.
+    @Test
+    fun `an item changed in place keeps a row for each form`() {
+        val bench = PlayerInv(alice, 3)
+        log.submit(
+            listOf(
+                Transfer(Cause.ANVIL_COMBINE, bench, Void, pickaxe, 7, 1, T0 + 40, kind = Kind.MUTATE),
+                Transfer(Cause.ANVIL_COMBINE, Void, bench, torch, 7, 1, T0 + 40, kind = Kind.MUTATE),
+            )
+        )
+        log.drain()
+
+        val rows = log.holderEntries(bench, 0, Long.MAX_VALUE).filter { it.kind == Kind.MUTATE }
+        assertEquals(2, rows.size)
+        assertEquals(listOf(-1, 1), rows.map { it.qty })
+        assertEquals(listOf(0, 1), rows.map { it.ordinal })
+        assertEquals(listOf(log.formId(pickaxe), log.formId(torch)), rows.map { it.itemFormId })
+        assertEquals(1, rows.map { it.txId }.distinct().size)
+
+        for (half in rows) {
+            assertEquals(rows.toSet(), log.transactionEntries(half).toSet(), "unreachable from $half")
+        }
+        assertEquals(emptyList<String>(), log.sweep(100).gaps)
+    }
+
+    // Two holder types cannot share a key, so the two ends of this movement are told apart by more
+    // than their ordinals and it is still an ordinary pair.
+    @Test
+    fun `a cursor to slot move of one player stays an ordinary pair`() {
+        log.submit(Transfer(Cause.CURSOR_PLACE, PlayerCursor(alice), PlayerInv(alice, 3), torch, null, 4, T0 + 40))
+        log.drain()
+
+        val fromCursor = log.holderEntries(PlayerCursor(alice), 0, Long.MAX_VALUE).single()
+        assertEquals(-4, fromCursor.qty)
+        val pair = log.transactionEntries(fromCursor)
+        assertEquals(listOf(PlayerCursor(alice), PlayerInv(alice, 3)), pair.map { it.holder })
+        assertEquals(listOf(T0 + 40, T0 + 40), pair.map { it.timestamp })
+        assertEquals(0, pair.sumOf { it.qty })
+        assertEquals(emptyList<String>(), log.sweep(100).gaps)
+    }
+
+    // A block break submits several movements at once, and two of them landing in one container
+    // collide exactly as the two ends of a single movement do.
+    @Test
+    fun `two movements of one transaction into the same container keep their own rows`() {
+        log.submit(
+            listOf(
+                Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 40),
+                Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 0), chestUpperSlot, torch, null, 2, T0 + 40),
+            )
+        )
+        log.drain()
+
+        val landed = log.holderEntries(chest, 0, Long.MAX_VALUE).filter { it.itemFormId == log.formId(torch) }
+        assertEquals(listOf(1, 2), landed.map { it.qty })
+        assertEquals(listOf(chest, chestUpperSlot), landed.map { it.holder })
+
+        val fromBob = log.holderEntries(PlayerInv(bob, 0), 0, Long.MAX_VALUE).single()
+        val whole = log.transactionEntries(fromBob)
+        assertEquals(0, whole.sumOf { it.qty })
+        assertTrue(whole.any { it.holder == chestUpperSlot && it.qty == 2 }, "bob's half went to the wrong slot")
+        assertEquals(emptyList<String>(), log.sweep(100).gaps)
     }
 
     @Test
@@ -89,6 +205,78 @@ class StorageTest {
             if (next.reachedEnd) break
         }
         assertEquals(log.sweep(100).checked, seen)
+    }
+
+    // The sweep resumes by seeking to the key it stopped at, and under a prefix extractor a seek is
+    // answered per prefix: a memtable holding none of the prefix sought is skipped whole. So a row
+    // written after the pause, under a prefix of its own and not yet flushed, is exactly what a walk
+    // in prefix mode stops being able to see — and the sweep going quiet is the one failure it must
+    // not have. Asking for total order is what keeps it honest.
+    @Test
+    fun `a resumed sweep sees a row written since the pause and never flushed`() {
+        val paused = log.sweep(2)
+        assertFalse(paused.reachedEnd)
+
+        // Reopening flushes, so everything above is now on disk and the memtable below is empty.
+        log.close()
+        log = RocksItemLog(dir)
+
+        // Neither end shares a prefix with the row the walk stopped at, so nothing puts that prefix
+        // into the fresh memtable alongside this row.
+        val position = WorldBlock(world, 900, 40, 900)
+        log.submit(Transfer(Cause.BLOCK_DROP, position, Void, cobblestone, null, 1, T0 + 90, actor = alice))
+        log.drain()
+
+        var seen = 0
+        do {
+            val pass = log.sweep(100)
+            seen += pass.checked
+        } while (!pass.reachedEnd)
+        assertEquals(6, seen, "the rest of the seeded rows plus the one written since the pause")
+        assertEquals(1, log.holderEntries(position, 0, Long.MAX_VALUE).size)
+    }
+
+    // The record version in the value cannot speak for the key: rows of an older key layout carry a
+    // record version this build accepts, so nothing in the value would stop it reading a world number
+    // and a posting ordinal out of bytes that were never written. The layout version in `meta` is the
+    // only guard, and it has to refuse rather than let the misreading start.
+    @Test
+    fun `a database of an older key layout refuses to open`() {
+        log.close()
+        stampSchemaVersion(1L)
+
+        val refused = assertThrows(IllegalArgumentException::class.java) { RocksItemLog(dir) }
+        assertTrue(refused.message.orEmpty().contains("schema"), "the refusal has to name the reason: $refused")
+
+        stampSchemaVersion(2L)
+        log = RocksItemLog(dir)
+        assertEquals(4, log.holderEntries(chest, 0, Long.MAX_VALUE).size)
+    }
+
+    // Opening has to name every column family the log created, or RocksDB refuses the database.
+    private val everyColumnFamily = listOf(
+        "default", "entries", "item_forms", "registry", "meta", "nested_owners", "tx", "placed_forms",
+    )
+
+    private fun stampSchemaVersion(version: Long) {
+        org.rocksdb.RocksDB.loadLibrary()
+        val handles = ArrayList<org.rocksdb.ColumnFamilyHandle>()
+        org.rocksdb.ColumnFamilyOptions().use { cfOptions ->
+            org.rocksdb.DBOptions().use { dbOptions ->
+                val descriptors = everyColumnFamily.map {
+                    org.rocksdb.ColumnFamilyDescriptor(it.toByteArray(), cfOptions)
+                }
+                org.rocksdb.RocksDB.open(dbOptions, dir.toAbsolutePath().toString(), descriptors, handles)
+                    .use { raw ->
+                        raw.put(
+                            handles[everyColumnFamily.indexOf("meta")],
+                            "schema".toByteArray(),
+                            ByteWriter(8).longBE(version).toByteArray(),
+                        )
+                        handles.forEach { it.close() }
+                    }
+            }
+        }
     }
 
     // A shulker loses its mark when it is broken, so the name has to outlive the box standing there,
@@ -109,6 +297,58 @@ class StorageTest {
 
         log.clearOwnerAt(world, 1, 2, 3)
         assertNull(log.ownerAt(world, 1, 2, 3))
+    }
+
+    // A block answers with the bare item whatever was put down, so the position has to give back the
+    // form it took over rather than one built from the block, restarts included.
+    @Test
+    fun `the form a position took over outlives the session`() {
+        val world = UUID.randomUUID()
+        assertNull(log.formAt(world, 1, 2, 3))
+        log.setFormAt(world, 1, 2, 3, pickaxe)
+        assertArrayEquals(pickaxe, log.formAt(world, 1, 2, 3))
+        assertNull(log.formAt(world, 1, 2, 4))
+        assertNull(log.formAt(UUID.randomUUID(), 1, 2, 3))
+
+        log.close()
+        log = RocksItemLog(dir)
+        assertArrayEquals(pickaxe, log.formAt(world, 1, 2, 3))
+
+        log.clearFormAt(world, 1, 2, 3)
+        assertNull(log.formAt(world, 1, 2, 3))
+    }
+
+    // Two positions one block apart must not read as one, and a form put down where another stood
+    // replaces it rather than joining it.
+    @Test
+    fun `each position keeps its own form`() {
+        val world = UUID.randomUUID()
+        log.setFormAt(world, 1, 2, 3, pickaxe)
+        log.setFormAt(world, 2, 2, 3, torch)
+        assertArrayEquals(pickaxe, log.formAt(world, 1, 2, 3))
+        assertArrayEquals(torch, log.formAt(world, 2, 2, 3))
+
+        log.setFormAt(world, 1, 2, 3, cobblestone)
+        assertArrayEquals(cobblestone, log.formAt(world, 1, 2, 3))
+
+        log.clearFormAt(world, 1, 2, 3)
+        assertNull(log.formAt(world, 1, 2, 3))
+        assertArrayEquals(torch, log.formAt(world, 2, 2, 3))
+    }
+
+    // The two tables are addressed by the same position and must not be able to read each other.
+    @Test
+    fun `the form of a position and the name of its container are kept apart`() {
+        val world = UUID.randomUUID()
+        val owner = UUID.randomUUID()
+        log.setOwnerAt(world, 1, 2, 3, owner)
+        assertNull(log.formAt(world, 1, 2, 3))
+
+        log.setFormAt(world, 1, 2, 3, pickaxe)
+        assertEquals(owner, log.ownerAt(world, 1, 2, 3))
+
+        log.clearFormAt(world, 1, 2, 3)
+        assertEquals(owner, log.ownerAt(world, 1, 2, 3))
     }
 
     @Test
@@ -207,6 +447,138 @@ class StorageTest {
         assertEquals(3, balanced)
     }
 
+    // Breaking a block is not conservative: the position gives up stone and the world receives
+    // cobblestone, so both halves face the Void and neither names the other. Without the index the
+    // graph walk stops at the first mined block.
+    @Test
+    fun `a transaction whose halves both face the void is reassembled through the index`() {
+        val position = WorldBlock(world, 100, 65, -200)
+        val dropped = ItemEntityRef(UUID.randomUUID())
+        log.submit(
+            listOf(
+                Transfer(Cause.BLOCK_DROP, position, Void, cobblestone, null, 1, T0 + 60, actor = alice),
+                Transfer(Cause.BLOCK_DROP, Void, dropped, torch, null, 1, T0 + 60, actor = alice),
+            )
+        )
+        log.drain()
+
+        val fromPosition = log.holderEntries(position, 0, Long.MAX_VALUE).single()
+        val whole = log.transactionEntries(fromPosition)
+        assertEquals(2, whole.size)
+        assertEquals(1, whole.map { it.txId }.distinct().size)
+        assertEquals(setOf(position, dropped), whole.map { it.holder }.toSet())
+        assertEquals(listOf(-1, 1), whole.map { it.qty })
+        assertEquals(setOf(alice), whole.map { it.actor }.toSet())
+
+        // Reachable from either end, not just the one the investigation happened to start at.
+        val fromEntity = log.holderEntries(dropped, 0, Long.MAX_VALUE).single()
+        assertEquals(whole.toSet(), log.transactionEntries(fromEntity).toSet())
+    }
+
+    // A pair already names itself, so an index row for it would be a second write buying nothing.
+    @Test
+    fun `an ordinary pair is reassembled without the index`() {
+        val paired = log.holderEntries(chest, 0, Long.MAX_VALUE).first()
+        assertEquals(2, log.transactionEntries(paired).size)
+        val lone = log.holderEntries(chest, 0, Long.MAX_VALUE).single { it.counterparty === Void }
+        assertEquals(listOf(lone), log.transactionEntries(lone))
+    }
+
+    @Test
+    fun `a region scan answers with both block holders`() {
+        val position = WorldBlock(world, 101, 65, -200)
+        log.submit(Transfer(Cause.BLOCK_PLACE, aliceInv, position, cobblestone, null, 1, T0 + 70))
+        log.drain()
+
+        val inBox = log.regionEntries(world, 96, -208, 112, -192, 0, Long.MAX_VALUE)
+        assertEquals(1, inBox.count { it.holder is WorldBlock })
+        assertEquals(4, inBox.count { it.holder is Container })
+        assertEquals(position, inBox.single { it.holder is WorldBlock }.holder)
+        assertEquals(listOf(T0, T0 + 10, T0 + 20, T0 + 30, T0 + 70), inBox.map { it.timestamp })
+
+        // Read backwards it is the same rows in the other order, both holder kinds included: the two
+        // kinds live under prefixes of their own and a reversed walk seeks into each one separately.
+        val backwards = log.regionEntries(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, reverse = true)
+        assertEquals(inBox.reversed(), backwards)
+    }
+
+    // Breaking a block writes the position losing what it was made of, and the person who swung is in
+    // the actor column and at neither end. Read back where it happened, an investigation of that
+    // player has to find it there.
+    @Test
+    fun `a broken block is found at its position and belongs to the breaker`() {
+        val position = WorldBlock(world, 60, 12, 60)
+        log.submit(Transfer(Cause.BLOCK_DROP, position, Void, cobblestone, null, 1, T0 + 80, actor = alice))
+        log.drain()
+
+        val broken = log.holderEntries(position, 0, Long.MAX_VALUE).single()
+        assertEquals(-1, broken.qty)
+        assertEquals(Void, broken.counterparty)
+        assertTrue(namesUser(broken, setOf(alice)))
+        assertFalse(namesUser(broken, setOf(bob)))
+        assertEquals(emptyList<String>(), log.sweep(100).gaps)
+    }
+
+    // A prefix extractor changes what an iterator is allowed to return, and every read below answered
+    // with nothing at all the first time it met one. A scan may only be written the way these expect:
+    // bounded at both ends, seeking backwards to a key that still belongs to the prefix, and asking
+    // for total order wherever the prefix is too short for the extractor. This is the standing proof.
+    @Test
+    fun `every scan still answers with the ledger under a prefix extractor`() {
+        val position = WorldBlock(world, 100, 70, -200)
+        for (i in 0 until 20) {
+            log.submit(Transfer(Cause.BLOCK_PLACE, aliceInv, position, cobblestone, null, 1, T0 + 100 + i))
+        }
+        log.drain()
+
+        // Nothing has asked for a flush, so every one of these rows is still in the memtable.
+        assertEveryScanAnswers(position)
+
+        log.close()
+        log = RocksItemLog(dir)
+        assertTrue(sstFiles() > 0, "nothing was flushed, so the table's own prefix filter never had a turn")
+        assertEveryScanAnswers(position)
+    }
+
+    private fun sstFiles(): Int = dir.toFile().listFiles().orEmpty().count { it.name.endsWith(".sst") }
+
+    private fun assertEveryScanAnswers(position: WorldBlock) {
+        // A position: its prefix is exactly the width the extractor is sized for, which is the case
+        // where seeking to the key just past the prefix asks the filter about the wrong prefix.
+        assertEquals(20, log.holderEntries(position, 0, Long.MAX_VALUE, limit = 1000).size)
+        val newestFirst = log.holderEntries(position, 0, Long.MAX_VALUE, reverse = true, limit = 1000)
+        assertEquals(20, newestFirst.size)
+        assertEquals(T0 + 119, newestFirst.first().timestamp)
+        assertEquals(
+            listOf(T0 + 119, T0 + 118),
+            log.regionEntries(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, reverse = true, limit = 2)
+                .map { it.timestamp },
+        )
+
+        // A player: its prefix is shorter than the extractor, so its rows are spread over many
+        // extractor prefixes and no single one of them can stand for the lot.
+        val fromAlice = log.holderEntries(aliceInv, 0, Long.MAX_VALUE, limit = 1000)
+        assertEquals(3 + 20, fromAlice.size, "the seeded rows plus the placements")
+        assertEquals(fromAlice.reversed(), log.holderEntries(aliceInv, 0, Long.MAX_VALUE, reverse = true, limit = 1000))
+        assertTrue(log.formBalance(alice).isNotEmpty())
+
+        // The whole ledger, walked from the start and then again a few rows at a time from a cursor.
+        // Counted against the prefixes rather than against another walk, or a walk that stopped early
+        // would agree with itself: these three prefixes hold every row the log has been given.
+        val everyRow = fromAlice.size + newestFirst.size +
+            log.holderEntries(chest, 0, Long.MAX_VALUE, limit = 1000).size
+        val whole = log.sweep(1000)
+        assertTrue(whole.reachedEnd)
+        assertEquals(everyRow, whole.checked, "the walk of the whole ledger did not see every row")
+        assertEquals(emptyList<String>(), whole.gaps)
+        var resumed = 0
+        do {
+            val pass = log.sweep(3)
+            resumed += pass.checked
+        } while (!pass.reachedEnd)
+        assertEquals(whole.checked, resumed, "a resumed walk lost rows the one from the start could see")
+    }
+
     @Test
     fun `equal forms are interned and readable by id`() {
         val fromChest = log.holderEntries(chest, 0, Long.MAX_VALUE)
@@ -239,5 +611,31 @@ class StorageTest {
         assertArrayEquals(torch, log.form(freshForm))
         assertArrayEquals(cobblestone, log.form(before[0].itemFormId))
         assertArrayEquals(pickaxe, log.form(before[2].itemFormId))
+    }
+
+    // One movement the capture cannot encode is a bug in the capture. Letting it stop the writer would
+    // turn that single bad row into a session that records nothing at all from then on, and a ledger
+    // kept in order to be trusted must fail on the row rather than on everything after it.
+    @Test
+    fun `a movement that cannot be written costs only itself`() {
+        val unreachable = Container(world, 100, 1_000_000, -200, 0)
+        log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 40))
+        log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, unreachable, torch, null, 2, T0 + 41))
+        log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 3, T0 + 42))
+        log.drain()
+
+        val landed = log.holderEntries(chest, 0, Long.MAX_VALUE, limit = 1000)
+            .filter { it.itemFormId == log.formId(torch) }
+        assertEquals(listOf(1, 3), landed.map { it.qty })
+
+        // Still alive afterwards: the next movement is written like nothing happened.
+        log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 5, T0 + 43))
+        log.drain()
+        assertEquals(
+            listOf(1, 3, 5),
+            log.holderEntries(chest, 0, Long.MAX_VALUE, limit = 1000)
+                .filter { it.itemFormId == log.formId(torch) }.map { it.qty },
+        )
+        assertEquals(emptyList<String>(), log.sweep(1000).gaps)
     }
 }

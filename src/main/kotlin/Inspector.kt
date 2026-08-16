@@ -10,7 +10,6 @@ import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.inventory.EquipmentSlot
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import org.bukkit.block.Container as ContainerBlock
 
 class Inspector(private val lookups: Lookups) : Listener {
     private val enabled = ConcurrentHashMap.newKeySet<UUID>()
@@ -29,13 +28,7 @@ class Inspector(private val lookups: Lookups) : Listener {
         if (event.action == Action.RIGHT_CLICK_BLOCK && event.hand != EquipmentSlot.HAND) return
         val block = event.clickedBlock ?: return
         event.isCancelled = true
-        val player = event.player
-        val target = lookupTargetAt(block)
-        if (block.state !is ContainerBlock) {
-            player.sendMessage("${target.label} is not a container; only containers are in the ledger so far.")
-            return
-        }
-        lookups.run(player, target, LookupQuery())
+        lookups.run(event.player, lookupTargetAt(block), LookupQuery())
     }
 
     @EventHandler

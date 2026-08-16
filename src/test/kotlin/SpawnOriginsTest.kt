@@ -25,7 +25,7 @@ class SpawnOriginsTest {
     fun `the entity that appears carries the reason the block gave`() {
         val entity = UUID.randomUUID()
         origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 1)
-        origins.claim(entity, Spot(world, 4.5, 70.2, 8.7), stone, 1)
+        assertEquals(1, origins.claim(entity, Spot(world, 4.5, 70.2, 8.7), stone, 1))
 
         val row = rows().single()
         assertEquals(Cause.DROPPER_EJECT, row.cause)
@@ -82,6 +82,50 @@ class SpawnOriginsTest {
         origins.expect(dropper, Cause.DISPENSER_EJECT, stone, at, 1)
         origins.sweep()
         assertTrue(rows().isEmpty())
+    }
+
+    // A break builds its entities before announcing them, so the note can say which one it means and
+    // distance never enters into it.
+    @Test
+    fun `a note addressed to an entity claims only that entity`() {
+        val mine = UUID.randomUUID()
+        origins.expect(mine, dropper, Cause.DEATH_DROP, stone, 1)
+
+        assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1))
+        assertTrue(rows().isEmpty())
+
+        assertEquals(1, origins.claim(mine, at, stone, 1))
+        assertEquals(ItemEntityRef(mine), rows().single().to)
+    }
+
+    @Test
+    fun `a silent note swallows the spawn without writing`() {
+        val entity = UUID.randomUUID()
+        origins.accounted(entity, 4)
+
+        assertEquals(4, origins.claim(entity, at, stone, 4))
+        assertTrue(rows().isEmpty())
+    }
+
+    @Test
+    fun `claim reports the amount left unexplained`() {
+        origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 2)
+
+        assertEquals(2, origins.claim(UUID.randomUUID(), at, stone, 5))
+        assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 3))
+    }
+
+    @Test
+    fun `a positional note does not steal a quantity from a note that names the entity`() {
+        val named = UUID.randomUUID()
+        origins.expect(Void, Cause.CAMPFIRE_COOK_DROP, stone, at, 1)
+        origins.expect(named, dropper, Cause.DEATH_DROP, stone, 1)
+
+        assertEquals(1, origins.claim(named, at, stone, 1))
+        assertEquals(dropper, rows().single().from)
+
+        assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1))
+        assertEquals(listOf(dropper, Void), rows().map { it.from })
     }
 
     @Test

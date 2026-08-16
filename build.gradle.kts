@@ -82,6 +82,10 @@ bukkit {
             description = "Toggle the inspector and read the ledger by clicking blocks"
             default = BukkitPluginDescription.Permission.Default.OP
         }
+        register("pfauprotect.reconcile") {
+            description = "Compare what a player is carrying against the ledger"
+            default = BukkitPluginDescription.Permission.Default.OP
+        }
     }
 }
 

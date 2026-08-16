@@ -81,13 +81,22 @@ class TickCoalescer(private val sink: (Transfer) -> Unit) {
         val cause: Cause,
         val item: ItemKey,
         val actor: UUID?,
+        val confidence: Confidence,
     )
 
     private val pending = ConcurrentHashMap<Pending, Int>()
 
-    fun add(from: Holder, to: Holder, cause: Cause, item: ItemKey, qty: Int, actor: UUID? = null) {
+    fun add(
+        from: Holder,
+        to: Holder,
+        cause: Cause,
+        item: ItemKey,
+        qty: Int,
+        actor: UUID? = null,
+        confidence: Confidence = Confidence.FACT,
+    ) {
         if (qty <= 0) return
-        pending.merge(Pending(from, to, cause, item, actor), qty, Int::plus)
+        pending.merge(Pending(from, to, cause, item, actor, confidence), qty, Int::plus)
     }
 
     // Removal hands back everything the region threads had merged under the key, so a movement added
@@ -106,6 +115,7 @@ class TickCoalescer(private val sink: (Transfer) -> Unit) {
                     damage = key.item.damage,
                     qty = qty,
                     timestamp = timestamp,
+                    confidence = key.confidence,
                     actor = key.actor,
                 )
             )

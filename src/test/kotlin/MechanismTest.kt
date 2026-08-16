@@ -1,10 +1,13 @@
 package io.pfaumc.pfauprotect
 
 import net.minecraft.core.Direction
+import net.minecraft.core.component.DataComponents
+import net.minecraft.network.chat.Component
 import net.minecraft.world.SimpleContainer
 import net.minecraft.world.WorldlyContainer
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.BeforeAll
@@ -16,9 +19,11 @@ import java.util.UUID
 class MechanismTest {
     private val world = UUID.randomUUID()
 
+    private lateinit var codec: ItemFormCodec
+
     @BeforeAll
     fun loadServerRegistries() {
-        ServerRegistries.access
+        codec = ItemFormCodec(Registries(MemoryRegistryStore()), ServerRegistries.access)
     }
 
     private fun chest(size: Int = 27, fill: Map<Int, ItemStack> = emptyMap()) =
@@ -115,6 +120,39 @@ class MechanismTest {
         coalescer.flush()
         coalescer.flush()
         assertEquals(1, written.size)
+    }
+
+    private fun form(item: net.minecraft.world.item.Item, name: String? = null) =
+        codec.encode(
+            ItemStack(item).apply {
+                if (name != null) set(DataComponents.CUSTOM_NAME, Component.literal(name))
+            }
+        ).form
+
+    @Test
+    fun `a position gives back the named box it took over and not a bare one`() {
+        val named = form(Items.SHULKER_BOX, "Ender Storage")
+        val bare = form(Items.SHULKER_BOX)
+        assertArrayEquals(named, gaveBack(named, bare))
+    }
+
+    @Test
+    fun `a position nobody placed gives back what the block itself is made of`() {
+        val cobblestone = form(Items.COBBLESTONE)
+        assertArrayEquals(cobblestone, gaveBack(null, cobblestone))
+    }
+
+    // Dirt turned to grass, or a piston pushed something else in, under a record left by a placement
+    // that is no longer standing there. Given back it would be an item that was never at that position.
+    @Test
+    fun `a form remembered for another item is not given back`() {
+        val grass = form(Items.GRASS_BLOCK)
+        assertArrayEquals(grass, gaveBack(form(Items.DIRT, "Sod"), grass))
+    }
+
+    @Test
+    fun `a block with no item form of its own gives nothing back`() {
+        assertNull(gaveBack(form(Items.COBBLESTONE), null))
     }
 
     // Stands in for a furnace: reachable slots depend on the face, and the game asks the container
