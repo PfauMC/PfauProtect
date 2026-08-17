@@ -63,24 +63,24 @@ data class EntryPage(val entries: List<LedgerEntry>, val complete: Boolean)
 // parsed as something it never was; a family holds rows the value version never speaks for at all.
 private const val SCHEMA_VERSION = 3L
 private const val MAX_REGION_CHUNKS = 1024
-private const val MAX_BATCH = 256
-private const val WRITER_POLL_MILLIS = 50L
-private const val WAL_FLUSH_INTERVAL_NANOS = 1_000_000_000L
-private const val DRAIN_TIMEOUT_NANOS = 10_000_000_000L
+internal const val MAX_BATCH = 256
+internal const val WRITER_POLL_MILLIS = 50L
+internal const val WAL_FLUSH_INTERVAL_NANOS = 1_000_000_000L
+internal const val DRAIN_TIMEOUT_NANOS = 10_000_000_000L
 private const val UNASSIGNED = -1
 
 // Longer than the longest tail a key can carry after any prefix this class scans, so a prefix padded
 // with this many 0xFF bytes sorts after every key under it while still sharing its prefix.
-private const val KEY_TAIL_PAD = 32
+internal const val KEY_TAIL_PAD = 32
 
 // One cache for every column family. An unconfigured family quietly gets a 32 MiB cache of its own,
 // so leaving this out is not "no cache" but eight of them.
-private const val BLOCK_CACHE_BYTES = 64L * 1024 * 1024
-private const val BLOOM_BITS_PER_KEY = 10.0
+internal const val BLOCK_CACHE_BYTES = 64L * 1024 * 1024
+internal const val BLOOM_BITS_PER_KEY = 10.0
 
 // The ledger takes every write; the rest hold a handful of small rows each and have no use for the
 // 64 MiB the default memtable would reserve for them.
-private const val COLD_WRITE_BUFFER_BYTES = 4L * 1024 * 1024
+internal const val COLD_WRITE_BUFFER_BYTES = 4L * 1024 * 1024
 
 private val ENTRIES_CF = "entries".toByteArray()
 private val ITEM_FORMS_CF = "item_forms".toByteArray()
@@ -97,19 +97,21 @@ private val META_ITEM_FORM_ID = "item_form_id".toByteArray()
 private val META_BLOCK_PAYLOAD_ID = "block_payload_id".toByteArray()
 private val META_SWEEP_CURSOR = "sweep_cursor".toByteArray()
 
-private val LOGGER: Logger = Logger.getLogger("PfauProtect")
+internal val LOGGER: Logger = Logger.getLogger("PfauProtect")
 
-private fun longBytes(v: Long): ByteArray = ByteWriter(8).longBE(v).toByteArray()
+internal fun longBytes(v: Long): ByteArray = ByteWriter(8).longBE(v).toByteArray()
 
 // Cheap compression while a level is still being rewritten, and the slow thorough one once it has
 // settled at the bottom and will be read far more often than it is written.
-private fun compressed() = ColumnFamilyOptions()
+internal fun compressed() = ColumnFamilyOptions()
     .setCompressionType(CompressionType.LZ4_COMPRESSION)
     .setBottommostCompressionType(CompressionType.ZSTD_COMPRESSION)
 
-// The smallest key that sorts after everything under `prefix`. Every prefix this class scans opens
-// with a holder type, which is never 0xFF, so such a key always exists.
-private fun afterPrefix(prefix: ByteArray): ByteArray {
+// The smallest key that sorts after everything under `prefix`. A prefix of nothing but 0xFF bytes
+// has none, and neither layout can produce one: an item key opens with a holder type, which is never
+// 0xFF, and a block key opens with a Z-code that would have to sit eight million chunks out, well
+// past any world border.
+internal fun afterPrefix(prefix: ByteArray): ByteArray {
     for (i in prefix.indices.reversed()) {
         if (prefix[i] != 0xFF.toByte()) {
             val end = prefix.copyOf(i + 1)
@@ -148,6 +150,17 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private val wholeCfRead = ReadOptions().setTotalOrderSeek(true)
 
     private val writeOptions = WriteOptions()
+
+    // A number minted outside the writer thread is minted for another database to name, and that
+    // database flushes its own log on a timer of its own. Write order alone does not survive a crash:
+    // the row citing the number can reach the disk while the interning that produced it is still in
+    // this log, and on restart the counter has rewound and hands the same number to a different value,
+    // so the surviving row decodes to something it never named. Fsyncing here is what orders the two.
+    // The ledger's own writes owe nothing of the sort — a row and the counter that named it share one
+    // batch in one database — and interning is a first-encounter cost, with the startup fill a single
+    // batch, so the flush is paid once per new value rather than once per row.
+    private val syncWriteOptions = WriteOptions().setSync(true)
+
     private val cfHandles = ArrayList<ColumnFamilyHandle>()
     private val db: RocksDB
     private val entriesCf: ColumnFamilyHandle
@@ -233,10 +246,11 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     val registries = Registries(this)
     val forms = InternTable(itemFormsCf, META_ITEM_FORM_ID)
 
-    // The block rows that will name these payloads live in a database per world, and there is no WAL
-    // shared between that database and this one, so the guarantee is the order: the payload first,
-    // then the row that names it. An orphaned payload is garbage nobody reads; a row whose payload
-    // was never written is lost data.
+    // The block rows that will name these payloads live in a database per world, with no WAL shared
+    // between that database and this one. Writing the payload first is half of it; the other half is
+    // that the write is fsynced before it returns, so a row written afterwards can never reach the
+    // disk ahead of the payload it names. An orphaned payload is garbage nobody reads; a row whose
+    // payload was never written is lost data.
     val payloads = InternTable(blockPayloadsCf, META_BLOCK_PAYLOAD_ID)
 
     // An unregistered world or player owns no rows at all, so a scan for one has to find nothing.
@@ -545,6 +559,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
 
     private fun closeOptions() {
         writeOptions.close()
+        syncWriteOptions.close()
         wholeCfRead.close()
         entriesOptions.close()
         pointReadOptions.close()
@@ -710,8 +725,11 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                 .setIterateLowerBound(lower)
                 .setIterateUpperBound(upper)
                 // A prefix shorter than the extractor spreads its rows over many extractor prefixes,
-                // so no seek key can stand for all of them and the walk has to leave prefix mode.
-                .setTotalOrderSeek(prefix.size < EntryCodec.CHUNK_PREFIX_SIZE)
+                // so no seek key can stand for all of them. A prefix exactly as long as the extractor
+                // is the case that matters here: a chunk prefix is that length, and the key just
+                // after it belongs to the next extractor prefix, which is an upper bound prefix mode
+                // does not define a walk against. Either way the walk has to leave prefix mode.
+                .setTotalOrderSeek(prefix.size <= EntryCodec.CHUNK_PREFIX_SIZE)
                 .use { options ->
                     db.newIterator(entriesCf, options).use { iter ->
                         if (reverse) iter.seekForPrev(lastUnder(prefix)) else iter.seekToFirst()
@@ -769,13 +787,13 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             stagingBatch.set(batch)
             try {
                 val result = body()
-                db.write(writeOptions, batch)
+                db.write(syncWriteOptions, batch)
                 result
             } catch (failure: Throwable) {
                 // Written even so, but its own failure is kept quiet: the reason the body stopped is
                 // the one worth reporting, and losing it to a storage error hides the ceiling that
                 // was actually hit.
-                runCatching { db.write(writeOptions, batch) }
+                runCatching { db.write(syncWriteOptions, batch) }
                 throw failure
             } finally {
                 stagingBatch.remove()
@@ -796,7 +814,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             check(!closed) { "the ledger is closed" }
             WriteBatch().use { batch ->
                 write(batch)
-                db.write(writeOptions, batch)
+                db.write(syncWriteOptions, batch)
             }
         }
     }

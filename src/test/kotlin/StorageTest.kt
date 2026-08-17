@@ -464,6 +464,24 @@ class StorageTest {
         assertTrue(report.reachedEnd)
     }
 
+    // A row torn by a half-written page reads as a version this build knows and then runs out of
+    // bytes. The sweep already has somewhere to put a row it cannot read, and a throw would instead
+    // end the pass on the spot and leave every row after it unswept for as long as the row is there.
+    @Test
+    fun `a row torn in half is counted rather than ending the pass`() {
+        val readable = log.sweep(1000).checked
+        val torn = EntryCodec.key(chest, T0 + 40, 99L, 0, log.registries)
+        log.close()
+        // Nothing but the header: the version is this build's, and the cause byte after it is gone.
+        writeRawEntry(dir, torn, byteArrayOf(EntryCodec.header(Kind.TRANSFER, Confidence.FACT).toByte()))
+        log = RocksItemLog(dir)
+
+        val report = log.sweep(1000)
+        assertEquals(readable, report.checked)
+        assertEquals(1, report.unreadable)
+        assertTrue(report.reachedEnd)
+    }
+
     private fun writeRawEntry(dir: Path, key: ByteArray, value: ByteArray) {
         RocksDB.loadLibrary()
         val path = dir.toAbsolutePath().toString()

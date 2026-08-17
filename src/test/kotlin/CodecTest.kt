@@ -235,6 +235,25 @@ class CodecTest {
         }
     }
 
+    // A row cut short carries a version this build knows and still cannot be read. Decoding it walks
+    // off the end of the buffer, and a scan meets such a row without having chosen it, so throwing
+    // there ends the pass and every row after it goes unlooked-at instead of one being counted.
+    @Test
+    fun `a record too short to read is skipped rather than throwing`() {
+        val holder = PlayerInv(playerA, 0)
+        val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
+        val value = EntryCodec.value(entry(holder, Void), registries)
+        for (kept in 0 until value.size) {
+            val torn = value.copyOf(kept)
+            assertNull(EntryCodec.decodeOrNull(key, torn, registries)) { "$kept bytes of a record decoded" }
+            assertThrows(Exception::class.java) { EntryCodec.decode(key, torn, registries) }
+        }
+        for (kept in 0 until key.size) {
+            val torn = key.copyOf(kept)
+            assertNull(EntryCodec.decodeOrNull(torn, value, registries)) { "$kept bytes of a key decoded" }
+        }
+    }
+
     // Causes are added without touching the record version, so a row from a newer build lands in a
     // scan of an older one. Throwing there would take the whole scan down over a label.
     @Test

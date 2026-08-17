@@ -10,6 +10,11 @@ import net.minecraft.server.MinecraftServer
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.entity.Player
+import org.bukkit.event.EventHandler
+import org.bukkit.event.EventPriority
+import org.bukkit.event.Listener
+import org.bukkit.event.world.WorldLoadEvent
+import org.bukkit.event.world.WorldUnloadEvent
 import org.bukkit.plugin.java.JavaPlugin
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -59,10 +64,28 @@ private class Uncovered(private val ledger: RocksItemLog) {
 
 private fun signed(difference: Int) = if (difference > 0) "+$difference" else difference.toString()
 
+// A world keeps its history in a database of its own, opened when the world loads and closed when it
+// unloads. A base reached after it was closed is a freed native handle, so nothing may hold one of
+// these past the unload.
+private class WorldBaseListener(private val blocks: BlockLogs) : Listener {
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onLoad(event: WorldLoadEvent) {
+        blocks.open(event.world.uid)
+    }
+
+    // A cancelled unload leaves the world running, and closing its base then would leave it running
+    // with nowhere to write.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onUnload(event: WorldUnloadEvent) {
+        blocks.close(event.world.uid)
+    }
+}
+
 // Everything the plugin owns while it is enabled. One field rather than nine, so there is no state
 // where half of them are up: either the ledger is open and all of this stands, or none of it does.
 private class Running(
     val ledger: RocksItemLog,
+    val blocks: BlockLogs,
     val uncovered: Uncovered,
     val codec: ItemFormCodec,
     val capture: ContainerCaptureListener,
@@ -78,6 +101,7 @@ class PfauProtectPlugin : JavaPlugin() {
 
     override fun onEnable() {
         val ledger = RocksItemLog(dataFolder.toPath().resolve("ledger"))
+        val blocks = BlockLogs(dataFolder.toPath().resolve("blocks"), ledger)
         val uncovered = Uncovered(ledger)
         val codec = ItemFormCodec(ledger.registries, MinecraftServer.getServer().registryAccess())
         val mechanisms = TickCoalescer(uncovered::submit)
@@ -90,11 +114,15 @@ class PfauProtectPlugin : JavaPlugin() {
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
         // the way back down.
         val running = Running(
-            ledger, uncovered, codec, capture, mechanisms, origins, lookups, inspector,
+            ledger, blocks, uncovered, codec, capture, mechanisms, origins, lookups, inspector,
             Reconciliation(ledger),
         )
         this.running = running
         ledger.staged { fillTypeRegistries(ledger.registries) }
+        server.pluginManager.registerEvents(WorldBaseListener(blocks), this)
+        // Enabling after startup, every world is already loaded and none of them will ever raise the
+        // load event again.
+        for (world in server.worlds) blocks.open(world.uid)
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
@@ -130,7 +158,7 @@ class PfauProtectPlugin : JavaPlugin() {
         warnAboutSilencedHoppers()
         registerCommand()
         logger.info(
-            "ledger open, registry sizes: " +
+            "ledger open, ${blocks.size} world bases, registry sizes: " +
                 RegistryNamespace.entries.joinToString { "${it.name.lowercase()}=${ledger.registries.size(it)}" }
         )
         for (warning in ledger.registries.fillWarnings()) logger.warning(warning)
@@ -149,8 +177,22 @@ class PfauProtectPlugin : JavaPlugin() {
         } catch (failure: Exception) {
             logger.log(Level.SEVERE, "the ledger lost entries while shutting down", failure)
         } finally {
-            running.ledger.close()
+            // Closing a world base stops its writer before it frees its handles, and that writer
+            // interns state numbers and payloads in the item database, so every base goes before the
+            // ledger it writes through. A base that fails to close must not take the ledger down with
+            // it: an unflushed log and a held lock file leave a plugin that cannot be enabled again
+            // without restarting the server, which is a worse outcome than whatever the base hit.
+            closeReporting("the world block bases") { running.blocks.close() }
+            closeReporting("the ledger") { running.ledger.close() }
             this.running = null
+        }
+    }
+
+    private fun closeReporting(what: String, close: () -> Unit) {
+        try {
+            close()
+        } catch (failure: Throwable) {
+            logger.log(Level.SEVERE, "$what could not be closed", failure)
         }
     }
 

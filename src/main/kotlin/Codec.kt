@@ -254,11 +254,20 @@ object EntryCodec {
     }
 
     fun decode(key: ByteArray, value: ByteArray, names: IdLookup): LedgerEntry =
-        decodeOrNull(key, value, names)
+        decodeEntry(key, value, names)
             ?: throw IllegalArgumentException("record version ${value[0].toInt() and VERSION_MASK} is not supported")
 
-    /** Returns null for records written in another layout version, so scans can skip them. */
-    fun decodeOrNull(key: ByteArray, value: ByteArray, names: IdLookup): LedgerEntry? {
+    // Null for anything this build cannot read, a torn or truncated row as much as another layout
+    // version. A scan walks rows it did not choose, and one bad row taken as a throw ends the whole
+    // pass instead of being counted and stepped over.
+    fun decodeOrNull(key: ByteArray, value: ByteArray, names: IdLookup): LedgerEntry? =
+        try {
+            decodeEntry(key, value, names)
+        } catch (failure: Exception) {
+            null
+        }
+
+    private fun decodeEntry(key: ByteArray, value: ByteArray, names: IdLookup): LedgerEntry? {
         val v = ByteReader(value)
         val header = v.byte()
         if (header and VERSION_MASK != VERSION) return null
