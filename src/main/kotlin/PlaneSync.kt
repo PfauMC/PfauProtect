@@ -19,6 +19,15 @@ private val BACKS_NO_ITEM = setOf(
     "minecraft:moving_piston",
 )
 
+/**
+ * Whether a position holding this state emptied: what stands there afterwards is something no item was
+ * ever made into. The question is asked from both ends — the capture decides by it whether a change is
+ * a disappearance to write off or a block turning into another block, and this check decides by it
+ * whether a write-off was owed — and an answer that differed between the two would read as debt in one
+ * plane for every change the other let through.
+ */
+internal fun emptied(state: String) = state.substringBefore('[') in BACKS_NO_ITEM
+
 // The two planes are written by two writer threads and the item side goes through a tick coalescer,
 // so for a while after a break the block plane already says air while the item plane still holds the
 // item. A position touched inside this window is left for a later pass rather than accused.
@@ -115,7 +124,7 @@ class PlaneSync(private val ledger: RocksItemLog, private val blocks: BlockLogs)
         val row = standing.row ?: return Outcome.UNRECORDED
         if (row.timestamp > now - SETTLE_MILLIS) return Outcome.SETTLING
         val state = ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) ?: return Outcome.UNREADABLE
-        if (state.substringBefore('[') in BACKS_NO_ITEM) gaps += PlaneGap(at, state, fact, inferred)
+        if (emptied(state)) gaps += PlaneGap(at, state, fact, inferred)
         return Outcome.CHECKED
     }
 }

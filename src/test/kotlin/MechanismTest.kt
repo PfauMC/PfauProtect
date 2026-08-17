@@ -150,9 +150,20 @@ class MechanismTest {
         assertArrayEquals(grass, gaveBack(form(Items.DIRT, "Sod"), grass))
     }
 
+    // Fire, a liquid and a portal are the blocks nobody put down, and there is nothing to give back
+    // for them because nothing was ever taken.
     @Test
-    fun `a block with no item form of its own gives nothing back`() {
-        assertNull(gaveBack(form(Items.COBBLESTONE), null))
+    fun `a block nobody placed and with no item form of its own gives nothing back`() {
+        assertNull(gaveBack(null, null))
+    }
+
+    // A potted plant, a candle cake and a stem that has grown its fruit all back an item that is
+    // nowhere in the registry while standing on a position the ledger credited. Giving nothing back
+    // there leaves that credit behind for ever, where no self-check reaches it.
+    @Test
+    fun `a position that was placed gives back what it took even where the block backs no item`() {
+        val pot = form(Items.FLOWER_POT)
+        assertArrayEquals(pot, gaveBack(pot, null))
     }
 
     // Stands in for a furnace: reachable slots depend on the face, and the game asks the container

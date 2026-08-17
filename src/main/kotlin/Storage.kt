@@ -41,10 +41,16 @@ interface NestedOwners {
 // with the bare item, so the position would give back something it never received and its history
 // would part company by form at the break. What was put down is only knowable while it is being put
 // down, so it is remembered here for as long as it stands.
+//
+// A whole set of positions is asked and cleared in one call as well as one at a time: an explosion
+// reaches these with every position it took away, from the thread ticking the region, where a trip
+// through JNI per position is a tick spent on nothing else.
 interface PlacedForms {
     fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray?
+    fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray>
     fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray)
     fun clearFormAt(world: UUID, x: Int, y: Int, z: Int)
+    fun clearFormsAt(positions: List<WorldBlock>)
 }
 
 // A row this build cannot decode is not a row without gaps: it is a row nobody looked at. Counting
@@ -555,6 +561,27 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
 
     override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) =
         clearNote(placedFormsCf, world, x, y, z)
+
+    // A position with no note comes back as a null in its own place, so the answers stay aligned with
+    // the positions asked about and only the ones holding something are named.
+    override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = dbLock.read {
+        if (closed || positions.isEmpty()) return emptyMap()
+        val keys = positions.map { blockKey(it.world, it.x, it.y, it.z) }
+        val values = db.multiGetAsList(List(keys.size) { placedFormsCf }, keys)
+        val forms = HashMap<WorldBlock, ByteArray>(positions.size)
+        positions.forEachIndexed { i, at -> values[i]?.let { forms[at] = it } }
+        forms
+    }
+
+    override fun clearFormsAt(positions: List<WorldBlock>) {
+        dbLock.read {
+            if (closed || positions.isEmpty()) return
+            WriteBatch().use { batch ->
+                for (at in positions) batch.delete(placedFormsCf, blockKey(at.world, at.x, at.y, at.z))
+                db.write(writeOptions, batch)
+            }
+        }
+    }
 
     // Both tables hold a note about what a block position is carrying while it stands there, so they
     // are read, written and cleared the same way and differ only in which family they land in.

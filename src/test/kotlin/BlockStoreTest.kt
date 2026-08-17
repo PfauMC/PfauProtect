@@ -299,6 +299,50 @@ class BlockStoreTest {
     }
 
     @Test
+    fun `a row behind the world but not behind its own position keeps its own time`() {
+        log.submit(listOf(placed(1, 64, 1, ts = T0 + 1000)))
+        log.drain()
+        log.submit(listOf(placed(2, 64, 2, after = DIRT, ts = T0)))
+        log.drain()
+
+        assertEquals(T0, log.at(2, 64, 2).single().timestamp)
+        assertEquals(T0 + 1000, log.at(1, 64, 1).single().timestamp)
+    }
+
+    @Test
+    fun `a row behind its own position is clamped to that position and not to the world`() {
+        log.submit(listOf(placed(3, 64, 3, before = AIR, after = STONE, ts = T0 + 100)))
+        log.drain()
+        log.submit(listOf(placed(9, 64, 9, after = WATER, ts = T0 + 500)))
+        log.drain()
+        log.submit(listOf(placed(3, 64, 3, before = STONE, after = DIRT, ts = T0)))
+        log.drain()
+
+        val rows = log.at(3, 64, 3)
+        assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
+        assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
+        assertEquals(stateOf(DIRT), log.standingAt(3, 64, 3).row?.stateAfter)
+    }
+
+    // Without the world mark on disk the reopened log would take every time as ahead of everything
+    // it holds and file the older row first.
+    @Test
+    fun `a clock that steps backwards over a reopen does not reorder a position`() {
+        log.submit(listOf(placed(8, 64, 8, before = AIR, after = STONE, ts = T0 + 100)))
+        log.drain()
+        logs.close(world)
+
+        val reopened = logs.open(world)
+        reopened.submit(listOf(placed(8, 64, 8, before = STONE, after = DIRT, ts = T0)))
+        reopened.drain()
+
+        val rows = reopened.at(8, 64, 8)
+        assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
+        assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
+        assertEquals(stateOf(DIRT), reopened.standingAt(8, 64, 8).row?.stateAfter)
+    }
+
+    @Test
     fun `rows and the event counter survive a close and a reopen`() {
         log.submit(listOf(placed(5, 64, 5)))
         log.drain()

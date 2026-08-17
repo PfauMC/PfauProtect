@@ -52,8 +52,14 @@ internal fun spotOf(at: Location) = Spot(at.world.uid, at.x, at.y, at.z)
 // trusted only while the position still holds that same item — a block that arrived without being
 // placed, pushed in by a piston or grown out of dirt, would otherwise be given back as whatever stood
 // there before.
+// A block with no item form of its own answers with nothing, and for a block nobody put down — fire,
+// a liquid, a portal — that is the whole answer. Where something was put down it is not: a potted
+// plant, a candle cake and a stem that has grown its fruit all back an item nowhere in the registry
+// while standing on a position the ledger credited, and giving nothing back there would leave that
+// credit behind for ever.
 internal fun gaveBack(remembered: ByteArray?, shell: ByteArray?): ByteArray? {
-    if (shell == null || remembered == null) return shell
+    if (remembered == null) return shell
+    if (shell == null) return remembered
     return if (itemTypeIdOf(remembered) == itemTypeIdOf(shell)) remembered else shell
 }
 

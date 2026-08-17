@@ -393,6 +393,39 @@ class StorageTest {
         assertArrayEquals(torch, log.formAt(world, 2, 2, 3))
     }
 
+    // An explosion clears a few thousand positions in one event, on the thread ticking the region, so
+    // it asks about the whole set at once and clears it in one write rather than a trip through JNI
+    // per position.
+    @Test
+    fun `a whole set of positions is asked and cleared in one call`() {
+        val here = WorldBlock(world, 1, 2, 3)
+        val next = WorldBlock(world, 2, 2, 3)
+        val bare = WorldBlock(world, 3, 2, 3)
+        val also = WorldBlock(world, 4, 2, 3)
+        val elsewhere = WorldBlock(UUID.randomUUID(), 1, 2, 3)
+        log.setFormAt(world, 1, 2, 3, pickaxe)
+        log.setFormAt(world, 2, 2, 3, torch)
+        log.setFormAt(world, 4, 2, 3, cobblestone)
+
+        val forms = log.formsAt(listOf(here, next, bare, elsewhere))
+
+        // A position holding nothing is left out rather than answered with a hole, and every answer
+        // belongs to the position it was asked about.
+        assertEquals(setOf(here, next), forms.keys)
+        assertArrayEquals(pickaxe, forms[here])
+        assertArrayEquals(torch, forms[next])
+        assertEquals(emptyMap<WorldBlock, ByteArray>(), log.formsAt(emptyList()))
+
+        // Every position named goes, not merely the first of them, and one holding nothing costs the
+        // rest of the set nothing.
+        log.clearFormsAt(listOf(here, bare, also))
+
+        assertNull(log.formAt(world, 1, 2, 3))
+        assertNull(log.formAt(world, 4, 2, 3))
+        assertArrayEquals(torch, log.formAt(world, 2, 2, 3))
+        assertEquals(setOf(next), log.formsAt(listOf(here, next, bare, also)).keys)
+    }
+
     // The two tables are addressed by the same position and must not be able to read each other.
     @Test
     fun `the form of a position and the name of its container are kept apart`() {

@@ -360,6 +360,9 @@ class BlockLog(dir: Path, private val shared: RocksItemLog) : AutoCloseable {
     // records nothing for the rest of the session.
     private fun writeAll(submissions: List<List<BlockChange>>) {
         WriteBatch().use { batch ->
+            // Nothing in the batch is readable until it is written, so a position this batch already
+            // holds a row for can only be clamped against what is remembered here.
+            val batchTs = HashMap<Triple<Int, Int, Int>, Long>()
             for (changes in submissions) {
                 val eventId = nextEventId++
                 batch.put(metaCf, META_EVENT_ID, longBytes(nextEventId))
@@ -371,7 +374,7 @@ class BlockLog(dir: Path, private val shared: RocksItemLog) : AutoCloseable {
                     batch.setSavePoint()
                     try {
                         val ordinal = seen.merge(Triple(change.x, change.y, change.z), 0) { old, _ -> old + 1 }!!
-                        writeChange(batch, change, eventId, ordinal)
+                        writeChange(batch, change, eventId, ordinal, batchTs)
                     } catch (failure: Exception) {
                         batch.rollbackToSavePoint()
                         LOGGER.log(Level.SEVERE, "a block change could not be written and was dropped", failure)
@@ -383,7 +386,13 @@ class BlockLog(dir: Path, private val shared: RocksItemLog) : AutoCloseable {
         }
     }
 
-    private fun writeChange(batch: WriteBatch, change: BlockChange, eventId: Long, ordinal: Int) {
+    private fun writeChange(
+        batch: WriteBatch,
+        change: BlockChange,
+        eventId: Long,
+        ordinal: Int,
+        batchTs: MutableMap<Triple<Int, Int, Int>, Long>,
+    ) {
         val at = "${change.x} ${change.y} ${change.z}"
         val before = requireNotNull(change.before) { "the block at $at was changed from nothing known" }
         val after = requireNotNull(change.after) { "the block at $at was changed into nothing known" }
@@ -391,12 +400,21 @@ class BlockLog(dir: Path, private val shared: RocksItemLog) : AutoCloseable {
         val stateAfter = shared.registries.idForKey(RegistryNamespace.BLOCK_STATE, after)
         val payloadBefore = change.payloadBefore?.let { shared.payloads.idOf(it) }
         val payloadAfter = change.payloadAfter?.let { shared.payloads.idOf(it) }
-        // Key order is read as time order, so a clock stepped backwards by NTP would file a newer row
-        // ahead of an older one and quietly make the last row of a position not what stands there.
-        // The cost: after a step back the stored time reads ahead of the wall clock until the wall
-        // clock catches up.
-        val ts = maxOf(change.timestamp, lastTs)
-        lastTs = ts
+        // Key order is read as time order, so the newest row of a position is what stands there, and
+        // a row filed behind one already at that position would silently take its place. Only that
+        // position is constrained: a change filed late, which a capture that has to see the outcome
+        // before it can file it always is, keeps its own time when what it fell behind is somewhere
+        // else. The world-wide mark spares the common case the lookup, a time at or past everything
+        // the world holds being past this position too, and it has to survive a restart or a clock
+        // stepped backwards by time synchronisation takes that fast path and reorders a position
+        // after every reopen. The cost: a change behind its own position keeps that position's time.
+        val here = Triple(change.x, change.y, change.z)
+        val ts = if (change.timestamp >= lastTs) {
+            change.timestamp
+        } else {
+            maxOf(change.timestamp, batchTs[here] ?: newestTsAt(change.x, change.y, change.z))
+        }
+        lastTs = maxOf(lastTs, ts)
         val row = BlockRow(
             x = change.x,
             y = change.y,
@@ -417,6 +435,21 @@ class BlockLog(dir: Path, private val shared: RocksItemLog) : AutoCloseable {
             BlockCodec.key(change.x, change.y, change.z, ts, eventId, ordinal),
             BlockCodec.value(row, shared.registries),
         )
+        batchTs[here] = ts
+    }
+
+    // The time is in the key, so a position whose newest row does not decode still bounds what may
+    // be filed under it, and no row has to be decoded to ask.
+    private fun newestTsAt(x: Int, y: Int, z: Int): Long {
+        var ts = 0L
+        forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = true) { key, _ ->
+            if (key.size < BlockCodec.KEY_SIZE) return@forEachUnder true
+            val reader = ByteReader(key)
+            reader.bytes(Zcode.SIZE)
+            ts = reader.longBE()
+            false
+        }
+        return ts
     }
 
     // Read-only and with exactly the families already on disk, so a database this build refuses is

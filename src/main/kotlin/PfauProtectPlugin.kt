@@ -93,6 +93,7 @@ private class Running(
     val uncovered: Uncovered,
     val codec: ItemFormCodec,
     val capture: ContainerCaptureListener,
+    val destruction: BlockDestructionListener,
     val mechanisms: TickCoalescer,
     val origins: SpawnOrigins,
     val lookups: Lookups,
@@ -115,13 +116,16 @@ class PfauProtectPlugin : JavaPlugin() {
         val capture = ContainerCaptureListener(this, uncovered::submit, codec, origins, ledger) { intent, qty ->
             unspentDrop(mechanisms, intent, qty)
         }
+        val destruction = BlockDestructionListener(
+            this, ledger.registries, blocks, attribution, codec, ledger, uncovered::submit,
+        )
         val lookups = Lookups(this, ledger)
         val inspector = Inspector(lookups)
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
         // the way back down.
         val running = Running(
-            ledger, blocks, attribution, uncovered, codec, capture, mechanisms, origins, lookups,
-            inspector, Reconciliation(ledger), PlaneSync(ledger, blocks),
+            ledger, blocks, attribution, uncovered, codec, capture, destruction, mechanisms, origins,
+            lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks),
         )
         this.running = running
         ledger.staged { fillTypeRegistries(ledger.registries) }
@@ -133,6 +137,7 @@ class PfauProtectPlugin : JavaPlugin() {
         // the load handler and after the bases opened by hand. Against the other handlers of equal
         // priority the order is free: nothing it reads is written by any of them.
         server.pluginManager.registerEvents(BlockCaptureListener(blocks, attribution), this)
+        server.pluginManager.registerEvents(destruction, this)
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
@@ -150,6 +155,7 @@ class PfauProtectPlugin : JavaPlugin() {
             origins.sweep()
             attribution.sweepRemovals()
             mechanisms.flush()
+            destruction.settleGrowth()
         }, 1, 1)
         server.asyncScheduler.runAtFixedRate(
             this,
