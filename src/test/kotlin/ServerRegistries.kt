@@ -27,6 +27,7 @@ object ServerRegistries {
         SharedConstants.tryDetectVersion()
         Bootstrap.bootStrap()
         Bootstrap.validate()
+        installGlobalConfiguration()
 
         val flags = FeatureFlags.VANILLA_SET
         val packs = ServerPacksSource.createVanillaTrustedRepository()
@@ -67,5 +68,21 @@ object ServerRegistries {
         ).join().updateComponentsAndStaticRegistryTags()
 
         return layers.compositeAccess().freeze()
+    }
+
+    // Block behaviour asks the global configuration whether a block may be destroyed at all, and the
+    // piston push reaction is one of the answers behind that. Only a running server ever loads one,
+    // so the defaults stand in for it here.
+    private fun installGlobalConfiguration() {
+        val type = Class.forName("io.papermc.paper.configuration.GlobalConfiguration")
+        val instance = type.getDeclaredField("instance").apply { isAccessible = true }
+        if (instance.get(null) != null) return
+        val config = type.getDeclaredConstructor().newInstance()
+        val unsupported = Class.forName("io.papermc.paper.configuration.GlobalConfiguration\$UnsupportedSettings")
+            .getDeclaredConstructor(type)
+            .apply { isAccessible = true }
+            .newInstance(config)
+        type.getField("unsupportedSettings").set(config, unsupported)
+        instance.set(null, config)
     }
 }

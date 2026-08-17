@@ -17,6 +17,9 @@ private val BACKS_NO_ITEM = setOf(
     "minecraft:end_portal",
     "minecraft:end_gateway",
     "minecraft:moving_piston",
+    // A piston puts its head down and takes it back without either being an item, so a position it
+    // stands in holds nothing, exactly as one it moved through does.
+    "minecraft:piston_head",
 )
 
 /**

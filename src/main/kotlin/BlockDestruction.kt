@@ -1,19 +1,28 @@
 package io.pfaumc.pfauprotect
 
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
+import net.minecraft.core.Direction
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.resources.Identifier
 import net.minecraft.world.item.BucketItem
 import net.minecraft.world.level.block.AbstractCauldronBlock
 import net.minecraft.world.level.block.BaseFireBlock
+import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.LiquidBlockContainer
+import net.minecraft.world.level.block.state.properties.BlockStateProperties
+import net.minecraft.world.level.block.state.properties.PistonType
 import net.minecraft.world.level.material.FlowingFluid
+import net.minecraft.world.level.material.PushReaction
 import org.bukkit.ExplosionResult
 import org.bukkit.Material
 import org.bukkit.block.Block
+import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
 import org.bukkit.block.data.BlockData
+import org.bukkit.block.data.Directional
 import org.bukkit.block.data.type.Bed
+import org.bukkit.block.data.type.PistonHead
+import org.bukkit.block.data.type.TechnicalPiston
 import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.craftbukkit.block.CraftBlock
 import org.bukkit.craftbukkit.block.data.CraftBlockData
@@ -21,6 +30,7 @@ import org.bukkit.craftbukkit.inventory.CraftItemType
 import org.bukkit.entity.Creeper
 import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
+import org.bukkit.entity.FallingBlock
 import org.bukkit.entity.Player
 import org.bukkit.entity.TNTPrimed
 import org.bukkit.event.EventHandler
@@ -35,11 +45,15 @@ import org.bukkit.event.block.BlockFromToEvent
 import org.bukkit.event.block.BlockGrowEvent
 import org.bukkit.event.block.BlockIgniteEvent
 import org.bukkit.event.block.BlockPhysicsEvent
+import org.bukkit.event.block.BlockPistonEvent
+import org.bukkit.event.block.BlockPistonExtendEvent
+import org.bukkit.event.block.BlockPistonRetractEvent
 import org.bukkit.event.block.BlockSpreadEvent
 import org.bukkit.event.block.EntityBlockFormEvent
 import org.bukkit.event.block.LeavesDecayEvent
 import org.bukkit.event.entity.EntityChangeBlockEvent
 import org.bukkit.event.entity.EntityExplodeEvent
+import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.player.PlayerBucketEmptyEvent
 import org.bukkit.event.world.StructureGrowEvent
 import org.bukkit.plugin.Plugin
@@ -56,6 +70,28 @@ import net.minecraft.world.level.block.state.BlockState as NmsBlockState
 private val DESTROYING = setOf(ExplosionResult.DESTROY, ExplosionResult.DESTROY_WITH_DECAY)
 
 private fun blockNameOf(state: String) = state.substringBefore('[')
+
+private const val AIR = "minecraft:air"
+
+// What a piston leaves in every position it clears and what stands in every position it fills before
+// the move: plain air, and never the fluid the block was standing in. Lazy because touching the block
+// registry before the server has bootstrapped it throws.
+private val AIR_DATA: BlockData by lazy { Blocks.AIR.defaultBlockState().asBlockData() }
+
+// One position of one change: where it is, what stood there, and what stands there now. The block
+// entity goes with the block, so it is read as the site is built rather than when the row is: a
+// read-back builds its site after the block is already gone and hands in what it took earlier.
+//
+// `went` is where the block that stood here has gone, for the positions a movement emptied rather
+// than a disappearance. It decides nothing about the row and everything about the item side.
+internal class Site(
+    val at: WorldBlock,
+    block: Block,
+    val before: BlockData,
+    val after: String,
+    val payload: ByteArray? = payloadAt(block),
+    val went: WorldBlock? = null,
+)
 
 /**
  * The cause an entity answers with wherever it turns up. A wither takes blocks away with its head and
@@ -165,6 +201,78 @@ internal fun bucketPlaced(bucket: Material, target: NmsBlockState): String? {
     return fluid.defaultFluidState().createLegacyBlock().asBlockData().asString
 }
 
+/**
+ * Whether a piston breaks this block where it stands instead of moving it. A piston event hands over
+ * the blocks it moves and the blocks it destroys in one list and never says which is which; the push
+ * reaction of what stands there is what the server itself decides by, and a block filed as moved when
+ * it was broken would credit a position it never reached.
+ */
+internal fun pistonDestroys(data: BlockData) =
+    (data as CraftBlockData).state.pistonPushReaction == PushReaction.DESTROY
+
+/**
+ * Where each block a piston is about to shift ends up: the positions it leaves, and the positions it
+ * arrives in. A block the piston breaks arrives nowhere, and it takes the other half of a bed or a
+ * door with it — the piston reaches one of the two, and the block clears its partner behind it under
+ * no event of its own, so a half left unfollowed keeps its form and its newest row goes on naming
+ * something that is not standing there.
+ *
+ * A piston writes plain air over every position it empties, whatever the block was standing in, so a
+ * waterlogged block takes its water with it rather than leaving a source behind.
+ */
+internal fun pistonSites(
+    moving: List<Block>,
+    step: BlockFace,
+    payload: (Block) -> ByteArray? = ::payloadAt,
+): Pair<List<Site>, List<Site>> {
+    val emptied = ArrayList<Site>(moving.size + 1)
+    val filled = ArrayList<Site>(moving.size + 2)
+    for (block in moving) {
+        val was = block.blockData
+        if (pistonDestroys(was)) {
+            for (half in withOtherHalves(listOf(block))) {
+                emptied += Site(positionOf(half), half, half.blockData, AIR, payload(half))
+            }
+            continue
+        }
+        val to = block.getRelative(step)
+        emptied += Site(positionOf(block), block, was, AIR, payload(block), went = positionOf(to))
+        filled += Site(positionOf(to), to, AIR_DATA, was.asString, payload = null)
+    }
+    return emptied to filled
+}
+
+/**
+ * The head a piston puts down and takes back. It stands in a position of its own that no event names,
+ * and it is derived rather than read: an extending piston has not put it down while the event runs,
+ * and a retracting one that pulls a block has already taken it away.
+ */
+internal fun pistonHead(facing: Direction, sticky: Boolean): BlockData = Blocks.PISTON_HEAD
+    .defaultBlockState()
+    .setValue(BlockStateProperties.FACING, facing)
+    .setValue(BlockStateProperties.PISTON_TYPE, if (sticky) PistonType.STICKY else PistonType.DEFAULT)
+    .asBlockData()
+
+/**
+ * The piston itself, which is the same block before and after and differs only in being extended. Both
+ * sides are derived, because the base of a retracting sticky piston is already the moving block by the
+ * time the event is raised: the row would otherwise start from an animation frame nobody asked about
+ * and no longer meet the row the extension left.
+ */
+internal fun pistonBase(facing: Direction, sticky: Boolean, extended: Boolean): BlockData =
+    (if (sticky) Blocks.STICKY_PISTON else Blocks.PISTON)
+        .defaultBlockState()
+        .setValue(BlockStateProperties.FACING, facing)
+        .setValue(BlockStateProperties.EXTENDED, extended)
+        .asBlockData()
+
+/**
+ * Which half of a fall an entity changing a block is. A block breaking loose leaves behind whatever it
+ * was standing in; a block landing puts down the very state it has been carrying, so the two halves are
+ * told apart by what the position is about to become rather than by anything about the entity.
+ */
+internal fun isLanding(carried: String, becomes: String) = carried == becomes
+
 /** Whether what was read back is a different block from the one the event was about. */
 internal fun wentAway(before: String, now: String) = blockNameOf(before) != blockNameOf(now)
 
@@ -228,6 +336,30 @@ internal fun wroteOff(
     cause = cause,
     from = at,
     to = Void,
+    form = form,
+    damage = null,
+    qty = 1,
+    timestamp = timestamp,
+    actor = by?.actor,
+)
+
+/**
+ * The item side of a block that changed position rather than disappearing: one transfer naming both
+ * ends, which is what lets a walk of the graph follow the block across the move. Written off at the
+ * one end and born again at the other, one block would be two, and the position it left would hand its
+ * form back a second time when whatever stands there now is broken.
+ */
+internal fun moved(
+    from: WorldBlock,
+    to: WorldBlock,
+    form: ByteArray,
+    cause: Cause,
+    by: Attributed?,
+    timestamp: Long,
+) = Transfer(
+    cause = cause,
+    from = from,
+    to = to,
     form = form,
     damage = null,
     qty = 1,
@@ -365,13 +497,23 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
         recent[at] = "$before>$after" to now()
     }
 
-    fun wasFiled(at: WorldBlock, before: String, after: String): Boolean {
-        val (change, filed) = recent[at] ?: return false
+    fun wasFiled(at: WorldBlock, before: String, after: String): Boolean = fresh(at) == "$before>$after"
+
+    /**
+     * Whether any capture has filed a change at this position within the tick, whatever the change was.
+     * A read-back carries the state the position held when it was queued, and a change filed behind its
+     * back makes that state stale: whatever the read finds now, the row it would write names as old a
+     * block that had already been replaced.
+     */
+    fun settled(at: WorldBlock): Boolean = fresh(at) != null
+
+    private fun fresh(at: WorldBlock): String? {
+        val (change, filed) = recent[at] ?: return null
         if (now() - filed > READ_BACK_MILLIS) {
             recent.remove(at)
-            return false
+            return null
         }
-        return change == "$before>$after"
+        return change
     }
 
     fun sweep() {
@@ -382,10 +524,15 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
 }
 
 /**
- * Every disappearance of a block that no player signed, in both planes. A block row carries the two
- * states the position went between; the item row is the same shape a player's break already writes —
- * the form the position was holding goes to `Void` — and differs only in the cause and in that the
- * actor may be empty.
+ * Every change to a block that no player signed, in both planes: what disappears, and what merely
+ * moves. A block row carries the two states the position went between; the item row of a disappearance
+ * is the same shape a player's break already writes — the form the position was holding goes to `Void`
+ * — and differs only in the cause and in that the actor may be empty.
+ *
+ * A piston and gravity take no block away, they change where it is, and filing them here among the
+ * causes of destruction would be an error with a price: a shift written as one row saying a position
+ * became air duplicates the block when the journal is played backwards. Both write two rows under one
+ * event instead, and one transfer between the two positions.
  *
  * Nothing here is written speculatively. Where the outcome of an event is not knowable while it is
  * being handled — a block giving way under physics, a block burning that becomes either fire or air,
@@ -410,17 +557,6 @@ class BlockDestructionListener(
 
     private val growing = GrowClaims()
     private val readBacks = ReadBacks()
-
-    // One position of one change: where it is, what stood there, and what stands there now. The block
-    // entity goes with the block, so it is read as the site is built rather than when the row is:
-    // a read-back builds its site after the block is already gone and hands in what it took earlier.
-    private class Site(
-        val at: WorldBlock,
-        block: Block,
-        val before: BlockData,
-        val after: String,
-        val payload: ByteArray? = payloadAt(block),
-    )
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onEntityExplode(event: EntityExplodeEvent) {
@@ -536,7 +672,7 @@ class BlockDestructionListener(
     fun onLeafDecay(event: LeavesDecayEvent) {
         val block = event.block
         val before = block.blockData
-        changed(block, before, leftBehind(before), Cause.BLK_LEAF_DECAY, by = null)
+        changed(block, before, leftBehind(before).asString, Cause.BLK_LEAF_DECAY, by = null)
     }
 
     /**
@@ -559,9 +695,43 @@ class BlockDestructionListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onEntityChangeBlock(event: EntityChangeBlockEvent) {
-        val cause = entityBlockCause(event.entity.type) ?: return
+        val entity = event.entity
+        // A falling block is the one entity here that moves a block rather than changing one, and both
+        // ends of that movement arrive on this same event.
+        if (entity is FallingBlock) return fell(event, entity)
+        val cause = entityBlockCause(entity.type) ?: return
         val block = event.block
         changed(block, block.blockData, event.blockData.asString, cause, by = null)
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPistonExtend(event: BlockPistonExtendEvent) =
+        piston(event, event.blocks, Cause.BLK_PISTON_EXTEND, extending = true)
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPistonRetract(event: BlockPistonRetractEvent) =
+        piston(event, event.blocks, Cause.BLK_PISTON_RETRACT, extending = false)
+
+    /**
+     * A flight that ended in anything but a landing: the block was destroyed in the air, fell out of
+     * the world, or turned into an item. The position it left really did lose its block then, so what
+     * it was holding is written off there rather than handed on. A landing takes the flight itself, so
+     * what reaches here is only what nothing else claimed.
+     *
+     * The item a broken flight leaves behind is born unexplained: the removal is announced before the
+     * drop, and by the time the drop exists there is nothing left saying the two belong together.
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onEntityRemove(event: EntityRemoveEvent) {
+        val entity = event.entity
+        if (entity !is FallingBlock) return
+        // A chunk going out of memory is not an end: the block goes into the region file still on its
+        // way down and comes back under the same name to land, so a loss written here is a loss that
+        // never happened and the landing behind it credits a position nothing was ever taken for.
+        if (event.cause == EntityRemoveEvent.Cause.UNLOAD) return
+        val flight = attribution.landed(entity.uniqueId) ?: return
+        val form = flight.form ?: return
+        sink(listOf(wroteOff(flight.from, form, Cause.BLK_FALL_START, flight.by, System.currentTimeMillis())))
     }
 
     /**
@@ -669,6 +839,109 @@ class BlockDestructionListener(
     }
 
     /**
+     * A piston firing, which is one event over every position it touches: each moved block leaves a row
+     * where it stood and another where it arrived, and the piston's own base and head are positions of
+     * their own that the event never mentions.
+     *
+     * Everything is read while the event runs because that is the only moment it can be read: the
+     * piston raises it before it touches anything, and a tick later every position it emptied is air.
+     * A piston writes plain air over those, whatever the block was standing in, so a waterlogged block
+     * takes its water with it instead of leaving a source behind.
+     *
+     * Nobody is named. The ladder answers who put a block somewhere and who took a support away;
+     * neither is who fired this piston, and the player who last touched it is not behind every block
+     * the redstone around it shifts afterwards.
+     */
+    private fun piston(event: BlockPistonEvent, moving: List<Block>, cause: Cause, extending: Boolean) {
+        val base = event.block
+        val log = logs.get(base.world.uid) ?: return
+        val data = base.blockData
+        // A retracting sticky piston is already the moving block here, and that block carries the
+        // facing and the stickiness of the piston it stands for.
+        val facing = (data as? Directional)?.facing ?: return
+        val notch = CraftBlock.blockFaceToNotch(facing) ?: return
+        val sticky = base.type == Material.STICKY_PISTON ||
+            (data as? TechnicalPiston)?.type == TechnicalPiston.Type.STICKY
+        val step = if (extending) facing else facing.oppositeFace
+        val (left, arrived) = pistonSites(moving, step)
+        val emptied = ArrayList(left)
+        val filled = ArrayList(arrived)
+        val head = base.getRelative(facing)
+        if (extending) {
+            filled += Site(positionOf(head), head, AIR_DATA, pistonHead(notch, sticky).asString, payload = null)
+        } else {
+            // A retract that pulls a block takes its own head away before it says anything, and that
+            // position is spoken for by what arrives in it; one that pulls nothing loses it here.
+            val standing = head.blockData
+            if (standing is PistonHead) emptied += Site(positionOf(head), head, standing, AIR)
+        }
+        filled += Site(
+            positionOf(base),
+            base,
+            pistonBase(notch, sticky, extended = !extending),
+            pistonBase(notch, sticky, extended = extending).asString,
+            payload = null,
+        )
+        file(log, emptied, cause, by = null, carried = filled)
+    }
+
+    /**
+     * A falling block, which is a movement with a flight in the middle of it. The two ends are separate
+     * events and no positional state survives between them, so what the position it left is holding
+     * travels under the entity's own id and is handed over where it lands.
+     */
+    private fun fell(event: EntityChangeBlockEvent, entity: FallingBlock) {
+        val block = event.block
+        val log = logs.get(block.world.uid) ?: return
+        val at = positionOf(block)
+        val carried = entity.blockData.asString
+        val becomes = event.blockData.asString
+        val timestamp = System.currentTimeMillis()
+        if (!isLanding(carried, becomes)) {
+            // Who took away what was holding it up, worked out here and kept under the entity: by the
+            // time it lands, the position it left holds whatever has moved in behind it.
+            val by = attribution.supportRemoverAt(at)
+            attribution.tookOff(entity.uniqueId, Falling(at, carried, by, takeHeldForm(at, carried)))
+            val site = Site(at, block, block.blockData, becomes)
+            file(log, emptyList(), Cause.BLK_FALL_START, by, timestamp, carried = listOf(site))
+            // A column comes down one block at a time, and each take-off is what the block above it
+            // finds: without a note here the chain would be attributed at its first step only.
+            by?.actor?.let { noteRemoval(at, becomes, it) }
+            return
+        }
+        val flight = attribution.landed(entity.uniqueId)
+        val by = flight?.by
+        val was = block.blockData
+        val left = leftBehind(was)
+        // Two rows in one position: whatever the landing replaced gives way, and the block that came
+        // down arrives over it. A landing in air writes only the second, the first changing nothing.
+        file(
+            log,
+            listOf(Site(at, block, was, left.asString)),
+            Cause.BLK_FALL_LAND,
+            by,
+            timestamp,
+            carried = listOf(Site(at, block, left, carried, payload = null)),
+        )
+        // A flight nobody watched take off — one a plugin dropped, one already in the air when this was
+        // enabled — hands over nothing, and the position it came from is not this event's to name.
+        val flown = flight ?: return
+        val form = flown.form ?: return
+        placed.setFormAt(at.world, at.x, at.y, at.z, form)
+        sink(listOf(moved(flown.from, at, form, Cause.BLK_FALL_LAND, by, timestamp)))
+    }
+
+    // What a position was holding, taken away from it as the block leaves: the block is not there any
+    // more, and a note left behind would be given back to whatever stands there next. Read at the
+    // moment of leaving and not later, or a block that moves in while this one is away has its own
+    // note read and cleared instead.
+    private fun takeHeldForm(at: WorldBlock, state: String): ByteArray? {
+        val remembered = placed.formAt(at.world, at.x, at.y, at.z)
+        placed.clearFormAt(at.world, at.x, at.y, at.z)
+        return gaveBack(remembered, shellForm(state))
+    }
+
+    /**
      * Every position of one change: one submit, so they share an event id, and one round trip to the
      * placed-form table for the whole set. A wither or a large cannon clears a few thousand positions
      * in one event, and a point read and a delete apiece would be a few thousand trips through JNI on
@@ -680,10 +953,15 @@ class BlockDestructionListener(
         cause: Cause,
         by: Attributed?,
         timestamp: Long = System.currentTimeMillis(),
+        // Positions of the same event whose item side belongs to somebody else: what arrives in a
+        // position is spoken for at the other end of the movement that brought it, and what leaves in
+        // the hands of a falling block is spoken for where the block lands.
+        carried: List<Site> = emptyList(),
     ) {
-        val real = sites.filter { it.before.asString != it.after }
-        log.submit(real.map { row(it, cause, by, timestamp) })
-        for (site in real) readBacks.filed(site.at, site.before.asString, site.after)
+        val real = sites.filter { unfiled(it) }
+        val rows = real + carried.filter { unfiled(it) }
+        log.submit(rows.map { row(it, cause, by, timestamp) })
+        for (site in rows) readBacks.filed(site.at, site.before.asString, site.after)
         val gone = real.filter { wentAway(it.before.asString, it.after) }
         if (gone.isEmpty()) return
         by?.actor?.let { actor -> for (site in gone) noteRemoval(site.at, site.after, actor) }
@@ -701,6 +979,15 @@ class BlockDestructionListener(
             placed.setFormAt(at.world, at.x, at.y, at.z, posting.form)
         }
         sink(transaction)
+    }
+
+    // A change worth a row: one that changes something, and one the journal has not already been told
+    // about this tick. Two captures reach one position — a piston clears the position it moved a block
+    // out of and the physics behind it reads the same air — and the second row would declare as old
+    // what the first had just made new.
+    private fun unfiled(site: Site): Boolean {
+        val before = site.before.asString
+        return before != site.after && !readBacks.wasFiled(site.at, before, site.after)
     }
 
     private fun row(
@@ -723,9 +1010,10 @@ class BlockDestructionListener(
         payloadBefore = site.payload,
     )
 
-    // What the position owes: written off where it emptied, and exchanged for the block that stands
-    // there now where that block has an item form of its own. Refused either way where the position is
-    // one half of a block whose form was remembered in the other.
+    // What the position owes: handed to the position the block moved to where it moved, written off
+    // where it emptied, and exchanged for the block that stands there now where that block has an item
+    // form of its own. Refused either way where the position is one half of a block whose form was
+    // remembered in the other.
     private fun released(
         site: Site,
         remembered: ByteArray?,
@@ -735,6 +1023,10 @@ class BlockDestructionListener(
     ): List<Transfer> {
         val shell = shellForm(site.before)
         val twoPositions = partnerFace(site.before) != null
+        site.went?.let { to ->
+            val form = heldForm(remembered, shell, twoPositions) ?: return emptyList()
+            return listOf(moved(site.at, to, form, cause, by, timestamp))
+        }
         lostForm(remembered, shell, site.after, twoPositions)?.let {
             return listOf(wroteOff(site.at, it, cause, by, timestamp))
         }
@@ -794,12 +1086,16 @@ class BlockDestructionListener(
      * newest row says: one that already runs from this state to that one is this same change, filed
      * by a capture that knew more about it.
      *
+     * A capture that filed anything at all at this position within the tick is answer enough on its
+     * own, and not only the same change: a piston moving a block into a position a read-back was
+     * queued for leaves that read about to write a row from a block that is no longer the one there.
+     *
      * A seek per confirmed give-away, which is what keeps it affordable: nothing is asked for a block
      * that survived its physics tick.
      */
     private fun alreadyFiled(log: BlockLog, at: WorldBlock, before: String, after: String): Boolean {
         // Asked here first because a row filed in this same tick is still on its way to the journal.
-        if (readBacks.wasFiled(at, before, after)) return true
+        if (readBacks.settled(at)) return true
         val row = log.standingAt(at.x, at.y, at.z).row ?: return false
         return registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore) == before &&
             registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) == after
@@ -824,8 +1120,8 @@ class BlockDestructionListener(
 
     // A block that no longer stands there leaves whatever it was standing in, which for anything dry
     // is air. This is `Level.removeBlock`'s own rule, the same one a break follows.
-    private fun leftBehind(data: BlockData) =
-        (data as CraftBlockData).state.fluidState.createLegacyBlock().asBlockData().asString
+    private fun leftBehind(data: BlockData): BlockData =
+        (data as CraftBlockData).state.fluidState.createLegacyBlock().asBlockData()
 
     // What the block was made of, which a block with no item form of its own — fire, a liquid, a
     // portal — answers with nothing at all.
@@ -845,7 +1141,6 @@ class BlockDestructionListener(
         (block.world as CraftWorld).handle.currentWorldData?.captureBlockStates == true
 
     private companion object {
-        const val AIR = "minecraft:air"
         const val TNT = "minecraft:tnt"
     }
 }

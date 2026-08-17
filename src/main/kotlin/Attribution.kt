@@ -45,7 +45,14 @@ private val PLACING_CAUSES = setOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_BONEMEAL)
 data class Attributed(val actor: UUID, val confidence: Confidence = Confidence.INFERRED)
 
 /** A block between the position it broke loose from and the one it lands in. */
-data class Falling(val from: WorldBlock, val state: String, val by: Attributed?)
+// The form travels with the block rather than being fetched back at the landing: the position it left
+// is free the moment it leaves, and whatever moves in there during the flight owns the note by then.
+data class Falling(
+    val from: WorldBlock,
+    val state: String,
+    val by: Attributed?,
+    val form: ByteArray? = null,
+)
 
 /**
  * Who is behind a block change the event itself will not name. A player puts down TNT and walks away;
