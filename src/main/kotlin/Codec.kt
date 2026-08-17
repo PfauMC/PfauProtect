@@ -202,6 +202,10 @@ object EntryCodec {
     // prefix extractor for it. Widening the world number to two bytes is what buys the fixed length.
     const val CHUNK_PREFIX_SIZE = 1 + WORLD_NO_SIZE + Zcode.CHUNK_PREFIX_SIZE
 
+    // The identity of a position ends here and the time follows it, so the rows of one position are a
+    // single contiguous run of any walk that crosses them.
+    const val POSITION_PREFIX_SIZE = 1 + WORLD_NO_SIZE + Zcode.SIZE
+
     // Postings of one transaction are numbered from zero in the order they are written, which is what
     // keeps two postings on one holder — a stack moved between two slots, both sides of a mutation —
     // in rows of their own.

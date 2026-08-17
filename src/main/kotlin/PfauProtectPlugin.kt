@@ -25,6 +25,8 @@ private const val TARGET_RANGE = 6
 private const val SWEEP_ENTRIES = 2000
 private const val SWEEP_MINUTES = 5L
 private const val SWEEP_GAPS_LOGGED = 5
+private const val PLANE_POSTINGS = 2000
+private const val PLANE_MINUTES = 10L
 private const val RECONCILE_MINUTES = 30L
 private const val LOOKUP_PERMISSION = "pfauprotect.lookup"
 private const val INSPECT_PERMISSION = "pfauprotect.inspect"
@@ -94,6 +96,7 @@ private class Running(
     val lookups: Lookups,
     val inspector: Inspector,
     val reconciliation: Reconciliation,
+    val planes: PlaneSync,
 )
 
 class PfauProtectPlugin : JavaPlugin() {
@@ -115,7 +118,7 @@ class PfauProtectPlugin : JavaPlugin() {
         // the way back down.
         val running = Running(
             ledger, blocks, uncovered, codec, capture, mechanisms, origins, lookups, inspector,
-            Reconciliation(ledger),
+            Reconciliation(ledger), PlaneSync(ledger, blocks),
         )
         this.running = running
         ledger.staged { fillTypeRegistries(ledger.registries) }
@@ -123,6 +126,10 @@ class PfauProtectPlugin : JavaPlugin() {
         // Enabling after startup, every world is already loaded and none of them will ever raise the
         // load event again.
         for (world in server.worlds) blocks.open(world.uid)
+        // A change to a world with no base open is dropped rather than journalled, so this goes after
+        // the load handler and after the bases opened by hand. Against the other handlers of equal
+        // priority the order is free: nothing it reads is written by any of them.
+        server.pluginManager.registerEvents(BlockCaptureListener(blocks), this)
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
@@ -145,6 +152,13 @@ class PfauProtectPlugin : JavaPlugin() {
             { sweepLedger(ledger) },
             SWEEP_MINUTES,
             SWEEP_MINUTES,
+            TimeUnit.MINUTES,
+        )
+        server.asyncScheduler.runAtFixedRate(
+            this,
+            { syncPlanes(running.planes) },
+            PLANE_MINUTES,
+            PLANE_MINUTES,
             TimeUnit.MINUTES,
         )
         server.asyncScheduler.runAtFixedRate(
@@ -216,6 +230,45 @@ class PfauProtectPlugin : JavaPlugin() {
         }
         if (report.reachedEnd && report.checked > 0) {
             logger.info("ledger swept to the end, ${report.checked} entries in this pass, ${report.gaps.size} gaps")
+        }
+    }
+
+    // A position where the two planes disagree is a change that reached one of them and not the other,
+    // which from inside either plane on its own reads as perfectly consistent. That is a hole in the
+    // capture rather than anything a player did.
+    private fun syncPlanes(planes: PlaneSync) {
+        if (!isEnabled) return
+        val report = planes.pass(PLANE_POSTINGS)
+        for (gap in report.gaps.take(SWEEP_GAPS_LOGGED)) {
+            val world = server.getWorld(gap.at.world)?.name ?: gap.at.world.toString()
+            logger.warning(
+                "plane gap in $world at ${gap.at.x} ${gap.at.y} ${gap.at.z}: the block plane says " +
+                    "${gap.standing} stands there, the item plane still holds ${gap.fact} confirmed " +
+                    "and ${gap.inferred} inferred"
+            )
+        }
+        val unlisted = report.gaps.size - SWEEP_GAPS_LOGGED
+        if (unlisted > 0) logger.warning("and $unlisted more plane gaps in this pass")
+        // Positions this build cannot read are not positions that agree. Left unsaid, a base that has
+        // become unreadable would keep reporting clean passes.
+        if (report.unreadable > 0) {
+            logger.warning("${report.unreadable} positions in this pass could not be compared by this build")
+        }
+        // The opposite of a standing debt and just as much a hole in the capture: the item plane took
+        // items out of a position it was never told held any.
+        if (report.overdrawn > 0) {
+            logger.warning(
+                "${report.overdrawn} positions in this pass gave up more than the item plane " +
+                    "ever booked to them"
+            )
+        }
+        if (report.reachedEnd && (report.checked > 0 || report.unrecorded > 0)) {
+            logger.info(
+                "planes compared to the end of the item plane, ${report.checked} positions in this pass, " +
+                    "${report.unrecorded} the block plane never recorded, ${report.settling} too recent " +
+                    "to judge, ${report.gaps.size} gaps, " +
+                    "${report.gaps.count { it.fact == 0 }} of them with nothing confirmed standing"
+            )
         }
     }
 

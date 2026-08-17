@@ -41,6 +41,12 @@ data class BlockChange(
     val payloadAfter: ByteArray? = null,
 )
 
+// What stands at a position, with `row` null where the position has no history at all. `torn` marks
+// an answer nothing may be concluded from: the newest row of the position did not decode, so the row
+// behind it names a state that has since been replaced, and a closed base answers the same way rather
+// than as a position nothing ever happened to.
+data class BlockStanding(val row: BlockRow?, val torn: Boolean)
+
 // Raised by a change to the key layout or to the set of column families. The record version in the
 // value covers neither: keys carry a version this build reads, so without the bump an older database
 // opens and every key is parsed as something it never was.
@@ -230,8 +236,21 @@ class BlockLog(dir: Path, private val shared: RocksItemLog) : AutoCloseable {
         found.sortedWith(if (reverse) byTime.reversed() else byTime).take(limit)
     }
 
-    /** The last row of a position, which is what stands there now. */
-    fun latestAt(x: Int, y: Int, z: Int): BlockRow? = at(x, y, z, limit = 1, reverse = true).firstOrNull()
+    /**
+     * The last row of a position, which is what stands there now: the log is a journal of states, so
+     * nothing has to be replayed to get at it.
+     */
+    fun standingAt(x: Int, y: Int, z: Int): BlockStanding = dbLock.read {
+        if (closed) return BlockStanding(null, torn = true)
+        var found = false
+        var row: BlockRow? = null
+        forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = true) { key, value ->
+            found = true
+            row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            false
+        }
+        BlockStanding(row, torn = found && row == null)
+    }
 
     // Reads run on any thread, so the native handles may only be freed once every reader has left,
     // and a write arriving from a region thread during shutdown would dereference a freed handle and

@@ -56,6 +56,14 @@ data class SweepReport(val checked: Int, val unreadable: Int, val gaps: List<Str
 // row short of the end and one that stopped in the middle of a year both come back full.
 data class EntryPage(val entries: List<LedgerEntry>, val complete: Boolean)
 
+// Everything the item plane holds against one block position, and the rows of that position nobody
+// could decode. A row that did not decode never balanced to anything, so it is counted apart from the
+// postings rather than left out of them; `at` is null only where no row of the position decoded at all
+// and the position cannot even be named.
+data class BlockPostings(val at: WorldBlock?, val entries: List<LedgerEntry>, val unreadable: Int)
+
+data class BlockPostingsPage(val positions: List<BlockPostings>, val reachedEnd: Boolean)
+
 // Raised by a change to the key layout — version 2 took a fixed-width world number and a trailing
 // posting ordinal — and by a change to the set of column families, which is what version 3 is: the
 // family of interned block-entity payloads. The record version in the value covers neither. Keys
@@ -96,6 +104,9 @@ private val META_TX_ID = "tx_id".toByteArray()
 private val META_ITEM_FORM_ID = "item_form_id".toByteArray()
 private val META_BLOCK_PAYLOAD_ID = "block_payload_id".toByteArray()
 private val META_SWEEP_CURSOR = "sweep_cursor".toByteArray()
+private val META_BLOCK_CURSOR = "block_cursor".toByteArray()
+
+private val WORLD_BLOCK_PREFIX = byteArrayOf(HolderType.WORLD_BLOCK.toByte())
 
 internal val LOGGER: Logger = Logger.getLogger("PfauProtect")
 
@@ -464,6 +475,58 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         SweepReport(checked, unreadable, gaps, reachedEnd)
     }
 
+    /**
+     * The postings standing against block positions, walked under the one holder type that addresses
+     * one. The rows of a position are contiguous — the key is the holder type, the world number, the
+     * position, and only then the time — so every position comes back whole and is settled once.
+     * Each pass picks up where the last one stopped, unloaded chunks and all.
+     *
+     * The budget is counted in rows but spent at a position boundary: half of a position's postings
+     * balance to something the position never held. A pass resumes past the last position it settled
+     * rather than at its last row, so a posting that lands on a settled position waits for the next
+     * cycle instead of coming back alone.
+     */
+    fun blockPostings(limit: Int): BlockPostingsPage = dbLock.read {
+        if (closed || limit <= 0) return BlockPostingsPage(emptyList(), false)
+        val cursor = db.get(metaCf, META_BLOCK_CURSOR)
+        val positions = ArrayList<BlockPostings>()
+        val entries = ArrayList<LedgerEntry>()
+        var unreadable = 0
+        var position: ByteArray? = null
+        var rows = 0
+        var settled: ByteArray? = null
+        var reachedEnd = true
+        forEachUnder(WORLD_BLOCK_PREFIX, reverse = false, from = cursor) { key, value ->
+            val at = key.copyOf(EntryCodec.POSITION_PREFIX_SIZE)
+            val done = position
+            if (done != null && !done.contentEquals(at)) {
+                positions += BlockPostings(entries.firstOrNull()?.holder as? WorldBlock, ArrayList(entries), unreadable)
+                entries.clear()
+                unreadable = 0
+                // Parked past the whole position rather than on its last row: the time follows the
+                // position in the key, so a posting written to a position already settled sorts after
+                // every row of it this pass read, and a cursor on that row would hand the next pass the
+                // position with nothing but its new rows and a total that was never the position's.
+                settled = afterPrefix(done)
+                if (rows >= limit) {
+                    reachedEnd = false
+                    return@forEachUnder false
+                }
+            }
+            position = at
+            val entry = EntryCodec.decodeOrNull(key, value, registries)
+            if (entry == null) unreadable++ else entries += entry
+            rows++
+            true
+        }
+        if (reachedEnd && position != null) {
+            positions += BlockPostings(entries.firstOrNull()?.holder as? WorldBlock, entries, unreadable)
+        }
+        val end = settled
+        if (reachedEnd || end == null) db.delete(metaCf, META_BLOCK_CURSOR) else db.put(metaCf, META_BLOCK_CURSOR, end)
+        BlockPostingsPage(positions, reachedEnd)
+    }
+
     private fun gapOf(entry: LedgerEntry): String? {
         val other = entry.counterparty
         if (!other.addressable) return null
@@ -716,6 +779,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private inline fun forEachUnder(
         prefix: ByteArray,
         reverse: Boolean,
+        from: ByteArray? = null,
         action: (ByteArray, ByteArray) -> Boolean,
     ) {
         val lower = Slice(prefix)
@@ -732,7 +796,11 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                 .setTotalOrderSeek(prefix.size <= EntryCodec.CHUNK_PREFIX_SIZE)
                 .use { options ->
                     db.newIterator(entriesCf, options).use { iter ->
-                        if (reverse) iter.seekForPrev(lastUnder(prefix)) else iter.seekToFirst()
+                        when {
+                            reverse -> iter.seekForPrev(lastUnder(prefix))
+                            from != null -> iter.seek(from)
+                            else -> iter.seekToFirst()
+                        }
                         while (iter.isValid) {
                             if (!action(iter.key(), iter.value())) return
                             if (reverse) iter.prev() else iter.next()

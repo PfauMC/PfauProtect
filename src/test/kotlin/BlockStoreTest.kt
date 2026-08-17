@@ -166,7 +166,7 @@ class BlockStoreTest {
 
         assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), log.at(2, 64, 2).map { it.stateAfter })
         assertEquals(2, log.inChunk(0, 0).size)
-        assertEquals(stateOf(DIRT), log.latestAt(2, 64, 2)?.stateAfter)
+        assertEquals(stateOf(DIRT), log.standingAt(2, 64, 2).row?.stateAfter)
     }
 
     @Test
@@ -229,7 +229,7 @@ class BlockStoreTest {
         assertEquals(listOf(stateOf(WATER), stateOf(STONE)), rows.map { it.stateAfter })
         assertEquals(listOf(0, 1), rows.map { it.ordinal })
         assertEquals(1, rows.map { it.eventId }.toSet().size)
-        assertEquals(stateOf(STONE), log.latestAt(0, 64, 0)?.stateAfter)
+        assertEquals(stateOf(STONE), log.standingAt(0, 64, 0).row?.stateAfter)
     }
 
     // The ordinal is one byte, and an explosion is thousands of positions in one event. Counted
@@ -265,7 +265,7 @@ class BlockStoreTest {
         log.submit(listOf(placed(10, 64, 10, before = STONE, after = DIRT, ts = T0 + 10)))
         log.drain()
 
-        val latest = log.latestAt(10, 64, 10)
+        val latest = log.standingAt(10, 64, 10).row
         assertEquals(stateOf(DIRT), latest?.stateAfter)
         assertEquals(T0 + 10, latest?.timestamp)
         assertEquals(2, log.at(10, 64, 10).size)
@@ -295,7 +295,7 @@ class BlockStoreTest {
         val rows = log.at(7, 64, 7)
         assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
         assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
-        assertEquals(stateOf(DIRT), log.latestAt(7, 64, 7)?.stateAfter)
+        assertEquals(stateOf(DIRT), log.standingAt(7, 64, 7).row?.stateAfter)
     }
 
     @Test
@@ -320,7 +320,7 @@ class BlockStoreTest {
 
         assertTrue(log.at(5, 64, 5).isEmpty())
         assertTrue(log.inChunk(0, 0).isEmpty())
-        assertNull(log.latestAt(5, 64, 5))
+        assertNull(log.standingAt(5, 64, 5).row)
         assertFalse(log.submit(listOf(placed(9, 64, 9))))
         log.drain()
     }
