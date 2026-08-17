@@ -1,21 +1,30 @@
 package io.pfaumc.pfauprotect
 
-import java.io.ByteArrayOutputStream
 import java.util.UUID
 
+// A plain array rather than a ByteArrayOutputStream: every method of that class is synchronized, and
+// a form is written a byte at a time, once per slot, on every inventory pass.
 class ByteWriter(initialCapacity: Int = 32) {
-    private val out = ByteArrayOutputStream(initialCapacity)
+    private var buf = ByteArray(maxOf(initialCapacity, 1))
+    private var len = 0
 
-    val size: Int get() = out.size()
+    val size: Int get() = len
 
     fun byte(v: Int): ByteWriter {
-        out.write(v)
+        room(1)
+        buf[len++] = v.toByte()
         return this
     }
 
     fun bytes(v: ByteArray): ByteWriter {
-        out.write(v, 0, v.size)
+        room(v.size)
+        v.copyInto(buf, len)
+        len += v.size
         return this
+    }
+
+    private fun room(more: Int) {
+        if (len + more > buf.size) buf = buf.copyOf(maxOf(len + more, buf.size * 2))
     }
 
     fun varInt(v: Int): ByteWriter {
@@ -49,7 +58,7 @@ class ByteWriter(initialCapacity: Int = 32) {
 
     fun uuid(v: UUID): ByteWriter = longBE(v.mostSignificantBits).longBE(v.leastSignificantBits)
 
-    fun toByteArray(): ByteArray = out.toByteArray()
+    fun toByteArray(): ByteArray = buf.copyOf(len)
 }
 
 class ByteReader(private val buf: ByteArray) {
@@ -220,25 +229,23 @@ object EntryCodec {
         return w.toByteArray()
     }
 
-    // Two holder types address a block position and their keys differ only in the leading byte, so a
-    // scan of one prefix answers with half the rows and looks complete doing it.
     fun blockChunkPrefixes(world: UUID, chunkX: Int, chunkZ: Int, ids: IdResolver): List<ByteArray> {
         val worldNo = ids.id(RegistryNamespace.WORLD, world)
         val chunk = Zcode.chunkPrefix(chunkX, chunkZ)
-        return listOf(5, 10).map { typeId ->
+        return HolderType.POSITIONAL.map { typeId ->
             ByteWriter(CHUNK_PREFIX_SIZE).byte(typeId).shortBE(worldNo).bytes(chunk).toByteArray()
         }
     }
 
     // The trailing damage varint carries no presence flag, so it is only decodable while nothing can
-    // follow it. Writing provenanceId here would need a new record version with a presence flag in
-    // the reserved header bits.
+    // follow it. Adding another field after it would need a new record version with a presence flag
+    // in the reserved header bits.
     fun value(entry: LedgerEntry, ids: IdResolver): ByteArray {
         val w = ByteWriter(32)
         w.byte(header(entry.kind, entry.confidence, entry.actor != null))
         w.byte(entry.cause.id)
         w.varInt(entry.holder.slot)
-        writeCounterparty(w, entry.counterparty, ids)
+        writeHolder(w, entry.counterparty, ids, withSlot = true)
         w.varLong(entry.itemFormId)
         w.zigZagInt(entry.qty)
         if (entry.actor != null) w.varInt(playerNo(entry.actor, ids))
@@ -283,97 +290,69 @@ object EntryCodec {
             itemFormId = itemFormId,
             qty = qty,
             damage = damage,
-            provenanceId = null,
             actor = actor,
         )
     }
 
-    private fun writeKeyIdentity(w: ByteWriter, holder: Holder, ids: IdResolver) {
+    // The key and the value write the same holder in the same layout; they differ only in the slot,
+    // which the key leaves out because it lives in the value of the row it belongs to.
+    private fun writeHolder(w: ByteWriter, holder: Holder, ids: IdResolver, withSlot: Boolean) {
         w.byte(holder.typeId)
         when (holder) {
             is PlayerHolder -> w.varInt(playerNo(holder.uuid, ids))
+            is MenuSlot -> w.varInt(holder.menuType)
             is Container -> writePosition(w, holder.world, holder.x, holder.y, holder.z, ids)
             is WorldBlock -> writePosition(w, holder.world, holder.x, holder.y, holder.z, ids)
             is EntitySlot -> w.uuid(holder.uuid)
             is ItemEntityRef -> w.uuid(holder.uuid)
             is Nested -> w.uuid(holder.ownerId)
-            is MenuSlot, Void -> throw IllegalArgumentException(
-                "holder type ${holder.typeId} produces no ledger rows of its own"
-            )
-        }
-    }
-
-    private fun readKeyIdentity(k: ByteReader, slot: Int, names: IdLookup): Holder =
-        when (val typeId = k.byte()) {
-            0 -> PlayerInv(playerUuid(k, names), slot)
-            1 -> PlayerEquip(playerUuid(k, names), slot)
-            2 -> PlayerCursor(playerUuid(k, names))
-            3 -> PlayerEnder(playerUuid(k, names), slot)
-            5 -> {
-                val world = worldUuid(k, names)
-                val pos = Zcode.decode(k.bytes(Zcode.SIZE))
-                Container(world, pos[0], pos[1], pos[2], slot)
-            }
-
-            6 -> EntitySlot(k.uuid(), slot)
-            7 -> ItemEntityRef(k.uuid())
-            8 -> Nested(k.uuid(), slot)
-            10 -> {
-                val world = worldUuid(k, names)
-                val pos = Zcode.decode(k.bytes(Zcode.SIZE))
-                WorldBlock(world, pos[0], pos[1], pos[2])
-            }
-
-            else -> throw IllegalArgumentException("holder type $typeId produces no ledger rows of its own")
-        }
-
-    private fun writeCounterparty(w: ByteWriter, holder: Holder, ids: IdResolver) {
-        w.byte(holder.typeId)
-        when (holder) {
-            // A cursor holds one stack and has no slot number of its own.
-            is PlayerCursor -> w.varInt(playerNo(holder.uuid, ids))
-            is PlayerHolder -> w.varInt(playerNo(holder.uuid, ids)).varInt(holder.slot)
-            is MenuSlot -> w.varInt(holder.menuType).varInt(holder.slot)
-            is Container -> {
-                writePosition(w, holder.world, holder.x, holder.y, holder.z, ids)
-                w.varInt(holder.slot)
-            }
-
-            // A block position holds one thing and needs no slot of its own.
-            is WorldBlock -> writePosition(w, holder.world, holder.x, holder.y, holder.z, ids)
-
-            is EntitySlot -> w.uuid(holder.uuid).varInt(holder.slot)
-            is ItemEntityRef -> w.uuid(holder.uuid)
-            is Nested -> w.uuid(holder.ownerId).varInt(holder.index)
             Void -> Unit
         }
+        if (withSlot && holder.carriesSlot) w.varInt(holder.slot)
     }
 
-    private fun readCounterparty(v: ByteReader, names: IdLookup): Holder =
-        when (val typeId = v.byte()) {
-            0 -> PlayerInv(playerUuid(v, names), v.varInt())
-            1 -> PlayerEquip(playerUuid(v, names), v.varInt())
-            2 -> PlayerCursor(playerUuid(v, names))
-            3 -> PlayerEnder(playerUuid(v, names), v.varInt())
-            4 -> MenuSlot(v.varInt(), v.varInt())
-            5 -> {
-                val world = worldUuid(v, names)
-                val pos = Zcode.decode(v.bytes(Zcode.SIZE))
-                Container(world, pos[0], pos[1], pos[2], v.varInt())
+    private fun writeKeyIdentity(w: ByteWriter, holder: Holder, ids: IdResolver) {
+        require(holder.addressable) { "holder type ${holder.typeId} produces no ledger rows of its own" }
+        writeHolder(w, holder, ids, withSlot = false)
+    }
+
+    // `keySlot` is the slot read out of the value for a key, and null for a counterparty, which
+    // carries its own slot after the identity bytes.
+    private fun readHolder(r: ByteReader, names: IdLookup, keySlot: Int?): Holder {
+        val typeId = r.byte()
+        fun slot() = keySlot ?: r.varInt()
+        return when (typeId) {
+            HolderType.PLAYER_INV -> PlayerInv(playerUuid(r, names), slot())
+            HolderType.PLAYER_EQUIP -> PlayerEquip(playerUuid(r, names), slot())
+            HolderType.PLAYER_CURSOR -> PlayerCursor(playerUuid(r, names))
+            HolderType.PLAYER_ENDER -> PlayerEnder(playerUuid(r, names), slot())
+            HolderType.MENU_SLOT -> MenuSlot(r.varInt(), slot())
+            HolderType.CONTAINER -> {
+                val world = worldUuid(r, names)
+                val pos = Zcode.decode(r.bytes(Zcode.SIZE))
+                Container(world, pos[0], pos[1], pos[2], slot())
             }
 
-            6 -> EntitySlot(v.uuid(), v.varInt())
-            7 -> ItemEntityRef(v.uuid())
-            8 -> Nested(v.uuid(), v.varInt())
-            9 -> Void
-            10 -> {
-                val world = worldUuid(v, names)
-                val pos = Zcode.decode(v.bytes(Zcode.SIZE))
+            HolderType.ENTITY_SLOT -> EntitySlot(r.uuid(), slot())
+            HolderType.ITEM_ENTITY -> ItemEntityRef(r.uuid())
+            HolderType.NESTED -> Nested(r.uuid(), slot())
+            HolderType.VOID -> Void
+            HolderType.WORLD_BLOCK -> {
+                val world = worldUuid(r, names)
+                val pos = Zcode.decode(r.bytes(Zcode.SIZE))
                 WorldBlock(world, pos[0], pos[1], pos[2])
             }
 
             else -> throw IllegalArgumentException("unknown holder type $typeId")
         }
+    }
+
+    private fun readKeyIdentity(k: ByteReader, slot: Int, names: IdLookup): Holder =
+        readHolder(k, names, slot).also {
+            require(it.addressable) { "holder type ${it.typeId} produces no ledger rows of its own" }
+        }
+
+    private fun readCounterparty(v: ByteReader, names: IdLookup): Holder = readHolder(v, names, null)
 
     private fun writePosition(w: ByteWriter, world: UUID, x: Int, y: Int, z: Int, ids: IdResolver) {
         w.shortBE(ids.id(RegistryNamespace.WORLD, world))

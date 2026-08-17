@@ -149,7 +149,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private val queue = LinkedBlockingQueue<List<Transfer>>()
     private val submitted = AtomicLong()
     private val written = AtomicLong()
-    private val rejected = AtomicLong()
 
     @Volatile
     private var running = true
@@ -392,37 +391,46 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         return if (half.itemFormId == entry.itemFormId) null else "$where: the halves name different items"
     }
 
-    override fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID? = dbLock.read {
+    override fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID? =
+        note(nestedOwnersCf, world, x, y, z)?.let { ByteReader(it).uuid() }
+
+    override fun setOwnerAt(world: UUID, x: Int, y: Int, z: Int, owner: UUID) =
+        putNote(nestedOwnersCf, world, x, y, z, ByteWriter(16).uuid(owner).toByteArray())
+
+    override fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int) =
+        clearNote(nestedOwnersCf, world, x, y, z)
+
+    override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? =
+        note(placedFormsCf, world, x, y, z)
+
+    override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) =
+        putNote(placedFormsCf, world, x, y, z, form)
+
+    override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) =
+        clearNote(placedFormsCf, world, x, y, z)
+
+    // Both tables hold a note about what a block position is carrying while it stands there, so they
+    // are read, written and cleared the same way and differ only in which family they land in.
+    private fun note(cf: ColumnFamilyHandle, world: UUID, x: Int, y: Int, z: Int): ByteArray? = dbLock.read {
         if (closed) return null
-        db.get(nestedOwnersCf, ownerKey(world, x, y, z))?.let { ByteReader(it).uuid() }
+        db.get(cf, blockKey(world, x, y, z))
     }
 
-    override fun setOwnerAt(world: UUID, x: Int, y: Int, z: Int, owner: UUID) = dbLock.read {
-        if (closed) return
-        db.put(nestedOwnersCf, ownerKey(world, x, y, z), ByteWriter(16).uuid(owner).toByteArray())
+    private fun putNote(cf: ColumnFamilyHandle, world: UUID, x: Int, y: Int, z: Int, value: ByteArray) {
+        dbLock.read {
+            if (closed) return
+            db.put(cf, blockKey(world, x, y, z), value)
+        }
     }
 
-    override fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int) = dbLock.read {
-        if (closed) return
-        db.delete(nestedOwnersCf, ownerKey(world, x, y, z))
+    private fun clearNote(cf: ColumnFamilyHandle, world: UUID, x: Int, y: Int, z: Int) {
+        dbLock.read {
+            if (closed) return
+            db.delete(cf, blockKey(world, x, y, z))
+        }
     }
 
-    override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = dbLock.read {
-        if (closed) return null
-        db.get(placedFormsCf, ownerKey(world, x, y, z))
-    }
-
-    override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) = dbLock.read {
-        if (closed) return
-        db.put(placedFormsCf, ownerKey(world, x, y, z), form)
-    }
-
-    override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) = dbLock.read {
-        if (closed) return
-        db.delete(placedFormsCf, ownerKey(world, x, y, z))
-    }
-
-    private fun ownerKey(world: UUID, x: Int, y: Int, z: Int): ByteArray =
+    private fun blockKey(world: UUID, x: Int, y: Int, z: Int): ByteArray =
         ByteWriter(16 + Zcode.SIZE).uuid(world).bytes(Zcode.encode(x, y, z)).toByteArray()
 
     // Reads run on any thread, so the native handles may only be freed once every reader has left.
@@ -522,7 +530,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                         writeTransaction(batch, transaction)
                     } catch (failure: Exception) {
                         batch.rollbackToSavePoint()
-                        rejected.incrementAndGet()
                         LOGGER.log(Level.SEVERE, "a movement could not be written and was dropped", failure)
                     }
                 }
@@ -588,7 +595,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         itemFormId = itemFormId,
         qty = qty,
         damage = transfer.damage,
-        provenanceId = null,
         actor = transfer.actor,
     )
 

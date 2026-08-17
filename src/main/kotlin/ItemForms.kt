@@ -44,14 +44,28 @@ data class EncodedItem(val form: ByteArray, val count: Int, val damage: Int?) {
 // decode the components behind it.
 fun itemTypeIdOf(form: ByteArray): Int = ByteReader(form).varInt()
 
+// Interning every vanilla name up front keeps the numbers the same across servers of one version,
+// which is what lets a ledger be read on a machine other than the one that wrote it.
+internal fun fillTypeRegistries(registries: Registries) {
+    for (key in BuiltInRegistries.ITEM.keySet()) {
+        registries.idForKey(RegistryNamespace.ITEM_TYPE, key.toString())
+    }
+    for (key in BuiltInRegistries.DATA_COMPONENT_TYPE.keySet()) {
+        registries.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, key.toString())
+    }
+}
+
 class ItemFormCodec(
     private val registries: Registries,
     private val registryAccess: RegistryAccess,
 ) {
     private val registryOps by lazy { registryAccess.createSerializationContext(NbtOps.INSTANCE) }
 
+    // Encoding only reads, so the handle behind a CraftItemStack is taken as it stands: asNMSCopy
+    // deep-copies the component map, and this runs once per slot on every inventory pass.
     fun encodeOrNull(stack: BukkitItemStack?): EncodedItem? {
-        val nms = CraftItemStack.asNMSCopy(stack ?: return null)
+        if (stack == null) return null
+        val nms = (stack as? CraftItemStack)?.handle ?: CraftItemStack.asNMSCopy(stack)
         return if (nms.isEmpty) null else encode(nms)
     }
 
@@ -60,12 +74,16 @@ class ItemFormCodec(
     // box whether it is full or empty.
     fun encode(stack: ItemStack): EncodedItem {
         val patch = stack.componentsPatch
-        val damage = patch.entrySet().firstOrNull { it.key === DataComponents.DAMAGE }?.value?.orElse(null) as Int?
-        val drop = ArrayList<DataComponentType<*>>(3)
-        // Clearing an absent value would also drop an explicit-removal marker, which is a third state.
-        if (damage != null) drop += DataComponents.DAMAGE
-        if (holdsValue(patch, DataComponents.CONTAINER)) drop += DataComponents.CONTAINER
-        if (holdsValue(patch, DataComponents.BUNDLE_CONTENTS)) drop += DataComponents.BUNDLE_CONTENTS
+        var damage: Int? = null
+        val drop = ArrayList<DataComponentType<*>>(NestedItems.NESTING_COMPONENTS.size + 1)
+        for (entry in patch.entrySet()) {
+            // Clearing an absent value would also drop an explicit-removal marker, a third state.
+            val value = entry.value.orElse(null) ?: continue
+            if (entry.key === DataComponents.DAMAGE) damage = value as Int
+            if (entry.key === DataComponents.DAMAGE || entry.key in NestedItems.NESTING_COMPONENTS) {
+                drop += entry.key
+            }
+        }
         val formPatch = if (drop.isEmpty()) {
             patch
         } else {
@@ -76,9 +94,6 @@ class ItemFormCodec(
         }
         return EncodedItem(form(stack.item, formPatch), stack.count, damage)
     }
-
-    private fun holdsValue(patch: DataComponentPatch, type: DataComponentType<*>) =
-        patch.entrySet().any { it.key === type && it.value.isPresent }
 
     fun decode(form: ByteArray, count: Int, damage: Int?): ItemStack {
         val r = ByteReader(form)

@@ -2,7 +2,6 @@ package io.pfaumc.pfauprotect
 
 import net.minecraft.core.NonNullList
 import net.minecraft.core.component.DataComponents
-import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.ItemStackTemplate
 import net.minecraft.world.item.Items
@@ -26,14 +25,8 @@ class NestedItemsTest {
 
     @BeforeAll
     fun loadServerRegistries() {
-        val access = ServerRegistries.access
-        for (key in BuiltInRegistries.ITEM.keySet()) {
-            registries.idForKey(RegistryNamespace.ITEM_TYPE, key.toString())
-        }
-        for (key in BuiltInRegistries.DATA_COMPONENT_TYPE.keySet()) {
-            registries.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, key.toString())
-        }
-        codec = ItemFormCodec(registries, access)
+        fillTypeRegistries(registries)
+        codec = ItemFormCodec(registries, ServerRegistries.access)
     }
 
     private fun shulker(vararg items: Pair<Int, ItemStack>): ItemStack {

@@ -70,8 +70,7 @@ class PlayerIntents {
     /** Drains: an intent survives exactly one pass, and the pass it survives into is its last. */
     fun take(player: UUID): List<Intent> {
         val queue = byPlayer[player] ?: return emptyList()
-        val taken = ArrayList<Intent>(queue.size)
-        while (true) taken += queue.poll() ?: return taken
+        return generateSequence(queue::poll).toList()
     }
 
     fun forget(player: UUID) {

@@ -21,30 +21,60 @@ enum class Confidence(val id: Int) {
     }
 }
 
-// typeId values are written into every stored key and must never change.
-sealed class Holder(val typeId: Int) {
-    abstract val slot: Int
+// These numbers are written into every stored key and must never change. They are named here rather
+// than spelled out at each holder because the decoder and the region scan both have to switch on
+// them by value, where the compiler cannot check that the set is complete.
+object HolderType {
+    const val PLAYER_INV = 0
+    const val PLAYER_EQUIP = 1
+    const val PLAYER_CURSOR = 2
+    const val PLAYER_ENDER = 3
+    const val MENU_SLOT = 4
+    const val CONTAINER = 5
+    const val ENTITY_SLOT = 6
+    const val ITEM_ENTITY = 7
+    const val NESTED = 8
+    const val VOID = 9
+    const val WORLD_BLOCK = 10
 
-    // A holder nobody can address owns no rows: it only ever appears as the other end of a movement,
-    // written into the value of the row that faces it.
-    val addressable: Boolean get() = this !is MenuSlot && this !is Void
+    // The holders that address a block position. Their keys differ only in this leading byte, so a
+    // scan that names one of them answers with half the rows and looks complete doing it.
+    val POSITIONAL = listOf(CONTAINER, WORLD_BLOCK)
 }
 
-sealed class PlayerHolder(typeId: Int) : Holder(typeId) {
+sealed class Holder(
+    val typeId: Int,
+    // A holder nobody can address owns no rows: it only ever appears as the other end of a movement,
+    // written into the value of the row that faces it.
+    val addressable: Boolean = true,
+    // Whether the slot is a number of its own. A cursor, a dropped item, a block position and the
+    // void each hold exactly one thing, so their slot is always zero and is never written down.
+    val carriesSlot: Boolean = true,
+) {
+    abstract val slot: Int
+}
+
+sealed class PlayerHolder(typeId: Int, carriesSlot: Boolean = true) :
+    Holder(typeId, carriesSlot = carriesSlot) {
     abstract val uuid: UUID
 }
 
-data class PlayerInv(override val uuid: UUID, override val slot: Int) : PlayerHolder(0)
+data class PlayerInv(override val uuid: UUID, override val slot: Int) :
+    PlayerHolder(HolderType.PLAYER_INV)
 
-data class PlayerEquip(override val uuid: UUID, override val slot: Int) : PlayerHolder(1)
+data class PlayerEquip(override val uuid: UUID, override val slot: Int) :
+    PlayerHolder(HolderType.PLAYER_EQUIP)
 
-data class PlayerCursor(override val uuid: UUID) : PlayerHolder(2) {
+data class PlayerCursor(override val uuid: UUID) :
+    PlayerHolder(HolderType.PLAYER_CURSOR, carriesSlot = false) {
     override val slot: Int get() = 0
 }
 
-data class PlayerEnder(override val uuid: UUID, override val slot: Int) : PlayerHolder(3)
+data class PlayerEnder(override val uuid: UUID, override val slot: Int) :
+    PlayerHolder(HolderType.PLAYER_ENDER)
 
-data class MenuSlot(val menuType: Int, override val slot: Int) : Holder(4)
+data class MenuSlot(val menuType: Int, override val slot: Int) :
+    Holder(HolderType.MENU_SLOT, addressable = false)
 
 data class Container(
     val world: UUID,
@@ -52,26 +82,27 @@ data class Container(
     val y: Int,
     val z: Int,
     override val slot: Int,
-) : Holder(5)
+) : Holder(HolderType.CONTAINER)
 
 // A placed block still holds the item it was made from. Writing the placement as a loss into Void
 // instead would cut the chain in two at every build: the stolen blocks laid into a floor would
 // vanish from the graph when placed and reappear from nowhere hours later when mined back out.
-data class WorldBlock(val world: UUID, val x: Int, val y: Int, val z: Int) : Holder(10) {
+data class WorldBlock(val world: UUID, val x: Int, val y: Int, val z: Int) :
+    Holder(HolderType.WORLD_BLOCK, carriesSlot = false) {
     override val slot: Int get() = 0
 }
 
-data class EntitySlot(val uuid: UUID, override val slot: Int) : Holder(6)
+data class EntitySlot(val uuid: UUID, override val slot: Int) : Holder(HolderType.ENTITY_SLOT)
 
-data class ItemEntityRef(val uuid: UUID) : Holder(7) {
+data class ItemEntityRef(val uuid: UUID) : Holder(HolderType.ITEM_ENTITY, carriesSlot = false) {
     override val slot: Int get() = 0
 }
 
-data class Nested(val ownerId: UUID, val index: Int) : Holder(8) {
+data class Nested(val ownerId: UUID, val index: Int) : Holder(HolderType.NESTED) {
     override val slot: Int get() = index
 }
 
-data object Void : Holder(9) {
+data object Void : Holder(HolderType.VOID, addressable = false, carriesSlot = false) {
     override val slot: Int get() = 0
 }
 
@@ -89,7 +120,6 @@ data class LedgerEntry(
     val itemFormId: Long,
     val qty: Int,
     val damage: Int?,
-    val provenanceId: Long?,
     val actor: UUID?,
 )
 

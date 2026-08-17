@@ -1,9 +1,6 @@
 package io.pfaumc.pfauprotect
 
-import org.bukkit.craftbukkit.entity.CraftLivingEntity
-import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Item
-import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -13,7 +10,6 @@ import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.entity.ItemMergeEvent
 import org.bukkit.event.entity.ItemSpawnEvent
-import org.bukkit.inventory.ItemStack
 
 // There is no cause for the end of an item that nobody can name, so the cause for its unnamed
 // beginning stands on the other side of the row instead. Deliberately written as a guess: an end
@@ -101,7 +97,7 @@ class WorldItemListener(
         val entity = event.entity
         val encoded = codec.encodeOrNull(entity.itemStack) ?: return
         val at = entity.location
-        val spot = Spot(at.world.uid, at.x, at.y, at.z)
+        val spot = spotOf(at)
         val unexplained = encoded.count - origins.claim(entity.uniqueId, spot, encoded.key, encoded.count)
         pending.add(
             Void,
@@ -170,16 +166,10 @@ class WorldItemListener(
         }
         pending.add(
             ItemEntityRef(item.uniqueId),
-            EntitySlot(picker.uniqueId, equipmentSlot(picker, stack)),
+            EntitySlot(picker.uniqueId, equipmentSlotOf(picker, stack)),
             Cause.ITEM_PICKUP_BY_MOB,
             encoded.key,
             encoded.count - event.remaining,
         )
     }
-
-    // The slot is not on the event, so it is worked out from the item the way the game works it out.
-    // A mob with no room in the slot the item asks for puts it in the main hand instead, and it
-    // decides that before the event fires, so the slot named here can disagree with the one used.
-    private fun equipmentSlot(entity: LivingEntity, item: ItemStack): Int =
-        (entity as CraftLivingEntity).handle.getEquipmentSlotForItem(CraftItemStack.asNMSCopy(item)).ordinal
 }

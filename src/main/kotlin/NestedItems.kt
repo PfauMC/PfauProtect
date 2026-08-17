@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect
 
 import net.minecraft.core.UUIDUtil
+import net.minecraft.core.component.DataComponentType
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.component.CustomData
@@ -23,6 +24,14 @@ private const val OWNER_TAG = "pfauprotect_owner"
 // goes, and the only place that travels with an item is the item itself. Writing to it is safe
 // because everything that holds items — shulker box, bundle, crossbow — never stacks.
 object NestedItems {
+    // What a container holds is never part of what it is, so the form has to be taken without these:
+    // a box whose form moved with its contents would read as a different item on every insertion and
+    // the diff would invent a movement out of it. `contents` reads exactly this set, and the codec
+    // strips exactly this set, so the two have to be named in one place or a component added to one
+    // and not the other silently breaks whichever side was missed.
+    val NESTING_COMPONENTS: List<DataComponentType<*>> =
+        listOf(DataComponents.CONTAINER, DataComponents.BUNDLE_CONTENTS)
+
     fun contents(stack: ItemStack): List<Pair<Int, ItemStack>> {
         stack.get(DataComponents.CONTAINER)?.let { container ->
             return container.items.withIndex().mapNotNull { (index, item) ->

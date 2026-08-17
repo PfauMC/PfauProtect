@@ -6,8 +6,10 @@ import net.minecraft.world.item.enchantment.EnchantmentEffectComponents
 import net.minecraft.world.item.enchantment.EnchantmentHelper
 import org.bukkit.Bukkit
 import org.bukkit.block.Block
+import org.bukkit.craftbukkit.entity.CraftLivingEntity
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Entity
+import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -204,6 +206,15 @@ private fun containerAt(inventory: Inventory): Container? {
 internal fun containerAt(block: Block, slot: Int) =
     Container(block.world.uid, block.x, block.y, block.z, slot)
 
+internal fun positionOf(block: Block) = WorldBlock(block.world.uid, block.x, block.y, block.z)
+
+// The slot is not on any of the events that need it, so it is worked out from the item the way the
+// game works it out. A mob with no room in the slot the item asks for puts it in the main hand
+// instead, and it decides that before the event fires, so the slot named here can disagree with the
+// one used.
+internal fun equipmentSlotOf(entity: LivingEntity, item: BukkitItemStack): Int =
+    (entity as CraftLivingEntity).handle.getEquipmentSlotForItem(CraftItemStack.asNMSCopy(item)).ordinal
+
 internal fun playerHolders(uuid: UUID, inventory: PlayerInventory): (Int) -> Holder {
     val storageSize = inventory.storageContents.size
     return { slot -> if (slot < storageSize) PlayerInv(uuid, slot) else PlayerEquip(uuid, slot) }
@@ -324,7 +335,7 @@ class ContainerCaptureListener(
             event.player,
             Intent(
                 cause = Cause.BLOCK_PLACE,
-                to = WorldBlock(block.world.uid, block.x, block.y, block.z),
+                to = positionOf(block),
                 form = form,
                 qty = 1,
                 holder = handSlot(event.player, event.hand),
@@ -429,8 +440,7 @@ class ContainerCaptureListener(
     fun onDeath(event: PlayerDeathEvent) {
         val player = event.entity
         val slots = heldAtDeath(player)
-        val at = player.location
-        val spot = Spot(at.world.uid, at.x, at.y, at.z)
+        val spot = spotOf(player.location)
         // What the death wrote is on the ledger already, so the pass that sees the emptied slots a
         // tick later has to swallow exactly those slots and no others. That is one note per stack
         // written, naming the slot and the form it was written for: a single total swallows whichever

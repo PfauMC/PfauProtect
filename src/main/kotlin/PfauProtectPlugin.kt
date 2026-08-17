@@ -6,7 +6,6 @@ import io.papermc.paper.command.brigadier.Commands
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents
-import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.server.MinecraftServer
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.CraftWorld
@@ -60,39 +59,42 @@ private class Uncovered(private val ledger: RocksItemLog) {
 
 private fun signed(difference: Int) = if (difference > 0) "+$difference" else difference.toString()
 
+// Everything the plugin owns while it is enabled. One field rather than nine, so there is no state
+// where half of them are up: either the ledger is open and all of this stands, or none of it does.
+private class Running(
+    val ledger: RocksItemLog,
+    val uncovered: Uncovered,
+    val codec: ItemFormCodec,
+    val capture: ContainerCaptureListener,
+    val mechanisms: TickCoalescer,
+    val origins: SpawnOrigins,
+    val lookups: Lookups,
+    val inspector: Inspector,
+    val reconciliation: Reconciliation,
+)
+
 class PfauProtectPlugin : JavaPlugin() {
-    private var ledger: RocksItemLog? = null
-    private var uncovered: Uncovered? = null
-    private var codec: ItemFormCodec? = null
-    private var capture: ContainerCaptureListener? = null
-    private var mechanisms: TickCoalescer? = null
-    private var origins: SpawnOrigins? = null
-    private var lookups: Lookups? = null
-    private var inspector: Inspector? = null
-    private var reconciliation: Reconciliation? = null
+    private var running: Running? = null
 
     override fun onEnable() {
         val ledger = RocksItemLog(dataFolder.toPath().resolve("ledger"))
-        this.ledger = ledger
-        fillTypeRegistries(ledger.registries)
         val uncovered = Uncovered(ledger)
-        this.uncovered = uncovered
         val codec = ItemFormCodec(ledger.registries, MinecraftServer.getServer().registryAccess())
-        this.codec = codec
         val mechanisms = TickCoalescer(uncovered::submit)
-        this.mechanisms = mechanisms
         val origins = SpawnOrigins(mechanisms)
-        this.origins = origins
         val capture = ContainerCaptureListener(this, uncovered::submit, codec, origins, ledger) { intent, qty ->
             unspentDrop(mechanisms, intent, qty)
         }
-        this.capture = capture
         val lookups = Lookups(this, ledger)
-        this.lookups = lookups
         val inspector = Inspector(lookups)
-        this.inspector = inspector
-        val reconciliation = Reconciliation(ledger)
-        this.reconciliation = reconciliation
+        // Held before anything that can fail, so a failure on the way up still closes the ledger on
+        // the way back down.
+        val running = Running(
+            ledger, uncovered, codec, capture, mechanisms, origins, lookups, inspector,
+            Reconciliation(ledger),
+        )
+        this.running = running
+        fillTypeRegistries(ledger.registries)
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
@@ -119,7 +121,7 @@ class PfauProtectPlugin : JavaPlugin() {
         )
         server.asyncScheduler.runAtFixedRate(
             this,
-            { reconcileEveryone(reconciliation, codec) },
+            { reconcileEveryone(running.reconciliation, codec) },
             RECONCILE_MINUTES,
             RECONCILE_MINUTES,
             TimeUnit.MINUTES,
@@ -136,26 +138,18 @@ class PfauProtectPlugin : JavaPlugin() {
     // Players are still online here and their pending region tasks are already cancelled, so the last
     // interaction of every open view is diffed before the queue is drained.
     override fun onDisable() {
-        val ledger = this.ledger ?: return
+        val running = this.running ?: return
         try {
-            capture?.recomputeAll()
-            origins?.sweep()
-            mechanisms?.flush()
-            ledger.drain()
-            uncovered?.let { reportUncovered(it) }
+            running.capture.recomputeAll()
+            running.origins.sweep()
+            running.mechanisms.flush()
+            running.ledger.drain()
+            reportUncovered(running.uncovered)
         } catch (failure: Exception) {
             logger.log(Level.SEVERE, "the ledger lost entries while shutting down", failure)
         } finally {
-            ledger.close()
-            this.ledger = null
-            this.uncovered = null
-            this.codec = null
-            this.capture = null
-            this.mechanisms = null
-            this.origins = null
-            this.lookups = null
-            this.inspector = null
-            this.reconciliation = null
+            running.ledger.close()
+            this.running = null
         }
     }
 
@@ -224,7 +218,7 @@ class PfauProtectPlugin : JavaPlugin() {
         )
 
     private fun lookup(source: CommandSourceStack, query: LookupQuery): Int {
-        val lookups = this.lookups ?: return notReady(source)
+        val lookups = running?.lookups ?: return notReady(source)
         val player = source.executor as? Player
         if (player == null) {
             source.sender.sendMessage("Only a player can look at a block.")
@@ -240,7 +234,7 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     private fun inspect(source: CommandSourceStack, desired: Boolean?): Int {
-        val inspector = this.inspector ?: return notReady(source)
+        val inspector = running?.inspector ?: return notReady(source)
         val player = source.executor as? Player
         if (player == null) {
             source.sender.sendMessage("Only a player can use the inspector.")
@@ -255,14 +249,14 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     private fun reconcile(source: CommandSourceStack, target: Player?): Int {
-        val reconciliation = this.reconciliation ?: return notReady(source)
-        val codec = this.codec ?: return notReady(source)
+        val running = this.running ?: return notReady(source)
         if (target == null) {
             source.sender.sendMessage("Name the player to reconcile.")
             return 0
         }
         val sender = source.sender
-        compare(target, codec, reconciliation) { report(sender, target, it, reconciliation) }
+        val reconciliation = running.reconciliation
+        compare(target, running.codec, reconciliation) { report(sender, target, it, reconciliation) }
         return Command.SINGLE_SUCCESS
     }
 
@@ -274,19 +268,18 @@ class PfauProtectPlugin : JavaPlugin() {
         reconciliation: Reconciliation,
         andThen: (List<Mismatch>) -> Unit,
     ) {
-        val capture = this.capture ?: return
-        val ledger = this.ledger ?: return
+        val running = this.running ?: return
         player.scheduler.run(this, {
             // The pass is the only writer for a player's own slots and it runs a tick behind the
             // events that ask for it, so the slots are read here against a ledger that has not been
             // told about the last thing the player did. Running the pass first is what makes the two
             // sides the same moment; without it every recent movement reads as a difference.
-            capture.recompute(player)
+            running.capture.recompute(player)
             val held = heldForms(player, codec)
             server.asyncScheduler.runNow(this) {
                 // The writer runs on a thread of its own, and what it has not written yet is missing
                 // from the balance the comparison is about to read.
-                ledger.drain()
+                running.ledger.drain()
                 andThen(reconciliation.compare(player.uniqueId, held))
             }
         }, null)
@@ -335,14 +328,5 @@ class PfauProtectPlugin : JavaPlugin() {
     private fun notReady(source: CommandSourceStack): Int {
         source.sender.sendMessage("The ledger is not open.")
         return 0
-    }
-
-    private fun fillTypeRegistries(registries: Registries) {
-        for (key in BuiltInRegistries.ITEM.keySet()) {
-            registries.idForKey(RegistryNamespace.ITEM_TYPE, key.toString())
-        }
-        for (key in BuiltInRegistries.DATA_COMPONENT_TYPE.keySet()) {
-            registries.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, key.toString())
-        }
     }
 }

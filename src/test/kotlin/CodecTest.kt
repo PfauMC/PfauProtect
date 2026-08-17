@@ -185,7 +185,6 @@ class CodecTest {
                     itemFormId = 1_000_000_000_000L + seed,
                     qty = if (seed % 2 == 0L) -64 else 3,
                     damage = if (seed % 4 == 0L) null else 231,
-                    provenanceId = null,
                     actor = if (seed % 3 == 0L) playerA else null,
                 )
                 val key = EntryCodec.key(entry.holder, entry.timestamp, entry.txId, entry.ordinal, registries)
@@ -276,7 +275,6 @@ class CodecTest {
             itemFormId = 300L,
             qty = -32,
             damage = null,
-            provenanceId = null,
             actor = null,
         )
         assertArrayEquals(
@@ -421,7 +419,6 @@ class CodecTest {
         itemFormId = 12L,
         qty = 1,
         damage = null,
-        provenanceId = null,
         actor = null,
     )
 

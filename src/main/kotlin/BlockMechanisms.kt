@@ -11,7 +11,6 @@ import org.bukkit.block.Campfire
 import org.bukkit.block.ShulkerBox
 import org.bukkit.block.data.Levelled
 import org.bukkit.craftbukkit.block.data.CraftBlockData
-import org.bukkit.craftbukkit.entity.CraftLivingEntity
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -44,6 +43,8 @@ private const val COMPOSTER_FULL_LEVEL = 7
 private const val SPAWN_REACH = 2.0
 
 data class Spot(val world: UUID, val x: Double, val y: Double, val z: Double)
+
+internal fun spotOf(at: Location) = Spot(at.world.uid, at.x, at.y, at.z)
 
 // A position gives back the item it took over, and the block alone cannot say what that was: a named
 // box, an enchanted head and a plain chest all answer with the bare item, so the two rows at one
@@ -165,10 +166,10 @@ class BlockMechanismListener(
         val item = event.item
         val key = key(item) ?: return
         val slot = slotHolding(block, item) ?: return
-        val from = holder(block, slot)
+        val from = containerAt(block, slot)
         if (event is BlockDispenseArmorEvent) {
             val target = event.targetEntity
-            val equipped = EntitySlot(target.uniqueId, equipmentSlot(target, item))
+            val equipped = EntitySlot(target.uniqueId, equipmentSlotOf(target, item))
             pending.add(from, equipped, Cause.DISPENSER_BEHAVIOR, key, item.amount)
             return
         }
@@ -176,12 +177,12 @@ class BlockMechanismListener(
         // bucket or lights a fire keeps or transforms what it holds, and guessing which of those
         // happened would invent rows for items that never moved.
         val cause = if (block.type == Material.DROPPER) Cause.DROPPER_EJECT else Cause.DISPENSER_EJECT
-        origins.expect(from, cause, key, spot(block.location), item.amount)
+        origins.expect(from, cause, key, spotOf(block.location), item.amount)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockBreak(event: BlockBreakEvent) {
-        breaking.set(position(event.block))
+        breaking.set(positionOf(event.block))
     }
 
     // The state handed to this event is the one from before the break, so what spilled is still
@@ -198,7 +199,7 @@ class BlockMechanismListener(
         // movement and neither may name the other. Both face Void, and the shared tx_id is the only
         // thing that carries a walk of the graph across the break.
         val transaction = ArrayList<Transfer>(event.items.size + 1)
-        val position = position(block)
+        val position = positionOf(block)
         val remembered = placed.formAt(position.world, position.x, position.y, position.z)
         // Cleared here because no other way for a block to leave says so.
         placed.clearFormAt(position.world, position.x, position.y, position.z)
@@ -229,7 +230,7 @@ class BlockMechanismListener(
                 val qty = minOf(unspilled, left[slot])
                 left[slot] -= qty
                 unspilled -= qty
-                pending.add(holder(block, slot), entity, Cause.CONTAINER_BREAK_DROP, key, qty, actor)
+                pending.add(containerAt(block, slot), entity, Cause.CONTAINER_BREAK_DROP, key, qty, actor)
             }
             if (unspilled > 0) {
                 transaction += Transfer(
@@ -256,7 +257,7 @@ class BlockMechanismListener(
         if (!event.isBurning || !event.willConsumeFuel()) return
         val fuel = event.fuel
         val key = key(fuel) ?: return
-        val slot = holder(event.block, FURNACE_FUEL_SLOT)
+        val slot = containerAt(event.block, FURNACE_FUEL_SLOT)
         pending.add(slot, Void, Cause.FURNACE_FUEL_CONSUME, key, 1)
         if (fuel.amount != 1) return
         val remainder = CraftItemStack.asNMSCopy(fuel).item.craftingRemainder?.create() ?: return
@@ -267,14 +268,14 @@ class BlockMechanismListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBrew(event: BrewEvent) {
         val key = key(event.contents.ingredient) ?: return
-        pending.add(holder(event.block, BREWING_INGREDIENT_SLOT), Void, Cause.BREWING_INGREDIENT_CONSUME, key, 1)
+        pending.add(containerAt(event.block, BREWING_INGREDIENT_SLOT), Void, Cause.BREWING_INGREDIENT_CONSUME, key, 1)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBrewingFuel(event: BrewingStandFuelEvent) {
         if (!event.isConsuming) return
         val key = key(event.fuel) ?: return
-        pending.add(holder(event.block, BREWING_FUEL_SLOT), Void, Cause.BREWING_FUEL_CONSUME, key, 1)
+        pending.add(containerAt(event.block, BREWING_FUEL_SLOT), Void, Cause.BREWING_FUEL_CONSUME, key, 1)
     }
 
     // Every occupied slot of a crafter gives up exactly one item per craft, and the result it hands
@@ -285,7 +286,7 @@ class BlockMechanismListener(
         val inventory = (block.getState(false) as? ContainerBlock)?.inventory ?: return
         for (slot in 0 until inventory.size) {
             val key = key(inventory.getItem(slot)) ?: continue
-            pending.add(holder(block, slot), Void, Cause.CRAFTER_CONSUME, key, 1)
+            pending.add(containerAt(block, slot), Void, Cause.CRAFTER_CONSUME, key, 1)
         }
     }
 
@@ -297,9 +298,9 @@ class BlockMechanismListener(
         val campfire = block.getState(false) as? Campfire ?: return
         val source = event.source
         val slot = (0 until campfire.size).firstOrNull { campfire.getItem(it)?.isSimilar(source) == true } ?: return
-        key(source)?.let { pending.add(holder(block, slot), Void, Cause.CAMPFIRE_COOK_DROP, it, source.amount) }
+        key(source)?.let { pending.add(containerAt(block, slot), Void, Cause.CAMPFIRE_COOK_DROP, it, source.amount) }
         val result = event.result
-        key(result)?.let { origins.expect(Void, Cause.CAMPFIRE_COOK_DROP, it, spot(block.location), result.amount) }
+        key(result)?.let { origins.expect(Void, Cause.CAMPFIRE_COOK_DROP, it, spotOf(block.location), result.amount) }
     }
 
     // The composter destroys what it eats, and out of nothing makes bone meal once it fills up. The
@@ -308,7 +309,7 @@ class BlockMechanismListener(
     @EventHandler(priority = EventPriority.MONITOR)
     fun onCompost(event: CompostItemEvent) {
         val block = event.block
-        val slot = holder(block, 0)
+        val slot = containerAt(block, 0)
         val actor = ((event as? EntityCompostItemEvent)?.entity as? Player)?.uniqueId
         key(event.item)?.let { pending.add(slot, Void, Cause.COMPOSTER_CONSUME, it, 1, actor) }
         if (!event.willRaiseLevel()) return
@@ -325,18 +326,14 @@ class BlockMechanismListener(
         val actor = event.player.uniqueId
         for (drop in event.drops) {
             val key = key(drop) ?: continue
-            origins.expect(Void, Cause.BEEHIVE_HARVEST, key, spot(block.location), drop.amount, actor)
+            origins.expect(Void, Cause.BEEHIVE_HARVEST, key, spotOf(block.location), drop.amount, actor)
         }
     }
-
-    private fun spot(at: Location) = Spot(at.world.uid, at.x, at.y, at.z)
-
-    private fun position(block: Block) = WorldBlock(block.world.uid, block.x, block.y, block.z)
 
     private fun brokeHere(block: Block): Boolean {
         val broken = breaking.get()
         breaking.remove()
-        return broken == position(block)
+        return broken == positionOf(block)
     }
 
     // A shulker keeps what it held inside the item it drops, and that move is written elsewhere.
@@ -354,15 +351,10 @@ class BlockMechanismListener(
         return if (stack.isEmpty) null else codec.encode(stack).form
     }
 
-    private fun holder(block: Block, slot: Int) = containerAt(block, slot)
-
     private fun slotHolding(block: Block, item: BukkitItemStack): Int? {
         val inventory = (block.getState(false) as? ContainerBlock)?.inventory ?: return null
         return (0 until inventory.size).firstOrNull { inventory.getItem(it)?.isSimilar(item) == true }
     }
-
-    private fun equipmentSlot(target: org.bukkit.entity.LivingEntity, item: BukkitItemStack): Int =
-        (target as CraftLivingEntity).handle.getEquipmentSlotForItem(CraftItemStack.asNMSCopy(item)).ordinal
 
     private fun key(stack: BukkitItemStack?): ItemKey? = codec.encodeOrNull(stack)?.key
 }

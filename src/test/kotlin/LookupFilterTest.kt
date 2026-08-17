@@ -22,7 +22,6 @@ class LookupFilterTest {
         itemFormId = 1,
         qty = -1,
         damage = null,
-        provenanceId = null,
         actor = actor,
     )
 

@@ -356,8 +356,7 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
     }
 
     private fun resolve(name: String): UUID? =
-        Bukkit.getOnlinePlayers().firstOrNull { it.name.equals(name, ignoreCase = true) }?.uniqueId
-            ?: Bukkit.getOfflinePlayerIfCached(name)?.uniqueId
+        Bukkit.getPlayerExact(name)?.uniqueId ?: Bukkit.getOfflinePlayerIfCached(name)?.uniqueId
 
     private fun normalizeItem(name: String): String =
         if (name.contains(':')) name.lowercase() else "$VANILLA_NAMESPACE:${name.lowercase()}"

@@ -2,7 +2,6 @@ package io.pfaumc.pfauprotect
 
 import net.minecraft.core.RegistryAccess
 import net.minecraft.core.component.DataComponents
-import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Component
 import net.minecraft.world.item.ItemStack
@@ -33,12 +32,7 @@ class ItemFormsTest {
     @BeforeAll
     fun loadServerRegistries() {
         registryAccess = ServerRegistries.access
-        for (key in BuiltInRegistries.ITEM.keySet()) {
-            registries.idForKey(RegistryNamespace.ITEM_TYPE, key.toString())
-        }
-        for (key in BuiltInRegistries.DATA_COMPONENT_TYPE.keySet()) {
-            registries.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, key.toString())
-        }
+        fillTypeRegistries(registries)
         codec = ItemFormCodec(registries, registryAccess)
     }
 
