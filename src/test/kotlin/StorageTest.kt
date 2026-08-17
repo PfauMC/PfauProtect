@@ -197,6 +197,31 @@ class StorageTest {
         assertEquals(emptyList<String>(), log.sweep(100).gaps)
     }
 
+    // Past the first pair a posting sits at an ordinal that faces nothing, so a transaction asked
+    // from one of its own halves must not come back smaller than it does from the others.
+    @Test
+    fun `a transaction of four postings reads the same from each of them`() {
+        log.submit(
+            listOf(
+                Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 40),
+                Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 0), chestUpperSlot, torch, null, 2, T0 + 40),
+            )
+        )
+        log.drain()
+
+        val rows = (
+            aliceRows(torch) +
+                log.holderEntries(PlayerInv(bob, 0), 0, Long.MAX_VALUE) +
+                log.holderEntries(chest, 0, Long.MAX_VALUE)
+            ).filter { it.timestamp == T0 + 40 }
+        assertEquals(listOf(0, 1, 2, 3), rows.map { it.ordinal }.sorted())
+
+        for (posting in rows) {
+            assertEquals(rows.toSet(), log.transactionEntries(posting).toSet(), "unreachable from $posting")
+        }
+        assertEquals(emptyList<String>(), log.sweep(100).gaps)
+    }
+
     @Test
     fun `sweeping continues where the last pass stopped`() {
         val first = log.sweep(2)
@@ -253,31 +278,58 @@ class StorageTest {
         val refused = assertThrows(IllegalArgumentException::class.java) { RocksItemLog(dir) }
         assertTrue(refused.message.orEmpty().contains("schema"), "the refusal has to name the reason: $refused")
 
-        stampSchemaVersion(2L)
+        stampSchemaVersion(3L)
         log = RocksItemLog(dir)
         assertEquals(4, log.holderEntries(chest, 0, Long.MAX_VALUE).size)
+    }
+
+    // A refusal that has already widened the database is not a refusal: the build that wrote it can
+    // no longer open it either, so one failed start of a newer jar would leave the ledger readable by
+    // nothing at all.
+    @Test
+    fun `a database refused for its schema is left as it was found`(@TempDir older: Path) {
+        val earlier = everyColumnFamily - "block_payloads"
+        openWith(older, earlier) { raw, handles ->
+            raw.put(handles[earlier.indexOf("meta")], "schema".toByteArray(), ByteWriter(8).longBE(2L).toByteArray())
+        }
+
+        assertThrows(IllegalArgumentException::class.java) { RocksItemLog(older) }
+
+        val left = org.rocksdb.Options().use { probe ->
+            org.rocksdb.RocksDB.listColumnFamilies(probe, older.toAbsolutePath().toString()).map { String(it) }
+        }
+        assertEquals(earlier.sorted(), left.sorted())
     }
 
     // Opening has to name every column family the log created, or RocksDB refuses the database.
     private val everyColumnFamily = listOf(
         "default", "entries", "item_forms", "registry", "meta", "nested_owners", "tx", "placed_forms",
+        "block_payloads",
     )
 
     private fun stampSchemaVersion(version: Long) {
+        openWith(dir, everyColumnFamily) { raw, handles ->
+            raw.put(
+                handles[everyColumnFamily.indexOf("meta")],
+                "schema".toByteArray(),
+                ByteWriter(8).longBE(version).toByteArray(),
+            )
+        }
+    }
+
+    private fun openWith(
+        at: Path,
+        families: List<String>,
+        body: (org.rocksdb.RocksDB, List<org.rocksdb.ColumnFamilyHandle>) -> Unit,
+    ) {
         org.rocksdb.RocksDB.loadLibrary()
         val handles = ArrayList<org.rocksdb.ColumnFamilyHandle>()
         org.rocksdb.ColumnFamilyOptions().use { cfOptions ->
-            org.rocksdb.DBOptions().use { dbOptions ->
-                val descriptors = everyColumnFamily.map {
-                    org.rocksdb.ColumnFamilyDescriptor(it.toByteArray(), cfOptions)
-                }
-                org.rocksdb.RocksDB.open(dbOptions, dir.toAbsolutePath().toString(), descriptors, handles)
+            org.rocksdb.DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true).use { dbOptions ->
+                val descriptors = families.map { org.rocksdb.ColumnFamilyDescriptor(it.toByteArray(), cfOptions) }
+                org.rocksdb.RocksDB.open(dbOptions, at.toAbsolutePath().toString(), descriptors, handles)
                     .use { raw ->
-                        raw.put(
-                            handles[everyColumnFamily.indexOf("meta")],
-                            "schema".toByteArray(),
-                            ByteWriter(8).longBE(version).toByteArray(),
-                        )
+                        body(raw, handles)
                         handles.forEach { it.close() }
                     }
             }

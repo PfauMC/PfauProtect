@@ -582,10 +582,19 @@ class ContainerCaptureListener(
     }
 
     internal fun recompute(player: Player) {
-        val baseline = baselines[player.uniqueId] ?: return
+        // Drained before anything can cut the pass short: a player who was already online when the
+        // plugin came up has no baseline yet, and intents left behind would pile up until the first
+        // one appeared and then explain a delta they had nothing to do with.
+        val taken = intents.take(player.uniqueId)
+        val baseline = baselines[player.uniqueId]
+        if (baseline == null) {
+            // Dropping them silently would strand an event that silenced a funnel of its own on the
+            // promise of this pass: the entity would get an end and never a beginning.
+            for (intent in taken) intent.qty?.let { unspent(intent, it) }
+            return
+        }
         val after = snapshot(player, baseline.view)
         baselines[player.uniqueId] = Baseline(baseline.view, after)
-        val taken = intents.take(player.uniqueId)
         val edges = Netting.diff(baseline.seen, after, taken, player.uniqueId)
         val timestamp = System.currentTimeMillis()
         val moves = Intents.explain(edges, taken, player.uniqueId, unspent) { form ->

@@ -94,7 +94,7 @@ class PfauProtectPlugin : JavaPlugin() {
             Reconciliation(ledger),
         )
         this.running = running
-        fillTypeRegistries(ledger.registries)
+        ledger.staged { fillTypeRegistries(ledger.registries) }
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
@@ -133,6 +133,7 @@ class PfauProtectPlugin : JavaPlugin() {
             "ledger open, registry sizes: " +
                 RegistryNamespace.entries.joinToString { "${it.name.lowercase()}=${ledger.registries.size(it)}" }
         )
+        for (warning in ledger.registries.fillWarnings()) logger.warning(warning)
     }
 
     // Players are still online here and their pending region tasks are already cancelled, so the last

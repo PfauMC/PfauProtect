@@ -360,4 +360,33 @@ class IntentTest {
         val moves = Intents.explain(emptyList(), listOf(both), player) { bag(0) }
         assertEquals(emptyList<Move>(), moves)
     }
+
+    @Test
+    fun `an intent survives exactly one take`() {
+        val queue = PlayerIntents()
+        val intent = Intent(Cause.BLOCK_PLACE, to = placed, qty = 1)
+        queue.add(player, intent)
+        assertEquals(listOf(intent), queue.take(player))
+        assertEquals(emptyList<Intent>(), queue.take(player))
+    }
+
+    @Test
+    fun `forgetting a player discards what is queued`() {
+        val queue = PlayerIntents()
+        queue.add(player, Intent(Cause.BLOCK_PLACE, to = placed, qty = 1))
+        queue.forget(player)
+        assertEquals(emptyList<Intent>(), queue.take(player))
+    }
+
+    @Test
+    fun `one player's take does not drain another's`() {
+        val queue = PlayerIntents()
+        val other = UUID.randomUUID()
+        val mine = Intent(Cause.BLOCK_PLACE, to = placed, qty = 1)
+        val theirs = Intent(Cause.PICKUP, from = ground, qty = 3)
+        queue.add(player, mine)
+        queue.add(other, theirs)
+        assertEquals(listOf(mine), queue.take(player))
+        assertEquals(listOf(theirs), queue.take(other))
+    }
 }

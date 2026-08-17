@@ -8,6 +8,7 @@ import org.rocksdb.ColumnFamilyOptions
 import org.rocksdb.CompressionType
 import org.rocksdb.DBOptions
 import org.rocksdb.LRUCache
+import org.rocksdb.Options
 import org.rocksdb.ReadOptions
 import org.rocksdb.RocksDB
 import org.rocksdb.Slice
@@ -55,10 +56,12 @@ data class SweepReport(val checked: Int, val unreadable: Int, val gaps: List<Str
 // row short of the end and one that stopped in the middle of a year both come back full.
 data class EntryPage(val entries: List<LedgerEntry>, val complete: Boolean)
 
-// Raised when the key layout took a fixed-width world number and a trailing posting ordinal. The
-// record version in the value cannot cover a key change: those rows carry a version this build reads,
-// so without the bump an older database opens and every key is parsed as something it never was.
-private const val SCHEMA_VERSION = 2L
+// Raised by a change to the key layout — version 2 took a fixed-width world number and a trailing
+// posting ordinal — and by a change to the set of column families, which is what version 3 is: the
+// family of interned block-entity payloads. The record version in the value covers neither. Keys
+// carry a version this build reads, so without the bump an older database opens and every key is
+// parsed as something it never was; a family holds rows the value version never speaks for at all.
+private const val SCHEMA_VERSION = 3L
 private const val MAX_REGION_CHUNKS = 1024
 private const val MAX_BATCH = 256
 private const val WRITER_POLL_MILLIS = 50L
@@ -86,10 +89,12 @@ private val META_CF = "meta".toByteArray()
 private val NESTED_OWNERS_CF = "nested_owners".toByteArray()
 private val TX_CF = "tx".toByteArray()
 private val PLACED_FORMS_CF = "placed_forms".toByteArray()
+private val BLOCK_PAYLOADS_CF = "block_payloads".toByteArray()
 
 private val META_SCHEMA = "schema".toByteArray()
 private val META_TX_ID = "tx_id".toByteArray()
 private val META_ITEM_FORM_ID = "item_form_id".toByteArray()
+private val META_BLOCK_PAYLOAD_ID = "block_payload_id".toByteArray()
 private val META_SWEEP_CURSOR = "sweep_cursor".toByteArray()
 
 private val LOGGER: Logger = Logger.getLogger("PfauProtect")
@@ -152,6 +157,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private val nestedOwnersCf: ColumnFamilyHandle
     private val txCf: ColumnFamilyHandle
     private val placedFormsCf: ColumnFamilyHandle
+    private val blockPayloadsCf: ColumnFamilyHandle
 
     private val queue = LinkedBlockingQueue<List<Transfer>>()
     private val submitted = AtomicLong()
@@ -169,13 +175,31 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private val dbLock = ReentrantReadWriteLock()
 
     private var pendingBatch: WriteBatch? = null
+
+    // A staging session belongs to the thread that opened it: two threads sharing one batch would be
+    // writing into the same native object, and a bulk fill is the only caller that opens one.
+    private val stagingBatch = ThreadLocal<WriteBatch?>()
     private var nextTxId: Long = 0
-    private var nextItemFormId: Long = 0
     private val registryCounters = ConcurrentHashMap<RegistryNamespace, Long>()
 
     init {
         RocksDB.loadLibrary()
         Files.createDirectories(dir)
+        val path = dir.toAbsolutePath().toString()
+        // Opening writes every missing column family into the manifest before anything can look at
+        // the schema, and a build that does not know those families can no longer open the database
+        // at all. A database refused for its schema has to be left exactly as it was found, or one
+        // failed start of a newer build makes going back impossible.
+        val stored = try {
+            storedSchema(path)?.also {
+                require(it == SCHEMA_VERSION) {
+                    "database schema $it cannot be read by this build (schema $SCHEMA_VERSION)"
+                }
+            }
+        } catch (failure: Throwable) {
+            runCatching { closeOptions() }
+            throw failure
+        }
         val descriptors = listOf(
             RocksDB.DEFAULT_COLUMN_FAMILY to unfilteredOptions,
             ENTRIES_CF to entriesOptions,
@@ -185,8 +209,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             NESTED_OWNERS_CF to pointReadOptions,
             TX_CF to pointReadOptions,
             PLACED_FORMS_CF to pointReadOptions,
+            BLOCK_PAYLOADS_CF to pointReadOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
-        db = RocksDB.open(dbOptions, dir.toAbsolutePath().toString(), descriptors, cfHandles)
+        db = RocksDB.open(dbOptions, path, descriptors, cfHandles)
         entriesCf = cfHandles[1]
         itemFormsCf = cfHandles[2]
         registryCf = cfHandles[3]
@@ -194,17 +219,11 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         nestedOwnersCf = cfHandles[5]
         txCf = cfHandles[6]
         placedFormsCf = cfHandles[7]
+        blockPayloadsCf = cfHandles[8]
 
         failClosed {
-            val schema = db.get(metaCf, META_SCHEMA)
-            if (schema == null) {
-                db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
-            } else {
-                val stored = ByteReader(schema).longBE()
-                require(stored == SCHEMA_VERSION) { "database schema $stored cannot be read by this build (schema $SCHEMA_VERSION)" }
-            }
+            if (stored == null) db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
             nextTxId = readCounter(META_TX_ID)
-            nextItemFormId = readCounter(META_ITEM_FORM_ID)
             for (ns in RegistryNamespace.entries) registryCounters[ns] = readCounter(registryCounterKey(ns))
         }
     }
@@ -212,7 +231,13 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private val writerThread = Thread(::runWriter, "pfauprotect-ledger-writer").apply { isDaemon = true }
 
     val registries = Registries(this)
-    val forms = ItemFormTable()
+    val forms = InternTable(itemFormsCf, META_ITEM_FORM_ID)
+
+    // The block rows that will name these payloads live in a database per world, and there is no WAL
+    // shared between that database and this one, so the guarantee is the order: the payload first,
+    // then the row that names it. An orphaned payload is garbage nobody reads; a row whose payload
+    // was never written is lost data.
+    val payloads = InternTable(blockPayloadsCf, META_BLOCK_PAYLOAD_ID)
 
     // An unregistered world or player owns no rows at all, so a scan for one has to find nothing.
     // A player number is a varint and -1 encodes to something the registry never hands out; a world
@@ -224,6 +249,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         failClosed {
             registries.load()
             forms.load()
+            payloads.load()
         }
         writerThread.start()
     }
@@ -336,27 +362,32 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
 
     fun transactionEntries(entry: LedgerEntry): List<LedgerEntry> = dbLock.read {
         if (closed) return listOf(entry)
-        val other = entry.counterparty
-        // A transaction of one movement writes exactly the ordinals 0 and 1, so the half facing this
-        // one is a point read away. A larger transaction can hold an unrelated posting at that
-        // ordinal, so the row found has to face back before it is believed; the rest goes to the index.
-        if (other.addressable && entry.ordinal <= 1) {
-            val otherKey = EntryCodec.key(other, entry.timestamp, entry.txId, 1 - entry.ordinal, knownIds)
-            val decoded = db.get(entriesCf, otherKey)?.let { EntryCodec.decodeOrNull(otherKey, it, registries) }
-            if (decoded != null && decoded.holder == other && decoded.counterparty == entry.holder) {
-                return listOf(entry, decoded)
+        // The index has to be asked first. A transaction that reaches past the first pair holds a
+        // posting at the facing ordinal that is nobody's other half, and answering from it would give
+        // the same transaction a different extent depending on which of its own postings asked.
+        val packed = db.get(txCf, longBytes(entry.txId))
+        if (packed != null) {
+            val found = unpackKeys(packed).mapNotNull { key ->
+                db.get(entriesCf, key)?.let { EntryCodec.decodeOrNull(key, it, registries) }
             }
+            return if (found.isEmpty()) listOf(entry) else found
         }
-        val packed = db.get(txCf, longBytes(entry.txId)) ?: return listOf(entry)
-        val found = unpackKeys(packed).mapNotNull { key ->
-            db.get(entriesCf, key)?.let { EntryCodec.decodeOrNull(key, it, registries) }
-        }
-        if (found.isEmpty()) listOf(entry) else found
+        // No index row means one movement, which writes exactly the ordinals 0 and 1, so the half
+        // facing this one is a point read away.
+        val other = entry.counterparty
+        if (!other.addressable) return listOf(entry)
+        val otherKey = EntryCodec.key(other, entry.timestamp, entry.txId, 1 - entry.ordinal, knownIds)
+        val decoded = db.get(entriesCf, otherKey)?.let { EntryCodec.decodeOrNull(otherKey, it, registries) }
+        if (decoded == null) listOf(entry) else listOf(entry, decoded)
     }
 
-    fun form(itemFormId: Long): ByteArray? = forms.formOf(itemFormId)
+    fun form(itemFormId: Long): ByteArray? = forms.valueOf(itemFormId)
 
     fun formId(form: ByteArray): Long? = forms.lookup(form)
+
+    fun payload(payloadId: Long): ByteArray? = payloads.valueOf(payloadId)
+
+    fun payloadId(payload: ByteArray): Long? = payloads.lookup(payload)
 
     // The slot never enters the key, so one prefix per holder type already covers every slot a player
     // owns and the whole balance is four scans rather than a read per row.
@@ -484,9 +515,35 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         }
     }
 
+    // Read-only and with exactly the families already on disk, so a database this build refuses is
+    // handed back untouched. Null means there is nothing to refuse: no database, or one from before
+    // the schema was stamped.
+    private fun storedSchema(path: String): Long? = Options().use { probe ->
+        val existing = RocksDB.listColumnFamilies(probe, path)
+        val metaIndex = existing.indexOfFirst { it.contentEquals(META_CF) }
+        if (metaIndex < 0) return null
+        val handles = ArrayList<ColumnFamilyHandle>()
+        ColumnFamilyOptions().use { cfOptions ->
+            DBOptions().use { options ->
+                RocksDB.openReadOnly(options, path, existing.map { ColumnFamilyDescriptor(it, cfOptions) }, handles)
+                    .use { probed ->
+                        try {
+                            probed.get(handles[metaIndex], META_SCHEMA)?.let { ByteReader(it).longBE() }
+                        } finally {
+                            handles.forEach { it.close() }
+                        }
+                    }
+            }
+        }
+    }
+
     private fun closeNatives() {
         cfHandles.forEach { it.close() }
         db.close()
+        closeOptions()
+    }
+
+    private fun closeOptions() {
         writeOptions.close()
         wholeCfRead.close()
         entriesOptions.close()
@@ -703,11 +760,34 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         return if (found.size <= limit) EntryPage(found, true) else EntryPage(found.take(limit), false)
     }
 
+    // A fill that mints thousands of numbers in a row would otherwise pay a write apiece. The batch is
+    // written even when the body fails: what it holds is already whole, every row alongside the
+    // counter that named it, and the numbers it minted are already being handed out in memory.
+    fun <T> staged(body: () -> T): T = dbLock.read {
+        check(!closed) { "the ledger is closed" }
+        WriteBatch().use { batch ->
+            stagingBatch.set(batch)
+            try {
+                val result = body()
+                db.write(writeOptions, batch)
+                result
+            } catch (failure: Throwable) {
+                // Written even so, but its own failure is kept quiet: the reason the body stopped is
+                // the one worth reporting, and losing it to a storage error hides the ceiling that
+                // was actually hit.
+                runCatching { db.write(writeOptions, batch) }
+                throw failure
+            } finally {
+                stagingBatch.remove()
+            }
+        }
+    }
+
     // Registry and form rows must land in the same batch as the counter that named them, or a crash
     // in between hands the same number out twice. Startup registry fills run before the writer has a
-    // batch open, so they get a batch of their own.
+    // batch open, so they go into the session the caller opened, or into a batch of their own.
     private fun stage(write: (WriteBatch) -> Unit) {
-        val pending = if (Thread.currentThread() === writerThread) pendingBatch else null
+        val pending = if (Thread.currentThread() === writerThread) pendingBatch else stagingBatch.get()
         if (pending != null) {
             write(pending)
             return
@@ -729,12 +809,16 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         writerFailure?.let { throw IllegalStateException("ledger writer stopped and ${queue.size} transfers are unwritten", it) }
     }
 
-    inner class ItemFormTable {
-        private val idByForm = ConcurrentHashMap<FormKey, Long>()
-        private val formById = ConcurrentHashMap<Long, ByteArray>()
+    // Interning, lossless and whole: what goes in comes back out byte for byte, because an edit to a
+    // sign has to be reproducible from what was kept of it.
+    inner class InternTable(private val cf: ColumnFamilyHandle, private val counterKey: ByteArray) {
+        private val idByValue = ConcurrentHashMap<FormKey, Long>()
+        private val valueById = ConcurrentHashMap<Long, ByteArray>()
+        private var nextId: Long = 0
 
         fun load() {
-            db.newIterator(itemFormsCf, wholeCfRead).use { iter ->
+            nextId = readCounter(counterKey)
+            db.newIterator(cf, wholeCfRead).use { iter ->
                 iter.seekToFirst()
                 while (iter.isValid) {
                     remember(ByteReader(iter.key()).longBE(), iter.value())
@@ -743,26 +827,30 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             }
         }
 
-        fun idOf(form: ByteArray): Long {
-            idByForm[FormKey(form)]?.let { return it }
-            val id = nextItemFormId++
-            remember(id, form)
+        // Minting is a read-modify-write of the counter, and the block plane interns from a writer
+        // thread of its own, so two threads reaching a value neither has seen would hand out one
+        // number twice and file two different things under it.
+        @Synchronized
+        fun idOf(value: ByteArray): Long {
+            idByValue[FormKey(value)]?.let { return it }
+            val id = nextId++
+            remember(id, value)
             stage {
-                it.put(itemFormsCf, longBytes(id), form)
-                it.put(metaCf, META_ITEM_FORM_ID, longBytes(nextItemFormId))
+                it.put(cf, longBytes(id), value)
+                it.put(metaCf, counterKey, longBytes(nextId))
             }
             return id
         }
 
-        fun formOf(id: Long): ByteArray? = formById[id]
+        fun valueOf(id: Long): ByteArray? = valueById[id]
 
         // Asking whether a form is known must not name it: a reconciliation that walks a live
         // inventory would otherwise mint an id for every item the ledger has never recorded.
-        fun lookup(form: ByteArray): Long? = idByForm[FormKey(form)]
+        fun lookup(value: ByteArray): Long? = idByValue[FormKey(value)]
 
-        private fun remember(id: Long, form: ByteArray) {
-            idByForm[FormKey(form)] = id
-            formById[id] = form
+        private fun remember(id: Long, value: ByteArray) {
+            idByValue[FormKey(value)] = id
+            valueById[id] = value
         }
     }
 }
