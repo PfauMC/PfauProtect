@@ -46,7 +46,14 @@ interface PlacedForms {
     fun clearFormAt(world: UUID, x: Int, y: Int, z: Int)
 }
 
-data class SweepReport(val checked: Int, val gaps: List<String>, val reachedEnd: Boolean)
+// A row this build cannot decode is not a row without gaps: it is a row nobody looked at. Counting
+// the two together would let a ledger that has become unreadable report a clean sweep.
+data class SweepReport(val checked: Int, val unreadable: Int, val gaps: List<String>, val reachedEnd: Boolean)
+
+// Whether the walk ran out of rows or out of budget travels with the rows it brought back. A caller
+// that has to tell the difference cannot get it from the size of the list: a scan that stopped one
+// row short of the end and one that stopped in the middle of a year both come back full.
+data class EntryPage(val entries: List<LedgerEntry>, val complete: Boolean)
 
 // Raised when the key layout took a fixed-width world number and a trailing posting ordinal. The
 // record version in the value cannot cover a key change: those rows carry a version this build reads,
@@ -261,8 +268,16 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         toTs: Long,
         reverse: Boolean = false,
         limit: Int = 100,
-    ): List<LedgerEntry> = dbLock.read {
-        if (closed) return emptyList()
+    ): List<LedgerEntry> = holderPage(holder, fromTs, toTs, reverse, limit).entries
+
+    fun holderPage(
+        holder: Holder,
+        fromTs: Long,
+        toTs: Long,
+        reverse: Boolean = false,
+        limit: Int = 100,
+    ): EntryPage = dbLock.read {
+        if (closed) return EntryPage(emptyList(), false)
         scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit)
     }
 
@@ -276,28 +291,46 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         toTs: Long,
         reverse: Boolean = false,
         limit: Int = 100,
-    ): List<LedgerEntry> {
+    ): List<LedgerEntry> = regionPage(world, minX, minZ, maxX, maxZ, fromTs, toTs, reverse, limit).entries
+
+    fun regionPage(
+        world: UUID,
+        minX: Int,
+        minZ: Int,
+        maxX: Int,
+        maxZ: Int,
+        fromTs: Long,
+        toTs: Long,
+        reverse: Boolean = false,
+        limit: Int = 100,
+    ): EntryPage {
         val chunkX = (minOf(minX, maxX) shr 4)..(maxOf(minX, maxX) shr 4)
         val chunkZ = (minOf(minZ, maxZ) shr 4)..(maxOf(minZ, maxZ) shr 4)
         val chunks = (chunkX.last - chunkX.first + 1).toLong() * (chunkZ.last - chunkZ.first + 1).toLong()
         require(chunks <= MAX_REGION_CHUNKS) {
             "region spans $chunks chunks, at most $MAX_REGION_CHUNKS can be scanned in one query"
         }
-        if (registries.lookupKey(RegistryNamespace.WORLD, world.toString()) == null) return emptyList()
+        if (registries.lookupKey(RegistryNamespace.WORLD, world.toString()) == null) {
+            return EntryPage(emptyList(), true)
+        }
         return dbLock.read {
-            if (closed) return emptyList()
+            if (closed) return EntryPage(emptyList(), false)
             val found = ArrayList<LedgerEntry>()
+            var complete = true
             // Keys inside a chunk are ordered by position and only then by time, so a chunk holding
             // more rows than the limit contributes them by position rather than by time.
             for (cx in chunkX) {
                 for (cz in chunkZ) {
                     for (prefix in EntryCodec.blockChunkPrefixes(world, cx, cz, knownIds)) {
-                        found += scan(prefix, fromTs, toTs, reverse, limit)
+                        val page = scan(prefix, fromTs, toTs, reverse, limit)
+                        found += page.entries
+                        complete = complete && page.complete
                     }
                 }
             }
             val byTime = compareBy<LedgerEntry>({ it.timestamp }, { it.txId })
-            found.sortedWith(if (reverse) byTime.reversed() else byTime).take(limit)
+            val ordered = found.sortedWith(if (reverse) byTime.reversed() else byTime)
+            EntryPage(ordered.take(limit), complete && ordered.size <= limit)
         }
     }
 
@@ -351,9 +384,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     // worth hearing about now rather than in the middle of an investigation years later. Each pass
     // picks up where the last one stopped, so the whole ledger is covered over time at a fixed cost.
     fun sweep(limit: Int): SweepReport = dbLock.read {
-        if (closed) return SweepReport(0, emptyList(), false)
+        if (closed) return SweepReport(0, 0, emptyList(), false)
         val gaps = ArrayList<String>()
         var checked = 0
+        var unreadable = 0
         var last: ByteArray? = null
         var reachedEnd = false
         db.newIterator(entriesCf, wholeCfRead).use { iter ->
@@ -365,9 +399,14 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                 if (iter.isValid && iter.key().contentEquals(cursor)) iter.next()
                 if (!iter.isValid) iter.seekToFirst()
             }
-            while (iter.isValid && checked < limit) {
+            // Unreadable rows spend the budget too: a stretch of them the length of a year would
+            // otherwise be walked in a single pass, on the thread that asked for one pass worth.
+            while (iter.isValid && checked + unreadable < limit) {
                 val key = iter.key()
-                EntryCodec.decodeOrNull(key, iter.value(), registries)?.let { entry ->
+                val entry = EntryCodec.decodeOrNull(key, iter.value(), registries)
+                if (entry == null) {
+                    unreadable++
+                } else {
                     checked++
                     gapOf(entry)?.let { gaps += it }
                 }
@@ -377,7 +416,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             reachedEnd = !iter.isValid
         }
         if (reachedEnd || last == null) db.delete(metaCf, META_SWEEP_CURSOR) else db.put(metaCf, META_SWEEP_CURSOR, last)
-        SweepReport(checked, gaps, reachedEnd)
+        SweepReport(checked, unreadable, gaps, reachedEnd)
     }
 
     private fun gapOf(entry: LedgerEntry): String? {
@@ -647,17 +686,21 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         toTs: Long,
         reverse: Boolean,
         limit: Int,
-    ): List<LedgerEntry> {
+    ): EntryPage {
         val found = ArrayList<LedgerEntry>()
-        if (limit <= 0) return found
+        if (limit <= 0) return EntryPage(found, false)
+        // One row past the limit is what separates a scan that ended from one that was cut off, and
+        // it costs a single decode. Guessing from the size instead is wrong both ways: a range that
+        // ends exactly on the limit reads as cut off, and rows dropped by the time window read as
+        // room to spare.
         forEachUnder(prefix, reverse) { key, value ->
             // A chunk prefix stops three position bytes short of the timestamp, so no byte range
             // under it can express a time window; the window is applied to the decoded entry instead.
             val entry = EntryCodec.decodeOrNull(key, value, registries)
             if (entry != null && entry.timestamp in fromTs..toTs) found += entry
-            found.size < limit
+            found.size <= limit
         }
-        return found
+        return if (found.size <= limit) EntryPage(found, true) else EntryPage(found.take(limit), false)
     }
 
     // Registry and form rows must land in the same batch as the counter that named them, or a crash

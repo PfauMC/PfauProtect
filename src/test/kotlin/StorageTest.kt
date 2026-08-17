@@ -11,6 +11,11 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.rocksdb.ColumnFamilyDescriptor
+import org.rocksdb.ColumnFamilyHandle
+import org.rocksdb.DBOptions
+import org.rocksdb.Options
+import org.rocksdb.RocksDB
 import java.nio.file.Path
 import java.util.UUID
 
@@ -371,6 +376,54 @@ class StorageTest {
         assertEquals(1, log.holderEntries(aliceInv, 0, Long.MAX_VALUE, limit = 1).size)
         assertEquals(-1, log.holderEntries(aliceInv, 0, Long.MAX_VALUE, reverse = true, limit = 1).single().qty)
         assertTrue(log.holderEntries(PlayerInv(UUID.randomUUID(), 0), 0, Long.MAX_VALUE).isEmpty())
+    }
+
+    // The old answer to this was the size of the list, which is wrong both ways: a range that ends
+    // exactly on the limit looks cut off, and rows the time window dropped look like room to spare.
+    @Test
+    fun `a page says whether it ran out of rows or out of room`() {
+        assertTrue(log.holderPage(aliceInv, 0, Long.MAX_VALUE, limit = 3).complete)
+        assertFalse(log.holderPage(aliceInv, 0, Long.MAX_VALUE, limit = 2).complete)
+
+        val window = log.holderPage(aliceInv, 0, T0, limit = 1)
+        assertEquals(1, window.entries.size)
+        assertTrue(window.complete)
+
+        assertFalse(log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, limit = 2).complete)
+        assertTrue(log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, limit = 4).complete)
+        assertTrue(log.regionPage(UUID.randomUUID(), 96, -208, 112, -192, 0, Long.MAX_VALUE).complete)
+    }
+
+    // A row this build cannot decode is not a row without gaps, and a sweep that folds the two
+    // together reports a clean pass over a ledger it can no longer read.
+    @Test
+    fun `rows this build cannot read are counted apart from the ones it checked`() {
+        val readable = log.sweep(1000).checked
+        val orphan = EntryCodec.key(chest, T0 + 40, 99L, 0, log.registries)
+        log.close()
+        // A version this build does not know, which is the one thing decoding rejects before it has
+        // read anything else.
+        writeRawEntry(dir, orphan, byteArrayOf(0x07))
+        log = RocksItemLog(dir)
+
+        val report = log.sweep(1000)
+        assertEquals(readable, report.checked)
+        assertEquals(1, report.unreadable)
+        assertTrue(report.reachedEnd)
+    }
+
+    private fun writeRawEntry(dir: Path, key: ByteArray, value: ByteArray) {
+        RocksDB.loadLibrary()
+        val path = dir.toAbsolutePath().toString()
+        val names = Options().use { RocksDB.listColumnFamilies(it, path) }
+        val handles = ArrayList<ColumnFamilyHandle>()
+        DBOptions().use { options ->
+            RocksDB.open(options, path, names.map { ColumnFamilyDescriptor(it) }, handles).use { db ->
+                val entries = handles[names.indexOfFirst { it.contentEquals("entries".toByteArray()) }]
+                db.put(entries, key, value)
+                handles.forEach { it.close() }
+            }
+        }
     }
 
     @Test

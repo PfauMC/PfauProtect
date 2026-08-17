@@ -173,6 +173,11 @@ enum class Cause(val id: Int) {
     CMD_KILL_ITEM(0xFB),
     CMD_ENCHANT(0xFC),
     CMD_CLEAR(0xFD),
+
+    // Never written, only decoded into. Causes are added without touching the record version, so a
+    // row from a newer build carries a number this one has no name for — and the quantity beside it
+    // is still readable and still counts towards a balance, which a skipped row would not.
+    UNKNOWN(0xFF),
     ;
 
     companion object {

@@ -299,7 +299,9 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
             sender.sendMessage("Unknown player: ${unknown.joinToString(", ")}")
             return
         }
-        val entries = filter(read(target, query), query, named.values.filterNotNull().toSet())
+        val page = read(target, query)
+        val matched = filter(page.entries, query, named.values.filterNotNull().toSet())
+        val entries = matched.take(query.limit)
         val where = if (query.radius == null) target.label else "${query.radius} blocks around ${target.label}"
         if (entries.isEmpty()) {
             sender.sendMessage("No ledger entries for $where.")
@@ -308,22 +310,29 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
         sender.sendMessage("Last ${entries.size} ledger entries for $where:")
         for (entry in entries) sender.sendMessage("  " + describe(entry))
         // A truncated view that says nothing about being truncated reads as the whole history, and an
-        // investigator would conclude the item came from nowhere.
-        if (entries.size == query.limit) {
+        // investigator would conclude the item came from nowhere. The read itself stops early too, and
+        // it stops before the filter runs, so a page cut short says so even when few rows matched.
+        if (matched.size > entries.size || !page.complete) {
             sender.sendMessage("  ... older entries are cut off; ask for more with limit:${query.limit * 4}")
         }
     }
 
-    private fun read(target: LookupTarget, query: LookupQuery): List<LedgerEntry> {
+    private fun read(target: LookupTarget, query: LookupQuery): EntryPage {
         val fromTs = query.secondsBack?.let { System.currentTimeMillis() - it * 1000 } ?: 0
         val fetch = minOf(query.limit * FETCH_FACTOR, MAX_FETCH)
-        val radius = query.radius ?: return listOf(
-            Container(target.world, target.x, target.y, target.z, 0),
-            WorldBlock(target.world, target.x, target.y, target.z),
-        ).flatMap { holder ->
-            ledger.holderEntries(holder, fromTs, Long.MAX_VALUE, reverse = true, limit = fetch)
-        }.sortedByDescending { it.timestamp }
-        return ledger.regionEntries(
+        val radius = query.radius ?: run {
+            val pages = listOf(
+                Container(target.world, target.x, target.y, target.z, 0),
+                WorldBlock(target.world, target.x, target.y, target.z),
+            ).map { holder ->
+                ledger.holderPage(holder, fromTs, Long.MAX_VALUE, reverse = true, limit = fetch)
+            }
+            return EntryPage(
+                pages.flatMap { it.entries }.sortedByDescending { it.timestamp },
+                pages.all { it.complete },
+            )
+        }
+        val region = ledger.regionPage(
             world = target.world,
             minX = target.x - radius,
             minZ = target.z - radius,
@@ -333,12 +342,18 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
             toTs = Long.MAX_VALUE,
             reverse = true,
             limit = fetch,
-        ).filter { entry ->
-            val height = (entry.holder as? Container)?.y ?: (entry.holder as? WorldBlock)?.y
-            height == null || height in (target.y - radius)..(target.y + radius)
-        }
+        )
+        return EntryPage(
+            region.entries.filter { entry ->
+                val height = (entry.holder as? Container)?.y ?: (entry.holder as? WorldBlock)?.y
+                height == null || height in (target.y - radius)..(target.y + radius)
+            },
+            region.complete,
+        )
     }
 
+    // Keeps one row more than asked for: the caller shows `limit` of them and needs the extra one to
+    // know whether saying so would be a lie.
     private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
         val included = query.included.map(::normalizeItem).toSet()
         val excludedItems = query.excluded.map(::normalizeItem).toSet()
@@ -351,7 +366,7 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
                 (included.isEmpty() || item in included) && item !in excludedItems
             }
             .filter { !namesUser(it, excludedUsers) }
-            .take(query.limit)
+            .take(query.limit + 1)
             .toList()
     }
 

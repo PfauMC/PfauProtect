@@ -268,7 +268,7 @@ object EntryCodec {
         val confidence = Confidence.byId(confidenceId)
             ?: throw IllegalArgumentException("unknown confidence $confidenceId")
         val causeId = v.byte()
-        val cause = Cause.byId(causeId) ?: throw IllegalArgumentException("unknown cause id $causeId")
+        val cause = Cause.byId(causeId) ?: Cause.UNKNOWN
         val slot = v.varInt()
         val counterparty = readCounterparty(v, names)
         val itemFormId = v.varLong()

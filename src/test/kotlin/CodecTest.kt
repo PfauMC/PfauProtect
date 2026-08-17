@@ -235,6 +235,21 @@ class CodecTest {
         }
     }
 
+    // Causes are added without touching the record version, so a row from a newer build lands in a
+    // scan of an older one. Throwing there would take the whole scan down over a label.
+    @Test
+    fun `a cause with no name in this build decodes rather than stopping the scan`() {
+        val holder = PlayerInv(playerA, 0)
+        val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
+        val value = EntryCodec.value(entry(holder, Void), registries)
+        value[1] = 0xFE.toByte()
+
+        val decoded = EntryCodec.decodeOrNull(key, value, registries)
+        assertEquals(Cause.UNKNOWN, decoded?.cause)
+        assertEquals(1, decoded?.qty)
+        assertEquals(12L, decoded?.itemFormId)
+    }
+
     @Test
     fun `cause ids are unique and answer to byId`() {
         assertEquals(Cause.entries.size, Cause.entries.map { it.id }.distinct().size)

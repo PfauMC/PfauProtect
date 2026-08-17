@@ -166,6 +166,11 @@ class PfauProtectPlugin : JavaPlugin() {
         for (gap in report.gaps.take(SWEEP_GAPS_LOGGED)) logger.warning("ledger gap: $gap")
         val unlisted = report.gaps.size - SWEEP_GAPS_LOGGED
         if (unlisted > 0) logger.warning("and $unlisted more ledger gaps in this pass")
+        // Rows this build cannot decode are not rows without gaps. Left unsaid, a ledger that has
+        // become unreadable would keep reporting clean passes.
+        if (report.unreadable > 0) {
+            logger.warning("${report.unreadable} ledger rows in this pass could not be read by this build")
+        }
         if (report.reachedEnd && report.checked > 0) {
             logger.info("ledger swept to the end, ${report.checked} entries in this pass, ${report.gaps.size} gaps")
         }
