@@ -25,6 +25,7 @@ private const val TARGET_RANGE = 6
 private const val SWEEP_ENTRIES = 2000
 private const val SWEEP_MINUTES = 5L
 private const val SWEEP_GAPS_LOGGED = 5
+private const val NOTE_MINUTES = 5L
 private const val PLANE_POSTINGS = 2000
 private const val PLANE_MINUTES = 10L
 private const val RECONCILE_MINUTES = 30L
@@ -88,6 +89,7 @@ private class WorldBaseListener(private val blocks: BlockLogs) : Listener {
 private class Running(
     val ledger: RocksItemLog,
     val blocks: BlockLogs,
+    val attribution: Attribution,
     val uncovered: Uncovered,
     val codec: ItemFormCodec,
     val capture: ContainerCaptureListener,
@@ -105,6 +107,7 @@ class PfauProtectPlugin : JavaPlugin() {
     override fun onEnable() {
         val ledger = RocksItemLog(dataFolder.toPath().resolve("ledger"))
         val blocks = BlockLogs(dataFolder.toPath().resolve("blocks"), ledger)
+        val attribution = Attribution(ledger.registries, blocks)
         val uncovered = Uncovered(ledger)
         val codec = ItemFormCodec(ledger.registries, MinecraftServer.getServer().registryAccess())
         val mechanisms = TickCoalescer(uncovered::submit)
@@ -117,8 +120,8 @@ class PfauProtectPlugin : JavaPlugin() {
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
         // the way back down.
         val running = Running(
-            ledger, blocks, uncovered, codec, capture, mechanisms, origins, lookups, inspector,
-            Reconciliation(ledger), PlaneSync(ledger, blocks),
+            ledger, blocks, attribution, uncovered, codec, capture, mechanisms, origins, lookups,
+            inspector, Reconciliation(ledger), PlaneSync(ledger, blocks),
         )
         this.running = running
         ledger.staged { fillTypeRegistries(ledger.registries) }
@@ -129,7 +132,7 @@ class PfauProtectPlugin : JavaPlugin() {
         // A change to a world with no base open is dropped rather than journalled, so this goes after
         // the load handler and after the bases opened by hand. Against the other handlers of equal
         // priority the order is free: nothing it reads is written by any of them.
-        server.pluginManager.registerEvents(BlockCaptureListener(blocks), this)
+        server.pluginManager.registerEvents(BlockCaptureListener(blocks, attribution), this)
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
@@ -145,8 +148,16 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(inspector, this)
         server.globalRegionScheduler.runAtFixedRate(this, {
             origins.sweep()
+            attribution.sweepRemovals()
             mechanisms.flush()
         }, 1, 1)
+        server.asyncScheduler.runAtFixedRate(
+            this,
+            { attribution.sweep() },
+            NOTE_MINUTES,
+            NOTE_MINUTES,
+            TimeUnit.MINUTES,
+        )
         server.asyncScheduler.runAtFixedRate(
             this,
             { sweepLedger(ledger) },

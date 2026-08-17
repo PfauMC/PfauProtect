@@ -25,6 +25,7 @@ import org.bukkit.block.data.type.PistonHead
 import org.bukkit.block.data.type.Stairs
 import org.bukkit.block.data.type.TrapDoor
 import org.bukkit.craftbukkit.block.CraftBlock
+import org.bukkit.craftbukkit.block.data.CraftBlockData
 import org.bukkit.craftbukkit.entity.CraftPlayer
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -52,6 +53,18 @@ internal fun partnerFace(data: BlockData): BlockFace? = when {
 }
 
 /**
+ * The other half where one is really standing. The face is arithmetic off a single block, and a half
+ * left alone — a door whose upper half a plugin took away, a tall plant half a regen left behind —
+ * puts an unrelated block at the end of it. Only a block that names this position back is the half
+ * that goes with it.
+ */
+internal fun otherHalfOf(block: Block): Block? {
+    val face = partnerFace(block.blockData) ?: return null
+    val partner = block.getRelative(face)
+    return partner.takeIf { partnerFace(it.blockData) == face.oppositeFace }
+}
+
+/**
  * What a break leaves standing, from the server's own rule for it. `Level.removeBlock` writes the
  * fluid the block was standing in back over the position, so a waterlogged stair, kelp and seagrass
  * all leave a water source and a dry block leaves air. The same rule clears the other half of a door
@@ -76,11 +89,15 @@ internal fun brokenAfter(
 }
 
 /**
- * Whether `ServerPlayerGameMode.destroyBlock` is about to return without touching the world. Both
- * refusals sit behind the event, so a creative player who may not use game-master blocks punching a
- * command block would otherwise be journalled as turning it into air while it goes on standing.
+ * Whether `ServerPlayerGameMode.destroyBlock` is about to return without touching the world. All
+ * three refusals sit behind the event, so a creative player who may not use game-master blocks
+ * punching a command block would otherwise be journalled as turning it into air while it goes on
+ * standing, and an adventure-mode player left-clicking a block he may not break would be handed
+ * whatever gives way nearby in the next tick.
  */
 private fun brokenRefused(player: ServerPlayer, pos: BlockPos, state: NmsBlockState): Boolean {
+    // A plugin that emptied the position without cancelling has already had its say.
+    if (state.isAir) return true
     val block = state.block
     if (block is GameMasterBlock &&
         !player.canUseGameMasterBlocks() &&
@@ -106,12 +123,52 @@ private fun payloadAt(block: Block): ByteArray? {
     return payloadOf(level.getBlockEntity(block.position), level.registryAccess())
 }
 
-class BlockCaptureListener(private val logs: BlockLogs) : Listener {
+// What the removal writes back over the position, by the fluid rule `brokenAfter` states in full. The
+// ice melt that rule also carries is left out: a note naming air where water ends up answers nobody,
+// which is the direction to be wrong in.
+private fun leftBy(data: BlockData) =
+    (data as CraftBlockData).state.fluidState.createLegacyBlock().asBlockData().asString
+
+/**
+ * What every capture that takes a block away seeds, a hand as much as an explosion, a piston or water.
+ * The removal note is what a block giving way in the next tick or two finds; the placement note over
+ * the same position is overwritten in the same breath and names what the removal leaves rather than
+ * what stood there, so that whoever put the old block there stops answering for the position and
+ * whoever emptied it never answers for what moves into the hole.
+ *
+ * A block standing in two positions is cleared in both, since the other half goes with it under no
+ * event of its own.
+ */
+internal fun Attribution.cleared(block: Block, actor: UUID) {
+    for (standing in listOfNotNull(block, otherHalfOf(block))) {
+        val at = positionOf(standing)
+        removed(at, actor)
+        placed(at, leftBy(standing.blockData), actor)
+    }
+}
+
+// A door, a bed and a double plant stand in two positions and arrive as one event.
+private fun replacedBy(event: BlockPlaceEvent) =
+    (event as? BlockMultiPlaceEvent)?.replacedBlockStates ?: listOf(event.blockReplacedState)
+
+/**
+ * The attribution notes are seeded from the same handlers that write the rows, and behind the same
+ * cancellation, which is the opposite of what an event needs whose observation outlives its own
+ * refusal. Placing and breaking are not such events: a region protection plugin cancelling at NORMAL
+ * or HIGH leaves the world exactly as it was, so there is nothing at that position to attribute to
+ * anybody, and a note seeded ahead of the cancellation would spend its whole window offering the
+ * refused player as the answer for whatever happens there next. Getting in early only earns its keep
+ * where the thing being noted has already happened by the time the event can be refused.
+ *
+ * The server's own refusals come after it raises the event and are checked for the same reason: an
+ * action that leaves the world as it was must neither be journalled nor lend its player to anything.
+ */
+class BlockCaptureListener(
+    private val logs: BlockLogs,
+    private val attribution: Attribution,
+) : Listener {
     // On MONITOR the block of a placement is already the new one, so the block answers for the after
     // side of the row while the event carries the side it replaced.
-    //
-    // Both sit on MONITOR with ignoreCancelled because region protection cancels at NORMAL or HIGH
-    // and an action that was refused must not be journalled.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPlace(event: BlockPlaceEvent) {
         // A second refusal that is not the cancelled flag and so is not covered by ignoreCancelled:
@@ -119,10 +176,11 @@ class BlockCaptureListener(private val logs: BlockLogs) : Listener {
         // protection lands, and where a plugin lands that said setBuild(false).
         if (!event.canBuild()) return
         val log = logs.get(event.block.world.uid) ?: return
-        // A door, a bed and a double plant stand in two positions and arrive as one event. Both
-        // positions are the same placement, so they go in one submit and share its event id.
-        val replaced = (event as? BlockMultiPlaceEvent)?.replacedBlockStates ?: listOf(event.blockReplacedState)
+        // Both positions are the same placement, so they go in one submit and share its event id.
+        val replaced = replacedBy(event)
         val actor = event.player.uniqueId
+        // The block already stands where it was put, and it is that block the note answers for.
+        for (was in replaced) attribution.placed(positionOf(was.block), was.block.blockData.asString, actor)
         log.submit(
             replaced.map { was ->
                 val now = was.block
@@ -148,13 +206,13 @@ class BlockCaptureListener(private val logs: BlockLogs) : Listener {
         val state = block.blockState
         if (brokenRefused(player, block.position, state)) return
         val actor = event.player.uniqueId
+        attribution.cleared(block, actor)
         // One submit for the whole break, so every position of it shares an event id and they are
         // found together.
         val changes = ArrayList<BlockChange>(3)
         brokenRow(block, state, player, actor)?.let { changes += it }
         // The other half is a direct neighbour, so the region ticking this block owns it too.
-        partnerFace(state.asBlockData())?.let { face ->
-            val partner = block.getRelative(face) as CraftBlock
+        (otherHalfOf(block) as CraftBlock?)?.let { partner ->
             brokenRow(partner, partner.blockState, player, actor)?.let { changes += it }
         }
         singledChestHalf(block, state, actor)?.let { changes += it }

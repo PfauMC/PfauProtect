@@ -21,15 +21,18 @@ import org.bukkit.World
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
+import org.bukkit.block.data.BlockData
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
+import org.bukkit.event.block.BlockBreakEvent
 import org.bukkit.event.block.BlockPlaceEvent
 import org.bukkit.inventory.EquipmentSlot
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -48,11 +51,13 @@ private const val AIR = "minecraft:air"
 class BlockCaptureTest {
     private val world = UUID.fromString("00000000-0000-4000-8000-000000000002")
     private val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
+    private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
 
     private lateinit var registries: RegistryAccess
     private lateinit var shared: RocksItemLog
     private lateinit var logs: BlockLogs
     private lateinit var log: BlockLog
+    private lateinit var attribution: Attribution
 
     // A getter and not a field: touching `Blocks` before the bootstrap in `open` throws out of the
     // class initializer, and a field is initialized before it.
@@ -64,6 +69,7 @@ class BlockCaptureTest {
         shared = RocksItemLog(tempDir.resolve("items"))
         logs = BlockLogs(tempDir.resolve("blocks"), shared)
         log = logs.open(world)
+        attribution = Attribution(shared.registries, logs)
     }
 
     @AfterEach
@@ -99,30 +105,39 @@ class BlockCaptureTest {
         } as T
     }
 
-    // A placement the listener turns away is one it reads nothing else off, and a block that is not
-    // the server's own is what turns reading anything off it into a failure rather than a quiet row.
+    // A block that is not the server's own is what turns reading anything off it into a failure rather
+    // than a quiet row, so a handler that must read nothing more is caught by the stub refusing.
+    private fun blockStub(at: BlockPos, data: BlockData, relative: Block? = null): Block = stub(
+        Block::class.java,
+        mapOf(
+            "getWorld" to stub(World::class.java, mapOf("getUID" to world)),
+            "getX" to at.x,
+            "getY" to at.y,
+            "getZ" to at.z,
+            "getBlockData" to data,
+            "getRelative" to relative,
+        ),
+    )
+
+    private fun player(uuid: UUID) = stub(Player::class.java, mapOf("getUniqueId" to uuid))
+
     private fun placement(at: BlockPos, canBuild: Boolean): BlockPlaceEvent {
         val data = signState.asBlockData()
-        val block = stub(
-            Block::class.java,
-            mapOf(
-                "getWorld" to stub(World::class.java, mapOf("getUID" to world)),
-                "getX" to at.x,
-                "getY" to at.y,
-                "getZ" to at.z,
-                "getBlockData" to data,
-            ),
-        )
+        val block = blockStub(at, data)
         return BlockPlaceEvent(
             block,
             stub(BlockState::class.java, mapOf("getBlock" to block, "getBlockData" to data)),
             block,
             CraftItemStack.asCraftMirror(NmsItemStack(Items.OAK_SIGN)),
-            stub(Player::class.java, mapOf("getUniqueId" to bob)),
+            player(bob),
             canBuild,
             EquipmentSlot.HAND,
         )
     }
+
+    private fun handlerOf(name: String, event: Class<*>) = BlockCaptureListener::class.java
+        .getMethod(name, event)
+        .getAnnotation(EventHandler::class.java)
 
     @Test
     fun `a block standing in two positions names the other one and a block standing in one names none`() {
@@ -296,15 +311,67 @@ class BlockCaptureTest {
     fun `a placement the server would revert is not journalled`() {
         val at = BlockPos(9, 70, 9)
 
-        BlockCaptureListener(logs).onPlace(placement(at, canBuild = false))
+        BlockCaptureListener(logs, attribution).onPlace(placement(at, canBuild = false))
         log.drain()
 
         assertTrue(log.at(at.x, at.y, at.z).isEmpty())
-        // The other refusal, which the listener never sees and so can only be read off its registration.
-        val handler = BlockCaptureListener::class.java
-            .getMethod("onPlace", BlockPlaceEvent::class.java)
-            .getAnnotation(EventHandler::class.java)
-        assertTrue(handler.ignoreCancelled)
-        assertEquals(EventPriority.MONITOR, handler.priority)
+        // A refusal leaves the position as it was, so it must lend its player to nothing there either.
+        assertTrue(attribution.isEmpty)
     }
+
+    // A protection plugin cancels at NORMAL or HIGH, and both halves of this capture sit behind that
+    // cancellation on purpose: a break or a placement it refused changed nothing, so there is neither
+    // a row to write nor a position to attribute to anybody. Registered earlier, the notes would spend
+    // their whole window offering the refused player as the answer for whatever happens there next.
+    @Test
+    fun `both handlers run behind the cancellation`() {
+        for (handler in listOf(
+            handlerOf("onPlace", BlockPlaceEvent::class.java),
+            handlerOf("onBreak", BlockBreakEvent::class.java),
+        )) {
+            assertEquals(EventPriority.MONITOR, handler.priority)
+            assertTrue(handler.ignoreCancelled)
+        }
+    }
+
+    @Test
+    fun `a break notes the removal in both positions the block stood in and clears the placement note`() {
+        val lower = Blocks.SPRUCE_DOOR.defaultBlockState()
+        val door = lower.asBlockData()
+        val foot = BlockPos(5, 64, 5)
+        val standing = WorldBlock(world, foot.x, foot.y, foot.z)
+        attribution.placed(standing, door.asString, alice)
+
+        val head = blockStub(
+            BlockPos(5, 65, 5),
+            lower.setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER).asBlockData(),
+        )
+        attribution.cleared(blockStub(foot, door, relative = head), bob)
+
+        // The position holds whatever the break left, so the player who put the door there is no
+        // longer the one who answers for it and the one who took it away answers for air alone.
+        assertNull(attribution.placerAt(standing, door.asString))
+        assertEquals(bob, attribution.placerAt(standing, AIR)?.actor)
+        assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 63, 5))?.actor)
+        // The other half goes with it under no event of its own, two cells away from the first note.
+        assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 66, 5))?.actor)
+    }
+
+    // Alice's TNT stands above a lone lower half of tall grass. The face is right and the block at the
+    // end of it is not the other half of anything, so nothing may be noted there.
+    @Test
+    fun `a half standing alone lends nothing to the block on its computed face`() {
+        val grass = Blocks.TALL_GRASS.defaultBlockState().asBlockData()
+        val tnt = Blocks.TNT.defaultBlockState().asBlockData()
+        val above = WorldBlock(world, 5, 65, 5)
+        attribution.placed(above, tnt.asString, alice)
+
+        attribution.cleared(blockStub(BlockPos(5, 64, 5), grass, relative = blockStub(BlockPos(5, 65, 5), tnt)), bob)
+
+        assertEquals(alice, attribution.placerAt(above, tnt.asString)?.actor)
+        assertNull(attribution.supportRemoverAt(WorldBlock(world, 5, 66, 5)))
+        // The break itself is still noted where it happened.
+        assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 63, 5))?.actor)
+    }
+
 }
