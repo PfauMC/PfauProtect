@@ -82,6 +82,10 @@ bukkit {
             description = "Toggle the inspector and read the ledger by clicking blocks"
             default = BukkitPluginDescription.Permission.Default.OP
         }
+        register("pfauprotect.verify") {
+            description = "Run the self-checks now instead of waiting for their schedules"
+            default = BukkitPluginDescription.Permission.Default.OP
+        }
         register("pfauprotect.reconcile") {
             description = "Compare what a player is carrying against the ledger"
             default = BukkitPluginDescription.Permission.Default.OP

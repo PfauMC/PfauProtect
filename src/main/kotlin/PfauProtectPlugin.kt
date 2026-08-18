@@ -37,6 +37,12 @@ private const val RECONCILE_MINUTES = 30L
 private const val LOOKUP_PERMISSION = "pfauprotect.lookup"
 private const val INSPECT_PERMISSION = "pfauprotect.inspect"
 private const val RECONCILE_PERMISSION = "pfauprotect.reconcile"
+private const val VERIFY_PERMISSION = "pfauprotect.verify"
+
+// A pass of each self-check is bounded so it cannot walk a years-old journal in one go, and a run
+// that stops on that bound says so: a check that quietly covered a fraction of the store reads as a
+// clean bill of health for the whole of it.
+private const val VERIFY_ROUNDS = 50
 
 // A row written with INFERRED is a movement nobody explained: a loss the pass found no gain for, or a
 // birth no mechanism claimed. Counted by cause, that is the cheapest measure there is of how much of
@@ -312,6 +318,7 @@ class PfauProtectPlugin : JavaPlugin() {
             for (alias in listOf("near", "n")) root.then(nearNode(alias))
             for (alias in listOf("inspect", "i")) root.then(inspectNode(alias))
             for (alias in listOf("reconcile", "r")) root.then(reconcileNode(alias))
+            for (alias in listOf("verify", "v")) root.then(verifyNode(alias))
             event.registrar().register(root.build(), "Item ledger lookup and inspector", listOf("pp"))
         }
     }
@@ -340,6 +347,14 @@ class PfauProtectPlugin : JavaPlugin() {
         .executes { inspect(it.source, null) }
         .then(Commands.literal("on").executes { inspect(it.source, true) })
         .then(Commands.literal("off").executes { inspect(it.source, false) })
+
+    // The self-checks run on their own schedules, which are minutes apart on purpose and far too slow
+    // to work against by hand. This is the same passes, now, from the beginning to the end of what
+    // they walk.
+    private fun verifyNode(literal: String) = Commands.literal(literal)
+        .requires { it.sender.hasPermission(VERIFY_PERMISSION) }
+        .executes { verify(it.source, judgeRecent = false) }
+        .then(Commands.literal("recent").executes { verify(it.source, judgeRecent = true) })
 
     private fun reconcileNode(literal: String) = Commands.literal(literal)
         .requires { it.sender.hasPermission(RECONCILE_PERMISSION) }
@@ -400,6 +415,96 @@ class PfauProtectPlugin : JavaPlugin() {
             else "Inspector disabled."
         )
         return Command.SINGLE_SUCCESS
+    }
+
+    /**
+     * Both store-side self-checks, run to the end rather than on their own schedules. The writer runs
+     * on a thread of its own, so anything it has not written yet is missing from what a check would
+     * read, which on a hand-run check is the difference between a real finding and the last thing the
+     * tester did.
+     *
+     * `judgeRecent` gives up the settle window the periodic pass keeps. The window is there because
+     * the two planes are written by two threads and a position read between them disagrees with itself
+     * for a moment; giving it up is what makes a check worth running straight after an action, at the
+     * price of the odd race reported as a finding.
+     */
+    private fun verify(source: CommandSourceStack, judgeRecent: Boolean): Int {
+        val running = this.running ?: return notReady(source)
+        val sender = source.sender
+        sender.sendMessage("Running both self-checks to the end; this reads the whole journal.")
+        server.asyncScheduler.runNow(this) {
+            try {
+                running.ledger.drain()
+                reportSweep(sender, running.ledger)
+                reportPlanes(sender, running.planes, judgeRecent)
+            } catch (failure: Throwable) {
+                logger.log(Level.SEVERE, "the self-checks failed", failure)
+                sender.sendMessage("The self-checks failed; the server log has the details.")
+            }
+        }
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun reportSweep(sender: CommandSender, ledger: RocksItemLog) {
+        var checked = 0
+        var unreadable = 0
+        val gaps = ArrayList<String>()
+        var rounds = 0
+        var reachedEnd = false
+        while (rounds < VERIFY_ROUNDS && !reachedEnd) {
+            val report = ledger.sweep(SWEEP_ENTRIES)
+            checked += report.checked
+            unreadable += report.unreadable
+            gaps += report.gaps
+            reachedEnd = report.reachedEnd
+            rounds++
+        }
+        sender.sendMessage("Transaction invariant: $checked entries, ${gaps.size} gaps, $unreadable unreadable.")
+        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) sender.sendMessage("  gap: $gap")
+        if (gaps.size > SWEEP_GAPS_LOGGED) sender.sendMessage("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
+        if (!reachedEnd) sender.sendMessage("  stopped on the round limit; run it again to cover the rest.")
+    }
+
+    private fun reportPlanes(sender: CommandSender, planes: PlaneSync, judgeRecent: Boolean) {
+        // Reading as though a settle window's worth of time had already passed is what lets a position
+        // touched a moment ago be judged at all.
+        val now = System.currentTimeMillis() + if (judgeRecent) SETTLE_MILLIS else 0
+        var checked = 0
+        var unrecorded = 0
+        var settling = 0
+        var unreadable = 0
+        var overdrawn = 0
+        val gaps = ArrayList<PlaneGap>()
+        var rounds = 0
+        var reachedEnd = false
+        while (rounds < VERIFY_ROUNDS && !reachedEnd) {
+            val report = planes.pass(PLANE_POSTINGS, now)
+            checked += report.checked
+            unrecorded += report.unrecorded
+            settling += report.settling
+            unreadable += report.unreadable
+            overdrawn += report.overdrawn
+            gaps += report.gaps
+            reachedEnd = report.reachedEnd
+            rounds++
+        }
+        sender.sendMessage(
+            "Two planes: $checked positions compared, ${gaps.size} gaps, $overdrawn overdrawn, " +
+                "$unrecorded the block plane never recorded, $settling too recent to judge, " +
+                "$unreadable unreadable."
+        )
+        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) {
+            val world = server.getWorld(gap.at.world)?.name ?: gap.at.world.toString()
+            sender.sendMessage(
+                "  gap in $world at ${gap.at.x} ${gap.at.y} ${gap.at.z}: ${gap.standing} stands there, " +
+                    "the item plane holds ${gap.fact} confirmed and ${gap.inferred} inferred"
+            )
+        }
+        if (gaps.size > SWEEP_GAPS_LOGGED) sender.sendMessage("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
+        if (settling > 0 && !judgeRecent) {
+            sender.sendMessage("  $settling positions were touched too recently; 'verify recent' judges them too.")
+        }
+        if (!reachedEnd) sender.sendMessage("  stopped on the round limit; run it again to cover the rest.")
     }
 
     private fun reconcile(source: CommandSourceStack, target: Player?): Int {
