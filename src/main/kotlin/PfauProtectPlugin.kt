@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect
 
 import com.mojang.brigadier.Command
+import com.mojang.brigadier.arguments.IntegerArgumentType
 import io.papermc.paper.command.brigadier.CommandSourceStack
 import io.papermc.paper.command.brigadier.Commands
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes
@@ -22,6 +23,10 @@ import java.util.concurrent.atomic.LongAdder
 import java.util.logging.Level
 
 private const val TARGET_RANGE = 6
+
+// What `near` covers when nobody says: enough to take in the room you are standing in, and small
+// enough that a busy area still answers with the change you came to look at.
+private const val NEAR_RADIUS = 5
 private const val SWEEP_ENTRIES = 2000
 private const val SWEEP_MINUTES = 5L
 private const val SWEEP_GAPS_LOGGED = 5
@@ -119,7 +124,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val destruction = BlockDestructionListener(
             this, ledger.registries, blocks, attribution, codec, ledger, uncovered::submit,
         )
-        val lookups = Lookups(this, ledger)
+        val lookups = Lookups(this, ledger, blocks)
         val inspector = Inspector(lookups)
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
         // the way back down.
@@ -304,6 +309,7 @@ class PfauProtectPlugin : JavaPlugin() {
         lifecycleManager.registerEventHandler(LifecycleEvents.COMMANDS) { event ->
             val root = Commands.literal("pfauprotect")
             for (alias in listOf("lookup", "l")) root.then(lookupNode(alias))
+            for (alias in listOf("near", "n")) root.then(nearNode(alias))
             for (alias in listOf("inspect", "i")) root.then(inspectNode(alias))
             for (alias in listOf("reconcile", "r")) root.then(reconcileNode(alias))
             event.registrar().register(root.build(), "Item ledger lookup and inspector", listOf("pp"))
@@ -316,6 +322,17 @@ class PfauProtectPlugin : JavaPlugin() {
         .then(
             Commands.argument("query", LookupArgument())
                 .executes { lookup(it.source, it.getArgument("query", LookupQuery::class.java)) }
+        )
+
+    // Centred on the player rather than on the block they are looking at, which is what makes it the
+    // command to reach for when something has just happened around you and there is nothing left
+    // standing to point at.
+    private fun nearNode(literal: String) = Commands.literal(literal)
+        .requires { it.sender.hasPermission(LOOKUP_PERMISSION) }
+        .executes { near(it.source, NEAR_RADIUS) }
+        .then(
+            Commands.argument("radius", IntegerArgumentType.integer(0, MAX_RADIUS))
+                .executes { near(it.source, it.getArgument("radius", Integer::class.java).toInt()) }
         )
 
     private fun inspectNode(literal: String) = Commands.literal(literal)
@@ -348,6 +365,25 @@ class PfauProtectPlugin : JavaPlugin() {
             return 0
         }
         lookups.run(player, lookupTargetAt(block), query)
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun near(source: CommandSourceStack, radius: Int): Int {
+        val lookups = running?.lookups ?: return notReady(source)
+        val player = source.executor as? Player
+        if (player == null) {
+            source.sender.sendMessage("Only a player has somewhere to look around.")
+            return 0
+        }
+        val at = player.location
+        val target = LookupTarget(
+            at.world.uid,
+            at.blockX,
+            at.blockY,
+            at.blockZ,
+            "you at ${at.blockX} ${at.blockY} ${at.blockZ}",
+        )
+        lookups.run(player, target, LookupQuery(radius = radius))
         return Command.SINGLE_SUCCESS
     }
 

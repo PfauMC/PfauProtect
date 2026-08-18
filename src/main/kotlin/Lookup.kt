@@ -69,6 +69,39 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     ADD(setOf(Cause.CONTAINER_ADD), "+container", "deposit", "deposits", "deposited"),
     REMOVE(setOf(Cause.CONTAINER_REMOVE), "-container", "withdraw", "withdraws", "withdrew"),
     LOOT(setOf(Cause.LOOT_GENERATE), "loot", "loot_generate"),
+
+    // A cause is only worth offering as a filter once something actually writes it: an empty answer
+    // from a filter that sounds certain reads as "nothing happened there".
+    BLOCK(BLOCK_CAUSES, "block", "blocks"),
+    BLOCK_PLACE(setOf(Cause.BLK_PLAYER_PLACE), "+block", "placed", "built"),
+    BLOCK_BREAK(setOf(Cause.BLK_PLAYER_BREAK), "-block", "broke", "mined"),
+    EXPLOSION(
+        setOf(
+            Cause.BLK_TNT, Cause.BLK_CREEPER, Cause.BLK_BED_EXPLOSION,
+            Cause.BLK_RESPAWN_ANCHOR, Cause.BLK_END_CRYSTAL, Cause.BLK_EXPLOSION,
+        ),
+        "explosion", "explosions", "tnt", "creeper",
+    ),
+    FIRE(setOf(Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD), "fire", "burn", "burnt"),
+    LIQUID(setOf(Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM), "liquid", "water", "lava"),
+    PISTON(setOf(Cause.BLK_PISTON_EXTEND, Cause.BLK_PISTON_RETRACT), "piston", "pistons"),
+    GRAVITY(setOf(Cause.BLK_FALL_START, Cause.BLK_FALL_LAND), "gravity", "fall", "falling"),
+    NATURE(
+        setOf(
+            Cause.BLK_GROW, Cause.BLK_BONEMEAL, Cause.BLK_LEAF_DECAY,
+            Cause.BLK_FADE, Cause.BLK_FORM, Cause.BLK_SCULK,
+        ),
+        "nature", "growth", "grow", "decay",
+    ),
+    MOB(
+        setOf(
+            Cause.BLK_ENDERMAN, Cause.BLK_WITHER, Cause.BLK_RAVAGER, Cause.BLK_SILVERFISH,
+            Cause.BLK_SNOWMAN, Cause.BLK_FROST_WALKER, Cause.BLK_MOB_GRIEF,
+        ),
+        "mob", "mobs", "griefing",
+    ),
+    DISPENSER(setOf(Cause.BLK_DISPENSER), "dispenser", "dispensers"),
+    PORTAL(setOf(Cause.BLK_PORTAL_CREATE, Cause.BLK_PORTAL_DESTROY), "portal", "portals"),
     ;
 
     companion object {
@@ -78,6 +111,9 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     }
 }
 
+// The block plane's whole range, so a filter can name it without listing thirty-two causes.
+private val BLOCK_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet()
+
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
 private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")
 private val RADIUS_EXAMPLES = listOf("0", "5", "10", "20", "50", "global")
@@ -86,6 +122,12 @@ private val LIMIT_EXAMPLES = listOf("10", "25", "50", "100")
 // Rebuilt per keystroke otherwise: completion is asked for candidates on every character typed.
 // Lazy because reading the material registry needs a running server, and parsing does not.
 private val ITEM_NAMES: List<String> by lazy { Material.entries.filter { it.isItem }.map { it.key.key } }
+
+// A block plane row names a block, and plenty of blocks are no item at all — fire, a liquid, a piston
+// head — so completion has to offer those too or the rows about them cannot be asked for.
+private val BLOCK_NAMES: List<String> by lazy {
+    Material.entries.filter { it.isBlock && !it.isItem }.map { it.key.key }
+}
 
 private val DURATION = Regex("(\\d+)(mo|[ymwdhs])")
 
@@ -267,13 +309,21 @@ class LookupArgument : CustomArgumentType<LookupQuery, String> {
         Param.TIME -> TIME_EXAMPLES
         Param.RADIUS -> RADIUS_EXAMPLES
         Param.ACTION -> Action.names
-        Param.INCLUDE -> ITEM_NAMES
+        Param.INCLUDE -> ITEM_NAMES + BLOCK_NAMES
         Param.LIMIT -> LIMIT_EXAMPLES
         null -> emptyList()
     }
 }
 
-class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
+// One line of an answer, from either plane, so the two can be shown in the order things happened
+// rather than as two lists a reader has to interleave in their head.
+private class Line(val timestamp: Long, val text: String)
+
+class Lookups(
+    private val plugin: Plugin,
+    private val ledger: RocksItemLog,
+    private val blocks: BlockLogs,
+) {
 
     // Reading hits RocksDB through JNI, which has no business running on a region thread, and a task
     // that dies out there would otherwise leave the player staring at a command that answered nothing.
@@ -288,7 +338,7 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
         }
     }
 
-    private fun report(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+    internal fun report(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
         if (query.global) {
             sender.sendMessage("A world-wide lookup needs the analytical backend; give a radius instead.")
             return
@@ -299,22 +349,69 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
             sender.sendMessage("Unknown player: ${unknown.joinToString(", ")}")
             return
         }
+        val users = named.values.filterNotNull().toSet()
         val page = read(target, query)
-        val matched = filter(page.entries, query, named.values.filterNotNull().toSet())
-        val entries = matched.take(query.limit)
+        val items = filter(page.entries, query, users).map { Line(it.timestamp, describe(it)) }
+        // The two planes are read apart and shown together: a position that was placed, blown up and
+        // flowed over has a row in each, and read as two lists the order they happened in is lost.
+        val changes = blockLines(target, query, users)
+        val matched = (items + changes).sortedByDescending { it.timestamp }
+        val lines = matched.take(query.limit)
         val where = if (query.radius == null) target.label else "${query.radius} blocks around ${target.label}"
-        if (entries.isEmpty()) {
+        if (lines.isEmpty()) {
             sender.sendMessage("No ledger entries for $where.")
             return
         }
-        sender.sendMessage("Last ${entries.size} ledger entries for $where:")
-        for (entry in entries) sender.sendMessage("  " + describe(entry))
+        sender.sendMessage("Last ${lines.size} ledger entries for $where:")
+        for (line in lines) sender.sendMessage("  " + line.text)
         // A truncated view that says nothing about being truncated reads as the whole history, and an
         // investigator would conclude the item came from nowhere. The read itself stops early too, and
         // it stops before the filter runs, so a page cut short says so even when few rows matched.
-        if (matched.size > entries.size || !page.complete) {
+        if (matched.size > lines.size || !page.complete) {
             sender.sendMessage("  ... older entries are cut off; ask for more with limit:${query.limit * 4}")
         }
+    }
+
+    /**
+     * The block plane's side of the same question. A world whose base is not open answers with nothing
+     * rather than with silence dressed as an answer: the caller is told, because a position whose
+     * history simply is not loaded looks exactly like a position nothing ever happened at.
+     */
+    private fun blockLines(target: LookupTarget, query: LookupQuery, users: Set<UUID>): List<Line> {
+        val log = blocks.get(target.world) ?: return emptyList()
+        val fromTs = query.secondsBack?.let { System.currentTimeMillis() - it * 1000 } ?: 0
+        val fetch = minOf(query.limit * FETCH_FACTOR, MAX_FETCH)
+        val radius = query.radius
+        val rows = if (radius == null) {
+            log.at(target.x, target.y, target.z, fromTs, Long.MAX_VALUE, limit = fetch, reverse = true)
+        } else {
+            val chunkX = ((target.x - radius) shr 4)..((target.x + radius) shr 4)
+            val chunkZ = ((target.z - radius) shr 4)..((target.z + radius) shr 4)
+            chunkX.flatMap { cx -> chunkZ.map { cz -> cx to cz } }
+                .flatMap { (cx, cz) -> log.inChunk(cx, cz, fromTs, Long.MAX_VALUE, limit = fetch, reverse = true) }
+                .filter { row ->
+                    row.x in (target.x - radius)..(target.x + radius) &&
+                        row.y in (target.y - radius)..(target.y + radius) &&
+                        row.z in (target.z - radius)..(target.z + radius)
+                }
+        }
+        val included = query.included.map(::normalizeItem).toSet()
+        val excluded = query.excluded.map(::normalizeItem).toSet()
+        val excludedUsers = query.excluded.mapNotNull(::resolve).toSet()
+        return rows.asSequence()
+            .filter { query.causes == null || it.cause in query.causes }
+            .filter { users.isEmpty() || it.actor in users }
+            .filter { it.actor == null || it.actor !in excludedUsers }
+            // A row names a block rather than an item, so what the filter is about is either state it
+            // ran between; naming an item that no block is made of therefore hides the whole plane,
+            // which is what a reader asking for one item wants.
+            .filter { row ->
+                val named = setOf(stateName(row.stateBefore), stateName(row.stateAfter))
+                (included.isEmpty() || named.any { it in included }) && named.none { it in excluded }
+            }
+            .take(query.limit + 1)
+            .map { Line(it.timestamp, describe(it)) }
+            .toList()
     }
 
     private fun read(target: LookupTarget, query: LookupQuery): EntryPage {
@@ -386,6 +483,31 @@ class Lookups(private val plugin: Plugin, private val ledger: RocksItemLog) {
             "slot ${entry.holder.slot}  " +
             "$direction ${describe(entry.counterparty)}$by"
     }
+
+    /**
+     * A block row reads as what the position went between, and it says plainly when the name on it was
+     * worked out rather than witnessed. A row with nobody on it is not a row worth less — an unfound
+     * culprit is no reason to leave a disappearance unrecorded — so it simply says so.
+     */
+    private fun describe(row: BlockRow): String {
+        val by = when {
+            row.actor == null -> "  by nobody named"
+            row.confidence == Confidence.INFERRED -> "  by ${playerName(row.actor)} (worked out)"
+            else -> "  by ${playerName(row.actor)}"
+        }
+        val payload = if (row.payloadBefore != null || row.payloadAfter != null) "  +contents" else ""
+        return "${TIME_FORMAT.format(Instant.ofEpochMilli(row.timestamp))}  " +
+            "${row.cause.name.lowercase()}  " +
+            "${stateOf(row.stateBefore)} -> ${stateOf(row.stateAfter)}  " +
+            "block ${row.x} ${row.y} ${row.z}$by$payload"
+    }
+
+    // The full state string is what the registry keeps, properties and all, which is what makes a row
+    // restorable; the properties are noise in a list, so only the block itself is shown.
+    private fun stateName(id: Int): String = stateOf(id).substringBefore('[')
+
+    private fun stateOf(id: Int): String =
+        ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, id) ?: "block state $id"
 
     private fun itemKey(itemFormId: Long): String? {
         val form = ledger.form(itemFormId) ?: return null

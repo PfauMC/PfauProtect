@@ -161,4 +161,45 @@ class LookupTest {
         assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("a:chatter") }
         assertThrows(CommandSyntaxException::class.java) { parseLookupQuery(":10") }
     }
+
+    // The block plane's causes only became worth offering as filters once something wrote them: an
+    // empty answer from a filter that sounds certain reads as "nothing happened there".
+    @Test
+    fun `the block plane is reachable by name and every block cause is under one of the filters`() {
+        val blockRange = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet()
+        assertEquals(32, blockRange.size)
+        assertEquals(blockRange, Action.of("block")?.causes)
+
+        val named = Action.entries.filter { it != Action.BLOCK }.flatMap { it.causes }.toSet()
+        val unreachable = blockRange - named
+        assertEquals(emptySet<Cause>(), unreachable, "no filter names these block causes")
+    }
+
+    // The two planes share one dictionary, so a filter meant for one must not quietly answer with the
+    // other's rows: an investigator asking about chests would be handed explosions.
+    @Test
+    fun `no filter mixes the two planes`() {
+        for (action in Action.entries) {
+            if (action == Action.BLOCK) continue
+            val block = action.causes.count { it.id in 0xD0..0xEF }
+            assertTrue(
+                block == 0 || block == action.causes.size,
+                "${action.keys.first()} names causes from both planes",
+            )
+        }
+    }
+
+    @Test
+    fun `block filters parse by every spelling they offer`() {
+        for (action in listOf(Action.EXPLOSION, Action.FIRE, Action.LIQUID, Action.PISTON, Action.GRAVITY)) {
+            for (key in action.keys) {
+                assertEquals(action.causes, parseLookupQuery("action:$key").causes, key)
+            }
+        }
+        assertEquals(
+            Action.EXPLOSION.causes + Action.FIRE.causes,
+            parseLookupQuery("a:explosion,fire").causes,
+        )
+    }
+
 }
