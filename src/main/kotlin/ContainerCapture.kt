@@ -523,6 +523,29 @@ class ContainerCaptureListener(
         val player = event.player
         val drop = event.itemDrop
         val encoded = codec.encodeOrNull(drop.itemStack) ?: return
+        // A player who leaves holding something on the cursor has it dropped for them, and that happens
+        // after the quit event: the pass is already gone, the intent would be left for nobody and the
+        // funnel silenced on a promise nothing can keep, so the item would leave no trace at either
+        // end. Whether the pass can still run is exactly whether the player still has a line of
+        // reference, so the row is written here instead, naming the cursor it came off.
+        if (baselines[player.uniqueId] == null) {
+            sink(
+                listOf(
+                    Transfer(
+                        cause = Cause.DROP_ON_DISCONNECT,
+                        from = PlayerCursor(player.uniqueId),
+                        to = ItemEntityRef(drop.uniqueId),
+                        form = encoded.form,
+                        damage = encoded.damage,
+                        qty = encoded.count,
+                        timestamp = System.currentTimeMillis(),
+                    )
+                )
+            )
+            // The birth is in the row just written, so the funnel still has to stay quiet about it.
+            origins.accounted(drop.uniqueId, encoded.count)
+            return
+        }
         // Nothing open and the player's own inventory screen report the same type, so a drop out of
         // the survival inventory is indistinguishable from a drop out of the hand and reads as one.
         val inMenu = player.openInventory.type != InventoryType.CRAFTING
