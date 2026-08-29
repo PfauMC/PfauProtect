@@ -77,6 +77,10 @@ data class BlockPostingsPage(val positions: List<BlockPostings>, val reachedEnd:
 // parsed as something it never was; a family holds rows the value version never speaks for at all.
 private const val SCHEMA_VERSION = 3L
 private const val MAX_REGION_CHUNKS = 1024
+
+// What one region query may hold in memory at once. Reached only by a query over an area whose
+// history is larger than any answer could carry, and a read that reaches it says it did.
+private const val MAX_REGION_ROWS = 100_000
 internal const val MAX_BATCH = 256
 internal const val WRITER_POLL_MILLIS = 50L
 internal const val WAL_FLUSH_INTERVAL_NANOS = 1_000_000_000L
@@ -374,12 +378,20 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             if (closed) return EntryPage(emptyList(), false)
             val found = ArrayList<LedgerEntry>()
             var complete = true
-            // Keys inside a chunk are ordered by position and only then by time, so a chunk holding
-            // more rows than the limit contributes them by position rather than by time.
+            // Keys inside a chunk are ordered by position and only then by time, so a chunk cut off
+            // at the limit contributes its rows by position: a crater packed into one chunk answers
+            // with one corner of itself and reads as silence over every position that is not in that
+            // corner. Every row under the prefix is therefore in hand before the limit is applied,
+            // which is how the block plane has always read a chunk.
             for (cx in chunkX) {
                 for (cz in chunkZ) {
                     for (prefix in EntryCodec.blockChunkPrefixes(world, cx, cz, knownIds)) {
-                        val page = scan(prefix, fromTs, toTs, reverse, limit)
+                        val room = MAX_REGION_ROWS - found.size
+                        if (room <= 0) {
+                            complete = false
+                            continue
+                        }
+                        val page = scan(prefix, fromTs, toTs, reverse, room)
                         found += page.entries
                         complete = complete && page.complete
                     }

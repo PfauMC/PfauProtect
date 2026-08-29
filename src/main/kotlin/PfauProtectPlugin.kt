@@ -127,10 +127,11 @@ class PfauProtectPlugin : JavaPlugin() {
         val capture = ContainerCaptureListener(this, uncovered::submit, codec, origins, ledger) { intent, qty ->
             unspentDrop(mechanisms, intent, qty)
         }
+        val entities = EntityOrigins()
         val destruction = BlockDestructionListener(
-            this, ledger.registries, blocks, attribution, codec, ledger, uncovered::submit,
+            this, ledger.registries, blocks, attribution, codec, origins, entities, ledger, uncovered::submit,
         )
-        val lookups = Lookups(this, ledger, blocks)
+        val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
         // the way back down.
@@ -149,6 +150,7 @@ class PfauProtectPlugin : JavaPlugin() {
         // priority the order is free: nothing it reads is written by any of them.
         server.pluginManager.registerEvents(BlockCaptureListener(blocks, attribution), this)
         server.pluginManager.registerEvents(destruction, this)
+        server.pluginManager.registerEvents(EntityOriginListener(attribution, entities), this)
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
@@ -170,7 +172,10 @@ class PfauProtectPlugin : JavaPlugin() {
         }, 1, 1)
         server.asyncScheduler.runAtFixedRate(
             this,
-            { attribution.sweep() },
+            {
+                attribution.sweep()
+                entities.sweep()
+            },
             NOTE_MINUTES,
             NOTE_MINUTES,
             TimeUnit.MINUTES,
@@ -216,7 +221,10 @@ class PfauProtectPlugin : JavaPlugin() {
             running.mechanisms.flush()
             running.ledger.drain()
             reportUncovered(running.uncovered)
-        } catch (failure: Exception) {
+            // Throwable and not Exception: a jar swapped under a running server turns an unloaded
+            // class into a NoClassDefFoundError here, and the diagnostic is worth more on exactly the
+            // shutdowns that go wrong.
+        } catch (failure: Throwable) {
             logger.log(Level.SEVERE, "the ledger lost entries while shutting down", failure)
         } finally {
             // Closing a world base stops its writer before it frees its handles, and that writer
@@ -367,38 +375,19 @@ class PfauProtectPlugin : JavaPlugin() {
                 }
         )
 
+    // A player pointing at a block means that block; anything else means the position the command was
+    // run from, which is what makes the command answerable from the console and from `/execute
+    // positioned`, and what stops a player who looked past the last block from being told off.
     private fun lookup(source: CommandSourceStack, query: LookupQuery): Int {
         val lookups = running?.lookups ?: return notReady(source)
-        val player = source.executor as? Player
-        if (player == null) {
-            source.sender.sendMessage("Only a player can look at a block.")
-            return 0
-        }
-        val block = player.getTargetBlockExact(TARGET_RANGE)
-        if (block == null) {
-            player.sendMessage("No block within $TARGET_RANGE blocks of where you are looking.")
-            return 0
-        }
-        lookups.run(player, lookupTargetAt(block), query)
+        val aimed = (source.executor as? Player)?.getTargetBlockExact(TARGET_RANGE)
+        lookups.run(source.sender, aimed?.let(::lookupTargetAt) ?: lookupTargetAt(source.location), query)
         return Command.SINGLE_SUCCESS
     }
 
     private fun near(source: CommandSourceStack, radius: Int): Int {
         val lookups = running?.lookups ?: return notReady(source)
-        val player = source.executor as? Player
-        if (player == null) {
-            source.sender.sendMessage("Only a player has somewhere to look around.")
-            return 0
-        }
-        val at = player.location
-        val target = LookupTarget(
-            at.world.uid,
-            at.blockX,
-            at.blockY,
-            at.blockZ,
-            "you at ${at.blockX} ${at.blockY} ${at.blockZ}",
-        )
-        lookups.run(player, target, LookupQuery(radius = radius))
+        lookups.run(source.sender, lookupTargetAt(source.location), LookupQuery(radius = radius))
         return Command.SINGLE_SUCCESS
     }
 

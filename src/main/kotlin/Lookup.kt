@@ -9,7 +9,9 @@ import com.mojang.brigadier.exceptions.DynamicCommandExceptionType
 import com.mojang.brigadier.suggestion.Suggestions
 import com.mojang.brigadier.suggestion.SuggestionsBuilder
 import io.papermc.paper.command.brigadier.argument.CustomArgumentType
+import net.minecraft.core.component.DataComponents
 import org.bukkit.Bukkit
+import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.command.CommandSender
@@ -23,6 +25,10 @@ import java.util.logging.Level
 
 const val DEFAULT_LIMIT = 10
 const val MAX_LIMIT = 200
+
+// How many postings a transaction may hold before it stops being about the position that was asked
+// after. A break of a double block with its drops sits well under this.
+private const val NEIGHBOURLY_TRANSACTION = 8
 const val MAX_RADIUS = 200
 
 private const val GLOBAL_RADIUS = -1
@@ -152,6 +158,12 @@ fun lookupTargetAt(block: Block) = LookupTarget(
     block.z,
     "${block.type.name.lowercase()} at ${block.x} ${block.y} ${block.z}",
 )
+
+// Where the command was run from rather than what it was pointed at. The console, a command block and
+// `/execute positioned` all have a position and no line of sight, and neither does a player looking
+// at the sky.
+fun lookupTargetAt(at: Location) =
+    LookupTarget(at.world.uid, at.blockX, at.blockY, at.blockZ, "${at.blockX} ${at.blockY} ${at.blockZ}")
 
 private val NOT_A_PARAMETER = DynamicCommandExceptionType {
     LiteralMessage("'$it' is not a parameter, expected one of ${Param.help}")
@@ -319,10 +331,36 @@ class LookupArgument : CustomArgumentType<LookupQuery, String> {
 // rather than as two lists a reader has to interleave in their head.
 private class Line(val timestamp: Long, val text: String)
 
+// A break says two things at once: the position gave up what it was made of, and an item came out of
+// it. Only the position end carries coordinates, so a reader standing there sees the debit and
+// nothing of what it turned into. The transaction is what joins the two, and asking for it costs a
+// point read per shown row instead of a second copy of every drop in the position index — which
+// would also be a lie a second later, once the item has drifted, merged or been picked up.
+internal fun wholeTransactions(ledger: RocksItemLog, entries: List<LedgerEntry>): List<LedgerEntry> {
+    val shown = LinkedHashSet(entries)
+    // An ordinary movement names both of its ends on the single row the position holds, so its other
+    // half would print the same movement a second time, mirrored. What is worth pulling in is the
+    // posting no row on screen names at all.
+    val mirrors = entries.mapTo(HashSet()) { it.counterparty to it.holder }
+    for (entry in entries) {
+        val whole = ledger.transactionEntries(entry)
+        // A break is a handful of postings about one position and belongs on screen together. An
+        // explosion is one transaction over a whole crater, and pulling it in would answer a question
+        // about this position with thousands of rows about every other one.
+        if (whole.size > NEIGHBOURLY_TRANSACTION) continue
+        for (posting in whole) {
+            if ((posting.holder to posting.counterparty) in mirrors) continue
+            shown += posting
+        }
+    }
+    return shown.toList()
+}
+
 class Lookups(
     private val plugin: Plugin,
     private val ledger: RocksItemLog,
     private val blocks: BlockLogs,
+    private val codec: ItemFormCodec? = null,
 ) {
 
     // Reading hits RocksDB through JNI, which has no business running on a region thread, and a task
@@ -351,15 +389,24 @@ class Lookups(
         }
         val users = named.values.filterNotNull().toSet()
         val page = read(target, query)
-        val items = filter(page.entries, query, users).map { Line(it.timestamp, describe(it)) }
+        val items = wholeTransactions(ledger, filter(page.entries, query, users))
+            .map { Line(it.timestamp, describe(it)) }
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
         val changes = blockLines(target, query, users)
         val matched = (items + changes).sortedByDescending { it.timestamp }
         val lines = matched.take(query.limit)
         val where = if (query.radius == null) target.label else "${query.radius} blocks around ${target.label}"
+        // Nothing matched can mean two very different things, and telling them apart is the whole
+        // difference between "nothing happened here" and "I did not get far enough to see". A read
+        // that stopped early inside a busy chunk hands back rows from one corner of it, and answering
+        // that with silence would clear a position the reader is standing in the crater of.
         if (lines.isEmpty()) {
-            sender.sendMessage("No ledger entries for $where.")
+            sender.sendMessage(
+                if (page.complete) "No ledger entries for $where."
+                else "Nothing matched for $where, but the read stopped before the whole area was " +
+                    "seen. Narrow the radius or ask for more with limit:${query.limit * 4}."
+            )
             return
         }
         sender.sendMessage("Last ${lines.size} ledger entries for $where:")
@@ -440,10 +487,21 @@ class Lookups(
             reverse = true,
             limit = fetch,
         )
+        // The scan reads whole chunks, so it comes back with rows the radius does not cover. The block
+        // plane filters itself to the box, and two planes disagreeing about what one radius means
+        // inside one answer reads as rows appearing and vanishing for no reason.
+        val inBox = { x: Int, y: Int, z: Int ->
+            x in (target.x - radius)..(target.x + radius) &&
+                y in (target.y - radius)..(target.y + radius) &&
+                z in (target.z - radius)..(target.z + radius)
+        }
         return EntryPage(
             region.entries.filter { entry ->
-                val height = (entry.holder as? Container)?.y ?: (entry.holder as? WorldBlock)?.y
-                height == null || height in (target.y - radius)..(target.y + radius)
+                when (val holder = entry.holder) {
+                    is Container -> inBox(holder.x, holder.y, holder.z)
+                    is WorldBlock -> inBox(holder.x, holder.y, holder.z)
+                    else -> true
+                }
             },
             region.complete,
         )
@@ -479,8 +537,8 @@ class Lookups(
         val by = entry.actor?.let { "  by ${playerName(it)}" } ?: ""
         return "${TIME_FORMAT.format(Instant.ofEpochMilli(entry.timestamp))}  " +
             "${entry.cause.name.lowercase()}  " +
-            "$amount ${itemKey(entry.itemFormId) ?: "item form ${entry.itemFormId}"}  " +
-            "slot ${entry.holder.slot}  " +
+            "$amount ${itemLabel(entry.itemFormId)}  " +
+            "${describe(entry.holder)}  " +
             "$direction ${describe(entry.counterparty)}$by"
     }
 
@@ -496,10 +554,13 @@ class Lookups(
             else -> "  by ${playerName(row.actor)}"
         }
         val payload = if (row.payloadBefore != null || row.payloadAfter != null) "  +contents" else ""
+        // Two rows of a door or a bed are otherwise the same row twice, and which half was struck is
+        // the whole of what an investigator is asking.
+        val half = if (row.alongside) "  (other half)" else ""
         return "${TIME_FORMAT.format(Instant.ofEpochMilli(row.timestamp))}  " +
             "${row.cause.name.lowercase()}  " +
             "${stateOf(row.stateBefore)} -> ${stateOf(row.stateAfter)}  " +
-            "block ${row.x} ${row.y} ${row.z}$by$payload"
+            "block ${row.x} ${row.y} ${row.z}$by$payload$half"
     }
 
     // The full state string is what the registry keeps, properties and all, which is what makes a row
@@ -508,6 +569,20 @@ class Lookups(
 
     private fun stateOf(id: Int): String =
         ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, id) ?: "block state $id"
+
+    /**
+     * The item type plus the name written on it, when one is. A named box and a bare one are the same
+     * type and read as the same row without it, which is exactly the difference a shulker box full of
+     * somebody's things turns on.
+     */
+    private fun itemLabel(itemFormId: Long): String {
+        val type = itemKey(itemFormId) ?: return "item form $itemFormId"
+        val decoder = codec ?: return type
+        val form = ledger.form(itemFormId) ?: return type
+        // A form that will not decode still names its type, which is worth more than an error.
+        val named = runCatching { decoder.decode(form, 1, null).get(DataComponents.CUSTOM_NAME) }.getOrNull()
+        return if (named == null) type else "$type \"${named.string}\""
+    }
 
     private fun itemKey(itemFormId: Long): String? {
         val form = ledger.form(itemFormId) ?: return null

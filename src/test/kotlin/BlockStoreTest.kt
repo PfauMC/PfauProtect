@@ -137,6 +137,31 @@ class BlockStoreTest {
     }
 
     @Test
+    fun `the half that went along with the struck one says so through the bytes`() {
+        val row = BlockRow(
+            x = 1,
+            y = 2,
+            z = 3,
+            timestamp = T0,
+            eventId = 1,
+            ordinal = 0,
+            cause = Cause.BLK_PLAYER_BREAK,
+            stateBefore = 1,
+            stateAfter = 2,
+            alongside = true,
+        )
+        val key = BlockCodec.key(row.x, row.y, row.z, row.timestamp, row.eventId, row.ordinal)
+        val value = BlockCodec.value(row, IdResolver { _, _ -> 0 })
+        val names = IdLookup { _, _ -> null }
+
+        assertEquals(0x80.toByte(), value[0])
+        assertEquals(row, BlockCodec.decode(key, value, names))
+        // A row written before the flag existed leaves the bit clear, so it reads back as the struck
+        // half rather than as a half that went along with one.
+        assertFalse(BlockCodec.decode(key, BlockCodec.value(row.copy(alongside = false), IdResolver { _, _ -> 0 }), names).alongside)
+    }
+
+    @Test
     fun `a row of an unknown layout version is skipped rather than guessed at`() {
         val row = BlockRow(1, 2, 3, T0, 0, 0, Cause.BLK_GROW, 1, 2)
         val key = BlockCodec.key(1, 2, 3, T0, 0, 0)

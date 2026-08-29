@@ -57,6 +57,19 @@ internal fun spotOf(at: Location) = Spot(at.world.uid, at.x, at.y, at.z)
 // plant, a candle cake and a stem that has grown its fruit all back an item nowhere in the registry
 // while standing on a position the ledger credited, and giving nothing back there would leave that
 // credit behind for ever.
+// A door, a bed, a tall plant and an extended piston stand in two positions but are paid for once,
+// and the credit goes to the half the placement event names. The breaker may strike either half, and
+// the debit belongs where the credit is: booked against the struck half instead, it leaves the
+// credited half holding a block that is gone while the other gives up one it never got. Each plane
+// stays consistent read on its own, so nothing short of the cross-check between them ever notices.
+// Where neither half was paid for — a plant the world generated — there is no credit to find and the
+// struck half is as good an answer as any.
+internal fun paidHalf(
+    struck: WorldBlock,
+    partner: WorldBlock?,
+    remembered: (WorldBlock) -> ByteArray?,
+): WorldBlock = partner?.takeIf { remembered(struck) == null && remembered(it) != null } ?: struck
+
 internal fun gaveBack(remembered: ByteArray?, shell: ByteArray?): ByteArray? {
     if (remembered == null) return shell
     if (shell == null) return remembered
@@ -164,7 +177,11 @@ class BlockMechanismListener(
     // Breaking a block and the drops it causes are one synchronous call on one thread. This is not a
     // cache: it is the only thing that tells that call apart from a player brushing suspicious sand,
     // which raises the drop event on its own, with no break behind it and the block still standing.
-    private val breaking = ThreadLocal<WorldBlock?>()
+    // The other half is found here as well: by the time the drop event arrives both halves are gone
+    // from the world, and looking for a partner then finds air.
+    private class Broken(val at: WorldBlock, val partner: WorldBlock?)
+
+    private val breaking = ThreadLocal<Broken?>()
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDispense(event: BlockDispenseEvent) {
@@ -188,7 +205,7 @@ class BlockMechanismListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockBreak(event: BlockBreakEvent) {
-        breaking.set(positionOf(event.block))
+        breaking.set(Broken(positionOf(event.block), otherHalfOf(event.block)?.let(::positionOf)))
     }
 
     // The state handed to this event is the one from before the break, so what spilled is still
@@ -196,7 +213,7 @@ class BlockMechanismListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockDrop(event: BlockDropItemEvent) {
         val block = event.block
-        if (!brokeHere(block)) return
+        val broken = brokeHere(block) ?: return
         val state = event.blockState
         val actor = event.player.uniqueId
         val timestamp = System.currentTimeMillis()
@@ -205,10 +222,12 @@ class BlockMechanismListener(
         // movement and neither may name the other. Both face Void, and the shared tx_id is the only
         // thing that carries a walk of the graph across the break.
         val transaction = ArrayList<Transfer>(event.items.size + 1)
-        val position = positionOf(block)
-        val remembered = placed.formAt(position.world, position.x, position.y, position.z)
-        // Cleared here because no other way for a block to leave says so.
-        placed.clearFormAt(position.world, position.x, position.y, position.z)
+        val position = paidHalf(broken.at, broken.partner, ::rememberedAt)
+        val remembered = rememberedAt(position)
+        // Cleared here because no other way for a block to leave says so, and on both halves because
+        // a half left alone would go on naming a block that stands nowhere.
+        forget(broken.at)
+        broken.partner?.let(::forget)
         gaveBack(remembered, shellForm(state))?.let {
             transaction += Transfer(
                 cause = Cause.BLOCK_DROP,
@@ -336,11 +355,15 @@ class BlockMechanismListener(
         }
     }
 
-    private fun brokeHere(block: Block): Boolean {
+    private fun brokeHere(block: Block): Broken? {
         val broken = breaking.get()
         breaking.remove()
-        return broken == positionOf(block)
+        return broken?.takeIf { it.at == positionOf(block) }
     }
+
+    private fun rememberedAt(at: WorldBlock) = placed.formAt(at.world, at.x, at.y, at.z)
+
+    private fun forget(at: WorldBlock) = placed.clearFormAt(at.world, at.x, at.y, at.z)
 
     // A shulker keeps what it held inside the item it drops, and that move is written elsewhere.
     private fun spilled(state: BlockState): Array<BukkitItemStack?> {

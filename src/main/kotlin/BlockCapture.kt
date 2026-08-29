@@ -213,7 +213,7 @@ class BlockCaptureListener(
         brokenRow(block, state, player, actor)?.let { changes += it }
         // The other half is a direct neighbour, so the region ticking this block owns it too.
         (otherHalfOf(block) as CraftBlock?)?.let { partner ->
-            brokenRow(partner, partner.blockState, player, actor)?.let { changes += it }
+            brokenRow(partner, partner.blockState, player, actor, alongside = true)?.let { changes += it }
         }
         singledChestHalf(block, state, actor)?.let { changes += it }
         log.submit(changes)
@@ -224,6 +224,7 @@ class BlockCaptureListener(
         state: NmsBlockState,
         player: ServerPlayer,
         actor: UUID,
+        alongside: Boolean = false,
     ): BlockChange? {
         val level = block.level
         val pos = block.position
@@ -248,6 +249,7 @@ class BlockCaptureListener(
             before = was,
             after = now,
             cause = Cause.BLK_PLAYER_BREAK,
+            alongside = alongside,
             actor = actor,
             // The block entity is only there while the event runs.
             payloadBefore = payloadOf(level.getBlockEntity(pos), level.registryAccess()),

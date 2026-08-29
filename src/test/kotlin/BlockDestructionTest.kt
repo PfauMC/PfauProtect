@@ -3,6 +3,7 @@ package io.pfaumc.pfauprotect
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
 import net.minecraft.core.Direction
 import net.minecraft.world.item.ItemStack as NmsItemStack
+import net.minecraft.world.item.Items
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.state.properties.BedPart
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
@@ -16,6 +17,7 @@ import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
 import org.bukkit.block.data.BlockData
 import org.bukkit.block.data.type.Bed
+import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Creeper
 import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
@@ -83,6 +85,11 @@ class BlockDestructionTest {
     private lateinit var logs: BlockLogs
     private lateinit var log: BlockLog
 
+    private val spawned = ArrayList<Transfer>()
+    private val coalescer = TickCoalescer(spawned::add)
+    private val origins = SpawnOrigins(coalescer)
+    private val entityOrigins = EntityOrigins()
+
     // A getter and not a field: touching `Blocks` before the bootstrap in `open` throws out of the
     // class initializer, and a field is initialized before it.
     private val bedHead
@@ -112,10 +119,20 @@ class BlockDestructionTest {
     // As much of a block as finding the other half takes: where it stands, what stands there, and the
     // neighbour behind each face. Equality is by position, which is `CraftBlock`'s own, so a partner
     // derived from one half and the same position already in the list are one entry and not two.
-    private fun blockStub(x: Int, y: Int, z: Int, data: BlockData, neighbours: Map<BlockFace, Block> = emptyMap()) =
+    private fun blockStub(
+        x: Int,
+        y: Int,
+        z: Int,
+        data: BlockData,
+        neighbours: Map<BlockFace, Block> = emptyMap(),
+        drops: Collection<org.bukkit.inventory.ItemStack> = emptyList(),
+    ) =
         Proxy.newProxyInstance(Block::class.java.classLoader, arrayOf(Block::class.java)) { _, method, args ->
+            val stubWorld = stub(World::class.java, mapOf("getUID" to world))
             when (method.name) {
-                "getWorld" -> stub(World::class.java, mapOf("getUID" to world))
+                "getWorld" -> stubWorld
+                "getLocation" -> Location(stubWorld, x.toDouble(), y.toDouble(), z.toDouble())
+                "getDrops" -> drops
                 "getBlockData" -> data
                 "getRelative" -> neighbours[args[0] as BlockFace]
                 "getX" -> x
@@ -143,6 +160,8 @@ class BlockDestructionTest {
         logs = logs,
         attribution = attribution,
         codec = ItemFormCodec(shared.registries, ServerRegistries.access),
+        origins = origins,
+        entities = entityOrigins,
         placed = shared,
         sink = sink,
     )
@@ -1252,4 +1271,35 @@ class BlockDestructionTest {
         assertEquals(listOf(WorldBlock(world, 4, 64, 0)), filled.map { it.at })
     }
 
+    @Test
+    fun `a block the world takes away explains the item it drops`() {
+        val cactus = CraftItemStack.asCraftMirror(NmsItemStack(Items.CACTUS))
+        val block = blockStub(5, 64, 7, Blocks.CACTUS.defaultBlockState().asBlockData(), drops = listOf(cactus))
+        val breaker = UUID.randomUUID()
+
+        expectDrops(origins, ItemFormCodec(shared.registries, ServerRegistries.access), block, Cause.BLK_FADE, breaker)
+
+        val entity = UUID.randomUUID()
+        val key = ItemFormCodec(shared.registries, ServerRegistries.access).encodeOrNull(cactus)!!.key
+        assertEquals(1, origins.claim(entity, Spot(world, 5.2, 64.0, 7.4), key, 1))
+
+        coalescer.flush()
+        val row = spawned.single()
+        // Born out of the same void a player break's drop is born out of, under the cause that took
+        // the block away and naming whoever the ladder held responsible for it.
+        assertEquals(Void, row.from)
+        assertEquals(ItemEntityRef(entity), row.to)
+        assertEquals(Cause.BLK_FADE, row.cause)
+        assertEquals(breaker, row.actor)
+        assertEquals(1, row.qty)
+    }
+
+    @Test
+    fun `a block that drops nothing leaves no note behind`() {
+        val block = blockStub(5, 64, 7, Blocks.GLASS.defaultBlockState().asBlockData())
+
+        expectDrops(origins, ItemFormCodec(shared.registries, ServerRegistries.access), block, Cause.BLK_FADE, null)
+
+        assertTrue(origins.isEmpty)
+    }
 }

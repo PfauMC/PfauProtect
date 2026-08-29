@@ -155,6 +155,25 @@ class Attribution(
         return found?.let { Attributed(it.actor) }
     }
 
+    /**
+     * Who put down a block anywhere within reach of this position, whatever block it was. A wither and
+     * the golems are built out of blocks and appear when the last of them is placed, so the answer is
+     * the most recent placement around the shape rather than one at a position the event names.
+     */
+    fun builderNear(at: WorldBlock, reach: Int): Attributed? {
+        var best: Note? = null
+        for (dx in -reach..reach) {
+            for (dy in -reach..reach) {
+                for (dz in -reach..reach) {
+                    val here = at.copy(x = at.x + dx, y = at.y + dy, z = at.z + dz)
+                    val note = noted(placements, here, NOTE_MILLIS) ?: continue
+                    if (best == null || note.at > best.at) best = note
+                }
+            }
+        }
+        return best?.let { Attributed(it.actor) }
+    }
+
     // A falling block is attributed in two halves and positional state does not survive the flight:
     // what stands in the source position by the time the block lands is whatever took its place.
     fun tookOff(entity: UUID, falling: Falling) {
@@ -207,4 +226,45 @@ class Attribution(
         .maxByOrNull { it.at }
 
     private fun blockOf(state: String) = state.substringBefore('[')
+}
+
+// How long an origin stands for. An entity outlives every other note in this file: a wither built in
+// the morning is still a wither in the evening. The origin is dropped when the entity goes, and this
+// window only catches the ones whose going nobody saw.
+internal const val ORIGIN_MILLIS = 6 * 60 * 60 * 1000L
+
+/**
+ * Which player an entity owes its existence to, and so who answers for the blocks it takes away. A
+ * wither, a golem and a silverfish are summoned rather than born, and the server names none of them
+ * on the event that destroys a block: without this rung every one of them reads as nobody.
+ *
+ * In memory only, and deliberately. An entity that outlived a restart is answered with nobody rather
+ * than with a guess: reading an origin back would need a plane for entities the ledger does not have,
+ * and deriving one from the block journal would name the wrong wither the first time two of them
+ * stood in one world. A summon is also not a placement — nothing is written down at the moment an
+ * entity appears — so there is nothing here for the journal rung to fall back on.
+ */
+class EntityOrigins(private val now: () -> Long = System::currentTimeMillis) {
+    private class Note(val actor: UUID, val at: Long)
+
+    private val origins = ConcurrentHashMap<UUID, Note>()
+
+    val isEmpty: Boolean get() = origins.isEmpty()
+
+    fun appeared(entity: UUID, actor: UUID) {
+        origins[entity] = Note(actor, now())
+    }
+
+    fun gone(entity: UUID) {
+        origins.remove(entity)
+    }
+
+    /** Worked out from what a player did, never witnessed on the event that destroyed the block. */
+    fun summonerOf(entity: UUID): Attributed? =
+        origins[entity]?.takeIf { now() - it.at <= ORIGIN_MILLIS }?.let { Attributed(it.actor) }
+
+    fun sweep() {
+        val cutoff = now() - ORIGIN_MILLIS
+        origins.values.removeIf { it.at < cutoff }
+    }
 }

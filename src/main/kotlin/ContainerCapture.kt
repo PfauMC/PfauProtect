@@ -328,7 +328,13 @@ class ContainerCaptureListener(
     // is already rolled back to its pre-consumption count, so it has to be read here and now.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockPlace(event: BlockPlaceEvent) {
-        val form = codec.encodeOrNull(event.itemInHand)?.form ?: return
+        val inHand = event.itemInHand
+        // A tool wears instead of being used up and stays in the hand afterwards, so a block put down
+        // with one — fire struck from a flint and steel — was paid for with nothing. Booked as what
+        // the position took over, the tool would be handed back whole when the fire goes out, writing
+        // off an item that is still in somebody's inventory.
+        if (inHand.type.maxDurability > 0) return
+        val form = codec.encodeOrNull(inHand)?.form ?: return
         val block = event.block
         placed.setFormAt(block.world.uid, block.x, block.y, block.z, form)
         intend(

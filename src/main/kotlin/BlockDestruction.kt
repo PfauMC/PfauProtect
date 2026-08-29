@@ -86,12 +86,37 @@ private val AIR_DATA: BlockData by lazy { Blocks.AIR.defaultBlockState().asBlock
 // than a disappearance. It decides nothing about the row and everything about the item side.
 internal class Site(
     val at: WorldBlock,
-    block: Block,
+    val block: Block,
     val before: BlockData,
     val after: String,
     val payload: ByteArray? = payloadAt(block),
     val went: WorldBlock? = null,
 )
+
+/**
+ * A block taken away by anything other than a player break drops its items with no event naming the
+ * break behind them: only a player break raises the drop event, so every other way of taking a block
+ * away leaves the birth of what it dropped to arrive at the spawn funnel unexplained, with neither
+ * the cause nor the culprit of the break on it.
+ *
+ * The drops are read while the block still stands, because a moment later there is nothing left to
+ * ask. Whether the block really goes need not be settled first: a note nobody claims is swept rather
+ * than written, so a block that survives after all, or a drop chance that came up empty, costs the
+ * note and nothing else.
+ */
+internal fun expectDrops(
+    origins: SpawnOrigins,
+    codec: ItemFormCodec,
+    block: Block,
+    cause: Cause,
+    actor: UUID?,
+) {
+    val spot = spotOf(block.location)
+    for (drop in block.drops) {
+        val key = codec.encodeOrNull(drop)?.key ?: continue
+        origins.expect(Void, cause, key, spot, drop.amount, actor)
+    }
+}
 
 /**
  * The cause an entity answers with wherever it turns up. A wither takes blocks away with its head and
@@ -551,6 +576,8 @@ class BlockDestructionListener(
     private val logs: BlockLogs,
     private val attribution: Attribution,
     private val codec: ItemFormCodec,
+    private val origins: SpawnOrigins,
+    private val entities: EntityOrigins,
     private val placed: PlacedForms,
     private val sink: (List<Transfer>) -> Unit,
 ) : Listener {
@@ -646,10 +673,10 @@ class BlockDestructionListener(
         val block = event.block
         if (capturing(block)) return
         val before = block.blockData
-        val cause = (event as? EntityBlockFormEvent)
-            ?.let { entityFormCause(it.entity.type) }
-            ?: formCause(before.asString)
-        changed(block, before, event.newState.blockData.asString, cause, by = null)
+        val entity = (event as? EntityBlockFormEvent)?.entity
+        val cause = entity?.let { entityFormCause(it.type) } ?: formCause(before.asString)
+        val by = entity?.let { entities.summonerOf(it.uniqueId) }
+        changed(block, before, event.newState.blockData.asString, cause, by)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -701,7 +728,7 @@ class BlockDestructionListener(
         if (entity is FallingBlock) return fell(event, entity)
         val cause = entityBlockCause(entity.type) ?: return
         val block = event.block
-        changed(block, block.blockData, event.blockData.asString, cause, by = null)
+        changed(block, block.blockData, event.blockData.asString, cause, entities.summonerOf(entity.uniqueId))
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -964,6 +991,8 @@ class BlockDestructionListener(
         for (site in rows) readBacks.filed(site.at, site.before.asString, site.after)
         val gone = real.filter { wentAway(it.before.asString, it.after) }
         if (gone.isEmpty()) return
+        // A block that moved carries itself to the position it arrived in and drops nothing on the way.
+        for (site in gone) if (site.went == null) expectDrops(origins, codec, site.block, cause, by?.actor)
         by?.actor?.let { actor -> for (site in gone) noteRemoval(site.at, site.after, actor) }
         // The note saying what a position took over is cleared wherever the block it was written about
         // stopped standing there: left behind, it answers for a block that is not the one there.
@@ -1060,6 +1089,9 @@ class BlockDestructionListener(
         // The block entity goes with the block, and by the read-back there is nothing left to read it
         // from: a sign that lost its fence would keep its position and lose its text.
         val payload = payloadAt(block)
+        // Here and not in the read-back: the items are already in the world by then, and a note that
+        // arrives after the spawn it explains is a note nobody can claim.
+        expectDrops(origins, codec, block, cause, by?.actor)
         plugin.server.regionScheduler.execute(plugin, block.world, block.x shr 4, block.z shr 4) {
             readBacks.done(at)
             val now = block.blockData.asString
@@ -1113,9 +1145,13 @@ class BlockDestructionListener(
     private fun whoSetOff(source: Entity): Attributed? {
         litBy(source)?.let { return Attributed(it.uniqueId, Confidence.FACT) }
         // Only a block that stood somewhere can be asked about, and of the entities that explode only
-        // dynamite was one. A creeper nobody lit and a crystal are answered with nobody.
-        if (source.type != EntityType.TNT) return null
-        return placerOf(positionOf(source.location.block), TNT)
+        // dynamite was one.
+        if (source.type == EntityType.TNT) {
+            placerOf(positionOf(source.location.block), TNT)?.let { return it }
+        }
+        // The last rung: a wither nobody lit was still built by somebody, and the explosion it opens
+        // with is the first thing it does.
+        return entities.summonerOf(source.uniqueId)
     }
 
     // A block that no longer stands there leaves whatever it was standing in, which for anything dry

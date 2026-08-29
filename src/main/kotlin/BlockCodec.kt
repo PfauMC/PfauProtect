@@ -16,6 +16,10 @@ data class BlockRow(
     val stateBefore: Int,
     val stateAfter: Int,
     val confidence: Confidence = Confidence.FACT,
+    // A position that changed only because the block standing in it also stood somewhere else, and
+    // that other half is the one the event was actually about. Without it the two rows of a door or a
+    // bed are indistinguishable and which half a player struck cannot be told from the journal.
+    val alongside: Boolean = false,
     val actor: UUID? = null,
     val payloadBefore: Long? = null,
     val payloadAfter: Long? = null,
@@ -44,6 +48,7 @@ object BlockCodec {
     private const val ACTOR_FLAG = 0x10
     private const val PAYLOAD_BEFORE_FLAG = 0x20
     private const val PAYLOAD_AFTER_FLAG = 0x40
+    private const val ALONGSIDE_FLAG = 0x80
 
     fun key(x: Int, y: Int, z: Int, timestamp: Long, eventId: Long, ordinal: Int): ByteArray {
         require(ordinal in 0..MAX_ORDINAL) { "change ordinal $ordinal does not fit in a byte" }
@@ -113,6 +118,7 @@ object BlockCodec {
             stateBefore = stateBefore,
             stateAfter = stateAfter,
             confidence = if (header and CONFIDENCE_FLAG != 0) Confidence.INFERRED else Confidence.FACT,
+            alongside = header and ALONGSIDE_FLAG != 0,
             actor = actor,
             payloadBefore = payloadBefore,
             payloadAfter = payloadAfter,
@@ -124,5 +130,6 @@ object BlockCodec {
             (if (row.confidence == Confidence.INFERRED) CONFIDENCE_FLAG else 0) or
             (if (row.actor != null) ACTOR_FLAG else 0) or
             (if (row.payloadBefore != null) PAYLOAD_BEFORE_FLAG else 0) or
-            (if (row.payloadAfter != null) PAYLOAD_AFTER_FLAG else 0)
+            (if (row.payloadAfter != null) PAYLOAD_AFTER_FLAG else 0) or
+            (if (row.alongside) ALONGSIDE_FLAG else 0)
 }

@@ -166,6 +166,36 @@ class MechanismTest {
         assertArrayEquals(pot, gaveBack(pot, null))
     }
 
+    // A door, a bed, a tall plant and an extended piston are paid for once, on the half the placement
+    // names. Struck on the other half, the debit still belongs where the credit sits, or the credited
+    // half keeps a holding for a block that is gone.
+    @Test
+    fun `a debit for a double block goes to the half that was paid for`() {
+        val lower = WorldBlock(world, 2, -60, 22)
+        val upper = WorldBlock(world, 2, -59, 22)
+        val paid = form(Items.TALL_GRASS)
+        val remembered = { at: WorldBlock -> paid.takeIf { at == lower } }
+
+        assertEquals(lower, paidHalf(upper, lower, remembered))
+        assertEquals(lower, paidHalf(lower, upper, remembered))
+    }
+
+    // A plant the world generated was paid for on neither half, and inventing a partner for it would
+    // move the debit off the position that actually lost the block.
+    @Test
+    fun `a debit for a double block nobody paid for stays where it was struck`() {
+        val lower = WorldBlock(world, 2, -60, 22)
+        val upper = WorldBlock(world, 2, -59, 22)
+        assertEquals(upper, paidHalf(upper, lower) { null })
+    }
+
+    // Most blocks have no other half at all, and the answer for them is the one position there is.
+    @Test
+    fun `a debit for a single block is booked where it was struck`() {
+        val at = WorldBlock(world, 44, -60, -27)
+        assertEquals(at, paidHalf(at, null) { form(Items.STONE) })
+    }
+
     // Stands in for a furnace: reachable slots depend on the face, and the game asks the container
     // itself rather than reading its inventory.
     private class FacedContainer : SimpleContainer(3), WorldlyContainer {

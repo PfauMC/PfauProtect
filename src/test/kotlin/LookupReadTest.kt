@@ -1,5 +1,8 @@
 package io.pfaumc.pfauprotect
 
+import net.minecraft.core.component.DataComponents
+import net.minecraft.network.chat.Component
+import net.minecraft.world.item.Items
 import org.bukkit.command.CommandSender
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -10,6 +13,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.lang.reflect.Proxy
 import java.nio.file.Path
 import java.util.UUID
+import net.minecraft.world.item.ItemStack as NmsItemStack
 
 private const val T0 = 1_700_000_000_000L
 private const val AIR = "minecraft:air"
@@ -38,7 +42,13 @@ class LookupReadTest {
         shared.close()
     }
 
-    private fun said(query: LookupQuery = LookupQuery(), x: Int = 10, y: Int = 64, z: Int = -3): List<String> {
+    private fun said(
+        query: LookupQuery = LookupQuery(),
+        x: Int = 10,
+        y: Int = 64,
+        z: Int = -3,
+        codec: ItemFormCodec? = null,
+    ): List<String> {
         val lines = ArrayList<String>()
         val sender = Proxy.newProxyInstance(
             CommandSender::class.java.classLoader,
@@ -47,7 +57,8 @@ class LookupReadTest {
             if (method.name == "sendMessage") args?.filterIsInstance<String>()?.forEach { lines += it }
             null
         } as CommandSender
-        Lookups(stubPlugin(), shared, logs).report(sender, LookupTarget(world, x, y, z, "stone at $x $y $z"), query)
+        Lookups(stubPlugin(), shared, logs, codec)
+            .report(sender, LookupTarget(world, x, y, z, "stone at $x $y $z"), query)
         return lines
     }
 
@@ -90,6 +101,74 @@ class LookupReadTest {
         assertTrue(said().any { it.contains("by nobody named") }, "${said()}")
     }
 
+    // A region scan reads whole chunks, so it answers with rows a radius does not cover. The block
+    // plane filters itself to the box, and two planes disagreeing about what one radius means inside
+    // one answer reads as rows appearing and vanishing for no reason.
+    @Test
+    fun `a radius holds the item plane to the same box as the block plane`() {
+        val inside = WorldBlock(world, 11, 64, -4)
+        val sameChunkOutsideBox = WorldBlock(world, 14, 64, -12)
+        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, inside, stone, null, 1, T0))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, sameChunkOutsideBox, stone, null, 1, T0 + 1))
+        log.submit(listOf(BlockChange(11, 64, -4, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
+        log.submit(listOf(BlockChange(14, 64, -12, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 1)))
+        shared.drain()
+        log.drain()
+
+        val lines = said(LookupQuery(radius = 2))
+        assertTrue(lines.any { it.contains("block 11 64 -4") }, "$lines")
+        assertTrue(lines.none { it.contains("block 14 64 -12") }, "$lines")
+    }
+
+    // One explosion is one transaction over a whole crater. Answering a question about one position
+    // with every other position it took out is worse than answering with the row that was asked for.
+    @Test
+    fun `a transaction far too big for one position is not pulled in behind it`() {
+        val here = WorldBlock(world, 10, 64, -3)
+        val crater = (1..12).map { WorldBlock(world, 10 + it, 64, -3) }
+        shared.submit((listOf(here) + crater).map {
+            Transfer(Cause.BLK_TNT, it, Void, stone, null, 1, T0)
+        })
+        shared.drain()
+
+        val byPosition = shared.holderEntries(here, 0, Long.MAX_VALUE)
+        assertEquals(byPosition, wholeTransactions(shared, byPosition))
+        assertTrue(said().none { it.contains("block 11 64 -3") }, "${said()}")
+    }
+
+    // Keys inside a chunk sort by position before time, so a chunk read up to a limit hands back one
+    // corner of itself. The asked-for position was in the crater and not in that corner, and the
+    // answer was silence about it.
+    @Test
+    fun `a busy corner of the chunk does not hide the position that was asked about`() {
+        val corner = WorldBlock(world, 15, 64, -15)
+        val here = WorldBlock(world, 10, 64, -3)
+        repeat(40) { i ->
+            shared.submit(Transfer(Cause.BLK_TNT, corner, Void, stone, null, 1, T0 + i))
+        }
+        shared.submit(Transfer(Cause.BLK_TNT, here, Void, stone, null, 1, T0 + 100))
+        shared.drain()
+
+        val lines = said(LookupQuery(radius = 1, limit = 1))
+
+        assertTrue(lines.any { it.contains("block 10 64 -3") }, "$lines")
+    }
+
+    // A read that stopped early answers about what it saw, not about what is there. Saying "no
+    // entries" for a position it never reached clears somebody of what the rows behind the cut say.
+    @Test
+    fun `an empty answer says so when the read stopped early`() {
+        val elsewhereInTheChunk = WorldBlock(world, 15, 64, -15)
+        repeat(40) { i ->
+            shared.submit(Transfer(Cause.BLK_TNT, elsewhereInTheChunk, Void, stone, null, 1, T0 + i))
+        }
+        shared.drain()
+
+        val lines = said(LookupQuery(radius = 1, limit = 1))
+        assertTrue(lines.any { it.contains("stopped before the whole area") }, "$lines")
+        assertTrue(lines.none { it.startsWith("No ledger entries") }, "$lines")
+    }
+
     // A filter meant for the block plane must not drag the item plane's rows in behind it.
     @Test
     fun `a block filter answers with block rows alone`() {
@@ -126,5 +205,23 @@ class LookupReadTest {
             .report(sender, LookupTarget(other, 1, 64, 1, "stone at 1 64 1"), LookupQuery())
 
         assertTrue(lines.any { it.contains("block_place") }, "$lines")
+    }
+
+    @Test
+    fun `a named box reads as the named box and a bare one does not borrow its name`() {
+        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
+        val named = NmsItemStack(Items.SHULKER_BOX).apply {
+            set(DataComponents.CUSTOM_NAME, Component.literal("Bank"))
+        }
+        val bare = NmsItemStack(Items.SHULKER_BOX)
+        val at = WorldBlock(world, 10, 64, -3)
+        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, at, codec.encode(named).form, null, 1, T0))
+        shared.submit(Transfer(Cause.BLOCK_DROP, at, Void, codec.encode(bare).form, null, 1, T0 + 1000))
+        shared.drain()
+
+        val lines = said(codec = codec)
+
+        assertTrue(lines.any { it.contains("+1 minecraft:shulker_box \"Bank\"") }, "$lines")
+        assertTrue(lines.any { it.contains("-1 minecraft:shulker_box  ") }, "the bare one stays bare: $lines")
     }
 }

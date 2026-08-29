@@ -302,4 +302,61 @@ class AttributionTest {
         attribution.sweep()
         assertTrue(attribution.isEmpty)
     }
+
+    @Test
+    fun `the builder search takes the most recent placement inside its reach and nothing outside it`() {
+        val spawn = at(0, 64, 0)
+        attribution.placed(at(0, 66, 0), STONE, alice)
+        clock += 1
+        attribution.placed(at(3, 65, -1), STONE, bob)
+
+        // Whatever block it was and wherever in the shape it stood: the last one placed completes it.
+        assertEquals(bob, attribution.builderNear(spawn, 3)?.actor)
+        // A reach that does not span the shape answers with whoever is inside it, not with nobody.
+        assertEquals(alice, attribution.builderNear(spawn, 2)?.actor)
+        assertNull(attribution.builderNear(spawn, 1))
+        // Worked out, never witnessed.
+        assertEquals(Confidence.INFERRED, attribution.builderNear(spawn, 3)?.confidence)
+    }
+
+    @Test
+    fun `a placement older than its window builds nothing`() {
+        attribution.placed(at(0, 65, 0), STONE, alice)
+        clock += NOTE_MILLIS + 1
+
+        assertNull(attribution.builderNear(at(0, 64, 0), 3))
+    }
+
+    @Test
+    fun `an entity carries the player it came from until it is gone`() {
+        var clock = START
+        val origins = EntityOrigins { clock }
+        val wither = UUID.randomUUID()
+
+        assertTrue(origins.isEmpty)
+        assertNull(origins.summonerOf(wither))
+
+        origins.appeared(wither, alice)
+        assertEquals(alice, origins.summonerOf(wither)?.actor)
+        // Nothing here is witnessed: the block event that reads it named nobody at all.
+        assertEquals(Confidence.INFERRED, origins.summonerOf(wither)?.confidence)
+
+        origins.gone(wither)
+        assertNull(origins.summonerOf(wither))
+        assertTrue(origins.isEmpty)
+    }
+
+    @Test
+    fun `an origin nobody saw end stops answering once its window has passed`() {
+        var clock = START
+        val origins = EntityOrigins { clock }
+        val golem = UUID.randomUUID()
+        origins.appeared(golem, alice)
+
+        clock += ORIGIN_MILLIS + 1
+        assertNull(origins.summonerOf(golem))
+
+        origins.sweep()
+        assertTrue(origins.isEmpty)
+    }
 }
