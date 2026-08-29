@@ -19,6 +19,39 @@ class DiffTest {
     private fun seen(vararg rows: Pair<Holder, Stack>, containers: Set<UUID> = emptySet()) =
         Snapshot(mapOf(*rows), containers)
 
+    // A grindstone merges two worn tools into one, and wear is not part of a form, so from the diff
+    // alone the result is indistinguishable from one of the inputs having simply moved out. Paired
+    // that way the transformation vanishes: an ordinary move plus one tool that disappeared for no
+    // stated reason. Naming the station's slots keeps both halves unpaired and facing the Void.
+    @Test
+    fun `a station slot does not pair with the item it became`() {
+        val station = setOf<Holder>(chest(0), chest(1))
+        val edges = Netting.diff(
+            seen(chest(0) to stack("sword", 1, damage = 90), chest(1) to stack("sword", 1, damage = 40)),
+            seen(cursor to stack("sword", 1, damage = 10)),
+            unpaired = station,
+        )
+
+        assertEquals(3, edges.size)
+        assertEquals(2, edges.count { it.to == Void })
+        assertEquals(1, edges.count { it.from == Void })
+        assertTrue(edges.none { it.from != Void && it.to != Void }, "a station half was married off: $edges")
+    }
+
+    // The same two snapshots without the station named: the pairing marries a loss to the gain and the
+    // second tool is left to vanish on its own. This is what the case above exists to prevent.
+    @Test
+    fun `without the station named the merge reads as a move and a disappearance`() {
+        val edges = Netting.diff(
+            seen(chest(0) to stack("sword", 1, damage = 90), chest(1) to stack("sword", 1, damage = 40)),
+            seen(cursor to stack("sword", 1, damage = 10)),
+        )
+
+        assertEquals(2, edges.size)
+        assertEquals(1, edges.count { it.from != Void && it.to != Void })
+        assertEquals(1, edges.count { it.to == Void })
+    }
+
     @Test
     fun `a whole stack moves as one edge`() {
         val edges = Netting.diff(

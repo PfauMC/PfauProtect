@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect
 
+import org.bukkit.NamespacedKey
 import org.bukkit.inventory.AnvilInventory
 import org.bukkit.inventory.CartographyInventory
 import org.bukkit.inventory.CraftingInventory
@@ -7,14 +8,26 @@ import org.bukkit.inventory.FurnaceInventory
 import org.bukkit.inventory.GrindstoneInventory
 import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.LoomInventory
+import org.bukkit.inventory.RecipeChoice
 import org.bukkit.inventory.SmithingInventory
+import org.bukkit.inventory.SmithingTrimRecipe
 import org.bukkit.inventory.StonecutterInventory
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestInstance
 import java.lang.reflect.Proxy
 
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PreviewSlotTest {
+    // A trim recipe builds an ItemStack in its own constructor, and every ItemStack constructor throws
+    // until a datapack load has bound the item prototypes.
+    @BeforeAll
+    fun loadServerRegistries() {
+        ServerRegistries.access
+    }
+
     // A crafting menu addresses its result ahead of the grid, so the workbench and the player's own
     // two-by-two both hide the same slot however many grid slots follow it.
     @Test
@@ -41,6 +54,39 @@ class PreviewSlotTest {
     fun `a menu that stores its output hides nothing`() {
         assertNull(previewSlot(sized(FurnaceInventory::class.java, 3)))
         assertNull(previewSlot(sized(Inventory::class.java, 27)))
+    }
+
+    // The station names which of the two smithing recipes matched, and it only names it while the
+    // click is being delivered — which is why it is read here and not from the deferred pass.
+    @Test
+    fun `a smithing station tells a trim apart from a transform`() {
+        val trim = SmithingTrimRecipe(
+            NamespacedKey.minecraft("test_trim"),
+            RecipeChoice.empty(),
+            RecipeChoice.empty(),
+            RecipeChoice.empty(),
+            stub(org.bukkit.inventory.meta.trim.TrimPattern::class.java),
+        )
+
+        assertEquals(Cause.SMITHING_TRIM, shiftOf(smithing(trim))!!.consume)
+        // A result-slot click that matched nothing is ordinary traffic, and the default carries it.
+        assertEquals(Cause.SMITHING_TRANSFORM, shiftOf(smithing(null))!!.consume)
+    }
+
+    private fun smithing(recipe: Any?): Inventory {
+        val type = SmithingInventory::class.java
+        return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ ->
+            when (method.name) {
+                "getSize" -> 4
+                "getRecipe" -> recipe
+                else -> null
+            }
+        } as Inventory
+    }
+
+    private fun <T : Any> stub(type: Class<T>): T {
+        @Suppress("UNCHECKED_CAST")
+        return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, _, _ -> null } as T
     }
 
     private fun <T : Inventory> sized(type: Class<T>, size: Int): Inventory {

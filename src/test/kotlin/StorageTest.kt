@@ -158,6 +158,36 @@ class StorageTest {
         assertEquals(emptyList<String>(), log.sweep(100).gaps)
     }
 
+    // A craft names more ends than a mutation does: several ingredients leave and one result arrives,
+    // every one of them facing the Void. Nothing pairs, so the index is the only way back — and the
+    // whole point is that it answers the same from whichever end the question is asked.
+    @Test
+    fun `a craft reads the same from any of its three postings`() {
+        val grid = { slot: Int -> EntitySlot(alice, slot) }
+        log.submit(
+            listOf(
+                Transfer(Cause.CRAFT_CONSUME, grid(1), Void, cobblestone, null, 8, T0 + 50),
+                Transfer(Cause.CRAFT_CONSUME, grid(2), Void, pickaxe, 7, 1, T0 + 50),
+                Transfer(Cause.CRAFT_RESULT, Void, PlayerCursor(alice), torch, null, 1, T0 + 50),
+            )
+        )
+        log.drain()
+
+        // The slot never enters the key, so one prefix answers with every grid slot at once.
+        val consumed = log.holderEntries(grid(0), 0, Long.MAX_VALUE)
+        val produced = log.holderEntries(PlayerCursor(alice), 0, Long.MAX_VALUE)
+        val whole = consumed + produced
+        assertEquals(3, whole.size)
+        assertEquals(listOf(-8, -1, 1), whole.map { it.qty })
+        assertEquals(listOf(0, 1, 2), whole.map { it.ordinal })
+        assertEquals(1, whole.map { it.txId }.distinct().size)
+
+        for (posting in whole) {
+            assertEquals(whole.toSet(), log.transactionEntries(posting).toSet(), "unreachable from $posting")
+        }
+        assertEquals(emptyList<String>(), log.sweep(100).gaps)
+    }
+
     // Two holder types cannot share a key, so the two ends of this movement are told apart by more
     // than their ordinals and it is still an ordinary pair.
     @Test

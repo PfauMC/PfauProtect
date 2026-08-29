@@ -93,6 +93,47 @@ class LookupReadTest {
         )
     }
 
+    // Both halves of a mutation face the Void, so a reader who is not told they are one event sees an
+    // item destroyed and an unrelated item created at the same instant — the very reading the shared
+    // transaction exists to deny.
+    @Test
+    fun `a mutation says the item changed in place`() {
+        val anvil = Container(world, 10, 64, -3, 0)
+        val worn = byteArrayOf(11)
+        val repaired = byteArrayOf(12)
+        shared.submit(
+            listOf(
+                Transfer(Cause.ANVIL_COMBINE, anvil, Void, worn, null, 1, T0, kind = Kind.MUTATE),
+                Transfer(Cause.ANVIL_COMBINE, Void, anvil, repaired, null, 1, T0, kind = Kind.MUTATE),
+            )
+        )
+        shared.drain()
+
+        val lines = said(LookupQuery(causes = Action.TRANSFORM.causes))
+
+        assertEquals(2, lines.count { it.contains("anvil_combine") }, "$lines")
+        assertTrue(lines.all { !it.contains("anvil_combine") || it.contains("(changed in place)") }, "$lines")
+    }
+
+    // The filter names every bench at once, so a row written by one of them must not be reachable
+    // under a filter that means something else.
+    @Test
+    fun `a transformation is not answered by an unrelated filter`() {
+        val anvil = Container(world, 10, 64, -3, 0)
+        shared.submit(
+            listOf(
+                Transfer(Cause.ANVIL_COMBINE, anvil, Void, byteArrayOf(11), null, 1, T0, kind = Kind.MUTATE),
+                Transfer(Cause.ANVIL_COMBINE, Void, anvil, byteArrayOf(12), null, 1, T0, kind = Kind.MUTATE),
+            )
+        )
+        shared.drain()
+
+        assertTrue(
+            said(LookupQuery(causes = Action.LOOT.causes)).none { it.contains("anvil_combine") },
+            "${said(LookupQuery(causes = Action.LOOT.causes))}",
+        )
+    }
+
     @Test
     fun `a block row says when nobody could be named`() {
         log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_LIQUID_DESTROY, T0)))

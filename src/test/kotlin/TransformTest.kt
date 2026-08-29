@@ -101,6 +101,32 @@ class TransformTest {
         assertEquals(Cause.ANVIL_COMBINE, transaction.single().cause)
     }
 
+    // Both ends of a transformation face the Void because neither pairs with anything, and the pass
+    // marks anything unpaired as a guess. Together they are not a guess, and left marked as one they
+    // would swell the count of movements nothing could explain by one entry per craft.
+    @Test
+    fun `a transformation with both sides is witnessed rather than guessed`() {
+        val moves = listOf(
+            move(grid(1), Void, "cobblestone", 8, Cause.CONTAINER_REMOVE),
+            move(Void, cursor, "furnace", 1, Cause.CONTAINER_ADD),
+        )
+
+        val transaction = transactions(moves, craft).single()
+
+        assertTrue(transaction.all { it.confidence == Confidence.FACT })
+    }
+
+    // One side alone has nothing to corroborate it: a creative craft consumes nothing, and the lone
+    // arrival stays exactly as unexplained as the pass found it.
+    @Test
+    fun `a transformation with one side stays a guess`() {
+        val moves = listOf(move(Void, cursor, "furnace", 1, Cause.CONTAINER_ADD))
+
+        val transaction = transactions(moves, craft).single()
+
+        assertEquals(Confidence.INFERRED, transaction.single().confidence)
+    }
+
     // Which station a taken result came out of, and whether it changed an item or ran a recipe.
     @Test
     fun `a workbench runs a recipe while a station changes the item`() {
@@ -137,6 +163,33 @@ class TransformTest {
             brewed(listOf(water, water, water), listOf(awkward)),
         )
         assertTrue(brewed(listOf(water, water, water), emptyList()).isEmpty())
+    }
+
+    // The whole pure path in one go: two snapshots of one slot, the intent the event left, and the
+    // grouping. A signed book never leaves the hand it was written in, so the slot reads as one form
+    // gone and another arrived, and only the shift says they are the same book.
+    @Test
+    fun `signing a book is one book changing and not two strangers`() {
+        val slot = PlayerInv(player, 0)
+        val sign = Shift(Cause.BOOK_SIGN, Cause.BOOK_SIGN, Kind.MUTATE)
+        val intents = listOf(Intent(sign.consume, shift = sign))
+
+        val edges = Netting.diff(
+            Snapshot(mapOf(slot to Stack(key("writable_book"), 1)), emptySet()),
+            Snapshot(mapOf(slot to Stack(key("written_book"), 1)), emptySet()),
+            intents,
+            player,
+        )
+        val moves = Intents.explain(edges, intents, player)
+        val transaction = transactions(moves, sign).single()
+
+        assertEquals(2, transaction.size)
+        assertTrue(transaction.all { it.cause == Cause.BOOK_SIGN }, "$transaction")
+        assertTrue(transaction.all { it.confidence == Confidence.FACT }, "$transaction")
+        // One side leaves the slot and the other arrives in it; neither pairs with the other, which is
+        // what keeps both facing the Void and the transaction readable as a change rather than a move.
+        assertEquals(1, transaction.count { it.to == Void })
+        assertEquals(1, transaction.count { it.from == Void })
     }
 
     private fun inventoryStub(): org.bukkit.inventory.Inventory {

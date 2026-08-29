@@ -30,6 +30,7 @@ import org.bukkit.event.player.PlayerItemBreakEvent
 import org.bukkit.event.player.PlayerItemConsumeEvent
 import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
+import org.bukkit.event.player.PlayerEditBookEvent
 import org.bukkit.event.player.PlayerSwapHandItemsEvent
 import org.bukkit.event.world.LootGenerateEvent
 import org.bukkit.inventory.AnvilInventory
@@ -44,6 +45,7 @@ import org.bukkit.inventory.InventoryView
 import org.bukkit.inventory.LoomInventory
 import org.bukkit.inventory.PlayerInventory
 import org.bukkit.inventory.SmithingInventory
+import org.bukkit.inventory.SmithingTrimRecipe
 import org.bukkit.inventory.StonecutterInventory
 import org.bukkit.plugin.Plugin
 import java.util.UUID
@@ -88,6 +90,12 @@ object Netting {
         after: Snapshot,
         intents: List<Intent> = emptyList(),
         player: UUID? = null,
+        // Slots whose losses and gains must not be married to each other. Pairing is by form and the
+        // form carries no wear, so a station that hands back the same kind of item — a grindstone
+        // merging two worn tools, a cartography table copying a map — looks from here like the very
+        // item moving out of the station, and the transformation collapses into an ordinary move plus
+        // one unexplained disappearance.
+        unpaired: Set<Holder> = emptySet(),
     ): List<Edge> {
         val losses = ArrayList<Delta>()
         val gains = ArrayList<Delta>()
@@ -122,11 +130,13 @@ object Netting {
         claim(gains, intents, player, loss = false)
 
         val waiting = HashMap<FormKey, ArrayDeque<Delta>>()
-        for (gain in gains) if (gain.pairable > 0) waiting.getOrPut(gain.form) { ArrayDeque() }.addLast(gain)
+        for (gain in gains) {
+            if (gain.pairable > 0 && gain.holder !in unpaired) waiting.getOrPut(gain.form) { ArrayDeque() }.addLast(gain)
+        }
 
         val edges = ArrayList<Edge>()
         for (loss in losses) {
-            val matching = waiting[loss.form]
+            val matching = if (loss.holder in unpaired) null else waiting[loss.form]
             while (loss.pairable > 0 && matching != null && matching.isNotEmpty()) {
                 val gain = matching.first()
                 val qty = minOf(loss.pairable, gain.pairable)
@@ -242,10 +252,16 @@ internal fun shiftOf(top: Inventory): Shift? = when (top) {
     is CraftingInventory -> Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER)
     is AnvilInventory -> Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
     is GrindstoneInventory -> Shift(Cause.GRINDSTONE, Cause.GRINDSTONE, Kind.MUTATE)
-    // The trim is a smithing recipe like any other and is not told apart from a transform here.
-    // ponytail: only SmithItemEvent.getInventory().getRecipe() names the subtype; reading it would
-    // mean a second handler on a shared list, and SMITHING_TRIM stays unwritten until that is worth it.
-    is SmithingInventory -> Shift(Cause.SMITHING_TRANSFORM, Cause.SMITHING_TRANSFORM, Kind.MUTATE)
+    // The station itself names which of the two smithing recipes matched, and it only names it while
+    // the click is still being delivered: taking the result reruns the match against the emptied
+    // inputs, finds nothing and forgets the recipe. So this may be read here and never from the
+    // deferred pass.
+    // ponytail: a plugin may register a SmithingRecipe that is neither, and it books as a transform;
+    // splitting that out needs a cause the dictionary does not have yet.
+    is SmithingInventory -> {
+        val cause = if (top.recipe is SmithingTrimRecipe) Cause.SMITHING_TRIM else Cause.SMITHING_TRANSFORM
+        Shift(cause, cause, Kind.MUTATE)
+    }
     is StonecutterInventory -> Shift(Cause.STONECUTTER, Cause.STONECUTTER, Kind.MUTATE)
     is LoomInventory -> Shift(Cause.LOOM, Cause.LOOM, Kind.MUTATE)
     is CartographyInventory -> Shift(Cause.CARTOGRAPHY, Cause.CARTOGRAPHY, Kind.MUTATE)
@@ -263,7 +279,18 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
             else -> rest += listOf(move)
         }
     }
-    if (transformed.isNotEmpty()) rest += transformed
+    // The pass had to guess at these ends because neither of them pairs with anything — that is what
+    // facing the Void means. Both sides together are not a guess: the event named the station and both
+    // of its reasons, which is as much as any click is ever witnessed by. Left INFERRED they would be
+    // counted as movements nothing could explain, and every craft would enlarge the very number that
+    // measures what the capture still cannot see.
+    //
+    // One side alone stays a guess. A creative craft that consumes nothing has nothing to corroborate.
+    if (transformed.size > 1) {
+        rest += transformed.map { it.copy(confidence = Confidence.FACT) }
+    } else if (transformed.isNotEmpty()) {
+        rest += transformed
+    }
     return rest
 }
 
@@ -465,6 +492,17 @@ class ContainerCaptureListener(
     fun onEnchant(event: EnchantItemEvent) {
         val shift = Shift(Cause.ENCHANT_APPLY, Cause.ENCHANT_APPLY, Kind.MUTATE)
         intend(event.enchanter, Intent(shift.consume, shift = shift))
+    }
+
+    // Signing turns a writable book into a written one in the slot it is held in, driven by a packet
+    // rather than a click, so nothing would schedule a pass for it and the form change would be picked
+    // up by whatever unrelated pass ran next and written as two strangers.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onEditBook(event: PlayerEditBookEvent) {
+        // The same event carries a plain page edit, which changes no form and has nothing to pair.
+        if (!event.isSigning) return
+        val shift = Shift(Cause.BOOK_SIGN, Cause.BOOK_SIGN, Kind.MUTATE)
+        intend(event.player, Intent(shift.consume, shift = shift))
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -700,16 +738,16 @@ class ContainerCaptureListener(
         }
         val after = snapshot(player, baseline.view)
         baselines[player.uniqueId] = Baseline(baseline.view, after)
-        val edges = Netting.diff(baseline.seen, after, taken, player.uniqueId)
+        // One item that became another is a mutation; a recipe that ate three and made one is not, so
+        // the kind comes from the event and never from the size of what the pass happened to gather.
+        val shift = taken.firstNotNullOfOrNull { it.shift }
+        val edges = Netting.diff(baseline.seen, after, taken, player.uniqueId, stationSlots(player, baseline, shift))
         val timestamp = System.currentTimeMillis()
         val moves = Intents.explain(edges, taken, player.uniqueId, unspent) { form ->
             after.stacks.entries.firstOrNull { (holder, stack) ->
                 holder is PlayerHolder && holder.uuid == player.uniqueId && stack.key.form.contentEquals(form)
             }?.key
         }
-        // One item that became another is a mutation; a recipe that ate three and made one is not, so
-        // the kind comes from the event and never from the size of what the pass happened to gather.
-        val shift = taken.firstNotNullOfOrNull { it.shift }
         for (group in transactions(moves, shift)) {
             val kind = if (shift != null && group.size > 1) shift.kind else Kind.TRANSFER
             sink(group.map { transferOf(it, timestamp, kind) })
@@ -719,6 +757,18 @@ class ContainerCaptureListener(
     private fun rebaseline(player: Player) {
         val view = player.openInventory
         baselines[player.uniqueId] = Baseline(view, snapshot(player, view))
+    }
+
+    // Only while a transformation is in flight, and only the station's own slots: everywhere else the
+    // pairing is what turns two halves into one movement, and switching it off would write every
+    // ordinary transfer as a disappearance and an arrival.
+    // ponytail: a genuine move out of a station slot in the same tick as the result click joins the
+    // transformation instead of keeping its own reason; that needs two clicks inside one tick.
+    private fun stationSlots(player: Player, baseline: Baseline, shift: Shift?): Set<Holder> {
+        if (shift == null) return emptySet()
+        val top = baseline.view.topInventory
+        val holders = topHolders(player, top) ?: return emptySet()
+        return (0 until top.size).mapTo(HashSet()) { holders(it) }
     }
 
     private fun snapshot(player: Player, view: InventoryView): Snapshot {

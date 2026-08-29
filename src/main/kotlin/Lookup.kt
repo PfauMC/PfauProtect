@@ -76,6 +76,10 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     REMOVE(setOf(Cause.CONTAINER_REMOVE), "-container", "withdraw", "withdraws", "withdrew"),
     LOOT(setOf(Cause.LOOT_GENERATE), "loot", "loot_generate"),
 
+    // One filter over every station rather than one per station: an investigator asks what became of
+    // an item, not which bench it happened at, and the cause on each row already says that.
+    TRANSFORM(TRANSFORM_CAUSES, "transform", "transforms", "changed"),
+
     // A cause is only worth offering as a filter once something actually writes it: an empty answer
     // from a filter that sounds certain reads as "nothing happened there".
     BLOCK(BLOCK_CAUSES, "block", "blocks"),
@@ -116,6 +120,13 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
         fun of(key: String): Action? = byKey[key]
     }
 }
+
+// Every way one item becomes another, which is one question however many benches answer it.
+private val TRANSFORM_CAUSES = setOf(
+    Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Cause.CRAFT_REMAINDER, Cause.SMELT, Cause.BREW,
+    Cause.ANVIL_COMBINE, Cause.GRINDSTONE, Cause.SMITHING_TRANSFORM, Cause.SMITHING_TRIM,
+    Cause.ENCHANT_APPLY, Cause.STONECUTTER, Cause.LOOM, Cause.CARTOGRAPHY, Cause.BOOK_SIGN,
+)
 
 // The block plane's whole range, so a filter can name it without listing thirty-two causes.
 private val BLOCK_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet()
@@ -535,11 +546,14 @@ class Lookups(
         val amount = if (entry.qty > 0) "+${entry.qty}" else entry.qty.toString()
         val direction = if (entry.qty > 0) "from" else "to"
         val by = entry.actor?.let { "  by ${playerName(it)}" } ?: ""
+        // Both halves of a mutation face the Void, so without this they read as an item destroyed and
+        // an unrelated item created at the same instant, which is the very thing they exist to deny.
+        val changed = if (entry.kind == Kind.MUTATE) "  (changed in place)" else ""
         return "${TIME_FORMAT.format(Instant.ofEpochMilli(entry.timestamp))}  " +
             "${entry.cause.name.lowercase()}  " +
             "$amount ${itemLabel(entry.itemFormId)}  " +
             "${describe(entry.holder)}  " +
-            "$direction ${describe(entry.counterparty)}$by"
+            "$direction ${describe(entry.counterparty)}$changed$by"
     }
 
     /**

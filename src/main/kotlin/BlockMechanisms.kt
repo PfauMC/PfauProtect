@@ -376,7 +376,10 @@ class BlockMechanismListener(
         val timestamp = System.currentTimeMillis()
         sink(
             listOf(
-                mutation(containerAt(block, FURNACE_INPUT_SLOT), Void, Cause.SMELT, source, event.source.amount, timestamp),
+                // The event carries a mirror of the whole input slot, while the smelt takes exactly one
+                // item out of it. Booking the stack would write a loss of sixty-four every time a full
+                // furnace finished a single ingot.
+                mutation(containerAt(block, FURNACE_INPUT_SLOT), Void, Cause.SMELT, source, 1, timestamp),
                 mutation(Void, containerAt(block, FURNACE_RESULT_SLOT), Cause.SMELT, result, event.result.amount, timestamp),
             )
         )
