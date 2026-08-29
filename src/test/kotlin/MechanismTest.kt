@@ -7,13 +7,21 @@ import net.minecraft.world.SimpleContainer
 import net.minecraft.world.WorldlyContainer
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import org.bukkit.Material
+import org.bukkit.World
+import org.bukkit.block.Block
+import org.bukkit.block.Furnace
+import org.bukkit.event.block.BlockCookEvent
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import java.lang.reflect.Proxy
 import java.util.UUID
+import org.bukkit.inventory.ItemStack as BukkitItemStack
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MechanismTest {
@@ -194,6 +202,57 @@ class MechanismTest {
     fun `a debit for a single block is booked where it was struck`() {
         val at = WorldBlock(world, 44, -60, -27)
         assertEquals(at, paidHalf(at, null) { form(Items.STONE) })
+    }
+
+    // The event carries a mirror of the whole input slot while the smelt takes exactly one item out of
+    // it, so a furnace loaded with a stack must still book a loss of one per ingot.
+    @Test
+    fun `a smelt consumes one item however full the input slot is`() {
+        val written = ArrayList<List<Transfer>>()
+        val coalescer = TickCoalescer { }
+        val listener = BlockMechanismListener(
+            codec, coalescer, SpawnOrigins(coalescer), NoPlacedForms, written::add,
+        )
+        val at = BukkitItemStack(Material.RAW_IRON, 8)
+        val out = BukkitItemStack(Material.IRON_INGOT, 1)
+
+        listener.onCook(BlockCookEvent(furnaceBlock(), at, out))
+
+        // One call: the two halves have to share a transaction or neither names the other.
+        assertEquals(1, written.size, "$written")
+        val transaction = written.single()
+        assertEquals(2, transaction.size)
+        assertTrue(transaction.all { it.kind == Kind.MUTATE && it.cause == Cause.SMELT }, "$transaction")
+        val consumed = transaction.single { it.to == Void }
+        assertEquals(1, consumed.qty, "the whole input stack was booked as smelted")
+        assertEquals(Container(world, 7, 65, -12, 0), consumed.from)
+        val produced = transaction.single { it.from == Void }
+        assertEquals(1, produced.qty)
+        assertEquals(Container(world, 7, 65, -12, 2), produced.to)
+    }
+
+    private object NoPlacedForms : PlacedForms {
+        override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = null
+        override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = emptyMap()
+        override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) = Unit
+        override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) = Unit
+        override fun clearFormsAt(positions: List<WorldBlock>) = Unit
+    }
+
+    private fun furnaceBlock(): Block {
+        val furnace = stub(Furnace::class.java)
+        val worldStub = stub(World::class.java, mapOf("getUID" to world))
+        return stub(
+            Block::class.java,
+            mapOf("getWorld" to worldStub, "getX" to 7, "getY" to 65, "getZ" to -12, "getState" to furnace),
+        )
+    }
+
+    private fun <T : Any> stub(type: Class<T>, answers: Map<String, Any?> = emptyMap()): T {
+        @Suppress("UNCHECKED_CAST")
+        return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ ->
+            answers[method.name]
+        } as T
     }
 
     // Stands in for a furnace: reachable slots depend on the face, and the game asks the container
