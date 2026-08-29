@@ -8,6 +8,7 @@ import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.BlockState
 import org.bukkit.block.Campfire
+import org.bukkit.block.Furnace
 import org.bukkit.block.ShulkerBox
 import org.bukkit.block.data.Levelled
 import org.bukkit.craftbukkit.block.data.CraftBlockData
@@ -32,7 +33,10 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 import org.bukkit.block.Container as ContainerBlock
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
+private const val FURNACE_INPUT_SLOT = 0
 private const val FURNACE_FUEL_SLOT = 1
+private const val FURNACE_RESULT_SLOT = 2
+private const val BREWING_BOTTLES = 3
 private const val BREWING_INGREDIENT_SLOT = 3
 private const val BREWING_FUEL_SLOT = 4
 // The scale runs to seven; the eighth state is the composter already turned into bone meal.
@@ -166,6 +170,18 @@ class SpawnOrigins(private val pending: TickCoalescer) {
             abs(origin.z - spawn.z) <= SPAWN_REACH
 }
 
+// Which bottles the brew actually changed. A stand runs with slots empty and with bottles the recipe
+// has nothing to say about, and the results list is only as long as the game made it, so a slot counts
+// only when it held something before, holds something after, and the two are not the same thing.
+internal fun brewed(
+    before: List<ItemKey?>,
+    after: List<ItemKey?>,
+): List<Triple<Int, ItemKey, ItemKey>> = before.indices.mapNotNull { slot ->
+    val was = before[slot] ?: return@mapNotNull null
+    val became = after.getOrNull(slot) ?: return@mapNotNull null
+    if (was == became) null else Triple(slot, was, became)
+}
+
 class BlockMechanismListener(
     private val codec: ItemFormCodec,
     private val pending: TickCoalescer,
@@ -290,10 +306,26 @@ class BlockMechanismListener(
         pending.add(Void, slot, Cause.FURNACE_FUEL_REMAINDER, encoded.key, remainder.count)
     }
 
+    // The ingredient is spent outright, while each bottle comes back as something else in the slot it
+    // stood in. Both halves of every bottle are readable here — the event carries the stand as it was
+    // and the results side by side — and the whole brew is one transaction, so a potion traced back
+    // names the water bottle it was made from and the brew that made it.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBrew(event: BrewEvent) {
-        val key = key(event.contents.ingredient) ?: return
-        pending.add(containerAt(event.block, BREWING_INGREDIENT_SLOT), Void, Cause.BREWING_INGREDIENT_CONSUME, key, 1)
+        val block = event.block
+        key(event.contents.ingredient)?.let {
+            pending.add(containerAt(block, BREWING_INGREDIENT_SLOT), Void, Cause.BREWING_INGREDIENT_CONSUME, it, 1)
+        }
+        val timestamp = System.currentTimeMillis()
+        val transaction = ArrayList<Transfer>(BREWING_BOTTLES * 2)
+        val before = List(BREWING_BOTTLES) { key(event.contents.getItem(it)) }
+        val after = List(BREWING_BOTTLES) { slot -> event.results.getOrNull(slot)?.let { key(it) } }
+        for ((slot, was, became) in brewed(before, after)) {
+            val bottle = containerAt(block, slot)
+            transaction += mutation(bottle, Void, Cause.BREW, was, 1, timestamp)
+            transaction += mutation(Void, bottle, Cause.BREW, became, 1, timestamp)
+        }
+        if (transaction.isNotEmpty()) sink(transaction)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -320,13 +352,47 @@ class BlockMechanismListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onCook(event: BlockCookEvent) {
         val block = event.block
-        val campfire = block.getState(false) as? Campfire ?: return
+        val campfire = block.getState(false) as? Campfire
+        if (campfire == null) {
+            smelted(event)
+            return
+        }
         val source = event.source
         val slot = (0 until campfire.size).firstOrNull { campfire.getItem(it)?.isSimilar(source) == true } ?: return
         key(source)?.let { pending.add(containerAt(block, slot), Void, Cause.CAMPFIRE_COOK_DROP, it, source.amount) }
         val result = event.result
         key(result)?.let { origins.expect(Void, Cause.CAMPFIRE_COOK_DROP, it, spotOf(block.location), result.amount) }
     }
+
+    // A furnace changes one item into another with nobody watching, so there is no pass to count it
+    // and no intent to leave: both halves are known here and are written on the spot. They face the
+    // Void and share a transaction, which is what says the ingot is what became of the ore rather
+    // than an arrival that happens to follow a disappearance.
+    private fun smelted(event: BlockCookEvent) {
+        val block = event.block
+        if (block.getState(false) !is Furnace) return
+        val source = key(event.source) ?: return
+        val result = key(event.result) ?: return
+        val timestamp = System.currentTimeMillis()
+        sink(
+            listOf(
+                mutation(containerAt(block, FURNACE_INPUT_SLOT), Void, Cause.SMELT, source, event.source.amount, timestamp),
+                mutation(Void, containerAt(block, FURNACE_RESULT_SLOT), Cause.SMELT, result, event.result.amount, timestamp),
+            )
+        )
+    }
+
+    private fun mutation(from: Holder, to: Holder, cause: Cause, key: ItemKey, qty: Int, timestamp: Long) =
+        Transfer(
+            cause = cause,
+            from = from,
+            to = to,
+            form = key.form,
+            damage = key.damage,
+            qty = qty,
+            timestamp = timestamp,
+            kind = Kind.MUTATE,
+        )
 
     // The composter destroys what it eats, and out of nothing makes bone meal once it fills up. The
     // filling item is what earns the bone meal, but the composter only turns it out a second later

@@ -124,7 +124,9 @@ class PfauProtectPlugin : JavaPlugin() {
         val codec = ItemFormCodec(ledger.registries, MinecraftServer.getServer().registryAccess())
         val mechanisms = TickCoalescer(uncovered::submit)
         val origins = SpawnOrigins(mechanisms)
-        val capture = ContainerCaptureListener(this, uncovered::submit, codec, origins, ledger) { intent, qty ->
+        val capture = ContainerCaptureListener(
+            this, uncovered::submit, codec, ledger.registries, origins, ledger,
+        ) { intent, qty ->
             unspentDrop(mechanisms, intent, qty)
         }
         val entities = EntityOrigins()

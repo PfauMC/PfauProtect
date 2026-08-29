@@ -75,7 +75,12 @@ data class BlockPostingsPage(val positions: List<BlockPostings>, val reachedEnd:
 // family of interned block-entity payloads. The record version in the value covers neither. Keys
 // carry a version this build reads, so without the bump an older database opens and every key is
 // parsed as something it never was; a family holds rows the value version never speaks for at all.
-private const val SCHEMA_VERSION = 3L
+//
+// Version 4 is neither: the layout is unchanged and a menu number is still one varint, but it now
+// counts through a registry instead of through InventoryType.ordinal, so an old row parses cleanly
+// and names the wrong menu. The record version cannot say so — an ordinary entry is pinned to a
+// header byte of 0x00 — which leaves this the only number that can refuse such a database.
+private const val SCHEMA_VERSION = 4L
 private const val MAX_REGION_CHUNKS = 1024
 
 // What one region query may hold in memory at once. Reached only by a query over an area whose
@@ -227,7 +232,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         val stored = try {
             storedSchema(path)?.also {
                 require(it == SCHEMA_VERSION) {
-                    "database schema $it cannot be read by this build (schema $SCHEMA_VERSION)"
+                    "database schema $it cannot be read by this build (schema $SCHEMA_VERSION); " +
+                        "the ledger and blocks directories have to be removed together, because a " +
+                        "block journal cites state, payload and player numbers minted in the ledger"
                 }
             }
         } catch (failure: Throwable) {

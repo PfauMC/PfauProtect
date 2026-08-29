@@ -23,6 +23,7 @@ import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.inventory.InventoryCloseEvent
 import org.bukkit.event.inventory.InventoryDragEvent
 import org.bukkit.event.inventory.InventoryOpenEvent
+import org.bukkit.event.enchantment.EnchantItemEvent
 import org.bukkit.event.inventory.InventoryType
 import org.bukkit.event.player.PlayerDropItemEvent
 import org.bukkit.event.player.PlayerItemBreakEvent
@@ -31,12 +32,19 @@ import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.event.player.PlayerSwapHandItemsEvent
 import org.bukkit.event.world.LootGenerateEvent
+import org.bukkit.inventory.AnvilInventory
 import org.bukkit.inventory.BlockInventoryHolder
+import org.bukkit.inventory.CartographyInventory
+import org.bukkit.inventory.CraftingInventory
 import org.bukkit.inventory.DoubleChestInventory
 import org.bukkit.inventory.EquipmentSlot
+import org.bukkit.inventory.GrindstoneInventory
 import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.InventoryView
+import org.bukkit.inventory.LoomInventory
 import org.bukkit.inventory.PlayerInventory
+import org.bukkit.inventory.SmithingInventory
+import org.bukkit.inventory.StonecutterInventory
 import org.bukkit.plugin.Plugin
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -220,6 +228,58 @@ internal fun playerHolders(uuid: UUID, inventory: PlayerInventory): (Int) -> Hol
     return { slot -> if (slot < storageSize) PlayerInv(uuid, slot) else PlayerEquip(uuid, slot) }
 }
 
+// A transformation reaches the pass as ends that pair with nothing, and a `Void` on one side is what
+// marks them: the ingredients go nowhere and the product comes from nowhere. Gathered under one
+// transaction they can be read back from any one of them; left apart they are unrelated losses and an
+// unexplained gain, which is the shape a laundered stack has too.
+//
+// Anything else the same pass turned up happened for its own reasons and keeps them.
+// What taking the result out of a station turns one thing into another for. A station whose recipe
+// only ever rearranges whole items — a workbench, and everything folded into it: dyeing, a signed
+// book, a copied banner, a scaled map — consumes and produces rather than mutates, so its two sides
+// carry the ordinary form. The rest hand back the very item that went in, changed.
+internal fun shiftOf(top: Inventory): Shift? = when (top) {
+    is CraftingInventory -> Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER)
+    is AnvilInventory -> Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
+    is GrindstoneInventory -> Shift(Cause.GRINDSTONE, Cause.GRINDSTONE, Kind.MUTATE)
+    // The trim is a smithing recipe like any other and is not told apart from a transform here.
+    // ponytail: only SmithItemEvent.getInventory().getRecipe() names the subtype; reading it would
+    // mean a second handler on a shared list, and SMITHING_TRIM stays unwritten until that is worth it.
+    is SmithingInventory -> Shift(Cause.SMITHING_TRANSFORM, Cause.SMITHING_TRANSFORM, Kind.MUTATE)
+    is StonecutterInventory -> Shift(Cause.STONECUTTER, Cause.STONECUTTER, Kind.MUTATE)
+    is LoomInventory -> Shift(Cause.LOOM, Cause.LOOM, Kind.MUTATE)
+    is CartographyInventory -> Shift(Cause.CARTOGRAPHY, Cause.CARTOGRAPHY, Kind.MUTATE)
+    else -> null
+}
+
+internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
+    if (shift == null) return moves.map { listOf(it) }
+    val transformed = ArrayList<Move>()
+    val rest = ArrayList<List<Move>>()
+    for (move in moves) {
+        when {
+            move.to == Void -> transformed += move.copy(cause = shift.consume)
+            move.from == Void -> transformed += move.copy(cause = shift.result)
+            else -> rest += listOf(move)
+        }
+    }
+    if (transformed.isNotEmpty()) rest += transformed
+    return rest
+}
+
+internal fun transferOf(move: Move, timestamp: Long, kind: Kind = Kind.TRANSFER): Transfer = Transfer(
+    cause = move.cause,
+    from = move.from,
+    to = move.to,
+    form = move.key.form,
+    damage = move.key.damage,
+    qty = move.qty,
+    timestamp = timestamp,
+    kind = kind,
+    confidence = move.confidence,
+    actor = move.actor,
+)
+
 internal fun causeOf(edge: Edge): Cause = when {
     edge.to is Nested -> Cause.BUNDLE_INSERT
     edge.from is Nested -> Cause.BUNDLE_EXTRACT
@@ -230,10 +290,28 @@ internal fun causeOf(edge: Edge): Cause = when {
     else -> Cause.QUICK_MOVE
 }
 
+// The slot a station computes from its inputs rather than holds an item in. It is filled the moment
+// the inputs match a recipe and emptied when they stop matching, without anything being moved, so
+// recording it mints an item out of nothing on every match and books a loss for one that was only
+// ever a preview. Taking the result is a real gain, and it shows up in the slot it is taken into.
+//
+// A furnace, a brewing stand and a crafter are deliberately not here: their output slots hold a real
+// item that stands there until somebody takes it out.
+internal fun previewSlot(top: Inventory): Int? = when (top) {
+    // Ingredients first, result last, for every station built on a result inventory.
+    is AnvilInventory, is GrindstoneInventory, is SmithingInventory,
+    is StonecutterInventory, is LoomInventory, is CartographyInventory,
+    -> top.size - 1
+    // A crafting inventory is the other way round: the result is addressed ahead of the grid.
+    is CraftingInventory -> 0
+    else -> null
+}
+
 class ContainerCaptureListener(
     private val plugin: Plugin,
-    private val sink: (Transfer) -> Unit,
+    private val sink: (List<Transfer>) -> Unit,
     private val codec: ItemFormCodec,
+    private val registries: Registries,
     private val origins: SpawnOrigins,
     private val placed: PlacedForms,
     // What an intent asked for and the pass never found. An event that silenced a funnel of its own on
@@ -306,7 +384,7 @@ class ContainerCaptureListener(
             val qty = minOf(left, found.count)
             if (qty <= 0) continue
             pending[found.key] = left - qty
-            sink(
+            sink(listOf(
                 Transfer(
                     cause = Cause.LOOT_GENERATE,
                     from = Void,
@@ -317,7 +395,7 @@ class ContainerCaptureListener(
                     timestamp = timestamp,
                     actor = actor,
                 )
-            )
+            ))
         }
     }
 
@@ -364,8 +442,29 @@ class ContainerCaptureListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onClick(event: InventoryClickEvent) {
         val player = event.whoClicked as? Player ?: return
+        // A craft arrives here and not at a handler of its own: CraftItemEvent declares no handler list
+        // and is dispatched into this one, so a second listener would be a second callback for one
+        // click and would leave the reason twice.
+        val top = event.view.topInventory
+        val shift = if (event.rawSlot == previewSlot(top)) shiftOf(top) else null
+        if (shift != null) intend(player, Intent(shift.consume, shift = shift))
         val cause = clickCause(event)
         if (cause == null) scheduleRecompute(player) else intend(player, Intent(cause))
+    }
+
+    // The one transformation that is not a click on a result slot, and the one with a handler list of
+    // its own, so it needs a handler of its own. The table hands back the same item with the
+    // enchantment on it, which the pass sees as one form leaving and another arriving in that slot.
+    //
+    // Both sides carry the same reason. The lapis is spent applying the enchantment just as much as
+    // the item is, and there is no side to hang ENCHANT_LAPIS_CONSUME on that would not also catch the
+    // unenchanted item leaving.
+    // ponytail: telling them apart means a cause per form on the consumed side rather than one per
+    // transformation; worth building when a second transformation needs the same distinction.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onEnchant(event: EnchantItemEvent) {
+        val shift = Shift(Cause.ENCHANT_APPLY, Cause.ENCHANT_APPLY, Kind.MUTATE)
+        intend(event.enchanter, Intent(shift.consume, shift = shift))
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -479,7 +578,7 @@ class ContainerCaptureListener(
             val timestamp = System.currentTimeMillis()
             for (slot in slots) {
                 if (slot.left <= 0 || !slot.vanishing) continue
-                sink(
+                sink(listOf(
                     Transfer(
                         cause = Cause.DEATH_DESTROY_VANISHING,
                         from = slot.holder,
@@ -489,7 +588,7 @@ class ContainerCaptureListener(
                         qty = slot.left,
                         timestamp = timestamp,
                     )
-                )
+                ))
                 written += Intent(
                     cause = Cause.DEATH_DESTROY_VANISHING,
                     form = slot.key.form,
@@ -608,20 +707,12 @@ class ContainerCaptureListener(
                 holder is PlayerHolder && holder.uuid == player.uniqueId && stack.key.form.contentEquals(form)
             }?.key
         }
-        for (move in moves) {
-            sink(
-                Transfer(
-                    cause = move.cause,
-                    from = move.from,
-                    to = move.to,
-                    form = move.key.form,
-                    damage = move.key.damage,
-                    qty = move.qty,
-                    timestamp = timestamp,
-                    confidence = move.confidence,
-                    actor = move.actor,
-                )
-            )
+        // One item that became another is a mutation; a recipe that ate three and made one is not, so
+        // the kind comes from the event and never from the size of what the pass happened to gather.
+        val shift = taken.firstNotNullOfOrNull { it.shift }
+        for (group in transactions(moves, shift)) {
+            val kind = if (shift != null && group.size > 1) shift.kind else Kind.TRANSFER
+            sink(group.map { transferOf(it, timestamp, kind) })
         }
     }
 
@@ -636,7 +727,11 @@ class ContainerCaptureListener(
         val top = view.topInventory
         val topHolder = topHolders(player, top)
         if (topHolder != null) {
-            for (slot in 0 until top.size) record(stacks, containers, topHolder(slot), top.getItem(slot))
+            val preview = previewSlot(top)
+            for (slot in 0 until top.size) {
+                if (slot == preview) continue
+                record(stacks, containers, topHolder(slot), top.getItem(slot))
+            }
         }
         val inventory = player.inventory
         val holders = playerHolders(player.uniqueId, inventory)
@@ -691,8 +786,10 @@ class ContainerCaptureListener(
             return playerHolders(viewer, inventory)
         }
         containerHolders(inventory)?.let { return it }
-        // Menu types carry no number of their own yet; ordinals are stable within a server version.
-        val menuType = inventory.type.ordinal
+        // Every window backed by a block or an entity has been claimed above, so what is left is a
+        // menu nobody owns. The number comes from the registry rather than from the ordinal, which
+        // shifts whenever a game update inserts an inventory type ahead of this one.
+        val menuType = registries.idForKey(RegistryNamespace.MENU_TYPE, inventory.type.name)
         return { slot -> MenuSlot(menuType, slot) }
     }
 }

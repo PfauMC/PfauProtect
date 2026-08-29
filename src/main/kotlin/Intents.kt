@@ -12,6 +12,12 @@ import java.util.concurrent.ConcurrentLinkedQueue
 //
 // So an event leaves an intent instead: what is about to happen and why. The recompute counts, the
 // event explains. An intent nobody needed is simply dropped when the pass ends.
+
+// What the pass sees of a transformation is a handful of ends that pair with nothing: the ingredients
+// leave for the Void and the product arrives out of it, in whatever quantities the snapshot says. Only
+// the event knows those ends are one event, and it says so by naming both sides and how they relate.
+class Shift(val consume: Cause, val result: Cause, val kind: Kind)
+
 class Intent(
     val cause: Cause,
     // The end that is not the player. A gain names `from`, a loss names `to`, and an intent that
@@ -31,6 +37,10 @@ class Intent(
     // already written has to swallow that slot's loss and no other, or the loss it was written for
     // reaches the pass unexplained and is written off a second time.
     val holder: Holder? = null,
+    // Set by an event that turned one form into another. It names no end and no amount, so it is spent
+    // on nothing here; the pass reads it after the fact to gather its own unpaired ends into one
+    // transaction.
+    val shift: Shift? = null,
 ) {
     // An intent is about the slots of the player who left it, so the end that is not its counterparty
     // has to be one of theirs. Matching on form alone lets an open container's own unpaired loss take
@@ -195,7 +205,7 @@ object Intents {
     // A label carries no counterparty, so it only has to be about a movement this player made: an
     // edge between two slots neither of which is theirs happened for some other reason.
     private fun Intent.labels(edge: Edge, player: UUID) =
-        from == null && to == null && !recorded && matches(edge.key.form) &&
+        shift == null && from == null && to == null && !recorded && matches(edge.key.form) &&
             (edge.from.heldBy(player) || edge.to.heldBy(player))
 
     private fun Holder.heldBy(player: UUID) = this is PlayerHolder && uuid == player

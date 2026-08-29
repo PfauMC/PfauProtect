@@ -22,6 +22,11 @@ enum class RegistryNamespace(val id: Int, val maxId: Int) {
     // for "no state": a block row that knows only one of its two sides is a write error rather than a
     // row with a default, so the case never arises and all of 0..0xFFFF is available.
     BLOCK_STATE(7, 0xFFFF),
+
+    // Keyed by the name of the InventoryType constant, not by its ordinal: a new type added anywhere
+    // but the end renumbers every constant after it, and rows already on disk would then quietly name
+    // a different menu than the one they were written for.
+    MENU_TYPE(8, 0xFFFF),
     ;
 
     internal val usesUuid: Boolean get() = this == WORLD || this == PLAYER

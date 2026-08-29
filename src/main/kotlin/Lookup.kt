@@ -570,6 +570,9 @@ class Lookups(
     private fun stateOf(id: Int): String =
         ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, id) ?: "block state $id"
 
+    private fun menuName(id: Int): String =
+        ledger.registries.keyOf(RegistryNamespace.MENU_TYPE, id)?.lowercase() ?: "type $id"
+
     /**
      * The item type plus the name written on it, when one is. A named box and a bare one are the same
      * type and read as the same row without it, which is exactly the difference a shulker box full of
@@ -594,7 +597,7 @@ class Lookups(
         is PlayerEquip -> "${playerName(holder.uuid)} equipment slot ${holder.slot}"
         is PlayerCursor -> "${playerName(holder.uuid)} cursor"
         is PlayerEnder -> "${playerName(holder.uuid)} ender chest slot ${holder.slot}"
-        is MenuSlot -> "menu ${holder.menuType} slot ${holder.slot}"
+        is MenuSlot -> "menu ${menuName(holder.menuType)} slot ${holder.slot}"
         is Container -> "container ${holder.x} ${holder.y} ${holder.z} slot ${holder.slot}"
         is WorldBlock -> "block ${holder.x} ${holder.y} ${holder.z}"
         is EntitySlot -> "entity ${holder.uuid} slot ${holder.slot}"

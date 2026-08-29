@@ -17,6 +17,7 @@ import net.minecraft.resources.Identifier
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.event.inventory.InventoryType
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -53,6 +54,9 @@ internal fun fillTypeRegistries(registries: Registries) {
     for (key in BuiltInRegistries.DATA_COMPONENT_TYPE.keySet()) {
         registries.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, key.toString())
     }
+    // Minted here so no number is ever handed out from a region thread mid-snapshot, and so two
+    // servers of one game version agree on which number means which menu.
+    for (type in InventoryType.entries) registries.idForKey(RegistryNamespace.MENU_TYPE, type.name)
 }
 
 class ItemFormCodec(

@@ -278,7 +278,7 @@ class StorageTest {
         val refused = assertThrows(IllegalArgumentException::class.java) { RocksItemLog(dir) }
         assertTrue(refused.message.orEmpty().contains("schema"), "the refusal has to name the reason: $refused")
 
-        stampSchemaVersion(3L)
+        stampSchemaVersion(4L)
         log = RocksItemLog(dir)
         assertEquals(4, log.holderEntries(chest, 0, Long.MAX_VALUE).size)
     }
