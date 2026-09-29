@@ -29,6 +29,7 @@ import org.bukkit.event.inventory.FurnaceBurnEvent
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.abs
+import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStack as NmsItemStack
 import org.bukkit.block.Container as ContainerBlock
 import org.bukkit.inventory.ItemStack as BukkitItemStack
@@ -105,8 +106,9 @@ class SpawnOrigins(private val pending: TickCoalescer) {
 
     // A shulker box that falls out of a block something other than a hand broke has to carry the name
     // its contents were filed under, and the only moment to give it one is before its spawn reads its
-    // form. Matched by the whole stack, contents and all, so two boxes blown up side by side cannot
-    // trade names.
+    // form. Matched by the item and what it holds, so two boxes blown up side by side cannot trade
+    // names — and by nothing else: a box used before still carries the name it was given then, on one
+    // of the two stacks or on both, and that stale name must not stop it being given the right one.
     private class Box(val stack: NmsItemStack, val owner: UUID, val at: Spot) {
         var swept = false
     }
@@ -125,7 +127,7 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         val boxes = boxes.iterator()
         while (boxes.hasNext()) {
             val box = boxes.next()
-            if (!near(box.at, at) || !NmsItemStack.isSameItemSameComponents(box.stack, stack)) continue
+            if (!near(box.at, at) || !sameBox(box.stack, stack)) continue
             boxes.remove()
             return box.owner
         }
@@ -194,6 +196,10 @@ class SpawnOrigins(private val pending: TickCoalescer) {
             if (box.swept) boxes.remove() else box.swept = true
         }
     }
+
+    private fun sameBox(expected: NmsItemStack, spawned: NmsItemStack) =
+        NmsItemStack.isSameItem(expected, spawned) &&
+            expected.get(DataComponents.CONTAINER) == spawned.get(DataComponents.CONTAINER)
 
     private fun near(origin: Spot, spawn: Spot) =
         origin.world == spawn.world &&

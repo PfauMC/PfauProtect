@@ -129,11 +129,13 @@ class WorldItemListener(
 
     // A box that fell out of a block something other than a hand broke is given the name its contents
     // were packed under before its form is read, or it would not match the form its drop was expected
-    // under and its contents would belong to no item at all.
+    // under and its contents would belong to no item at all. A name it already carries is overwritten:
+    // it is the one from its last life, and the contents were packed under the position's.
     private fun nameBox(entity: Item, spot: Spot) {
         val stack = CraftItemStack.asNMSCopy(entity.itemStack)
-        if (!NestedItems.isShulkerBox(stack) || NestedItems.ownerOf(stack) != null) return
+        if (!NestedItems.isShulkerBox(stack)) return
         val owner = origins.ownerFor(stack, spot) ?: return
+        if (NestedItems.ownerOf(stack) == owner) return
         NestedItems.mark(stack, owner)
         entity.itemStack = CraftItemStack.asBukkitCopy(stack)
     }

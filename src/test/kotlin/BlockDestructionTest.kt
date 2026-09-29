@@ -1378,6 +1378,31 @@ class BlockDestructionTest {
         assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(diamondDrop).key, 1))
     }
 
+    // A box broken by hand before carries the name it was given then, and the loot of its next break
+    // may or may not copy it onto the drop. Either way the drop is expected, and named, under the name
+    // its contents were just packed under.
+    @Test
+    fun `a box used before is given the name its contents were packed under`() {
+        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
+        val packed = UUID.randomUUID()
+        val box = NmsItemStack(Items.SHULKER_BOX).apply {
+            set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(NmsItemStack(Items.DIAMOND, 5))))
+            NestedItems.mark(this, UUID.randomUUID())
+        }
+        val state = Blocks.SHULKER_BOX.defaultBlockState().asBlockData()
+        expectDrops(
+            origins, codec, blockStub(5, 64, 7, state, drops = listOf(CraftItemStack.asBukkitMirror(box.copy()))),
+            Cause.BLK_TNT, null, packed,
+        )
+        val spot = Spot(world, 5.2, 64.0, 7.4)
+
+        // The drop still carries the old name; the new one wins.
+        val spawned = box.copy()
+        assertEquals(packed, origins.ownerFor(spawned, spot))
+        NestedItems.mark(spawned, packed)
+        assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(spawned).key, 1))
+    }
+
     // A cactus breaks a tick after its support, from its own block tick, while the read-back that the
     // support's physics queued may still hold the position. The destroy event is the moment the drops
     // are certain and follow at once, so it expects them whatever the read-back is doing.
