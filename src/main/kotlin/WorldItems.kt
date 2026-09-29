@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect
 
+import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Item
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -95,9 +96,9 @@ class WorldItemListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onSpawn(event: ItemSpawnEvent) {
         val entity = event.entity
+        val spot = spotOf(entity.location)
+        nameBox(entity, spot)
         val encoded = codec.encodeOrNull(entity.itemStack) ?: return
-        val at = entity.location
-        val spot = spotOf(at)
         val unexplained = encoded.count - origins.claim(entity.uniqueId, spot, encoded.key, encoded.count)
         pending.add(
             Void,
@@ -107,6 +108,17 @@ class WorldItemListener(
             unexplained,
             confidence = Confidence.INFERRED,
         )
+    }
+
+    // A box that fell out of a block something other than a hand broke is given the name its contents
+    // were packed under before its form is read, or it would not match the form its drop was expected
+    // under and its contents would belong to no item at all.
+    private fun nameBox(entity: Item, spot: Spot) {
+        val stack = CraftItemStack.asNMSCopy(entity.itemStack)
+        if (!NestedItems.isShulkerBox(stack) || NestedItems.ownerOf(stack) != null) return
+        val owner = origins.ownerFor(stack, spot) ?: return
+        NestedItems.mark(stack, owner)
+        entity.itemStack = CraftItemStack.asBukkitCopy(stack)
     }
 
     @EventHandler(priority = EventPriority.MONITOR)

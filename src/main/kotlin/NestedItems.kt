@@ -5,7 +5,9 @@ import net.minecraft.core.component.DataComponentType
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.component.CustomData
+import net.minecraft.world.level.block.ShulkerBoxBlock
 import org.bukkit.Tag
+import org.bukkit.block.Block
 import org.bukkit.block.ShulkerBox
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Player
@@ -16,6 +18,7 @@ import org.bukkit.event.block.BlockDropItemEvent
 import org.bukkit.event.block.BlockPlaceEvent
 import java.util.UUID
 import kotlin.jvm.optionals.getOrNull
+import net.minecraft.world.level.block.Block as NmsBlock
 
 private const val OWNER_TAG = "pfauprotect_owner"
 
@@ -49,9 +52,34 @@ object NestedItems {
 
     fun own(stack: ItemStack): UUID = ownerOf(stack) ?: UUID.randomUUID().also { mark(stack, it) }
 
+    // Asked of the item rather than of a tag: tags are bound late, and a box is a box without them.
+    fun isShulkerBox(stack: ItemStack) = NmsBlock.byItem(stack.item) is ShulkerBoxBlock
+
     fun mark(stack: ItemStack, owner: UUID) {
         CustomData.update(DataComponents.CUSTOM_DATA, stack) { it.store(OWNER_TAG, UUIDUtil.CODEC, owner) }
     }
+}
+
+/**
+ * The slots of a shulker box standing as a block, handed over under the name its contents answer to
+ * as an item. However the box goes — a hand, a piston, an explosion — the contents leave the position
+ * inside it, and the name the position kept is the one the item has to carry.
+ */
+internal fun packShulker(
+    owners: NestedOwners,
+    block: Block,
+    box: ShulkerBox,
+    pack: (slot: Int, owner: UUID, item: ItemStack) -> Unit,
+): UUID {
+    val world = block.world.uid
+    val owner = owners.ownerAt(world, block.x, block.y, block.z) ?: UUID.randomUUID()
+    owners.clearOwnerAt(world, block.x, block.y, block.z)
+    val inventory = box.inventory
+    for (slot in 0 until inventory.size) {
+        val item = CraftItemStack.asNMSCopy(inventory.getItem(slot) ?: continue)
+        if (!item.isEmpty) pack(slot, owner, item)
+    }
+    return owner
 }
 
 // While a shulker box stands as a block its contents are addressed by the block, and as an item they
@@ -79,13 +107,7 @@ class NestedCaptureListener(
     fun onBreak(event: BlockDropItemEvent) {
         val state = event.blockState as? ShulkerBox ?: return
         val block = event.block
-        val world = block.world.uid
-        val owner = owners.ownerAt(world, block.x, block.y, block.z) ?: UUID.randomUUID()
-        owners.clearOwnerAt(world, block.x, block.y, block.z)
-        val inventory = state.inventory
-        for (slot in 0 until inventory.size) {
-            val item = CraftItemStack.asNMSCopy(inventory.getItem(slot) ?: continue)
-            if (item.isEmpty) continue
+        val owner = packShulker(owners, block, state) { slot, owner, item ->
             move(containerAt(block, slot), Nested(owner, slot), Cause.CONTAINER_BREAK_PACK, item, event.player)
         }
         // The loot table of a shulker copies a fixed handful of components onto the dropped item and

@@ -18,6 +18,7 @@ import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
+import org.bukkit.block.ShulkerBox
 import org.bukkit.block.data.BlockData
 import org.bukkit.block.data.Directional
 import org.bukkit.block.data.type.Bed
@@ -26,6 +27,7 @@ import org.bukkit.block.data.type.TechnicalPiston
 import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.craftbukkit.block.CraftBlock
 import org.bukkit.craftbukkit.block.data.CraftBlockData
+import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.craftbukkit.inventory.CraftItemType
 import org.bukkit.entity.Creeper
 import org.bukkit.entity.Entity
@@ -110,11 +112,20 @@ internal fun expectDrops(
     block: Block,
     cause: Cause,
     actor: UUID?,
+    // The name a shulker box's contents were packed under. The box that falls out has to carry it, and
+    // the name is part of its form, so the drop is expected under the named form and the entity is
+    // named the same way before its spawn reads it.
+    boxOwner: UUID? = null,
 ) {
     val spot = spotOf(block.location)
     for (drop in block.drops) {
-        val key = codec.encodeOrNull(drop)?.key ?: continue
-        origins.expect(Void, cause, key, spot, drop.amount, actor)
+        val stack = CraftItemStack.asNMSCopy(drop)
+        if (stack.isEmpty) continue
+        if (boxOwner != null && NestedItems.isShulkerBox(stack)) {
+            origins.expectBox(stack, boxOwner, spot)
+            NestedItems.mark(stack, boxOwner)
+        }
+        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor)
     }
 }
 
@@ -602,6 +613,7 @@ class BlockDestructionListener(
     private val origins: SpawnOrigins,
     private val entities: EntityOrigins,
     private val placed: PlacedForms,
+    private val owners: NestedOwners,
     private val sink: (List<Transfer>) -> Unit,
 ) : Listener {
 
@@ -1020,7 +1032,10 @@ class BlockDestructionListener(
         val gone = real.filter { wentAway(it.before.asString, it.after) }
         if (gone.isEmpty()) return
         // A block that moved carries itself to the position it arrived in and drops nothing on the way.
-        for (site in gone) if (site.went == null) expectDrops(origins, codec, site.block, cause, by?.actor)
+        for (site in gone) {
+            if (site.went != null) continue
+            expectDrops(origins, codec, site.block, cause, by?.actor, packBox(site, by, timestamp))
+        }
         by?.actor?.let { actor -> for (site in gone) noteRemoval(site.at, site.after, actor) }
         // The note saying what a position took over is cleared wherever the block it was written about
         // stopped standing there: left behind, it answers for a block that is not the one there.
@@ -1036,6 +1051,32 @@ class BlockDestructionListener(
             placed.setFormAt(at.world, at.x, at.y, at.z, posting.form)
         }
         sink(transaction)
+    }
+
+    /**
+     * A shulker box a piston or an explosion breaks keeps what it held: the contents fall out inside
+     * the item. They are filed into the box's own name the way a hand's break files them, or they stay
+     * booked to a position that holds nothing and come back as births nobody explains once the box is
+     * opened. The name is handed back for the drop to carry.
+     */
+    private fun packBox(site: Site, by: Attributed?, timestamp: Long): UUID? {
+        val box = site.block.getState(false) as? ShulkerBox ?: return null
+        val packed = ArrayList<Transfer>()
+        val owner = packShulker(owners, site.block, box) { slot, owner, item ->
+            val encoded = codec.encode(item)
+            packed += Transfer(
+                cause = Cause.CONTAINER_BREAK_PACK,
+                from = containerAt(site.block, slot),
+                to = Nested(owner, slot),
+                form = encoded.key.form,
+                damage = encoded.key.damage,
+                qty = encoded.count,
+                timestamp = timestamp,
+                actor = by?.actor,
+            )
+        }
+        if (packed.isNotEmpty()) sink(packed)
+        return owner
     }
 
     // A change worth a row: one that changes something, and one the journal has not already been told

@@ -2,8 +2,10 @@ package io.pfaumc.pfauprotect
 
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
 import net.minecraft.core.Direction
+import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStack as NmsItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.item.component.ItemContainerContents
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.state.properties.BedPart
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
@@ -168,6 +170,7 @@ class BlockDestructionTest {
         origins = origins,
         entities = entityOrigins,
         placed = shared,
+        owners = shared,
         sink = sink,
     )
 
@@ -1334,6 +1337,44 @@ class BlockDestructionTest {
         assertEquals(Cause.BLK_FADE, row.cause)
         assertEquals(breaker, row.actor)
         assertEquals(1, row.qty)
+    }
+
+    // A shulker box a piston broke drops with its contents inside, and those were packed under the
+    // name the position kept. The box that appears has to carry that name, and a second box broken
+    // beside it must not be handed the first one's.
+    @Test
+    fun `a box broken by the world is expected under the name its contents were packed under`() {
+        fun box(item: net.minecraft.world.item.Item, count: Int) = NmsItemStack(Items.SHULKER_BOX).apply {
+            set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(NmsItemStack(item, count))))
+        }
+        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
+        val diamonds = box(Items.DIAMOND, 5)
+        val stone = box(Items.STONE, 64)
+        val first = UUID.randomUUID()
+        val second = UUID.randomUUID()
+        val state = Blocks.SHULKER_BOX.defaultBlockState().asBlockData()
+        expectDrops(
+            origins, codec, blockStub(5, 64, 7, state, drops = listOf(CraftItemStack.asCraftMirror(diamonds.copy()))),
+            Cause.BLK_PISTON_EXTEND, null, first,
+        )
+        expectDrops(
+            origins, codec, blockStub(6, 64, 7, state, drops = listOf(CraftItemStack.asCraftMirror(stone.copy()))),
+            Cause.BLK_PISTON_EXTEND, null, second,
+        )
+        val spot = Spot(world, 6.2, 64.0, 7.4)
+
+        // What the spawn does with each box before it reads the form, in the order they appear.
+        val stoneDrop = stone.copy()
+        assertEquals(second, origins.ownerFor(stoneDrop, spot))
+        NestedItems.mark(stoneDrop, second)
+        val diamondDrop = diamonds.copy()
+        assertEquals(first, origins.ownerFor(diamondDrop, spot))
+        NestedItems.mark(diamondDrop, first)
+        // Each name is handed out once.
+        assertNull(origins.ownerFor(diamonds.copy(), spot))
+
+        assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(stoneDrop).key, 1))
+        assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(diamondDrop).key, 1))
     }
 
     @Test
