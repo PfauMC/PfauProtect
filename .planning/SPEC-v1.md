@@ -97,30 +97,30 @@ CoreProtect-класса функциональность для контейн�
 | `Container`     | world, pos, slot   | блок-контейнер; двойной сундук раскладывать на две пары (pos, локальный слот)         |
 | `EntitySlot`    | uuid, slot         | вагонетки/лодки с сундуком, рамки, стойки брони, снаряжение мобов                     |
 | `ItemEntityRef` | uuid               | предмет в мире; UUID переживает рестарт                                               |
-| `Nested`        | ownerId, index     | внутри шалкера/сумки/арбалета                                                         |
+| `Nested`        | ownerId, index     | внутри шалкерового ящика/мешка/арбалета                                                         |
 | `Void`          | —                  | небытие (создание/уничтожение)                                                        |
 
 Фаза 1 порождает `PlayerInv`, `PlayerEquip`, `PlayerCursor`, `Container`, `ItemEntityRef` и
 `Nested`. Остальные типы существуют в модели, но наполняются в следующих фазах.
 
-**Про `Nested` и его предпосылку.** Содержимое контейнера-предмета (шалкер, сумка) — это не байты
+**Про `Nested` и его предпосылку.** Содержимое контейнера-предмета (шалкеровый ящик, мешок) — это не байты
 внутри предмета, а отдельные дочерние владения под `Nested(ownerId, index)`, чтобы граф видел
 предметы внутри. Для этого контейнер-предмет нуждается в **стабильном id** (`ownerId`), на который
 ссылаются его дочерние владения. Id ставится меткой в `custom_data`; это безопасно, потому что все
-контейнеры-предметы (шалкер, сумка, арбалет) объявлены `stacksTo(1)`, и метка не ломает стакание.
+контейнеры-предметы (шалкеровый ящик, мешок, арбалет) объявлены `stacksTo(1)`, и метка не ломает стакание.
 
-Один разрыв, который надо перекрыть: лут-таблица шалкера при ломании блока переносит на предмет
+Один разрыв, который надо перекрыть: лут-таблица шалкерового ящика при ломании блока переносит на предмет
 только `CUSTOM_NAME`, `CONTAINER`, `LOCK`, `CONTAINER_LOOT` — **`custom_data` с меткой в этот список
 не входит**. Поэтому на цикле «поставил блоком → сломал» метка теряется. Перекрывается побочной
 таблицей `(мир, позиция) → ownerId`: пишется при установке, читается при сломе, метка проставляется
-новому предмету. Пока шалкер стоит блоком, его содержимое адресуется обычным `Container(world,pos,slot)`,
+новому предмету. Пока шалкеровый ящик стоит блоком, его содержимое адресуется обычным `Container(world,pos,slot)`,
 а таблица держит связь с прежним `ownerId`, чтобы цепочка не рвалась.
 
-Ломание блока-шалкера при этом — обычная транзакция `BLOCK_DROP` (VOID → ItemEntity) для самой
+Ломание блока шалкерового ящика при этом — обычная транзакция `BLOCK_DROP` (VOID → ItemEntity) для самой
 оболочки, как земля из травы; отдельной причины «упаковки» нет. Перенос содержимого
 `Container → Nested` идёт причиной ломания контейнера, а его зеркало `Nested → Container` при
 установке — причиной установки; пункт назначения (`Nested` или `ItemEntity`) сам несёт разницу
-между шалкером и обычным сундуком.
+между шалкеровым ящиком и обычным сундуком.
 
 **Про `EntitySlot` (сущности-контейнеры: вагонетки, лодки с сундуком, рамки, стойки брони).**
 Адресуются по **UUID сущности**, а не по `(мир, позиция)`: вагонетка едет по рельсам, позиция
@@ -128,7 +128,7 @@ CoreProtect-класса функциональность для контейн�
 произошло», не как адрес. UUID сохраняется в регион-файл, поэтому холдер переживает рестарт и
 выгрузку чанка, как `ItemEntityRef`.
 
-- **Вагонетка с сундуком** — как обычный сундук, но слоты `EntitySlot(uuid, slot)`. Перекладка
+- **Грузовая вагонетка** — как обычный сундук, но слоты `EntitySlot(uuid, slot)`. Перекладка
   игрок↔вагонетка — `TRANSFER` между `PlayerInv` и `EntitySlot`. Установка/разрушение оболочки —
   отдельные транзакции, не путать с содержимым; при разрушении содержимое высыпается
   `EntitySlot → ItemEntity` по каждому предмету.
@@ -138,7 +138,7 @@ CoreProtect-класса функциональность для контейн�
 
 Три ловушки: (1) логировать **фактическую** сущность из события, а не гадать по позиции — когда
 наземная воронка находит в клетке несколько вагонеток, выбор получателя **случайный**; (2) спам —
-вагонетка-воронка над линией воронок гонит поток по одному предмету за такт, нужна та же склейка
+загрузочная вагонетка над линией воронок гонит поток по одному предмету за такт, нужна та же склейка
 за тик, что и для механизмов (§6); (3) атрибуции нет, автоматические переносы безымянны
 (`confidence` автоматический).
 
@@ -500,11 +500,11 @@ opaque до фазы 2. Стартовый набор (частые в выжи�
 
 Вынесенное в колонку транзакции поле `damage` (см. §4.2) в патч **не** попадает. `map_id` наоборот
 остаётся в компонентах (см. §4.2), поэтому кодируется здесь как обычный компонент.
-Вложенные хранилища `container` (шалкер) и `bundle_contents` (сумка) в фазе 1 **не** кодируются
+Вложенные хранилища `container` (шалкеровый ящик) и `bundle_contents` (мешок) в фазе 1 **не** кодируются
 как компонент — их содержимое разбирается в дочерние владения `Nested` (см. §2.1), а из формы
 самого контейнера-предмета эти компоненты исключаются. `charged_projectiles` (арбалет) в фазе 1
 остаётся opaque — снаряд внутри разбирать не обязательно. Глубину вложенности ограничить явно
-(сумка в сумке допустима игрой до многих уровней).
+(мешок в мешке допустим игрой до многих уровней).
 
 Точный список выживальных компонентов вывести перечислением того, что реально появляется на
 предметах в выживании; всё за пределами списка покрывает opaque-фолбэк.
@@ -580,7 +580,7 @@ DataFixerUpper): `~/src/github.com/InsiderAnh/StellarProtect/API/src/main/java/i
 
 Содержимое контейнеров (`container`, `bundle_contents`) **из формы не выносить в колонку и не
 кодировать в компонент** — это дочерние владения под холдером `Nested` (§2.1). Форма самого
-шалкера/сумки считается без содержимого, поэтому таблица форм от него не растёт, а баланс видит
+шалкерового ящика/мешка считается без содержимого, поэтому таблица форм от него не растёт, а баланс видит
 предметы внутри, а не непрозрачный блоб.
 
 **Обязательный тест фазы 1:** круговой прогон — предмет → (форму + вынесенные колонки) →
@@ -604,7 +604,7 @@ Column families:
 | `item_forms`   | item_form_id                                                                  | таблица форм предмета                     |
 | `registry`     | namespace:key                                                                 | реестр §3                                 |
 | `meta`         | фиксированные ключи                                                           | версия схемы, счётчики, курсоры           |
-| `nested_owners`| мир + позиция                                                                 | `(мир, позиция) → ownerId` для цикла «шалкер блоком → предмет» (§2.1) |
+| `nested_owners`| мир + позиция                                                                 | `(мир, позиция) → ownerId` для цикла «шалкеровый ящик блоком → предмет» (§2.1) |
 | `tx`           | `tx_id`                                                                       | ключи проводок транзакции, которую нельзя собрать точечным чтением (§7) |
 | `placed_forms` | мир + позиция                                                                 | форма предмета, которым поставлен блок, — читается при сломе |
 
@@ -903,7 +903,7 @@ ClickHouse-адаптер, не трогая захват.
 догадке о форме транзакции**, поэтому найденную строку обязательно сверять: она считается парной,
 только если действительно называет нас контрагентом. Не сошлось — идти в индекс.
 
-**Транзакция из трёх и более проводок** (крафт, переплавка, автокрафтер, слом блока с содержимым) так не
+**Транзакция из трёх и более проводок** (крафт, переплавка, сборщик, слом блока с содержимым) так не
 восстановится: её проводки лежат под разными холдерами и с произвольными номерами, и вывести их из
 одной нельзя. Для них есть CF `tx` — `tx_id → ключи проводок` (§5.1). Она же остаётся запасным
 путём для всего, что не сошлось при точечном чтении. Писать в неё надо только транзакции, которые
@@ -990,8 +990,8 @@ ClickHouse-адаптер, не трогая захват.
 7. Захват слоя 1 (§6) на Folia-планировщике: снимок трёх частей, сведение убыли с приростом, запись
    парой проводок.
 8. Разбор `Nested` (§2.1): метка `ownerId` в `custom_data` контейнеров-предметов, побочная
-   таблица `(мир, позиция) → ownerId` для цикла шалкер-блок, декомпозиция содержимого в дочерние
-   владения, ограничение глубины. Круговой тест на шалкере и сумке (в т.ч. цикл «поставил → сломал»).
+   таблица `(мир, позиция) → ownerId` для цикла шалкеровый ящик-блок, декомпозиция содержимого в дочерние
+   владения, ограничение глубины. Круговой тест на шалкеровом ящике и мешке (в т.ч. цикл «поставил → сломал»).
 9. Проверка инварианта транзакции (§2.2) — отдельной проверкой поверх записанного, а не глазами: она
    ловит потерянную половину транзакции, то есть баг захвата, и должна пройти до ручной проверки.
 10. Проверка критерия готовности (§1): сундук → перекладка → корректные парные проводки → round-trip.
@@ -1035,18 +1035,18 @@ ClickHouse-адаптер, не трогая захват.
 - `container_add` — X → Container — предмет положен в блок-контейнер
 - `container_remove` — Container → X — предмет вынут (в т.ч. jukebox/lectern/pot/bookshelf: блок несёт холдер)
 - `container_break_drop` — Container → ItemEntity — снос контейнера, содержимое на землю (сундук, бочка, воронка, печь)
-- `container_break_pack` — Container → Nested — снос шалкера, содержимое в предмет (различие несёт пункт назначения)
-- `container_place_unpack` — Nested → Container — установка шалкера блоком
+- `container_break_pack` — Container → Nested — снос шалкерового ящика, содержимое в предмет (различие несёт пункт назначения)
+- `container_place_unpack` — Nested → Container — установка шалкерового ящика блоком
 - `hopper_pull_container` — Container → Container — забор воронкой сверху
 - `hopper_pull_ground` — ItemEntity → Container — воронка подобрала с земли
 - `hopper_push` — Container → Container — отдача воронкой вниз/вбок
-- `hopper_minecart_pull` — Container/ItemEntity → EntitySlot — вагонетка-воронка
+- `hopper_minecart_pull` — Container/ItemEntity → EntitySlot — загрузочная вагонетка
 - `dropper_push` — Container → Container — дроппер в контейнер
 - `dropper_eject` — Container → ItemEntity — дроппер выкинул
 - `dispenser_eject` — Container → ItemEntity — раздатчик выкинул предмет
 - `dispenser_behavior` — Container → Void/EntitySlot/мир — раздатчик применил (ведро, броня, снаряд)
-- `crafter_consume` — Container → Void — автокрафтер списал ингредиенты
-- `crafter_emit` — Void → Container/ItemEntity — автокрафтер выдал результат
+- `crafter_consume` — Container → Void — сборщик списал ингредиенты
+- `crafter_emit` — Void → Container/ItemEntity — сборщик выдал результат
 - `furnace_fuel_consume` — Container → Void — расход топлива
 - `furnace_fuel_remainder` — Void → Container — пустое ведро от лавы в слоте топлива
 - `brewing_ingredient_consume` — Container → Void
@@ -1054,7 +1054,7 @@ ClickHouse-адаптер, не трогая захват.
 - `composter_consume` — X → Void — компостирование
 - `composter_bonemeal` — Void → ItemEntity/Container — выдача костной муки
 - `campfire_cook_drop` — Container → ItemEntity — приготовленное выпадает
-- `beehive_harvest` — Void → ItemEntity — соты/мёд ножницами/бутылкой
+- `beehive_harvest` — Void → ItemEntity — соты/мёд ножницами/бутылочкой
 - `brushable_reveal` — Void → ItemEntity — находка археологии
 
 ### 0x20–0x2F Предмет в мире (ItemEntity)
@@ -1062,12 +1062,12 @@ ClickHouse-адаптер, не трогая захват.
 - `item_merge` — ItemEntity → ItemEntity — слияние (донор теряет `thrower`)
 - `item_despawn` — ItemEntity → Void — таймаут
 - `item_pickup_by_mob` — ItemEntity → EntitySlot — экипировка моба
-- `item_pickup_by_mob_inv` — ItemEntity → EntitySlot — виллагер/пиглин/аллей
+- `item_pickup_by_mob_inv` — ItemEntity → EntitySlot — крестьянин/пиглин/тихоня
 - `item_destroy_fire` — ItemEntity → Void — огонь/лава
 - `item_destroy_cactus` — ItemEntity → Void — кактус (уничтожает и незерит)
 - `item_destroy_void` — ItemEntity → Void — падение в пустоту
 - `item_destroy_explosion` — ItemEntity → Void
-- `mob_throw_item` — EntitySlot → ItemEntity — лиса/дельфин/житель (`thrower` выставлен)
+- `mob_throw_item` — EntitySlot → ItemEntity — лисица/дельфин/крестьянин (`thrower` выставлен)
 
 ### 0x30–0x3F Лут и материализация
 - `block_drop` — Void → ItemEntity — дроп с ломания блока (лут-таблица)
@@ -1076,7 +1076,7 @@ ClickHouse-адаптер, не трогая захват.
 - `mob_spawn_equipment` — Void → EntitySlot — снаряжение при спавне (атрибуции нет)
 - `loot_generate` — Void → Container — структурный лут при первом обращении (игрок может быть null)
 - `vault_reward` — Void → ItemEntity — хранилище пробных палат (лут на игрока, размножитель)
-- `trial_spawner_reward` — Void → ItemEntity — триал-спавнер (размножитель)
+- `trial_spawner_reward` — Void → ItemEntity — рассадник испытаний (размножитель)
 - `fishing_catch` — Void → ItemEntity
 - `trade_result` — Void → MenuSlot — результат сделки (create, не перемещение)
 - `trade_payment` — MenuSlot → Void — плата уничтожается (`shrink`)
@@ -1088,14 +1088,14 @@ ClickHouse-адаптер, не трогая захват.
 - `creative_set` — Void → slot — пакет установки слота (гейт `instabuild`, компоненты не валидируются)
 - `creative_clone` — Void → PlayerCursor — средний клик
 - `creative_pick` — Void → PlayerInv — pick-block (Ctrl вкладывает NBT блок-сущности)
-- `direct_new_item` — Void → X — прямой `new ItemStack` в коде (незеритовая звезда Витера и т.п.)
+- `direct_new_item` — Void → X — прямой `new ItemStack` в коде (звезда Незера с визера и т.п.)
 
 ### 0x40–0x4F Крафт и трансформации
 - `craft_consume` — MenuSlot(grid) → Void — списание ингредиентов
 - `craft_result` — Void → PlayerCursor/PlayerInv/ItemEntity — взятие результата
-- `craft_remainder` — Void → MenuSlot/PlayerInv/ItemEntity — ведро от торта, бутылка
+- `craft_remainder` — Void → MenuSlot/PlayerInv/ItemEntity — ведро от торта, бутылочка
 - `smelt` — Container → Container — вход→выход печи (transform)
-- `brew` — Container → Container — трансформация трёх бутылок
+- `brew` — Container → Container — трансформация трёх бутылочек
 - `anvil_combine` — MenuSlot → MenuSlot — MUTATE, провенанс левого слота сохраняется
 - `grindstone` — MenuSlot → MenuSlot — снятие зачарований
 - `smithing_transform` — MenuSlot → MenuSlot — MUTATE (незерит)
@@ -1106,11 +1106,11 @@ ClickHouse-адаптер, не трогая захват.
 - `loom` — MenuSlot → MenuSlot — знамя+краситель→знамя
 - `cartography` — MenuSlot → MenuSlot — копирование/расширение карты
 - `consume_food` — PlayerEquip → Void — еда/питьё
-- `consume_remainder` — Void → slot — стеклянная бутылка/ведро/миска обратно
+- `consume_remainder` — Void → slot — бутылочка/ведро/миска обратно
 - `durability_damage` — MUTATE — износ (`damage++`, вынесен в колонку)
 - `durability_break` — slot → Void — предмет сломался (`shrink(1)`)
-- `transmute_on_break` — MUTATE — морковка на удочке → удочка
-- `dye_item` — MUTATE — покраска кожи/шалкера-предмета
+- `transmute_on_break` — MUTATE — удочка с морковкой → удочка
+- `dye_item` — MUTATE — покраска кожи/шалкерового ящика-предмета
 - `book_sign` — MUTATE — writable → written
 - `book_copy` — X → X+copy — CLONE (generation+1)
 - `banner_duplicate` — X → X+copy — CLONE
@@ -1126,9 +1126,9 @@ ClickHouse-адаптер, не трогая захват.
 - `wax_apply` — PlayerInv → Void — восковка медью сотами
 - `record_into_jukebox` — PlayerInv → Container
 - `book_onto_lectern` — PlayerInv → Container
-- `item_into_single_block` — PlayerInv → Container/Void — горшок/полка/книжная полка/компостер
+- `item_into_single_block` — PlayerInv → Container/Void — горшок/полка/книжная полка/компостница
 - `place_entity_item` — PlayerInv → EntitySlot — лодка/вагонетка/рамка/стойка/поводок/картина
-- `eye_into_frame` — PlayerInv → WorldBlock — глаз в рамку портала
+- `eye_into_frame` — PlayerInv → WorldBlock — око Эндера в рамку портала Энда
 
 ### 0x60–0x6F Использование по сущности
 - `feed_mob` — PlayerInv → Void — кормление/размножение (расход до броска кубика)
@@ -1153,17 +1153,17 @@ ClickHouse-адаптер, не трогая захват.
 - `proj_despawn` — Projectile → Void
 - `trident_loyalty_return` — Projectile → PlayerInv
 - `trident_drop` — Projectile → ItemEntity — владелец мёртв/в спектаторе
-- `eye_survive` — Projectile → ItemEntity — глаз Края уцелел (80%)
+- `eye_survive` — Projectile → ItemEntity — око Эндера уцелело (80%)
 - `eye_shatter` — Projectile → Void
-- `thrown_consumed` — PlayerInv → Void — снежок/яйцо/жемчуг/зелье/ветрозаряд (визуал, не носитель)
+- `thrown_consumed` — PlayerInv → Void — снежок/яйцо/эндер-жемчуг/зелье/заряд ветра (визуал, не носитель)
 - `firework_launch` — PlayerInv → Void
 - `dispensed_projectile` — Container → Projectile/Void — из раздатчика (атрибуции нет)
 
 ### 0x80–0x8F Вложенное хранение (внутри предмета)
-- `bundle_insert` — slot → Nested — сумка, частичное по весу, вставка в позицию 0
+- `bundle_insert` — slot → Nested — мешок, частичное по весу, вставка в позицию 0
 - `bundle_extract` — Nested → slot
 - `bundle_dump` — Nested → ItemEntity — высыпание зажатым кликом (поток за одно действие)
-- `bundle_spill_destroyed` — Nested → ItemEntity — сумка сгорела (деспавн — тихо в Void)
+- `bundle_spill_destroyed` — Nested → ItemEntity — мешок сгорел (деспавн — тихо в Void)
 - `crossbow_load` — PlayerInv → Nested — заряд арбалета (multishot: 3 снаряда, 1 списан)
 - `crossbow_shoot` — Nested → Projectile
 
@@ -1186,5 +1186,5 @@ ClickHouse-адаптер, не трогая захват.
 **Заметки по краевым случаям** (полнее — в комментариях к самим причинам при написании enum):
 призрачный `ItemEntity` от `/give` не логировать; один shift-клик = цикл; `cursor_swap` — два ребра
 без хука; `InventoryMoveItemEvent` глохнет без вызова `getItem()`; пять мест расходуют предмет и в
-креативе (бирка, краситель на овце, седло, поводок, бутылка мёда), три — дублируют
-(`consumeAndReturn`: конская броня, пиглин, аллей).
+креативе (бирка, краситель на овце, седло, поводок, бутылочка мёда), три — дублируют
+(`consumeAndReturn`: конская броня, пиглин, тихоня).

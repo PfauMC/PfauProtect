@@ -544,7 +544,7 @@ NBT), а не отображаемая.
 - `BlockFromToEvent` без NMS-проверки `canBeReplaced(Fluids.WATER/LAVA)` не отличает «жидкость
   разрушила блок» от «жидкость мимо него протекла» (`listener/BlockFromToListener.kt:119-126`) — а для
   нас это разница между честной проводкой и фантомной убылью на каждом блоке, над которым текла вода;
-- поджиг крипера кресалом **не** поднимает `EntityDamageByEntityEvent`, только
+- поджиг крипера огнивом **не** поднимает `EntityDamageByEntityEvent`, только
   `PlayerInteractEntityEvent` (`listener/PlayerCreeperIgniteListener.kt:21-50`).
 
 **Чего брать нельзя: правки строки на месте.** Их дозапись читает уже записанную строку и
