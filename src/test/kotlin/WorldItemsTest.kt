@@ -1,13 +1,23 @@
 package io.pfaumc.pfauprotect
 
+import net.minecraft.core.component.DataComponents
+import net.minecraft.world.item.ItemStackTemplate
+import net.minecraft.world.item.Items
+import net.minecraft.world.item.component.BundleContents
+import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.entity.Item
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityRemoveEvent
+import org.bukkit.plugin.Plugin
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.lang.reflect.Proxy
 import java.util.UUID
+import net.minecraft.world.item.ItemStack as NmsItemStack
 
 class WorldItemsTest {
     private val written = ArrayList<Transfer>()
@@ -115,6 +125,89 @@ class WorldItemsTest {
             assertNotNull(end(cause)) { "$cause writes nothing at all" }
         }
     }
+
+    // Health is whole and the hit is cut down to a whole number, so a hit that leaves less than one
+    // point is the end of the item.
+    @Test
+    fun `a hit is lethal when what it leaves rounds down to nothing`() {
+        assertTrue(lethal(5, 5.0))
+        assertTrue(lethal(5, 4.5))
+        assertFalse(lethal(5, 3.9))
+    }
+
+    // Only a death by damage spills what a box held; running out of time, the void and a kill take the
+    // contents down with it.
+    @Test
+    fun `only an item whose health ran out spills its contents`() {
+        assertTrue(spills(EntityRemoveEvent.Cause.DEATH, 0))
+        assertFalse(spills(EntityRemoveEvent.Cause.DEATH, 4))
+        assertFalse(spills(EntityRemoveEvent.Cause.OUT_OF_WORLD, 5))
+        assertFalse(spills(EntityRemoveEvent.Cause.DESPAWN, 5))
+    }
+
+    private val codec by lazy { ItemFormCodec(Registries(MemoryRegistryStore()), ServerRegistries.access) }
+
+    // `Items` cannot be touched before the registries are up, and the codec is what brings them up.
+    private fun bundle(owner: UUID?) = codec.let { NmsItemStack(Items.BUNDLE) }.apply {
+        set(
+            DataComponents.BUNDLE_CONTENTS,
+            BundleContents(listOf(ItemStackTemplate(Items.DIAMOND, 3), ItemStackTemplate(Items.STONE, 16))),
+        )
+        owner?.let { NestedItems.mark(this, it) }
+    }
+
+    @Test
+    fun `a bundle accounts for its contents under its own name and an unnamed one for nothing`() {
+        val owner = UUID.randomUUID()
+        assertTrue(namedContents(bundle(null), codec).isEmpty())
+
+        val contents = namedContents(bundle(owner), codec)
+        assertEquals(listOf(Nested(owner, 0), Nested(owner, 1)), contents.map { it.first })
+        assertEquals(listOf(3, 16), contents.map { it.second.count })
+    }
+
+    // Thrown over the edge: the end of the bundle and of everything in it, and the player who threw it
+    // is on every one of those rows.
+    @Test
+    fun `a thrown bundle lost to the void names its thrower and takes its contents with it`() {
+        val owner = UUID.randomUUID()
+        val thrower = UUID.randomUUID()
+        val entity = UUID.randomUUID()
+        val origins = SpawnOrigins(coalescer)
+        val capture = ContainerCaptureListener(
+            stub(Plugin::class.java, mapOf("isEnabled" to false)), {}, codec,
+            Registries(MemoryRegistryStore()), origins, noPlacedForms(),
+        )
+        val item = stub(
+            Item::class.java,
+            mapOf(
+                "isDead" to false,
+                "getHealth" to 5,
+                "getUniqueId" to entity,
+                "getThrower" to thrower,
+                "getItemStack" to CraftItemStack.asCraftMirror(bundle(owner)),
+            ),
+        )
+
+        WorldItemListener(codec, coalescer, origins, capture)
+            .onRemove(EntityRemoveEvent(item, EntityRemoveEvent.Cause.OUT_OF_WORLD))
+
+        val rows = rows()
+        assertEquals(setOf(ItemEntityRef(entity), Nested(owner, 0), Nested(owner, 1)), rows.map { it.from }.toSet())
+        assertTrue(rows.all { it.to == Void && it.cause == Cause.ITEM_DESTROY_VOID && it.actor == thrower }, "$rows")
+    }
+
+    private fun noPlacedForms() = object : PlacedForms {
+        override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = null
+        override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = emptyMap()
+        override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) = Unit
+        override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) = Unit
+        override fun clearFormsAt(positions: List<WorldBlock>) = Unit
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun <T : Any> stub(type: Class<T>, answers: Map<String, Any?>): T =
+        Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ -> answers[method.name] } as T
 
     // The merge is allowed as long as the donor fits under the survivor's own maximum, and then never
     // fills it past 64. An item that stacks to 99 therefore leaves the donor alive holding the rest,
