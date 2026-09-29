@@ -49,6 +49,9 @@ dependencies {
     testImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.0")
     testImplementation("org.rocksdb:rocksdbjni:$rocksdbVersion:osx")
     testImplementation("org.rocksdb:rocksdbjni:$rocksdbVersion:linux64")
+    // Tests also run on Windows dev machines; the server itself never does, so plugin.yml stays
+    // without it.
+    testImplementation("org.rocksdb:rocksdbjni:$rocksdbVersion:win64")
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
