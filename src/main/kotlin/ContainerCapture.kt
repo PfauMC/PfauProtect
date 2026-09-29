@@ -519,6 +519,13 @@ class ContainerCaptureListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onClick(event: InventoryClickEvent) {
         val player = event.whoClicked as? Player ?: return
+        // A furnace smelting into the open window, a hopper filling it or another player at the same
+        // chest changes slots under the baseline with no pass of this player's to see it, and taking
+        // such an item out would read as the slot unchanged and the cursor filled from nowhere. The
+        // click arrives before it is applied, so a pass here counts everything up to it — the foreign
+        // part is dropped as the container's own business — and leaves the baseline where the click
+        // starts from.
+        recompute(player)
         // A craft arrives here and not at a handler of its own: CraftItemEvent declares no handler list
         // and is dispatched into this one, so a second listener would be a second callback for one
         // click and would leave the reason twice.
@@ -569,7 +576,10 @@ class ContainerCaptureListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDrag(event: InventoryDragEvent) {
-        intend(event.whoClicked as? Player ?: return, Intent(Cause.QUICK_CRAFT_DISTRIBUTE))
+        val player = event.whoClicked as? Player ?: return
+        // For the same reason as a click: the drag starts from whatever the window holds now.
+        recompute(player)
+        intend(player, Intent(Cause.QUICK_CRAFT_DISTRIBUTE))
     }
 
     // Every getter here reports the state after the swap, so nothing but the reason is worth taking.
