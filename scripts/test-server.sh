@@ -6,8 +6,10 @@
 #   scripts/test-server.sh start   build the plugin, copy it into run/plugins and start the server
 #   scripts/test-server.sh stop    stop it the way a server is stopped, so onDisable runs
 #   scripts/test-server.sh logs    follow the console
+#   scripts/test-server.sh cmd "pp lookup player:SPY_me"   run a console command; the answer is in logs
 #
-# RCON listens on 127.0.0.1:25575 only. online-mode is off so the bots of the two-player cases can
+# The console reads from a pipe, because RCON returns before an asynchronous command has answered and
+# every /pp lookup is asynchronous. RCON listens on 127.0.0.1:25575 only. online-mode is off so the bots of the two-player cases can
 # join with the same world and the same player ids as a real client.
 set -eu
 cd "$(dirname "$0")/.."
@@ -40,7 +42,14 @@ EOF
     docker run -d --rm --name "$NAME" \
         -p 25565:25565 -p 127.0.0.1:25575:25575 \
         -v "$HOST_RUN:/server" -w /server \
-        eclipse-temurin:25-jre java -Xmx4G -jar canvas.jar --nogui
+        eclipse-temurin:25-jre sh -c '
+            mkfifo /tmp/console
+            # Held open for writing so the server never reads an end of input between two commands.
+            sleep infinity >/tmp/console &
+            exec java -Xmx4G -jar canvas.jar --nogui </tmp/console'
+    ;;
+cmd)
+    docker exec "$NAME" sh -c 'echo "$1" >/tmp/console' _ "$2"
     ;;
 stop)
     # SIGTERM is the server's own shutdown path; the grace period covers draining the ledger.
@@ -50,7 +59,7 @@ logs)
     docker logs -f "$NAME"
     ;;
 *)
-    echo "usage: $0 start|stop|logs" >&2
+    echo "usage: $0 start|stop|logs|cmd <command>" >&2
     exit 2
     ;;
 esac
