@@ -88,7 +88,7 @@ internal fun brokenAfter(
     val removed = state.fluidState.createLegacyBlock()
     if (state.block !is IceBlock || !dropsBlock || waterEvaporates) return removed
     if (EnchantmentHelper.hasTag(tool, EnchantmentTags.PREVENTS_ICE_MELTING)) return removed
-    return if (below.blocksMotion() || below.liquid()) IceBlock.meltsInto() else removed
+    return if (below.`is`(BlockTags.ICE_MELTS_WHEN_DESTROYED_ABOVE) || below.liquid()) IceBlock.meltsInto() else removed
 }
 
 /**

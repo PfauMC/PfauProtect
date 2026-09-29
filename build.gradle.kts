@@ -12,8 +12,10 @@ version = "1.0.0"
 
 // Canvas publishes the dev bundle to maven and the matching server jar to Jenkins under the same
 // CI number.
-val canvasBuild = "923"
-val canvasMinecraftVersion = "26.2"
+val canvasBuild = "956"
+val canvasMinecraftVersion = "26.3"
+// 26.3 has no stable builds yet; the dev bundle's version carries the channel.
+val canvasChannel = "alpha"
 val rocksdbVersion = "10.4.2"
 
 kotlin {
@@ -35,7 +37,7 @@ val canvasServer = configurations.create("canvasServer")
 
 dependencies {
     paperweight.foliaDevBundle(
-        version = "$canvasMinecraftVersion.build.$canvasBuild-stable",
+        version = "$canvasMinecraftVersion.build.$canvasBuild-$canvasChannel",
         group = "io.canvasmc.canvas",
     )
     // Everything declared with library(...) is written into plugin.yml's `libraries` block by

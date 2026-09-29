@@ -250,7 +250,7 @@ internal fun bucketPlaced(bucket: Material, target: NmsBlockState): String? {
  * it was broken would credit a position it never reached.
  */
 internal fun pistonDestroys(data: BlockData) =
-    (data as CraftBlockData).state.pistonPushReaction == PushReaction.DESTROY
+    (data as CraftBlockData).state.pistonPushReaction == PushReaction.POPPED
 
 /**
  * Where each block a piston is about to shift ends up: the positions it leaves, and the positions it

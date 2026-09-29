@@ -1318,7 +1318,7 @@ class BlockDestructionTest {
 
     @Test
     fun `a block the world takes away explains the item it drops`() {
-        val cactus = CraftItemStack.asCraftMirror(NmsItemStack(Items.CACTUS))
+        val cactus = CraftItemStack.asBukkitMirror(NmsItemStack(Items.CACTUS))
         val block = blockStub(5, 64, 7, Blocks.CACTUS.defaultBlockState().asBlockData(), drops = listOf(cactus))
         val breaker = UUID.randomUUID()
 
@@ -1354,11 +1354,11 @@ class BlockDestructionTest {
         val second = UUID.randomUUID()
         val state = Blocks.SHULKER_BOX.defaultBlockState().asBlockData()
         expectDrops(
-            origins, codec, blockStub(5, 64, 7, state, drops = listOf(CraftItemStack.asCraftMirror(diamonds.copy()))),
+            origins, codec, blockStub(5, 64, 7, state, drops = listOf(CraftItemStack.asBukkitMirror(diamonds.copy()))),
             Cause.BLK_PISTON_EXTEND, null, first,
         )
         expectDrops(
-            origins, codec, blockStub(6, 64, 7, state, drops = listOf(CraftItemStack.asCraftMirror(stone.copy()))),
+            origins, codec, blockStub(6, 64, 7, state, drops = listOf(CraftItemStack.asBukkitMirror(stone.copy()))),
             Cause.BLK_PISTON_EXTEND, null, second,
         )
         val spot = Spot(world, 6.2, 64.0, 7.4)

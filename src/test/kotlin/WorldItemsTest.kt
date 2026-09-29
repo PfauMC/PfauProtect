@@ -185,7 +185,7 @@ class WorldItemsTest {
                 "getHealth" to 5,
                 "getUniqueId" to entity,
                 "getThrower" to thrower,
-                "getItemStack" to CraftItemStack.asCraftMirror(bundle(owner)),
+                "getItemStack" to CraftItemStack.asBukkitMirror(bundle(owner)),
             ),
         )
 

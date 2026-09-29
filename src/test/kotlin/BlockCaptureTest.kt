@@ -9,6 +9,7 @@ import net.minecraft.network.chat.Component
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.entity.SignBlockEntity
+import net.minecraft.world.level.block.entity.SignTextSlot
 import net.minecraft.world.item.ItemStack as NmsItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.enchantment.Enchantments
@@ -82,7 +83,7 @@ class BlockCaptureTest {
         shared.registries.lookupKey(RegistryNamespace.BLOCK_STATE, blockData)
 
     private fun sign(at: BlockPos, line: String): SignBlockEntity =
-        SignBlockEntity(at, signState).apply { setText(frontText.setMessage(0, Component.literal(line)), true) }
+        SignBlockEntity(at, signState).apply { setText(getText(SignTextSlot.FRONT).asMutable().setLine(0, Component.literal(line)).asImmutable(), SignTextSlot.FRONT) }
 
     private fun partnerOf(state: NmsBlockState) = partnerFace(state.asBlockData())
 
@@ -128,7 +129,7 @@ class BlockCaptureTest {
             block,
             stub(BlockState::class.java, mapOf("getBlock" to block, "getBlockData" to data)),
             block,
-            CraftItemStack.asCraftMirror(NmsItemStack(Items.OAK_SIGN)),
+            CraftItemStack.asBukkitMirror(NmsItemStack(Items.OAK_SIGN)),
             player(bob),
             canBuild,
             EquipmentSlot.HAND,
@@ -248,7 +249,7 @@ class BlockCaptureTest {
         val tag = NbtIo.read(DataInputStream(ByteArrayInputStream(payload)))
         val restored = BlockEntity.loadStatic(at, signState, tag, registries) as SignBlockEntity
 
-        assertEquals("первая строка", restored.frontText.getMessage(0, false).string)
+        assertEquals("первая строка", restored.getText(SignTextSlot.FRONT).getMessages(false)[0].string)
         assertArrayEquals(payload, payloadOf(restored, registries))
         assertNotEquals(
             payload.toList(),

@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 
 NAME=pfauprotect-test
 # Must match canvasBuild in build.gradle.kts.
-CANVAS_BUILD=923
+CANVAS_BUILD=956
 # Git Bash rewrites anything that looks like a path, the container side included.
 export MSYS_NO_PATHCONV=1
 HOST_RUN="$(pwd -W 2>/dev/null || pwd)/run"

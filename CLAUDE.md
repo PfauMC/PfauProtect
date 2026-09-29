@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-PfauProtect is a Canvas (Folia fork) plugin for Minecraft 26.2, Canvas build 923. It keeps a double-entry
-ledger of every item movement and a per-world log of block changes, so an admin can trace where items went,
-spot items with no explained origin, and eventually roll back a culprit. Kotlin 2.4, JVM toolchain 25.
+PfauProtect is a Canvas (Folia fork) plugin for Minecraft 26.3, Canvas build 956 (alpha channel). It keeps a
+double-entry ledger of every item movement and a per-world log of block changes, so an admin can trace where items
+went, spot items with no explained origin, and eventually roll back a culprit. Kotlin 2.4, JVM toolchain 25.
 
 ## Commands
 
@@ -13,18 +13,23 @@ spot items with no explained origin, and eventually roll back a culprit. Kotlin 
 ./gradlew test                                                   # all tests
 ./gradlew test --tests 'io.pfaumc.pfauprotect.StorageTest'       # one class
 ./gradlew test --tests 'io.pfaumc.pfauprotect.StorageTest.*name*'# one method (glob)
-./gradlew runServer                                              # Canvas server with the plugin (jar from Canvas Jenkins)
+./gradlew runServer                                              # Canvas server with the plugin (not on Windows, see below)
+scripts/test-server.sh start|stop|logs                           # the same server in a Linux container, for manual runs
 ```
 
 - Nothing is shaded into the jar. Runtime dependencies go through `library(...)` (plugin-yml writes them into
   `plugin.yml` `libraries`). `kotlin.stdlib.default.dependency=false`, so a new dependency usually has to be
   declared twice: `library(...)` for the server and `testImplementation(...)` for tests.
+- The Canvas build is pinned in two places: `canvasBuild` in `build.gradle.kts` and `CANVAS_BUILD` in
+  `scripts/test-server.sh`.
 - RocksDB is `compileOnly`. Its natives come in classifier jars, which the server gets from the literal strings in
   `bukkit { libraries }` and the tests from `testImplementation`. The server gets `osx` and `linux64`. The tests
   also get `win64`, for Windows dev machines. A platform the server has to run on goes into both lists.
+  `runServer` on Windows therefore cannot load the plugin; `scripts/test-server.sh` runs it in Docker.
 - The first test run is slow. `ServerRegistries` (src/test/kotlin) bootstraps vanilla registries and
   `GlobalConfiguration` through reflection and writes `config/` and `logs/` into the repo root (gitignored).
-- Do not rebuild or run `gradle test` while a manual-test server is running from this build: it swaps the jar.
+- Do not rebuild or run `gradle test` while a `runServer` server is running from this build: it swaps the jar. The
+  Docker server runs a copy in `run/plugins`, taken at `start`.
 
 ## Architecture
 

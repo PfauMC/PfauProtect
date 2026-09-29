@@ -644,7 +644,7 @@ class Lookups(
         val tag = runCatching { NbtIo.read(DataInputStream(ByteArrayInputStream(bytes))) }.getOrNull() ?: return null
         val sides = listOf("front_text", "back_text").mapNotNull { side ->
             val text = tag.get(side) ?: return@mapNotNull null
-            SignText.DIRECT_CODEC.parse(NbtOps.INSTANCE, text).result().getOrNull()
+            SignText.CODEC.parse(NbtOps.INSTANCE, text).result().getOrNull()
                 ?.getMessages(false)?.map { it.string }?.filter { it.isNotBlank() }
                 ?.takeIf { it.isNotEmpty() }?.joinToString(" | ", "\"", "\"")
         }

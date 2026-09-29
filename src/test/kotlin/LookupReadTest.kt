@@ -6,6 +6,7 @@ import net.minecraft.network.chat.Component
 import net.minecraft.world.item.Items
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.entity.SignBlockEntity
+import net.minecraft.world.level.block.entity.SignTextSlot
 import org.bukkit.command.CommandSender
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -253,7 +254,7 @@ class LookupReadTest {
         val registries = ServerRegistries.access
         fun sign(line: String) = payloadOf(
             SignBlockEntity(BlockPos(10, 64, -3), Blocks.OAK_SIGN.defaultBlockState()).apply {
-                setText(frontText.setMessage(0, Component.literal(line)), true)
+                setText(getText(SignTextSlot.FRONT).asMutable().setLine(0, Component.literal(line)).asImmutable(), SignTextSlot.FRONT)
             },
             registries,
         )

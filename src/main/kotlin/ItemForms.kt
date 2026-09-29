@@ -6,6 +6,7 @@ import net.minecraft.core.RegistryAccess
 import net.minecraft.core.component.DataComponentPatch
 import net.minecraft.core.component.DataComponentType
 import net.minecraft.core.component.DataComponents
+import net.minecraft.core.component.Removed
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.nbt.ListTag
@@ -80,9 +81,9 @@ class ItemFormCodec(
         val patch = stack.componentsPatch
         var damage: Int? = null
         val drop = ArrayList<DataComponentType<*>>(NestedItems.NESTING_COMPONENTS.size + 1)
-        for (entry in patch.entrySet()) {
+        for (entry in patch.map.reference2ObjectEntrySet()) {
             // Clearing an absent value would also drop an explicit-removal marker, a third state.
-            val value = entry.value.orElse(null) ?: continue
+            val value = Removed.removedToNull(entry.value) ?: continue
             if (entry.key === DataComponents.DAMAGE) damage = value as Int
             if (entry.key === DataComponents.DAMAGE || entry.key in NestedItems.NESTING_COMPONENTS) {
                 drop += entry.key
@@ -121,11 +122,11 @@ class ItemFormCodec(
     private fun form(item: Item, patch: DataComponentPatch): ByteArray {
         val add = ArrayList<Pair<Int, ByteArray>>(patch.size())
         val remove = ArrayList<Int>()
-        for (entry in patch.entrySet()) {
+        for (entry in patch.map.reference2ObjectEntrySet()) {
             val codec = entry.key.codec() ?: continue
             val id = componentTypeId(entry.key)
             val value = entry.value
-            if (value.isPresent) add += id to encodeValue(codec, value.get()) else remove += id
+            if (Removed.isRemoved(value)) remove += id else add += id to encodeValue(codec, value)
         }
         // Patch iteration follows insertion order, so identical items would otherwise differ in bytes.
         add.sortBy { it.first }
