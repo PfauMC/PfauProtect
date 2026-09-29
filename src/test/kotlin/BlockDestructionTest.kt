@@ -162,7 +162,8 @@ class BlockDestructionTest {
         attribution: Attribution = Attribution(shared.registries, logs),
         sink: (List<Transfer>) -> Unit = {},
     ) = BlockDestructionListener(
-        plugin = stub(Plugin::class.java, emptyMap()),
+        // Disabled, so a read-back is never queued: there is no region scheduler to queue it on.
+        plugin = stub(Plugin::class.java, mapOf("isEnabled" to false)),
         registries = shared.registries,
         logs = logs,
         attribution = attribution,
@@ -1375,6 +1376,21 @@ class BlockDestructionTest {
 
         assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(stoneDrop).key, 1))
         assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(diamondDrop).key, 1))
+    }
+
+    // A cactus breaks a tick after its support, from its own block tick, while the read-back that the
+    // support's physics queued may still hold the position. The destroy event is the moment the drops
+    // are certain and follow at once, so it expects them whatever the read-back is doing.
+    @Test
+    fun `a block the world destroys expects its drops on the destroy event itself`() {
+        val cactus = CraftItemStack.asBukkitMirror(NmsItemStack(Items.CACTUS))
+        val data = Blocks.CACTUS.defaultBlockState().asBlockData()
+        val block = blockStub(5, 64, 7, data, drops = listOf(cactus))
+
+        listener().onBlockDestroy(BlockDestroyEvent(block, Blocks.AIR.defaultBlockState().asBlockData(), data, 0, true))
+
+        val key = ItemFormCodec(shared.registries, ServerRegistries.access).encodeOrNull(cactus)!!.key
+        assertEquals(1, origins.claim(UUID.randomUUID(), Spot(world, 5.3, 64.0, 7.6), key, 1))
     }
 
     @Test

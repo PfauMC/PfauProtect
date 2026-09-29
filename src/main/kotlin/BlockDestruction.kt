@@ -853,7 +853,9 @@ class BlockDestructionListener(
         if (state.isAir || state.canSurvive(block.level, block.position)) return
         // The cause dictionary has no entry of its own for a block that could no longer stand where it
         // stood, and this is the one that says the world took the block away by its own rules.
-        defer(block, block.blockData, Cause.BLK_FADE, attribution.supportRemoverAt(positionOf(block)))
+        // What gives way under physics is destroyed through `Level.destroyBlock`, and its drops are
+        // expected where that raises its own event.
+        defer(block, block.blockData, Cause.BLK_FADE, attribution.supportRemoverAt(positionOf(block)), expectsDrops = false)
     }
 
     /**
@@ -870,7 +872,13 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockDestroy(event: BlockDestroyEvent) {
         val block = event.block
-        defer(block, block.blockData, Cause.BLK_FADE, attribution.supportRemoverAt(positionOf(block)))
+        val by = attribution.supportRemoverAt(positionOf(block))
+        // The drops follow this event inside the same call, so this is where they are expected, and
+        // always: a cactus breaks a tick after its support, while the read-back the physics of that
+        // support queued still holds the position, and the note that read-back left may already have
+        // been swept by then. A capture that filed the position this tick expected them itself.
+        if (!readBacks.settled(positionOf(block))) expectDrops(origins, codec, block, Cause.BLK_FADE, by?.actor)
+        defer(block, block.blockData, Cause.BLK_FADE, by, expectsDrops = false)
     }
 
     // Everything an explosion took away, plus the positions the exploding block itself vacated before
@@ -1149,7 +1157,7 @@ class BlockDestructionListener(
     // The read has to happen on the region that owns the block, and this is queued rather than run
     // inline, so it lands at the start of that region's next tick with the tick that raised the event
     // already finished.
-    private fun defer(block: Block, before: BlockData, cause: Cause, by: Attributed?) {
+    private fun defer(block: Block, before: BlockData, cause: Cause, by: Attributed?, expectsDrops: Boolean = true) {
         // A task queued against a plugin already on its way down is refused outright, and an event can
         // still reach a handler while the server is taking the plugin apart.
         if (!plugin.isEnabled) return
@@ -1165,7 +1173,7 @@ class BlockDestructionListener(
         val payload = payloadAt(block)
         // Here and not in the read-back: the items are already in the world by then, and a note that
         // arrives after the spawn it explains is a note nobody can claim.
-        expectDrops(origins, codec, block, cause, by?.actor)
+        if (expectsDrops) expectDrops(origins, codec, block, cause, by?.actor)
         plugin.server.regionScheduler.execute(plugin, block.world, block.x shr 4, block.z shr 4) {
             readBacks.done(at)
             val now = block.blockData.asString
