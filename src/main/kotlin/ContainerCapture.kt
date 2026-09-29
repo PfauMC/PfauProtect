@@ -249,7 +249,7 @@ internal fun playerHolders(uuid: UUID, inventory: PlayerInventory): (Int) -> Hol
 // book, a copied banner, a scaled map — consumes and produces rather than mutates, so its two sides
 // carry the ordinary form. The rest hand back the very item that went in, changed.
 internal fun shiftOf(top: Inventory): Shift? = when (top) {
-    is CraftingInventory -> Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER)
+    is CraftingInventory -> Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
     is AnvilInventory -> Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
     is GrindstoneInventory -> Shift(Cause.GRINDSTONE, Cause.GRINDSTONE, Kind.MUTATE)
     // The station itself names which of the two smithing recipes matched, and it only names it while
@@ -275,7 +275,12 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
     for (move in moves) {
         when {
             move.to == Void -> transformed += move.copy(cause = shift.consume)
-            move.from == Void -> transformed += move.copy(cause = shift.result)
+            // The product is taken to the player; what the recipe leaves behind stays in the grid.
+            // A remainder that finds its grid slot still occupied — a stack of honey bottles —
+            // is pushed into the inventory by the game and books as the result.
+            move.from == Void -> transformed += move.copy(
+                cause = if (move.to is PlayerHolder) shift.result else shift.remainder,
+            )
             else -> rest += listOf(move)
         }
     }

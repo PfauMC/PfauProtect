@@ -16,7 +16,11 @@ import java.util.concurrent.ConcurrentLinkedQueue
 // What the pass sees of a transformation is a handful of ends that pair with nothing: the ingredients
 // leave for the Void and the product arrives out of it, in whatever quantities the snapshot says. Only
 // the event knows those ends are one event, and it says so by naming both sides and how they relate.
-class Shift(val consume: Cause, val result: Cause, val kind: Kind)
+//
+// A recipe can also leave something behind in the grid — the bucket a cake was made with — which
+// arrives out of the Void exactly as the product does. `remainder` is what that is called; a station
+// that leaves nothing behind calls it the result.
+class Shift(val consume: Cause, val result: Cause, val kind: Kind, val remainder: Cause = result)
 
 class Intent(
     val cause: Cause,
