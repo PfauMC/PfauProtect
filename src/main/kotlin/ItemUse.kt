@@ -13,6 +13,7 @@ import net.minecraft.world.item.EmptyMapItem
 import net.minecraft.world.item.EnderEyeItem
 import net.minecraft.world.item.EnderpearlItem
 import net.minecraft.world.item.FireChargeItem
+import net.minecraft.world.item.FireworkRocketItem
 import net.minecraft.world.item.HoneycombItem
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.MobBucketItem
@@ -50,8 +51,11 @@ internal fun useCause(item: NmsItemStack, target: Material?): Cause? {
         kind is BoneMealItem -> if (target != null) Cause.BONEMEAL_USE else null
         kind is SpawnEggItem -> Cause.SPAWN_EGG_USE
         kind is HoneycombItem -> if (target != null) Cause.WAX_APPLY else null
-        // Thrown when it is not going into a frame, and a throw has an event of its own.
-        kind is EnderEyeItem -> if (target == Material.END_PORTAL_FRAME) Cause.EYE_INTO_FRAME else null
+        // Thrown when it is not going into a frame. The eye is not a projectile to the server, so no
+        // launch event ever speaks for it.
+        kind is EnderEyeItem -> if (target == Material.END_PORTAL_FRAME) Cause.EYE_INTO_FRAME else Cause.THROWN_CONSUMED
+        // Set off from the ground rather than launched from a crossbow or a glide.
+        kind is FireworkRocketItem -> if (target != null) Cause.FIREWORK_LAUNCH else null
         target == Material.RESPAWN_ANCHOR && item.`is`(Items.GLOWSTONE) -> Cause.ITEM_INTO_SINGLE_BLOCK
         spentElsewhere(item) -> null
         else -> Cause.ITEM_USED
@@ -88,7 +92,7 @@ internal fun cauldronCause(reason: ChangeReason): Cause? = when (reason) {
 
 // A changed item carries every reason on both of its sides: the empty bucket went and the full one came,
 // and neither happened without the other.
-private fun mutation(cause: Cause) = Intent(cause, shift = Shift(cause, cause, Kind.MUTATE))
+internal fun mutation(cause: Cause) = Intent(cause, shift = Shift(cause, cause, Kind.MUTATE))
 
 class ItemUseListener(
     private val capture: ContainerCaptureListener,

@@ -4,6 +4,7 @@ import net.minecraft.world.item.Item
 import net.minecraft.world.item.Items
 import org.bukkit.Material
 import org.bukkit.event.block.CauldronLevelChangeEvent.ChangeReason
+import org.bukkit.event.entity.EntityRemoveEvent
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.BeforeAll
@@ -33,6 +34,21 @@ class ItemUseTest {
         assertEquals(Cause.WAX_APPLY, useCause(stack(Items.HONEYCOMB), Material.COPPER_BLOCK))
         assertEquals(Cause.SPAWN_EGG_USE, useCause(stack(Items.PIG_SPAWN_EGG), Material.GRASS_BLOCK))
         assertEquals(Cause.ITEM_USED, useCause(stack(Items.FIRE_CHARGE), Material.NETHERRACK))
+        // No launch event speaks for either of these.
+        assertEquals(Cause.THROWN_CONSUMED, useCause(stack(Items.ENDER_EYE), null))
+        assertEquals(Cause.FIREWORK_LAUNCH, useCause(stack(Items.FIREWORK_ROCKET), Material.STONE))
+    }
+
+    // A booked arrow ends where it can no longer be picked up; saved with its chunk or taken back into
+    // an inventory, it has not ended at all.
+    @Test
+    fun `a projectile ends only where it can no longer be picked up`() {
+        assertEquals(Cause.PROJ_DESPAWN, projectileEnd(EntityRemoveEvent.Cause.DESPAWN))
+        assertEquals(Cause.PROJ_HIT_VOID, projectileEnd(EntityRemoveEvent.Cause.HIT))
+        assertEquals(Cause.PROJ_HIT_VOID, projectileEnd(EntityRemoveEvent.Cause.OUT_OF_WORLD))
+        assertNull(projectileEnd(EntityRemoveEvent.Cause.PICKUP))
+        assertNull(projectileEnd(EntityRemoveEvent.Cause.UNLOAD))
+        assertNull(projectileEnd(EntityRemoveEvent.Cause.DROP))
     }
 
     @Test
@@ -46,7 +62,7 @@ class ItemUseTest {
         assertNull(useCause(stack(Items.WATER_BUCKET), Material.STONE))
         assertNull(useCause(stack(Items.SNOWBALL), null))
         assertNull(useCause(stack(Items.ENDER_PEARL), null))
-        assertNull(useCause(stack(Items.ENDER_EYE), null))
+        assertNull(useCause(stack(Items.FIREWORK_ROCKET), null))
         // Nothing to spend it on.
         assertNull(useCause(stack(Items.BONE_MEAL), null))
     }
