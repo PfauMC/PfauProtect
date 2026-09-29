@@ -32,6 +32,7 @@ import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.FallingBlock
 import org.bukkit.entity.Player
+import org.bukkit.entity.Projectile
 import org.bukkit.entity.TNTPrimed
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -159,8 +160,14 @@ internal fun explosionCause(exploded: String): Cause = when {
 internal fun litBy(source: Entity): Player? = when (source) {
     is TNTPrimed -> source.source as? Player
     is Creeper -> source.igniter as? Player
+    // A fireball a player hit back is theirs from then on.
+    is Projectile -> source.shooter as? Player
     else -> null
 }
+
+// A skull a wither fires is a projectile with no origin of its own, so it is the wither behind it that
+// the summoner rung has to ask about.
+internal fun firedBy(source: Entity): Entity = (source as? Projectile)?.shooter as? Entity ?: source
 
 /**
  * An entity changing a block. Null for the two that belong to somebody else: a player using a shovel,
@@ -1151,7 +1158,7 @@ class BlockDestructionListener(
         }
         // The last rung: a wither nobody lit was still built by somebody, and the explosion it opens
         // with is the first thing it does.
-        return entities.summonerOf(source.uniqueId)
+        return entities.summonerOf(firedBy(source).uniqueId)
     }
 
     // A block that no longer stands there leaves whatever it was standing in, which for anything dry

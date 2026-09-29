@@ -22,8 +22,11 @@ import org.bukkit.entity.Creeper
 import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.FallingBlock
+import org.bukkit.entity.Fireball
 import org.bukkit.entity.Player
 import org.bukkit.entity.TNTPrimed
+import org.bukkit.entity.Wither
+import org.bukkit.entity.WitherSkull
 import org.bukkit.event.Cancellable
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -39,6 +42,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -793,6 +797,20 @@ class BlockDestructionTest {
         assertNull(litBy(stub(TNTPrimed::class.java, emptyMap())))
         // An end crystal remembers nobody at all.
         assertNull(litBy(mob))
+        // A fireball a player hit back.
+        assertEquals(bob, litBy(stub(Fireball::class.java, mapOf("getShooter" to player)))?.uniqueId)
+    }
+
+    @Test
+    fun `a skull is asked about as the wither that fired it`() {
+        val wither = stub(Wither::class.java, emptyMap())
+        val skull = stub(WitherSkull::class.java, mapOf("getShooter" to wither))
+
+        assertSame(wither, firedBy(skull))
+        assertSame(wither, firedBy(wither))
+        // A skull whose wither is gone has nobody behind it but itself.
+        val orphan = stub(WitherSkull::class.java, emptyMap())
+        assertSame(orphan, firedBy(orphan))
     }
 
     /**
