@@ -4,9 +4,11 @@ import io.canvasmc.canvas.event.PlayerPostRespawnAsyncEvent
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.enchantment.EnchantmentEffectComponents
 import net.minecraft.world.item.enchantment.EnchantmentHelper
+import net.minecraft.world.level.block.entity.BlockEntity
 import org.bukkit.Bukkit
 import org.bukkit.block.Block
 import org.bukkit.craftbukkit.entity.CraftLivingEntity
+import org.bukkit.craftbukkit.inventory.CraftInventory
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
@@ -50,6 +52,7 @@ import org.bukkit.inventory.StonecutterInventory
 import org.bukkit.plugin.Plugin
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.logging.Level
 import org.bukkit.block.Container as ContainerBlock
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
@@ -198,6 +201,17 @@ internal fun containerHolders(inventory: Inventory): ((Int) -> Holder)? {
             }
         }
     }
+    // A block entity knows where it stands. Asking the inventory for its holder reads the block state
+    // out of the world, which only the thread ticking that region may do — and while the server shuts
+    // down no thread does, so the last pass over an open furnace failed and took the rest of the
+    // shutdown with it.
+    val entity = (inventory as? CraftInventory)?.inventory as? BlockEntity
+    val level = entity?.level
+    if (entity != null && level != null) {
+        val at = entity.blockPos
+        val container = Container(level.world.uid, at.x, at.y, at.z, 0)
+        return { slot -> container.copy(slot = slot) }
+    }
     // Only the position is wanted, and a snapshot holder would copy the whole block state.
     val holder = inventory.getHolder(false)
     val block = (holder as? BlockInventoryHolder)?.block
@@ -207,9 +221,9 @@ internal fun containerHolders(inventory: Inventory): ((Int) -> Holder)? {
     }
     // A minecart rides the rails, so only its uuid addresses it; its position is where something
     // happened, not what it is.
-    val entity = holder as? Entity
-    if (entity != null) {
-        val uuid = entity.uniqueId
+    val cart = holder as? Entity
+    if (cart != null) {
+        val uuid = cart.uniqueId
         return { slot -> EntitySlot(uuid, slot) }
     }
     return null
@@ -389,8 +403,16 @@ class ContainerCaptureListener(
         intents.forget(event.player.uniqueId)
     }
 
+    // At shutdown, one player's pass that fails must not cost everybody else theirs, nor the rest of
+    // the shutdown that drains what the mechanisms were still holding.
     fun recomputeAll() {
-        for (player in Bukkit.getOnlinePlayers()) recompute(player)
+        for (player in Bukkit.getOnlinePlayers()) {
+            try {
+                recompute(player)
+            } catch (failure: Exception) {
+                plugin.logger.log(Level.SEVERE, "the last pass for ${player.name} failed; its movements are lost", failure)
+            }
+        }
     }
 
     // A new line of reference discards everything the old one was still holding, so whatever the last
