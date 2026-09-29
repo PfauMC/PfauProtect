@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect
 
+import java.util.UUID
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Item
 import org.bukkit.entity.Player
@@ -86,9 +87,14 @@ internal fun mergedAmount(donor: Int, target: Int, targetMax: Int): Int =
 // menu empties no slot, so the pass has nothing to see and writes nothing, and the entity is never
 // born at all — whatever becomes of it next is then a debit against a credit nobody made. What the
 // pass could not spend is born here after all, as the row the funnel would have written.
-internal fun unspentDrop(pending: TickCoalescer, intent: Intent, qty: Int) {
+internal fun unspentDrop(pending: TickCoalescer, intent: Intent, qty: Int, creative: (UUID) -> Boolean = { false }) {
     val entity = intent.to as? ItemEntityRef ?: return
     val form = intent.form ?: return
+    // Out of the creative menu the item was made by the drop itself, and that is known, not guessed.
+    if (intent.actor?.let(creative) == true) {
+        pending.add(Void, entity, Cause.CREATIVE_SET, ItemKey(form, null), qty, intent.actor)
+        return
+    }
     pending.add(Void, entity, Cause.ITEM_SPAWN, ItemKey(form, null), qty, confidence = Confidence.INFERRED)
 }
 

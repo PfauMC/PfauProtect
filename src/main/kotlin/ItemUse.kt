@@ -28,6 +28,7 @@ import net.minecraft.world.item.NameTagItem
 import net.minecraft.world.item.ProjectileItem
 import net.minecraft.world.item.SpawnEggItem
 import net.minecraft.world.item.WritableBookItem
+import org.bukkit.GameMode
 import org.bukkit.Material
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Allay
@@ -223,7 +224,13 @@ class ItemUseListener(
     // Both move an item between the player's own slots with no click to name them.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPick(event: PlayerPickItemEvent) {
-        capture.intend(event.player, Intent(Cause.HOTBAR_SWAP))
+        val player = event.player
+        // In creative the picked block is made on the spot rather than looked for in the inventory.
+        if (player.gameMode == GameMode.CREATIVE) {
+            capture.intend(player, Intent(Cause.CREATIVE_PICK, from = Void))
+            return
+        }
+        capture.intend(player, Intent(Cause.HOTBAR_SWAP))
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

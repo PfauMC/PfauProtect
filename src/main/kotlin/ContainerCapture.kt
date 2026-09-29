@@ -1,6 +1,9 @@
 package io.pfaumc.pfauprotect
 
 import io.canvasmc.canvas.event.PlayerPostRespawnAsyncEvent
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.logging.Level
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.enchantment.EnchantmentEffectComponents
 import net.minecraft.world.item.enchantment.EnchantmentHelper
@@ -19,23 +22,24 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.event.block.BlockPlaceEvent
+import org.bukkit.event.enchantment.EnchantItemEvent
 import org.bukkit.event.entity.EntityResurrectEvent
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.inventory.ClickType
 import org.bukkit.event.inventory.InventoryAction
 import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.inventory.InventoryCloseEvent
+import org.bukkit.event.inventory.InventoryCreativeEvent
 import org.bukkit.event.inventory.InventoryDragEvent
 import org.bukkit.event.inventory.InventoryOpenEvent
-import org.bukkit.event.enchantment.EnchantItemEvent
 import org.bukkit.event.inventory.InventoryType
 import org.bukkit.event.player.PlayerDropItemEvent
+import org.bukkit.event.player.PlayerEditBookEvent
+import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.player.PlayerItemBreakEvent
 import org.bukkit.event.player.PlayerItemConsumeEvent
 import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
-import org.bukkit.event.player.PlayerEditBookEvent
-import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.player.PlayerSwapHandItemsEvent
 import org.bukkit.event.world.LootGenerateEvent
 import org.bukkit.inventory.AnvilInventory
@@ -54,9 +58,6 @@ import org.bukkit.inventory.SmithingInventory
 import org.bukkit.inventory.SmithingTrimRecipe
 import org.bukkit.inventory.StonecutterInventory
 import org.bukkit.plugin.Plugin
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import java.util.logging.Level
 import org.bukkit.block.Container as ContainerBlock
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
@@ -532,6 +533,12 @@ class ContainerCaptureListener(
         // A craft arrives here and not at a handler of its own: CraftItemEvent declares no handler list
         // and is dispatched into this one, so a second listener would be a second callback for one
         // click and would leave the reason twice.
+        // The creative inventory sets slots to whatever the client asks for, conjuring and deleting as
+        // it goes. What it made and what it threw away is named as that rather than left unexplained.
+        if (event is InventoryCreativeEvent) {
+            intend(player, Intent(Cause.CREATIVE_SET, from = Void))
+            intend(player, Intent(Cause.CREATIVE_SET, to = Void))
+        }
         val top = event.view.topInventory
         val shift = if (event.rawSlot == previewSlot(top)) shiftOf(top) else null
         if (shift != null) intend(player, Intent(shift.consume, shift = shift))
@@ -631,6 +638,8 @@ class ContainerCaptureListener(
                 to = ItemEntityRef(drop.uniqueId),
                 form = encoded.form,
                 qty = encoded.count,
+                // Also what tells a drop the pass could not find apart: one conjured by creative.
+                actor = player.uniqueId,
             )
         )
         // The entity is added to the world inside this same call and the spawn funnel writes a birth

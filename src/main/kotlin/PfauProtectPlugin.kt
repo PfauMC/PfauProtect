@@ -8,6 +8,7 @@ import io.papermc.paper.command.brigadier.argument.ArgumentTypes
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents
 import net.minecraft.server.MinecraftServer
+import org.bukkit.GameMode
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.entity.Player
@@ -127,7 +128,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val capture = ContainerCaptureListener(
             this, uncovered::submit, codec, ledger.registries, origins, ledger,
         ) { intent, qty ->
-            unspentDrop(mechanisms, intent, qty)
+            unspentDrop(mechanisms, intent, qty) { server.getPlayer(it)?.gameMode == GameMode.CREATIVE }
         }
         val entities = EntityOrigins()
         val destruction = BlockDestructionListener(
@@ -157,6 +158,7 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
         server.pluginManager.registerEvents(ProjectileListener(capture, codec, mechanisms, origins), this)
         server.pluginManager.registerEvents(MobItemListener(codec, mechanisms, origins), this)
+        server.pluginManager.registerEvents(CommandListener(capture, codec, origins), this)
         server.pluginManager.registerEvents(
             HolderListener(capture, codec, origins) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
             this,
