@@ -31,7 +31,7 @@ repositories {
     }
 }
 
-val canvasServer: Configuration by configurations.creating
+val canvasServer = configurations.create("canvasServer")
 
 dependencies {
     paperweight.foliaDevBundle(
