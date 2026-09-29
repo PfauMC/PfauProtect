@@ -162,7 +162,9 @@ class PfauProtectPlugin : JavaPlugin() {
         // drop under a form that has no owner on it and the chain of custody would end at the break.
         server.pluginManager.registerEvents(NestedCaptureListener(ledger, codec, mechanisms), this)
         server.pluginManager.registerEvents(
-            BlockMechanismListener(codec, mechanisms, origins, ledger, uncovered::submit),
+            BlockMechanismListener(codec, mechanisms, origins, ledger, uncovered::submit) { block, task ->
+                server.regionScheduler.run(this, block.location) { task() }
+            },
             this,
         )
         server.pluginManager.registerEvents(WorldItemListener(codec, mechanisms, origins, capture), this)

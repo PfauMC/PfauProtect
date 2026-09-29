@@ -30,6 +30,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.abs
 import net.minecraft.core.component.DataComponents
+import net.minecraft.world.item.ProjectileItem
 import net.minecraft.world.item.ItemStack as NmsItemStack
 import org.bukkit.block.Container as ContainerBlock
 import org.bukkit.inventory.ItemStack as BukkitItemStack
@@ -138,6 +139,9 @@ class SpawnOrigins(private val pending: TickCoalescer) {
     // `reach` is how far from its block the item may land. An explosion gathers what it breaks into
     // one pile per kind and drops the pile where the first block of that kind stood, so its notes have
     // to reach across the whole crater.
+    //
+    // Answers how much of the note spawns have taken so far, for a caller that has to tell an item
+    // that came out as an entity from one that was spent some other way.
     fun expect(
         from: Holder,
         cause: Cause,
@@ -146,9 +150,11 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         qty: Int,
         actor: UUID? = null,
         reach: Double = SPAWN_REACH,
-    ) {
-        if (qty <= 0) return
-        notes += Note(from, cause, key, at, null, qty, actor, reach)
+    ): () -> Int {
+        if (qty <= 0) return { 0 }
+        val note = Note(from, cause, key, at, null, qty, actor, reach)
+        notes += note
+        return { qty - note.qty }
     }
 
     fun expect(entity: UUID, from: Holder, cause: Cause, key: ItemKey, qty: Int, actor: UUID? = null) {
@@ -232,12 +238,40 @@ internal fun brewed(
     if (was == became) null else Triple(slot, was, became)
 }
 
+internal class SlotChange(val slot: Int, val key: ItemKey, val qty: Int, val gain: Boolean)
+
+// What a dispense did to the dispenser beyond what came out of it as an entity. The slot it fired
+// from is one short or holds something else — a bucket filled, a bottle filled — and a transformation
+// that leaves a remainder puts the product in another slot, as a form that slot did not hold before.
+// A hopper feeding the same dispenser in the same tick with a new form is read as part of the
+// dispense; telling them apart needs the move event's own slot, which it does not carry.
+internal fun dispenseChanges(before: List<Stack?>, after: List<Stack?>, slot: Int, ejected: Int): List<SlotChange> {
+    val was = before.getOrNull(slot) ?: return emptyList()
+    val now = after.getOrNull(slot)
+    val changes = ArrayList<SlotChange>()
+    val same = now != null && now.key.form.contentEquals(was.key.form)
+    val lost = (if (same) was.count - now!!.count else was.count) - ejected
+    if (lost > 0) changes += SlotChange(slot, was.key, lost, gain = false)
+    if (now != null && !same) changes += SlotChange(slot, now.key, now.count, gain = true)
+    for (other in after.indices) {
+        if (other == slot) continue
+        val gained = after[other] ?: continue
+        val held = before.getOrNull(other)
+        if (gained.key.form.contentEquals(was.key.form)) continue
+        val qty = if (held != null && held.key.form.contentEquals(gained.key.form)) gained.count - held.count else gained.count
+        if (qty > 0) changes += SlotChange(other, gained.key, qty, gain = true)
+    }
+    return changes
+}
+
 class BlockMechanismListener(
     private val codec: ItemFormCodec,
     private val pending: TickCoalescer,
     private val origins: SpawnOrigins,
     private val placed: PlacedForms,
     private val sink: (List<Transfer>) -> Unit,
+    // Runs a task on the block's own region a tick later.
+    private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
 
     // Breaking a block and the drops it causes are one synchronous call on one thread. This is not a
@@ -262,11 +296,44 @@ class BlockMechanismListener(
             pending.add(from, equipped, Cause.DISPENSER_BEHAVIOR, key, item.amount)
             return
         }
-        // Only an item that turns into an entity has left the block: a dispenser that shears, fills a
-        // bucket or lights a fire keeps or transforms what it holds, and guessing which of those
-        // happened would invent rows for items that never moved.
+        // An item that turns into an entity is claimed by its spawn. Everything else a dispenser does —
+        // bone meal, a boat, TNT, a bucket filled, an arrow fired — spends or changes what it holds,
+        // and the only way to know which is to look at the dispenser once the behaviour has run.
         val cause = if (block.type == Material.DROPPER) Cause.DROPPER_EJECT else Cause.DISPENSER_EJECT
-        origins.expect(from, cause, key, spotOf(block.location), item.amount)
+        val ejected = origins.expect(from, cause, key, spotOf(block.location), item.amount)
+        val before = contentsOf(block) ?: return
+        val projectile = CraftItemStack.asNMSCopy(item).item is ProjectileItem
+        later(block) { settleDispense(block, slot, before, ejected(), projectile) }
+    }
+
+    private fun settleDispense(block: Block, slot: Int, before: List<Stack?>, ejected: Int, projectile: Boolean) {
+        val after = contentsOf(block) ?: return
+        val changes = dispenseChanges(before, after, slot, ejected)
+        if (changes.isEmpty()) return
+        // One item spent is a movement; one turned into another is a mutation of both sides together.
+        val mutated = changes.any { it.gain }
+        val cause = if (projectile && !mutated) Cause.DISPENSED_PROJECTILE else Cause.DISPENSER_BEHAVIOR
+        val timestamp = System.currentTimeMillis()
+        sink(changes.map { change ->
+            val at = containerAt(block, change.slot)
+            Transfer(
+                cause = cause,
+                from = if (change.gain) Void else at,
+                to = if (change.gain) at else Void,
+                form = change.key.form,
+                damage = change.key.damage,
+                qty = change.qty,
+                timestamp = timestamp,
+                kind = if (mutated) Kind.MUTATE else Kind.TRANSFER,
+            )
+        })
+    }
+
+    private fun contentsOf(block: Block): List<Stack?>? {
+        val inventory = (block.getState(false) as? ContainerBlock)?.inventory ?: return null
+        return (0 until inventory.size).map { slot ->
+            codec.encodeOrNull(inventory.getItem(slot))?.let { Stack(it.key, it.count) }
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
