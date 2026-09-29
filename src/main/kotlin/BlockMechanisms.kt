@@ -2,6 +2,7 @@ package io.pfaumc.pfauprotect
 
 import io.papermc.paper.event.block.CompostItemEvent
 import io.papermc.paper.event.block.PlayerShearBlockEvent
+import io.papermc.paper.block.TileStateInventoryHolder
 import io.papermc.paper.event.entity.EntityCompostItemEvent
 import org.bukkit.Location
 import org.bukkit.Material
@@ -566,9 +567,14 @@ class BlockMechanismListener(
     private fun forget(at: WorldBlock) = placed.clearFormAt(at.world, at.x, at.y, at.z)
 
     // A shulker keeps what it held inside the item it drops, and that move is written elsewhere.
-    private fun spilled(state: BlockState): Array<BukkitItemStack?> {
-        if (state is ShulkerBox) return emptyArray()
-        return (state as? ContainerBlock)?.inventory?.contents ?: emptyArray()
+    // A jukebox, a bookshelf, a pot, a lectern, a shelf and a campfire spill what they hold just as a
+    // chest does, and their slots are the ones a click filled.
+    private fun spilled(state: BlockState): Array<BukkitItemStack?> = when (state) {
+        is ShulkerBox -> emptyArray()
+        is ContainerBlock -> state.inventory.contents
+        is TileStateInventoryHolder -> state.snapshotInventory.contents
+        is Campfire -> Array(state.size) { state.getItem(it) }
+        else -> emptyArray()
     }
 
     // What the block was made of, not what breaking it yields: a crop answers with the seed it was

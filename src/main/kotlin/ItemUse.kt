@@ -4,25 +4,43 @@ import io.papermc.paper.event.player.PlayerChangeBeaconEffectEvent
 import io.papermc.paper.event.player.PlayerPickItemEvent
 import io.papermc.paper.event.player.PlayerSwapWithEquipmentSlotEvent
 import net.minecraft.core.component.DataComponents
+import net.minecraft.world.item.ArmorStandItem
 import net.minecraft.world.item.BlockItem
+import net.minecraft.world.item.BoatItem
 import net.minecraft.world.item.BoneMealItem
 import net.minecraft.world.item.BottleItem
 import net.minecraft.world.item.BucketItem
 import net.minecraft.world.item.BundleItem
+import net.minecraft.world.item.DyeItem
 import net.minecraft.world.item.EmptyMapItem
+import net.minecraft.world.item.EndCrystalItem
 import net.minecraft.world.item.EnderEyeItem
 import net.minecraft.world.item.EnderpearlItem
 import net.minecraft.world.item.FireChargeItem
 import net.minecraft.world.item.FireworkRocketItem
+import net.minecraft.world.item.HangingEntityItem
 import net.minecraft.world.item.HoneycombItem
 import net.minecraft.world.item.Items
+import net.minecraft.world.item.LeadItem
+import net.minecraft.world.item.MinecartItem
 import net.minecraft.world.item.MobBucketItem
+import net.minecraft.world.item.NameTagItem
 import net.minecraft.world.item.ProjectileItem
 import net.minecraft.world.item.SpawnEggItem
 import net.minecraft.world.item.WritableBookItem
 import org.bukkit.Material
 import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.entity.Allay
+import org.bukkit.entity.Animals
+import org.bukkit.entity.ArmorStand
+import org.bukkit.entity.Cat
+import org.bukkit.entity.ItemFrame
+import org.bukkit.entity.MushroomCow
+import org.bukkit.entity.Piglin
 import org.bukkit.entity.Player
+import org.bukkit.entity.Sheep
+import org.bukkit.entity.Tameable
+import org.bukkit.entity.Wolf
 import org.bukkit.event.Event
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -62,12 +80,30 @@ internal fun useCause(item: NmsItemStack, target: Material?): Cause? {
     }
 }
 
+// What the target entity makes of an item. Worked out by the caller from the entity, so that this
+// stays a plain function of what was used and on what kind of thing.
+internal class EntityTarget(
+    // A mob that takes the item into a slot of its own — an allay, a piglin — or a frame or a stand:
+    // the item goes somewhere the ledger can name, and that is written where it lands.
+    val keeps: Boolean = false,
+    val untamed: Boolean = false,
+    val breedsOn: Boolean = false,
+    val dyeable: Boolean = false,
+)
+
 // On an entity nothing is put down as a block, so seeds fed to a chicken are spent right here.
-internal fun entityUseCause(item: NmsItemStack): Cause? {
+internal fun entityUseCause(item: NmsItemStack, target: EntityTarget = EntityTarget()): Cause? {
     val kind = item.item
     return when {
         kind is SpawnEggItem -> Cause.SPAWN_EGG_USE
         item.isDamageableItem || kind is BucketItem || kind is MobBucketItem -> null
+        // Worn by the mob: the equipment change says which slot it went into.
+        target.keeps || item.has(DataComponents.EQUIPPABLE) -> null
+        kind is NameTagItem -> Cause.NAME_TAG
+        kind is LeadItem -> Cause.LEASH_ATTACH
+        kind is DyeItem && target.dyeable -> Cause.DYE_MOB
+        target.untamed -> Cause.TAME_MOB
+        target.breedsOn -> Cause.FEED_MOB
         else -> Cause.ITEM_USED
     }
 }
@@ -77,7 +113,10 @@ private fun spentElsewhere(item: NmsItemStack): Boolean {
     return kind is BlockItem || item.isDamageableItem || item.has(DataComponents.CONSUMABLE) ||
         item.has(DataComponents.EQUIPPABLE) || kind is BucketItem || kind is MobBucketItem ||
         (kind is ProjectileItem && kind !is FireChargeItem) || kind is EnderpearlItem ||
-        kind is BottleItem || kind is EmptyMapItem || kind is BundleItem || kind is WritableBookItem
+        kind is BottleItem || kind is EmptyMapItem || kind is BundleItem || kind is WritableBookItem ||
+        // Each of these becomes an entity, and the entity's own placement event names where it went.
+        kind is BoatItem || kind is MinecartItem || kind is ArmorStandItem || kind is EndCrystalItem ||
+        kind is HangingEntityItem
 }
 
 // A cauldron changes the item in hand into another one; it spends and hands back in the same slot.
@@ -112,7 +151,10 @@ class ItemUseListener(
             capture.intend(player, mutation(Cause.BOTTLE_FILL))
             return
         }
-        val cause = useCause(live, event.clickedBlock?.type) ?: return
+        val target = event.clickedBlock?.type
+        // A block that keeps what is put into it has its own reckoning, slot by slot.
+        if (target != null && keepsItems(target)) return
+        val cause = useCause(live, target) ?: return
         spend(player, event.hand, stack, cause)
     }
 
@@ -122,7 +164,21 @@ class ItemUseListener(
         val stack = player.inventory.getItem(event.hand)
         val live = CraftItemStack.asNMSCopy(stack)
         if (live.isEmpty) return
-        val cause = entityUseCause(live) ?: return
+        val entity = event.rightClicked
+        // A frame and a stand hold what they are given, and their own events say where.
+        if (entity is ItemFrame || entity is ArmorStand) return
+        // A bowl held to a mooshroom comes back full of stew.
+        if (entity is MushroomCow && stack.type == Material.BOWL) {
+            capture.intend(player, mutation(Cause.ITEM_USED))
+            return
+        }
+        val target = EntityTarget(
+            keeps = entity is Allay || entity is Piglin,
+            untamed = entity is Tameable && !entity.isTamed,
+            breedsOn = entity is Animals && entity.isBreedItem(stack),
+            dyeable = entity is Sheep || entity is Wolf || entity is Cat,
+        )
+        val cause = entityUseCause(live, target) ?: return
         spend(player, event.hand, stack, cause)
     }
 

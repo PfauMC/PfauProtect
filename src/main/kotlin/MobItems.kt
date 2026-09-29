@@ -3,6 +3,8 @@ package io.pfaumc.pfauprotect
 import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.NamespacedKey
+import org.bukkit.entity.AbstractArrow
+import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Armadillo
 import org.bukkit.entity.Cat
 import org.bukkit.entity.Chicken
@@ -22,10 +24,12 @@ import org.bukkit.event.entity.EntityDeathEvent
 import org.bukkit.event.entity.EntityDropItemEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.entity.EntityTransformEvent
+import org.bukkit.event.entity.EntityUnleashEvent
 import org.bukkit.event.entity.PiglinBarterEvent
 import org.bukkit.event.player.PlayerFishEvent
 import org.bukkit.event.player.PlayerHarvestBlockEvent
 import org.bukkit.event.player.PlayerShearEntityEvent
+import org.bukkit.event.player.PlayerUnleashEntityEvent
 import org.bukkit.persistence.PersistentDataType
 
 // A mob's drops scatter around where it died, and a big one is wider than a block.
@@ -41,7 +45,10 @@ private const val REWARD_REACH = 3.0
 // a villager's stacked seeds are the case where a partial give-up is written as the whole of it.
 private fun heldKey(slot: Int) = NamespacedKey("pfauprotect", "held_$slot")
 
-private val HELD_SLOTS = 0..16
+// The item an entity was placed from — a boat, a stand, a frame — kept apart from anything it wears.
+internal const val ENTITY_ITEM_SLOT = 16
+
+private val HELD_SLOTS = 0..ENTITY_ITEM_SLOT
 
 internal fun bookHeld(entity: Entity, slot: Int, form: ByteArray) {
     entity.persistentDataContainer.set(heldKey(slot), PersistentDataType.BYTE_ARRAY, form)
@@ -79,6 +86,7 @@ class MobItemListener(
 
     private val sheared = ThreadLocal<Marked?>()
     private val bartered = ThreadLocal<Marked?>()
+    private val unleashed = ThreadLocal<Marked?>()
 
     private fun ThreadLocal<Marked?>.now(entity: Entity) = get()?.let { it.entity == entity.uniqueId && it.tick == Bukkit.getCurrentTick() } == true
 
@@ -105,23 +113,38 @@ class MobItemListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDrop(event: EntityDropItemEvent) {
-        val mob = event.entity as? LivingEntity ?: return
-        if (mob is Player) return
+        val entity = event.entity
+        // A player's drop is the capture's; an arrow's is the projectile listener's.
+        if (entity is Player || entity is AbstractArrow) return
         val item = event.itemDrop
         val encoded = codec.encodeOrNull(item.itemStack) ?: return
-        val held = heldBy(mob)
-        val slot = heldSlotOf(held, encoded.form)
+        val slot = heldSlotOf(heldBy(entity), encoded.form)
+        val booked = slot?.let {
+            unbookHeld(entity, it)
+            EntitySlot(entity.uniqueId, it)
+        }
         val (from, cause) = when {
-            sheared.now(mob) -> Void to Cause.SHEARING_DROP
-            bartered.now(mob) -> Void to Cause.PIGLIN_BARTER
-            slot != null -> {
-                unbookHeld(mob, slot)
-                EntitySlot(mob.uniqueId, slot) to Cause.MOB_THROW_ITEM
-            }
-            giftFrom(mob) -> Void to Cause.GIFT_DROP
+            // A frame, a boat, a minecart: broken, it falls out as what it was made of and what it held.
+            entity !is LivingEntity -> (booked ?: Void) to Cause.ENTITY_BREAK_DROP
+            sheared.now(entity) -> if (booked != null) booked to Cause.SHEAR_MOB else Void to Cause.SHEARING_DROP
+            unleashed.now(entity) -> Void to Cause.LEASH_DROP
+            bartered.now(entity) -> Void to Cause.PIGLIN_BARTER
+            booked != null -> booked to Cause.MOB_THROW_ITEM
+            giftFrom(entity) -> Void to Cause.GIFT_DROP
             else -> Void to Cause.MOB_THROW_ITEM
         }
         origins.expect(item.uniqueId, from, cause, encoded.key, encoded.count)
+    }
+
+    // The lead comes off the mob as an item in the same call.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onUnleash(event: EntityUnleashEvent) {
+        if (event.isDropLeash) unleashed.set(Marked(event.entity.uniqueId, Bukkit.getCurrentTick()))
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPlayerUnleash(event: PlayerUnleashEntityEvent) {
+        if (event.isDropLeash) unleashed.set(Marked(event.entity.uniqueId, Bukkit.getCurrentTick()))
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -132,16 +155,33 @@ class MobItemListener(
         val held = heldBy(mob).toMutableMap()
         val spot = spotOf(mob.location)
         val killer = mob.killer?.uniqueId
+        // A horse, a donkey or a llama spills its own inventory — saddle, armour, chest — slot by slot,
+        // and those slots are the ones its window booked.
+        val inventory = (mob as? AbstractHorse)?.inventory?.contents
+        val left = IntArray(inventory?.size ?: 0) { inventory?.get(it)?.amount ?: 0 }
         for (dropped in event.drops) {
             val encoded = codec.encodeOrNull(dropped) ?: continue
+            var need = encoded.count
+            if (inventory != null) {
+                for (slot in inventory.indices) {
+                    if (need <= 0) break
+                    if (left[slot] <= 0 || inventory[slot]?.isSimilar(dropped) != true) continue
+                    val qty = minOf(need, left[slot])
+                    left[slot] -= qty
+                    need -= qty
+                    val from = EntitySlot(mob.uniqueId, slot)
+                    origins.expect(from, Cause.CONTAINER_BREAK_DROP, encoded.key, spot, qty, killer, DEATH_REACH)
+                }
+            }
+            if (need <= 0) continue
             val slot = heldSlotOf(held, encoded.form)
             if (slot != null) {
                 held.remove(slot)
-                origins.expect(
-                    EntitySlot(mob.uniqueId, slot), Cause.MOB_EQUIPMENT_DROP, encoded.key, spot, encoded.count, killer, DEATH_REACH,
-                )
+                // A stand broken gives back the stand it was placed from, out of the slot that booked it.
+                val cause = if (slot == ENTITY_ITEM_SLOT) Cause.ENTITY_BREAK_DROP else Cause.MOB_EQUIPMENT_DROP
+                origins.expect(EntitySlot(mob.uniqueId, slot), cause, encoded.key, spot, need, killer, DEATH_REACH)
             } else {
-                origins.expect(Void, Cause.MOB_DROP, encoded.key, spot, encoded.count, killer, DEATH_REACH)
+                origins.expect(Void, Cause.MOB_DROP, encoded.key, spot, need, killer, DEATH_REACH)
             }
         }
         // Equipment drops by chance; what the ledger booked and the death did not drop went with it.
@@ -155,16 +195,20 @@ class MobItemListener(
     // it, so this is rare — but a plugin removing it is not.
     @EventHandler(priority = EventPriority.MONITOR)
     fun onRemove(event: EntityRemoveEvent) {
-        val mob = event.entity as? LivingEntity ?: return
-        if (mob is Player) return
+        val entity = event.entity
+        if (entity is Player) return
+        val living = entity is LivingEntity
         when (event.cause) {
-            EntityRemoveEvent.Cause.DESPAWN, EntityRemoveEvent.Cause.PLUGIN, EntityRemoveEvent.Cause.OUT_OF_WORLD,
-            EntityRemoveEvent.Cause.DISCARD -> Unit
-            else -> return
+            // Saved with the chunk, or already written by the death or the drop that ended it.
+            EntityRemoveEvent.Cause.UNLOAD, EntityRemoveEvent.Cause.PLAYER_QUIT, EntityRemoveEvent.Cause.DROP,
+            EntityRemoveEvent.Cause.TRANSFORMATION, EntityRemoveEvent.Cause.PICKUP, EntityRemoveEvent.Cause.MERGE -> return
+            EntityRemoveEvent.Cause.DEATH -> if (living) return
+            else -> Unit
         }
-        for ((slot, form) in heldBy(mob)) {
-            pending.add(EntitySlot(mob.uniqueId, slot), Void, Cause.MOB_EQUIPMENT_LOST, ItemKey(form, null), 1)
-            unbookHeld(mob, slot)
+        val cause = if (living) Cause.MOB_EQUIPMENT_LOST else Cause.ENTITY_BREAK_DROP
+        for ((slot, form) in heldBy(entity)) {
+            pending.add(EntitySlot(entity.uniqueId, slot), Void, cause, ItemKey(form, null), 1)
+            unbookHeld(entity, slot)
         }
     }
 

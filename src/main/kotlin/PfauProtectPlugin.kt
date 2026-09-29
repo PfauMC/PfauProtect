@@ -157,6 +157,10 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
         server.pluginManager.registerEvents(ProjectileListener(capture, codec, mechanisms, origins), this)
         server.pluginManager.registerEvents(MobItemListener(codec, mechanisms, origins), this)
+        server.pluginManager.registerEvents(
+            HolderListener(capture, codec, origins) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
+            this,
+        )
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
         // just dropped and the block capture then reads the form of that same stack. Handlers of equal

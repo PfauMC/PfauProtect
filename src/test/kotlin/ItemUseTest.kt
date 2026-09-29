@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect
 
+import net.minecraft.world.item.DyeColor
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.Items
 import org.bukkit.Material
@@ -65,6 +66,40 @@ class ItemUseTest {
         assertNull(useCause(stack(Items.FIREWORK_ROCKET), null))
         // Nothing to spend it on.
         assertNull(useCause(stack(Items.BONE_MEAL), null))
+    }
+
+    @Test
+    fun `an entity names the use by what it makes of the item`() {
+        assertEquals(Cause.FEED_MOB, entityUseCause(stack(Items.WHEAT), EntityTarget(breedsOn = true)))
+        assertEquals(Cause.TAME_MOB, entityUseCause(stack(Items.BONE), EntityTarget(untamed = true)))
+        assertEquals(Cause.DYE_MOB, entityUseCause(stack(Items.DYE.pick(DyeColor.RED)), EntityTarget(dyeable = true)))
+        assertEquals(Cause.NAME_TAG, entityUseCause(stack(Items.NAME_TAG)))
+        assertEquals(Cause.LEASH_ATTACH, entityUseCause(stack(Items.LEAD)))
+        // Worn or kept by the mob: its equipment change says where it went.
+        assertNull(entityUseCause(stack(Items.SADDLE)))
+        assertNull(entityUseCause(stack(Items.DIAMOND), EntityTarget(keeps = true)))
+    }
+
+    // A record put in a jukebox is a gain of the slot; one taken back out, a loss. A slot that went on
+    // holding the same thing moved nothing.
+    @Test
+    fun `a click on a block with slots is what its slots gained and lost`() {
+        val disc = Stack(ItemKey("music_disc_cat".toByteArray(), null), 1)
+        val book = Stack(ItemKey("book".toByteArray(), null), 1)
+        val put = slotDiff(listOf(null, book), listOf(disc, book)).single()
+        assertEquals(0, put.slot)
+        assertEquals(true, put.gain)
+        val taken = slotDiff(listOf(disc), listOf(null)).single()
+        assertEquals(false, taken.gain)
+        assertEquals(1, taken.qty)
+    }
+
+    @Test
+    fun `a block that keeps what is put into it has its own reckoning`() {
+        assertEquals(true, keepsItems(Material.JUKEBOX))
+        assertEquals(true, keepsItems(Material.CHISELED_BOOKSHELF))
+        assertEquals(true, keepsItems(Material.OAK_SHELF))
+        assertEquals(false, keepsItems(Material.CHEST))
     }
 
     @Test
