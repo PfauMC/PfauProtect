@@ -506,7 +506,7 @@ class ContainerCaptureListener(
 
     // The offhand is one slot past the armour in the player's own numbering, and the snapshot walks
     // those same numbers, so a hand is nameable as a holder the moment the event says which one.
-    private fun handSlot(player: Player, hand: EquipmentSlot?): Holder? {
+    internal fun handSlot(player: Player, hand: EquipmentSlot?): Holder? {
         val inventory = player.inventory
         val slot = when (hand) {
             EquipmentSlot.HAND -> inventory.heldItemSlot
@@ -654,6 +654,14 @@ class ContainerCaptureListener(
     // mirror that will read as empty by the time the pass runs.
     @EventHandler(priority = EventPriority.MONITOR)
     fun onItemBreak(event: PlayerItemBreakEvent) {
+        // A rod with bait on it wears down into the bare rod rather than into nothing: one item turned
+        // into another, in the same slot.
+        val type = event.brokenItem.type
+        if (type == Material.CARROT_ON_A_STICK || type == Material.WARPED_FUNGUS_ON_A_STICK) {
+            val shift = Shift(Cause.TRANSMUTE_ON_BREAK, Cause.TRANSMUTE_ON_BREAK, Kind.MUTATE)
+            intend(event.player, Intent(shift.consume, shift = shift))
+            return
+        }
         val form = codec.encodeOrNull(event.brokenItem)?.form ?: return
         intend(event.player, Intent(Cause.DURABILITY_BREAK, to = Void, form = form, qty = 1))
     }

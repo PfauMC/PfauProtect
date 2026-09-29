@@ -154,6 +154,7 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(destruction, this)
         server.pluginManager.registerEvents(EntityOriginListener(attribution, entities), this)
         server.pluginManager.registerEvents(capture, this)
+        server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
         // just dropped and the block capture then reads the form of that same stack. Handlers of equal

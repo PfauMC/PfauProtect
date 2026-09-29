@@ -86,6 +86,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     // One filter over every station rather than one per station: an investigator asks what became of
     // an item, not which bench it happened at, and the cause on each row already says that.
     TRANSFORM(TRANSFORM_CAUSES, "transform", "transforms", "changed"),
+    USE(USE_CAUSES, "use", "used", "spent"),
 
     // A cause is only worth offering as a filter once something actually writes it: an empty answer
     // from a filter that sounds certain reads as "nothing happened there".
@@ -133,6 +134,14 @@ private val TRANSFORM_CAUSES = setOf(
     Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Cause.CRAFT_REMAINDER, Cause.SMELT, Cause.BREW,
     Cause.ANVIL_COMBINE, Cause.GRINDSTONE, Cause.SMITHING_TRANSFORM, Cause.SMITHING_TRIM,
     Cause.ENCHANT_APPLY, Cause.STONECUTTER, Cause.LOOM, Cause.CARTOGRAPHY, Cause.BOOK_SIGN, Cause.MAP_FILL,
+    Cause.BUCKET_FILL, Cause.BUCKET_EMPTY, Cause.BUCKET_CAPTURE_MOB, Cause.BUCKET_RELEASE_MOB,
+    Cause.BOTTLE_FILL, Cause.BOTTLE_EMPTY, Cause.CAULDRON_WASH, Cause.TRANSMUTE_ON_BREAK,
+)
+
+// An item spent by using it on something, rather than by eating it or building with it.
+private val USE_CAUSES = setOf(
+    Cause.BONEMEAL_USE, Cause.SPAWN_EGG_USE, Cause.WAX_APPLY, Cause.ITEM_INTO_SINGLE_BLOCK,
+    Cause.EYE_INTO_FRAME, Cause.ITEM_USED, Cause.BEACON_PAYMENT,
 )
 
 // The block plane's whole range, so a filter can name it without listing thirty-two causes.

@@ -126,6 +126,12 @@ enum class Cause(val id: Int) {
     ITEM_INTO_SINGLE_BLOCK(0x58),
     PLACE_ENTITY_ITEM(0x59),
     EYE_INTO_FRAME(0x5A),
+    // Spent on a block or an entity by a path that has no cause of its own: a fire charge, a trial key.
+    ITEM_USED(0x5B),
+    BOTTLE_FILL(0x5C),
+    CAULDRON_WASH(0x5D),
+    BEACON_PAYMENT(0x5E),
+    BOTTLE_EMPTY(0x5F),
 
     FEED_MOB(0x60),
     TAME_MOB(0x61),
