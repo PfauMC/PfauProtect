@@ -1,8 +1,11 @@
 package io.pfaumc.pfauprotect
 
+import net.minecraft.core.BlockPos
 import net.minecraft.core.component.DataComponents
 import net.minecraft.network.chat.Component
 import net.minecraft.world.item.Items
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.entity.SignBlockEntity
 import org.bukkit.command.CommandSender
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -241,6 +244,37 @@ class LookupReadTest {
             listOf("Unknown player: Carol"),
             said(LookupQuery(players = listOf("Carol")), players = mapOf("Alice" to alice)),
         )
+    }
+
+    // The text of a sign is what was kept for it, and an edit reads as what it said before and after.
+    // A payload that is not a sign keeps the marker it always had.
+    @Test
+    fun `a sign row reads out its text and an edit reads out both`() {
+        val registries = ServerRegistries.access
+        fun sign(line: String) = payloadOf(
+            SignBlockEntity(BlockPos(10, 64, -3), Blocks.OAK_SIGN.defaultBlockState()).apply {
+                setText(frontText.setMessage(0, Component.literal(line)), true)
+            },
+            registries,
+        )
+        val sign = "minecraft:oak_sign[rotation=0,waterlogged=false]"
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, sign, Cause.BLK_PLAYER_PLACE, T0, payloadAfter = sign("здесь был Боб"))))
+        log.submit(
+            listOf(
+                BlockChange(
+                    10, 64, -3, sign, sign, Cause.BLK_PLAYER_PLACE, T0 + 1000,
+                    payloadBefore = sign("здесь был Боб"), payloadAfter = sign("здесь была Алиса"),
+                )
+            )
+        )
+        log.submit(listOf(BlockChange(10, 64, -2, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 2000, payloadAfter = byteArrayOf(1, 2, 3))))
+        log.drain()
+
+        val lines = said(LookupQuery(radius = 1))
+
+        assertTrue(lines.any { it.endsWith("text \"здесь был Боб\"") }, "$lines")
+        assertTrue(lines.any { it.contains("text \"здесь был Боб\" -> \"здесь была Алиса\"") }, "$lines")
+        assertTrue(lines.any { it.contains("block 10 64 -2") && it.contains("+contents") }, "$lines")
     }
 
     // A filter meant for the block plane must not drag the item plane's rows in behind it.

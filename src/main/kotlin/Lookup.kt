@@ -10,18 +10,24 @@ import com.mojang.brigadier.suggestion.Suggestions
 import com.mojang.brigadier.suggestion.SuggestionsBuilder
 import io.papermc.paper.command.brigadier.argument.CustomArgumentType
 import net.minecraft.core.component.DataComponents
+import net.minecraft.nbt.NbtIo
+import net.minecraft.nbt.NbtOps
+import net.minecraft.world.level.block.entity.SignText
 import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
+import java.io.ByteArrayInputStream
+import java.io.DataInputStream
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.logging.Level
+import kotlin.jvm.optionals.getOrNull
 
 const val DEFAULT_LIMIT = 10
 const val MAX_LIMIT = 200
@@ -608,7 +614,7 @@ class Lookups(
             row.confidence == Confidence.INFERRED -> "  by ${playerName(row.actor)} (worked out)"
             else -> "  by ${playerName(row.actor)}"
         }
-        val payload = if (row.payloadBefore != null || row.payloadAfter != null) "  +contents" else ""
+        val payload = payloadLabel(row)
         // Two rows of a door or a bed are otherwise the same row twice, and which half was struck is
         // the whole of what an investigator is asking.
         val half = if (row.alongside) "  (other half)" else ""
@@ -616,6 +622,33 @@ class Lookups(
             "${row.cause.name.lowercase()}  " +
             "${stateOf(row.stateBefore)} -> ${stateOf(row.stateAfter)}  " +
             "block ${row.x} ${row.y} ${row.z}$by$payload$half"
+    }
+
+    // A sign is what a payload is most often asked about, and its text is the whole of what was
+    // written. Anything else keeps the marker: what a container held is already rows of the item plane.
+    private fun payloadLabel(row: BlockRow): String {
+        if (row.payloadBefore == null && row.payloadAfter == null) return ""
+        val before = row.payloadBefore?.let(::signText)
+        val after = row.payloadAfter?.let(::signText)
+        return when {
+            before == null && after == null -> "  +contents"
+            before != null && after != null && before != after -> "  text $before -> $after"
+            else -> "  text ${after ?: before}"
+        }
+    }
+
+    // A payload is kept byte for byte, so reading it can fail on a tag a later game version wrote; the
+    // row then says what it always said rather than failing the whole answer.
+    private fun signText(payloadId: Long): String? {
+        val bytes = ledger.payload(payloadId) ?: return null
+        val tag = runCatching { NbtIo.read(DataInputStream(ByteArrayInputStream(bytes))) }.getOrNull() ?: return null
+        val sides = listOf("front_text", "back_text").mapNotNull { side ->
+            val text = tag.get(side) ?: return@mapNotNull null
+            SignText.DIRECT_CODEC.parse(NbtOps.INSTANCE, text).result().getOrNull()
+                ?.getMessages(false)?.map { it.string }?.filter { it.isNotBlank() }
+                ?.takeIf { it.isNotEmpty() }?.joinToString(" | ", "\"", "\"")
+        }
+        return sides.takeIf { it.isNotEmpty() }?.joinToString(" / ")
     }
 
     // The full state string is what the registry keeps, properties and all, which is what makes a row
