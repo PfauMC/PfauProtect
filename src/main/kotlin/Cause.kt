@@ -113,6 +113,7 @@ enum class Cause(val id: Int) {
     BANNER_DUPLICATE(0xC6),
     MAP_CLONE(0xC7),
     MAP_SCALE_LOCK(0xC8),
+    MAP_FILL(0xC9),
 
     BLOCK_PLACE(0x50),
     BONEMEAL_USE(0x51),

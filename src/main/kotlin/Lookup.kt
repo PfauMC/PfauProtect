@@ -132,7 +132,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
 private val TRANSFORM_CAUSES = setOf(
     Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Cause.CRAFT_REMAINDER, Cause.SMELT, Cause.BREW,
     Cause.ANVIL_COMBINE, Cause.GRINDSTONE, Cause.SMITHING_TRANSFORM, Cause.SMITHING_TRIM,
-    Cause.ENCHANT_APPLY, Cause.STONECUTTER, Cause.LOOM, Cause.CARTOGRAPHY, Cause.BOOK_SIGN,
+    Cause.ENCHANT_APPLY, Cause.STONECUTTER, Cause.LOOM, Cause.CARTOGRAPHY, Cause.BOOK_SIGN, Cause.MAP_FILL,
 )
 
 // The block plane's whole range, so a filter can name it without listing thirty-two causes.

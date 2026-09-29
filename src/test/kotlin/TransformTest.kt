@@ -94,6 +94,22 @@ class TransformTest {
         assertEquals(moves, withoutForeignEnds(moves, anvil))
     }
 
+    // An empty map used from a stack stays where it was minus one, and the filled map lands beside it.
+    // The use names the change; the pass gathers both ends into one item changed in place.
+    @Test
+    fun `filling a map is one map changing and not a loss beside a birth`() {
+        val fill = Shift(Cause.MAP_FILL, Cause.MAP_FILL, Kind.MUTATE)
+        val moves = listOf(
+            move(PlayerInv(player, 3), Void, "map", 1, Cause.ITEM_VANISHED),
+            move(Void, PlayerInv(player, 4), "filled_map", 1, Cause.DIRECT_NEW_ITEM),
+        )
+
+        val transaction = transactions(moves, fill).single()
+
+        assertEquals(listOf(Cause.MAP_FILL, Cause.MAP_FILL), transaction.map { it.cause })
+        assertTrue(transaction.all { it.confidence == Confidence.FACT })
+    }
+
     // A movement that happened for its own reasons in the same tick keeps that reason and its own row.
     @Test
     fun `a movement with both ends named is left out of the transformation`() {

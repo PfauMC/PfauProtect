@@ -6,6 +6,7 @@ import net.minecraft.world.item.enchantment.EnchantmentEffectComponents
 import net.minecraft.world.item.enchantment.EnchantmentHelper
 import net.minecraft.world.level.block.entity.BlockEntity
 import org.bukkit.Bukkit
+import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.craftbukkit.entity.CraftLivingEntity
 import org.bukkit.craftbukkit.inventory.CraftInventory
@@ -13,6 +14,7 @@ import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
+import org.bukkit.event.Event
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
@@ -33,6 +35,7 @@ import org.bukkit.event.player.PlayerItemConsumeEvent
 import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.event.player.PlayerEditBookEvent
+import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.player.PlayerSwapHandItemsEvent
 import org.bukkit.event.world.LootGenerateEvent
 import org.bukkit.inventory.AnvilInventory
@@ -539,6 +542,18 @@ class ContainerCaptureListener(
     fun onEnchant(event: EnchantItemEvent) {
         val shift = Shift(Cause.ENCHANT_APPLY, Cause.ENCHANT_APPLY, Kind.MUTATE)
         intend(event.enchanter, Intent(shift.consume, shift = shift))
+    }
+
+    // Using an empty map writes a filled one, in the hand that held it or beside it when the empty map
+    // was one of a stack. It is driven by a use rather than a click, like signing a book, and it is as
+    // much one item turning into another. A right click in the air is raised already denied, so the
+    // item's own verdict is what says whether the use went ahead.
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onUseMap(event: PlayerInteractEvent) {
+        if (!event.action.isRightClick || event.item?.type != Material.MAP) return
+        if (event.useItemInHand() == Event.Result.DENY) return
+        val shift = Shift(Cause.MAP_FILL, Cause.MAP_FILL, Kind.MUTATE)
+        intend(event.player, Intent(shift.consume, shift = shift))
     }
 
     // Signing turns a writable book into a written one in the slot it is held in, driven by a packet
