@@ -54,7 +54,7 @@ class EntityOriginListener(
             SpawnReason.SPAWNER_EGG -> clicking.get().also { clicking.set(null) }
             // A silverfish comes out of the block somebody has just broken, and the break is already
             // noted where it happened.
-            SpawnReason.SILVERFISH_BLOCK -> attribution.supportRemoverAt(at)?.actor
+            SpawnReason.SILVERFISH_BLOCK -> attribution.removerAt(at)?.actor
             in BUILT -> attribution.builderNear(at, BUILD_REACH)?.actor
             else -> null
         } ?: return

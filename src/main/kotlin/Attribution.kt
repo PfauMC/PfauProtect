@@ -156,6 +156,13 @@ class Attribution(
     }
 
     /**
+     * Who emptied this very position a moment ago. A silverfish comes out of the block that was broken,
+     * where the support search never looks: it asks about the cells around a block, not the block.
+     */
+    fun removerAt(at: WorldBlock): Attributed? =
+        noted(removals, at, SUPPORT_MILLIS)?.let { Attributed(it.actor) }
+
+    /**
      * Who put down a block anywhere within reach of this position, whatever block it was. A wither and
      * the golems are built out of blocks and appear when the last of them is placed, so the answer is
      * the most recent placement around the shape rather than one at a position the event names.

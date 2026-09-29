@@ -244,6 +244,20 @@ class AttributionTest {
         assertEquals(alice, attribution.supportRemoverAt(at(5, 65, 5))?.actor)
     }
 
+    // A silverfish appears inside the block that was broken, which is the one cell the support search
+    // skips.
+    @Test
+    fun `the remover of a position answers for that position and not its neighbours`() {
+        attribution.removed(at(5, 64, 5), alice)
+
+        assertNull(attribution.supportRemoverAt(at(5, 64, 5)))
+        assertEquals(alice, attribution.removerAt(at(5, 64, 5))?.actor)
+        assertNull(attribution.removerAt(at(5, 65, 5)))
+
+        clock += SUPPORT_MILLIS + 1
+        assertNull(attribution.removerAt(at(5, 64, 5)))
+    }
+
     @Test
     fun `flight state is kept by entity and taken exactly once`() {
         val entity = UUID.randomUUID()
