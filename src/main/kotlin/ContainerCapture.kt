@@ -340,6 +340,12 @@ internal fun transferOf(move: Move, timestamp: Long, kind: Kind = Kind.TRANSFER)
     actor = move.actor,
 )
 
+// Nothing named this end. The cause says so rather than borrowing the name of a click that never
+// happened: a gain nobody explained is an item that turned up, a loss one that went. A transformation
+// renames these ends afterwards; everything left under these two is what the capture could not see.
+internal fun unexplainedCause(edge: Edge): Cause =
+    if (edge.from == Void) Cause.DIRECT_NEW_ITEM else Cause.ITEM_VANISHED
+
 internal fun causeOf(edge: Edge): Cause = when {
     edge.to is Nested -> Cause.BUNDLE_INSERT
     edge.from is Nested -> Cause.BUNDLE_EXTRACT

@@ -125,7 +125,7 @@ object Intents {
             while (remaining > 0) {
                 val index = pick(intents, left, end, edge.key.form, player, loss)
                 if (index < 0) {
-                    moves += Move(edge.from, edge.to, edge.key, remaining, causeOf(edge), edge.confidence)
+                    moves += Move(edge.from, edge.to, edge.key, remaining, unexplainedCause(edge), edge.confidence)
                     break
                 }
                 val intent = intents[index]

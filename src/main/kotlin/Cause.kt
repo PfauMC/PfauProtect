@@ -27,6 +27,7 @@ enum class Cause(val id: Int) {
     DEATH_DESTROY_VANISHING(0x92),
     TOTEM_CONSUME(0x93),
     INVENTORY_LOAD(0x94),
+    ITEM_VANISHED(0x95),
 
     CONTAINER_ADD(0x10),
     CONTAINER_REMOVE(0x11),
