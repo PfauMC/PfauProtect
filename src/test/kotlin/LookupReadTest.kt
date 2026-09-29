@@ -48,6 +48,8 @@ class LookupReadTest {
         y: Int = 64,
         z: Int = -3,
         codec: ItemFormCodec? = null,
+        // Stands in for the server's player cache, which a test has none of.
+        players: Map<String, UUID> = emptyMap(),
     ): List<String> {
         val lines = ArrayList<String>()
         val sender = Proxy.newProxyInstance(
@@ -57,7 +59,8 @@ class LookupReadTest {
             if (method.name == "sendMessage") args?.filterIsInstance<String>()?.forEach { lines += it }
             null
         } as CommandSender
-        Lookups(stubPlugin(), shared, logs, codec)
+        val names = players.entries.associate { (name, id) -> id to name }
+        Lookups(stubPlugin(), shared, logs, codec, players::get, names::get)
             .report(sender, LookupTarget(world, x, y, z, "stone at $x $y $z"), query)
         return lines
     }
@@ -215,6 +218,29 @@ class LookupReadTest {
         val lines = said(LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE)))
         assertTrue(lines.any { it.contains("stopped before the whole area") }, "$lines")
         assertTrue(lines.none { it.startsWith("No ledger entries") }, "$lines")
+    }
+
+    // What a player carried has no position, and a crafting grid is booked to them as an entity. Both
+    // are read by whose they are, and only theirs.
+    @Test
+    fun `a player lookup reads their own slots and their crafting grid and nobody else's`() {
+        val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
+        val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
+        val chest = Container(world, 1, 64, 1, 0)
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 3), stone, null, 5, T0))
+        shared.submit(Transfer(Cause.CRAFT_CONSUME, EntitySlot(alice, 1), Void, stone, null, 8, T0 + 1))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), stone, null, 2, T0 + 2))
+        shared.drain()
+
+        val lines = said(LookupQuery(players = listOf("Alice")), players = mapOf("Alice" to alice, "Bob" to bob))
+
+        assertTrue(lines.any { it.contains("Alice slot 3") }, "$lines")
+        assertTrue(lines.any { it.contains("craft_consume") && it.contains("entity Alice slot 1") }, "$lines")
+        assertTrue(lines.none { it.contains("Bob") }, "$lines")
+        assertEquals(
+            listOf("Unknown player: Carol"),
+            said(LookupQuery(players = listOf("Carol")), players = mapOf("Alice" to alice)),
+        )
     }
 
     // A filter meant for the block plane must not drag the item plane's rows in behind it.

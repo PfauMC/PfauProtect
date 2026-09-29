@@ -86,8 +86,8 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
 - TESTING-v3 / TESTING-v3-RESULTS is the manual test plan and its 2026-08-18 run. Sections B–F must be run in
   survival. TESTING-v4 is the crafting and stations run, written but not yet run.
-- `/pp lookup` only reads by position, so rows booked to a player (inventory, crafting grid) are not visible
-  through any command. `/pp reconcile` is the only check for them.
+- `/pp lookup` reads by position, or with `player:<name>` by a player's own holders (inventory, equipment,
+  cursor, ender chest, crafting grid). `user:` is something else: a filter on the actor of positional rows.
 
 ## Conventions
 

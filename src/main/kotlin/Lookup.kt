@@ -48,6 +48,7 @@ private val TIME_FORMAT: DateTimeFormatter =
 // readable while the short forms typed from muscle memory keep working.
 internal enum class Param(vararg val keys: String) {
     USER("user", "u", "users"),
+    PLAYER("player", "p"),
     TIME("time", "t"),
     RADIUS("radius", "r"),
     ACTION("action", "a"),
@@ -150,6 +151,9 @@ private val DURATION = Regex("(\\d+)(mo|[ymwdhs])")
 
 data class LookupQuery(
     val users: List<String> = emptyList(),
+    // Whose own slots to read, rather than where. `users` narrows the rows of a place down to the
+    // ones a player is named on; this is the other question, what went through their hands.
+    val players: List<String> = emptyList(),
     val included: List<String> = emptyList(),
     val excluded: List<String> = emptyList(),
     val causes: Set<Cause>? = null,
@@ -228,6 +232,7 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
         reader.cursor = valueStart
         query = when (param) {
             Param.USER -> query.copy(users = query.users + values(value))
+            Param.PLAYER -> query.copy(players = query.players + values(value))
             Param.TIME -> query.copy(secondsBack = durationOrNull(value) ?: fail(reader, BAD_TIME, value))
             Param.RADIUS -> query.copy(radius = radiusOrNull(value) ?: fail(reader, BAD_RADIUS, value))
             Param.ACTION -> query.copy(causes = (query.causes ?: emptySet()) + causes(reader, valueStart, value))
@@ -328,7 +333,7 @@ class LookupArgument : CustomArgumentType<LookupQuery, String> {
     }
 
     private fun valuesFor(param: Param?): List<String> = when (param) {
-        Param.USER, Param.EXCLUDE -> Bukkit.getOnlinePlayers().map { it.name }
+        Param.USER, Param.PLAYER, Param.EXCLUDE -> Bukkit.getOnlinePlayers().map { it.name }
         Param.TIME -> TIME_EXAMPLES
         Param.RADIUS -> RADIUS_EXAMPLES
         Param.ACTION -> Action.names
@@ -372,6 +377,10 @@ class Lookups(
     private val ledger: RocksItemLog,
     private val blocks: BlockLogs,
     private val codec: ItemFormCodec? = null,
+    private val idOf: (String) -> UUID? = { name ->
+        Bukkit.getPlayerExact(name)?.uniqueId ?: Bukkit.getOfflinePlayerIfCached(name)?.uniqueId
+    },
+    private val nameOf: (UUID) -> String? = { Bukkit.getOfflinePlayer(it).name },
 ) {
 
     // Reading hits RocksDB through JNI, which has no business running on a region thread, and a task
@@ -388,33 +397,67 @@ class Lookups(
     }
 
     internal fun report(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+        if (query.players.isNotEmpty()) return reportPlayers(sender, query)
         if (query.global) {
             sender.sendMessage("A world-wide lookup needs the analytical backend; give a radius instead.")
             return
         }
-        val named = query.users.associateWith { resolve(it) }
-        val unknown = named.filterValues { it == null }.keys
-        if (unknown.isNotEmpty()) {
-            sender.sendMessage("Unknown player: ${unknown.joinToString(", ")}")
-            return
-        }
-        val users = named.values.filterNotNull().toSet()
+        val users = resolveAll(sender, query.users) ?: return
         val page = read(target, query)
         val items = wholeTransactions(ledger, filter(page.entries, query, users))
             .map { Line(it.timestamp, describe(it)) }
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
         val changes = blockLines(target, query, users)
-        val matched = (items + changes).sortedByDescending { it.timestamp }
-        val lines = matched.take(query.limit)
         val where = if (query.radius == null) target.label else "${query.radius} blocks around ${target.label}"
+        answer(sender, items + changes, page.complete, where, query)
+    }
+
+    /**
+     * What went through a player's own hands: their inventory, equipment, cursor, ender chest and the
+     * crafting grid, which the server books to the player as an entity. None of it has a position, so
+     * no radius reaches it, and the block plane has nothing to say about it.
+     */
+    private fun reportPlayers(sender: CommandSender, query: LookupQuery) {
+        val players = resolveAll(sender, query.players) ?: return
+        val users = resolveAll(sender, query.users) ?: return
+        val fromTs = query.secondsBack?.let { System.currentTimeMillis() - it * 1000 } ?: 0
+        val fetch = minOf(query.limit * FETCH_FACTOR, MAX_FETCH)
+        // The slot never enters the key, so slot 0 stands for every slot of its kind.
+        val pages = players.flatMap { player ->
+            listOf(
+                PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player),
+                PlayerEnder(player, 0), EntitySlot(player, 0),
+            )
+        }.map { ledger.holderPage(it, fromTs, Long.MAX_VALUE, reverse = true, limit = fetch) }
+        val entries = pages.flatMap { it.entries }.sortedByDescending { it.timestamp }
+        val items = wholeTransactions(ledger, filter(entries, query, users))
+            .map { Line(it.timestamp, describe(it)) }
+        answer(sender, items, pages.all { it.complete }, "player ${query.players.joinToString(", ")}", query)
+    }
+
+    // Every name has to be known: dropping the one that was misspelt would answer about the rest as
+    // if it were the whole question.
+    private fun resolveAll(sender: CommandSender, names: List<String>): Set<UUID>? {
+        val named = names.associateWith { idOf(it) }
+        val unknown = named.filterValues { it == null }.keys
+        if (unknown.isNotEmpty()) {
+            sender.sendMessage("Unknown player: ${unknown.joinToString(", ")}")
+            return null
+        }
+        return named.values.filterNotNull().toSet()
+    }
+
+    private fun answer(sender: CommandSender, found: List<Line>, complete: Boolean, where: String, query: LookupQuery) {
+        val matched = found.sortedByDescending { it.timestamp }
+        val lines = matched.take(query.limit)
         // Nothing matched can mean two very different things, and telling them apart is the whole
         // difference between "nothing happened here" and "I did not get far enough to see". A read
         // that stopped early inside a busy chunk hands back rows from one corner of it, and answering
         // that with silence would clear a position the reader is standing in the crater of.
         if (lines.isEmpty()) {
             sender.sendMessage(
-                if (page.complete) "No ledger entries for $where."
+                if (complete) "No ledger entries for $where."
                 else "Nothing matched for $where, but the read stopped before the whole area was " +
                     "seen. Narrow the radius or ask for more with limit:${query.limit * 4}."
             )
@@ -425,7 +468,7 @@ class Lookups(
         // A truncated view that says nothing about being truncated reads as the whole history, and an
         // investigator would conclude the item came from nowhere. The read itself stops early too, and
         // it stops before the filter runs, so a page cut short says so even when few rows matched.
-        if (matched.size > lines.size || !page.complete) {
+        if (matched.size > lines.size || !complete) {
             sender.sendMessage("  ... older entries are cut off; ask for more with limit:${query.limit * 4}")
         }
     }
@@ -535,8 +578,7 @@ class Lookups(
             .toList()
     }
 
-    private fun resolve(name: String): UUID? =
-        Bukkit.getPlayerExact(name)?.uniqueId ?: Bukkit.getOfflinePlayerIfCached(name)?.uniqueId
+    private fun resolve(name: String): UUID? = idOf(name)
 
     private fun normalizeItem(name: String): String =
         if (name.contains(':')) name.lowercase() else "$VANILLA_NAMESPACE:${name.lowercase()}"
@@ -613,11 +655,12 @@ class Lookups(
         is MenuSlot -> "menu ${menuName(holder.menuType)} slot ${holder.slot}"
         is Container -> "container ${holder.x} ${holder.y} ${holder.z} slot ${holder.slot}"
         is WorldBlock -> "block ${holder.x} ${holder.y} ${holder.z}"
-        is EntitySlot -> "entity ${holder.uuid} slot ${holder.slot}"
+        // A crafting grid is the player's own entity slot, and a name reads better than their uuid.
+        is EntitySlot -> "entity ${playerName(holder.uuid)} slot ${holder.slot}"
         is ItemEntityRef -> "dropped item ${holder.uuid}"
         is Nested -> "inside ${holder.ownerId} at ${holder.index}"
         Void -> "nowhere"
     }
 
-    private fun playerName(uuid: UUID): String = Bukkit.getOfflinePlayer(uuid).name ?: uuid.toString()
+    private fun playerName(uuid: UUID): String = nameOf(uuid) ?: uuid.toString()
 }
