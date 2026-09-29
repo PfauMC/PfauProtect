@@ -68,9 +68,50 @@ data class Stack(val key: ItemKey, val count: Int)
 
 // What one pass saw. Which container items were in view is part of that and not a detail: a row filed
 // under a container is only comparable against a pass that had the same container in front of it.
-class Snapshot(val stacks: Map<Holder, Stack>, val containers: Set<UUID> = emptySet()) {
+class Snapshot(
+    val stacks: Map<Holder, Stack>,
+    val containers: Set<UUID> = emptySet(),
+    // Container items this very snapshot gave a name to. The name is part of the form, so on its own
+    // it would read as one item going and another arriving in the same slot.
+    val named: Map<Holder, Naming> = emptyMap(),
+) {
     fun sees(nested: Nested) = nested.ownerId in containers
 }
+
+class Naming(val unnamed: ItemKey, val owner: UUID)
+
+// The pair a pass compares when this snapshot named something. The named slot is compared under the
+// form it had before the name, so it moves only if it really moved; and the container is taken to have
+// been in view before, empty, so what was put into it in the same pass has somewhere to go.
+internal fun comparable(before: Snapshot, after: Snapshot): Pair<Snapshot, Snapshot> {
+    if (after.named.isEmpty()) return before to after
+    val stacks = LinkedHashMap(after.stacks)
+    val owners = HashSet<UUID>()
+    for ((holder, naming) in after.named) {
+        val stack = stacks[holder] ?: continue
+        stacks[holder] = Stack(naming.unnamed, stack.count)
+        if (before.stacks[holder]?.key == naming.unnamed) owners += naming.owner
+    }
+    return Snapshot(before.stacks, before.containers + owners) to Snapshot(stacks, after.containers)
+}
+
+// Naming changes the item where it lies, so it is written as that: the unnamed form out of the slot and
+// the named one into it, as one mutation.
+internal fun namingRows(after: Snapshot, timestamp: Long): List<List<Transfer>> =
+    after.named.mapNotNull { (holder, naming) ->
+        val stack = after.stacks[holder] ?: return@mapNotNull null
+        fun row(from: Holder, to: Holder, key: ItemKey) = Transfer(
+            cause = Cause.CONTAINER_NAMED,
+            from = from,
+            to = to,
+            form = key.form,
+            damage = key.damage,
+            qty = stack.count,
+            timestamp = timestamp,
+            kind = Kind.MUTATE,
+        )
+        listOf(row(holder, Void, naming.unnamed), row(Void, holder, stack.key))
+    }
 
 data class Edge(
     val from: Holder,
@@ -858,12 +899,15 @@ class ContainerCaptureListener(
         }
         val after = snapshot(player, baseline.view)
         baselines[player.uniqueId] = Baseline(baseline.view, after)
+        val (was, now) = comparable(baseline.seen, after)
         // One item that became another is a mutation; a recipe that ate three and made one is not, so
         // the kind comes from the event and never from the size of what the pass happened to gather.
         val shift = taken.firstNotNullOfOrNull { it.shift }
-        val edges = Netting.diff(baseline.seen, after, taken, player.uniqueId, stationSlots(player, baseline, shift))
+        val edges = Netting.diff(was, now, taken, player.uniqueId, stationSlots(player, baseline, shift))
         val timestamp = System.currentTimeMillis()
-        val moves = Intents.explain(edges, taken, player.uniqueId, unspent) { form ->
+        // A bundle the player holds is theirs to empty: a drop out of it is still their drop.
+        val carried = { nested: Nested -> nested.ownerId in was.containers }
+        val moves = Intents.explain(edges, taken, player.uniqueId, unspent, carried) { form ->
             after.stacks.entries.firstOrNull { (holder, stack) ->
                 holder is PlayerHolder && holder.uuid == player.uniqueId && stack.key.form.contentEquals(form)
             }?.key
@@ -872,6 +916,8 @@ class ContainerCaptureListener(
             val kind = if (shift != null && group.size > 1) shift.kind else Kind.TRANSFER
             sink(group.map { transferOf(it, timestamp, kind) })
         }
+        // After the movements, so a bundle picked up unnamed arrives under the form it was carried in.
+        for (rows in namingRows(after, timestamp)) sink(rows)
     }
 
     private fun rebaseline(player: Player) {
@@ -894,20 +940,21 @@ class ContainerCaptureListener(
     private fun snapshot(player: Player, view: InventoryView): Snapshot {
         val stacks = LinkedHashMap<Holder, Stack>()
         val containers = HashSet<UUID>()
+        val named = HashMap<Holder, Naming>()
         val top = view.topInventory
         val topHolder = topHolders(player, top)
         if (topHolder != null) {
             val preview = previewSlot(top)
             for (slot in 0 until top.size) {
                 if (slot == preview) continue
-                record(stacks, containers, topHolder(slot), top.getItem(slot))
+                record(stacks, containers, named, topHolder(slot), top.getItem(slot))
             }
         }
         val inventory = player.inventory
         val holders = playerHolders(player.uniqueId, inventory)
-        for (slot in 0 until inventory.size) record(stacks, containers, holders(slot), inventory.getItem(slot))
-        record(stacks, containers, PlayerCursor(player.uniqueId), player.itemOnCursor)
-        return Snapshot(stacks, containers)
+        for (slot in 0 until inventory.size) record(stacks, containers, named, holders(slot), inventory.getItem(slot))
+        record(stacks, containers, named, PlayerCursor(player.uniqueId), player.itemOnCursor)
+        return Snapshot(stacks, containers, named)
     }
 
     // Bukkit hands out live mirrors of the server's stacks, so a snapshot has to turn every slot into
@@ -920,6 +967,7 @@ class ContainerCaptureListener(
     private fun record(
         into: MutableMap<Holder, Stack>,
         containers: MutableSet<UUID>,
+        named: MutableMap<Holder, Naming>,
         holder: Holder,
         stack: BukkitItemStack?,
     ) {
@@ -930,10 +978,12 @@ class ContainerCaptureListener(
         // one on the next pass and the diff would invent a movement out of it. A box that already
         // carries a name keeps answering to it while it stands empty, which is what lets the next pass
         // tell a container emptied in place from one carried out of view.
+        val unnamed = if (contents.isNotEmpty() && NestedItems.ownerOf(live) == null) codec.encode(live).key else null
         val owner = if (contents.isEmpty()) NestedItems.ownerOf(live) else NestedItems.own(live)
         val encoded = codec.encode(live)
         into[holder] = Stack(encoded.key, encoded.count)
         if (owner == null) return
+        if (unnamed != null) named[holder] = Naming(unnamed, owner)
         containers += owner
         for ((index, child) in contents) {
             val inside = codec.encode(child)

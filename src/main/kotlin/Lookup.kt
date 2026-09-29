@@ -121,6 +121,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     ),
     DISPENSER(setOf(Cause.BLK_DISPENSER), "dispenser", "dispensers"),
     PORTAL(setOf(Cause.BLK_PORTAL_CREATE, Cause.BLK_PORTAL_DESTROY), "portal", "portals"),
+    SIGN(setOf(Cause.BLK_SIGN_EDIT), "sign", "signs", "edit"),
     ;
 
     companion object {
@@ -150,7 +151,7 @@ private val USE_CAUSES = setOf(
 )
 
 // The block plane's whole range, so a filter can name it without listing thirty-two causes.
-private val BLOCK_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet()
+private val BLOCK_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT
 
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
 private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")

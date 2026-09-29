@@ -50,8 +50,9 @@ class Intent(
     // has to be one of theirs. Matching on form alone lets an open container's own unpaired loss take
     // the player's drop intent, because the top inventory is snapshotted first and is therefore
     // offered every intent ahead of the player's own slots.
-    internal fun explains(end: Holder, form: ByteArray, player: UUID?) =
-        end is PlayerHolder && end.uuid == player && (holder == null || holder == end) && matches(form)
+    internal fun explains(end: Holder, form: ByteArray, player: UUID?, carried: (Nested) -> Boolean = { false }) =
+        (end is PlayerHolder && end.uuid == player || end is Nested && carried(end)) &&
+            (holder == null || holder == end) && matches(form)
 
     // A recorded movement that names neither end is still not a label: read as one it would emit the
     // very row it was left to suppress. Anything else has to name the far end to have something to
@@ -102,6 +103,9 @@ object Intents {
         intents: List<Intent>,
         player: UUID,
         unspent: (Intent, Int) -> Unit = { _, _ -> },
+        // Whether a container item's contents are in this player's hands: a bundle they hold empties
+        // under their own drop, the loss coming out of the bundle rather than out of a slot.
+        carried: (Nested) -> Boolean = { false },
         // Any slot of this player's that is holding the form, for a netted pair neither intent gave a
         // slot of its own. The pass can see that and this cannot.
         carrying: (ByteArray) -> Holder? = { null },
@@ -123,7 +127,7 @@ object Intents {
             val end = if (loss) edge.from else edge.to
             var remaining = edge.qty
             while (remaining > 0) {
-                val index = pick(intents, left, end, edge.key.form, player, loss)
+                val index = pick(intents, left, end, edge.key.form, player, loss, carried)
                 if (index < 0) {
                     moves += Move(edge.from, edge.to, edge.key, remaining, unexplainedCause(edge), edge.confidence)
                     break
@@ -136,7 +140,9 @@ object Intents {
                 // Writing it a second time here is what an intent like this exists to prevent.
                 if (intent.recorded) continue
                 moves += if (loss) {
-                    Move(edge.from, intent.to!!, edge.key, qty, intent.cause, Confidence.FACT, intent.actor)
+                    // Emptied out of a bundle rather than dropped out of a slot.
+                    val cause = if (end is Nested && intent.cause == Cause.DROP_FROM_HAND) Cause.BUNDLE_DUMP else intent.cause
+                    Move(edge.from, intent.to!!, edge.key, qty, cause, Confidence.FACT, intent.actor)
                 } else {
                     Move(intent.from!!, edge.to, edge.key, qty, intent.cause, Confidence.FACT, intent.actor)
                 }
@@ -195,11 +201,12 @@ object Intents {
         form: ByteArray,
         player: UUID,
         loss: Boolean,
+        carried: (Nested) -> Boolean,
     ): Int {
         var found = -1
         for (index in intents.indices) {
             val intent = intents[index]
-            if (left[index] <= 0 || !intent.aims(loss) || !intent.explains(end, form, player)) continue
+            if (left[index] <= 0 || !intent.aims(loss) || !intent.explains(end, form, player, carried)) continue
             if (intent.recorded) return index
             if (found < 0) found = index
         }

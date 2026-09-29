@@ -36,6 +36,7 @@ import org.bukkit.event.Listener
 import org.bukkit.event.block.BlockBreakEvent
 import org.bukkit.event.block.BlockMultiPlaceEvent
 import org.bukkit.event.block.BlockPlaceEvent
+import org.bukkit.event.block.SignChangeEvent
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.util.UUID
@@ -212,7 +213,39 @@ private fun replacedBy(event: BlockPlaceEvent) =
 class BlockCaptureListener(
     private val logs: BlockLogs,
     private val attribution: Attribution,
+    // Runs a task on the block's own region a tick later.
+    private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
+    // The event carries the lines the player sent, before the sign takes them, and a plugin at a higher
+    // priority may still rewrite them. What the sign ended up saying is only readable once it has.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onSignChange(event: SignChangeEvent) {
+        val block = event.block
+        val log = logs.get(block.world.uid) ?: return
+        val before = payloadAt(block)
+        val actor = event.player.uniqueId
+        later(block) {
+            val after = payloadAt(block)
+            if (after == null || after.contentEquals(before)) return@later
+            val state = block.blockData.asString
+            log.submit(
+                listOf(
+                    BlockChange(
+                        x = block.x,
+                        y = block.y,
+                        z = block.z,
+                        before = state,
+                        after = state,
+                        cause = Cause.BLK_SIGN_EDIT,
+                        actor = actor,
+                        payloadBefore = before,
+                        payloadAfter = after,
+                    )
+                )
+            )
+        }
+    }
+
     // On MONITOR the block of a placement is already the new one, so the block answers for the after
     // side of the row while the event carries the side it replaced.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

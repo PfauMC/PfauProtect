@@ -151,7 +151,10 @@ class PfauProtectPlugin : JavaPlugin() {
         // A change to a world with no base open is dropped rather than journalled, so this goes after
         // the load handler and after the bases opened by hand. Against the other handlers of equal
         // priority the order is free: nothing it reads is written by any of them.
-        server.pluginManager.registerEvents(BlockCaptureListener(blocks, attribution), this)
+        server.pluginManager.registerEvents(
+            BlockCaptureListener(blocks, attribution) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
+            this,
+        )
         server.pluginManager.registerEvents(destruction, this)
         server.pluginManager.registerEvents(EntityOriginListener(attribution, entities), this)
         server.pluginManager.registerEvents(capture, this)
@@ -311,7 +314,10 @@ class PfauProtectPlugin : JavaPlugin() {
                     "ever booked to them"
             )
         }
-        if (report.reachedEnd && (report.checked > 0 || report.unrecorded > 0)) {
+        // A last page of nothing but positions too fresh to judge is still the end of the cycle; a
+        // busy piston clock keeps its own positions fresh for ever, and staying quiet then read as a
+        // cursor that never came round.
+        if (report.reachedEnd && (report.checked > 0 || report.unrecorded > 0 || report.settling > 0)) {
             logger.info(
                 "planes compared to the end of the item plane, ${report.checked} positions in this pass, " +
                     "${report.unrecorded} the block plane never recorded, ${report.settling} too recent " +

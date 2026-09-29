@@ -261,7 +261,7 @@ class CodecTest {
         val holder = PlayerInv(playerA, 0)
         val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
         val value = EntryCodec.value(entry(holder, Void), registries)
-        value[1] = 0xFE.toByte()
+        value[1] = 0x9F.toByte() // unused; pick another if a cause takes it
 
         val decoded = EntryCodec.decodeOrNull(key, value, registries)
         assertEquals(Cause.UNKNOWN, decoded?.cause)

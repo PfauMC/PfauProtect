@@ -54,6 +54,8 @@ enum class Cause(val id: Int) {
     CAMPFIRE_COOK_DROP(0xA5),
     BEEHIVE_HARVEST(0xA6),
     BRUSHABLE_REVEAL(0xA7),
+    // A container item given the name its contents are filed under.
+    CONTAINER_NAMED(0xA8),
 
     ITEM_SPAWN(0x20),
     ITEM_MERGE(0x21),
@@ -225,6 +227,8 @@ enum class Cause(val id: Int) {
     // Never written, only decoded into. Causes are added without touching the record version, so a
     // row from a newer build carries a number this one has no name for — and the quantity beside it
     // is still readable and still counts towards a balance, which a skipped row would not.
+    // The block plane's thirty-two slots are full, so it goes on here.
+    BLK_SIGN_EDIT(0xFE),
     UNKNOWN(0xFF),
     ;
 
