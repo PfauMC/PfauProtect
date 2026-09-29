@@ -1,0 +1,94 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+PfauProtect is a Canvas (Folia fork) plugin for Minecraft 26.2, Canvas build 923. It keeps a double-entry
+ledger of every item movement and a per-world log of block changes, so an admin can trace where items went,
+spot items with no explained origin, and eventually roll back a culprit. Kotlin 2.4, JVM toolchain 25.
+
+## Commands
+
+```
+./gradlew build                                                  # compile + tests + plugin jar
+./gradlew test                                                   # all tests
+./gradlew test --tests 'io.pfaumc.pfauprotect.StorageTest'       # one class
+./gradlew test --tests 'io.pfaumc.pfauprotect.StorageTest.*name*'# one method (glob)
+./gradlew runServer                                              # Canvas server with the plugin (jar from Canvas Jenkins)
+```
+
+- Nothing is shaded into the jar. Runtime dependencies go through `library(...)` (plugin-yml writes them into
+  `plugin.yml` `libraries`). `kotlin.stdlib.default.dependency=false`, so a new dependency usually has to be
+  declared twice: `library(...)` for the server and `testImplementation(...)` for tests.
+- RocksDB is `compileOnly`. Its natives come in classifier jars, which the server gets from the literal strings in
+  `bukkit { libraries }` and the tests from `testImplementation`. The server gets `osx` and `linux64`. The tests
+  also get `win64`, for Windows dev machines. A platform the server has to run on goes into both lists.
+- The first test run is slow. `ServerRegistries` (src/test/kotlin) bootstraps vanilla registries and
+  `GlobalConfiguration` through reflection and writes `config/` and `logs/` into the repo root (gitignored).
+- Do not rebuild or run `gradle test` while a manual-test server is running from this build: it swaps the jar.
+
+## Architecture
+
+One flat package `io.pfaumc.pfauprotect`. `PfauProtectPlugin.onEnable` wires everything into a `Running` object.
+
+**Item plane (`Storage.kt`, `RocksItemLog`).** Single RocksDB at `ledger/`, with column families entries,
+item_forms, registry, meta, nested_owners, tx, placed_forms and block_payloads, all written by one writer thread
+(`pfauprotect-ledger-writer`). Every row is a `Transfer` of `qty > 0` from one `Holder` to another (`Model.kt`):
+player inv/equip/cursor/ender, menu slot (not addressable), container, entity slot, item entity, nested
+(shulker/bundle contents), `VOID`, world block. A row also carries a `Kind` (TRANSFER/MUTATE/CLONE) and a
+`Confidence` (FACT/INFERRED).
+
+**Block plane (`BlockStore.kt`, `BlockLogs`).** One RocksDB per world (`blocks/<uuid>`), opened and closed on
+world load and unload. Block-state ids and block-entity payloads are interned in the shared ledger, and referenced
+data is written first so a block row never points at nothing.
+
+**Write path.**
+- Capture listeners feed `TickCoalescer`, which merges changes within a tick, and `Uncovered`, which counts
+  what could not be explained, by reason.
+- Player slots are written only by the recompute pass. Events leave an `Intent` (`Intents.kt`), and the pass
+  diffs the inventory and assigns causes.
+- Listener registration order matters: `NestedCaptureListener` must be registered before `BlockMechanismListener`.
+
+**Attribution (`Attribution.kt`, plus `SpawnOrigins`/`EntityOrigins`).** Attribution climbs a ladder: direct
+source, then in-memory trackers, then the ledger. Anything that was not observed directly is `INFERRED`. Rows are
+never rewritten after the fact.
+
+**Self-checks, scheduled from `PfauProtectPlugin`.**
+- Sweep: per-transaction invariant.
+- `PlaneSync`: item plane vs block plane, settled after `SETTLE_MILLIS`.
+- `Reconciliation`: live inventories vs ledger.
+
+`/pp verify` and `/pp reconcile` run them on demand.
+
+**Commands.** `/pfauprotect` (alias `/pp`) is registered through Brigadier (`LifecycleEvents.COMMANDS`), with
+subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]`. Permissions are declared in
+`build.gradle.kts` `bukkit {}`.
+
+## Invariants
+
+- On-disk numbers never change and are never reused: `Cause` codes, `HolderType`, `Kind` and registry ids.
+  Add new values; never renumber.
+- Bump `SCHEMA_VERSION` (`Storage.kt`) or `BLOCK_SCHEMA_VERSION` (`BlockStore.kt`) when a key layout, the CF set
+  or the meaning of stored numbers changes.
+- Folia threading: touch world and player state only on the owning region thread (entity/region schedulers). Do
+  RocksDB I/O off it, never on a region thread.
+- `onDisable` closes the per-world databases before the ledger.
+
+## Specs (`.planning/`)
+
+- SPEC-v1 is the foundation and long-term goals (rollback, dupe detection by balance; not built yet).
+- SPEC-v2 covers item entities and player inventory. SPEC-v3 covers the block plane, attribution and plane sync.
+  SPEC-v4 covers crafting and stations. Later specs override earlier ones, and SPEC-v3 supersedes BLOCKS-notes.
+  PLAN-v1-iteration-1 is outdated.
+- The code deviates from SPEC-v4 in places:
+  - `MenuSlot` stays unaddressed.
+  - `MENU_CLOSE_RETURN` is declared but never written.
+  - Fuel is logged as `FURNACE_FUEL_CONSUME`, not `FUEL_BURN`.
+- PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
+  `PlayerRespawnEvent` never fires. Read it before writing a listener.
+- TESTING-v3 / TESTING-v3-RESULTS is the manual test plan and its 2026-08-18 run. Sections B–F must be run in
+  survival.
+
+## Conventions
+
+- Commit messages in Russian with `feat:`/`fix:`/`test:`/`refactor:`/`chore:`/`docs:`. The body explains why.
+- Code comments in English, explaining why rather than what. Match the existing density.
