@@ -1403,6 +1403,14 @@ class BlockDestructionTest {
         assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(spawned).key, 1))
     }
 
+    @Test
+    fun `a crater reaches as far as its blocks are apart`() {
+        val stone = Blocks.STONE.defaultBlockState().asBlockData()
+        assertEquals(SPAWN_REACH, craterReach(emptyList()))
+        assertEquals(SPAWN_REACH, craterReach(listOf(blockStub(0, 64, 0, stone))))
+        assertEquals(7.0, craterReach(listOf(blockStub(0, 64, 0, stone), blockStub(6, 62, -2, stone))))
+    }
+
     // A cactus breaks a tick after its support, from its own block tick, while the read-back that the
     // support's physics queued may still hold the position. The destroy event is the moment the drops
     // are certain and follow at once, so it expects them whatever the read-back is doing.

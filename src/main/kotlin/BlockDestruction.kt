@@ -116,6 +116,7 @@ internal fun expectDrops(
     // the name is part of its form, so the drop is expected under the named form and the entity is
     // named the same way before its spawn reads it.
     boxOwner: UUID? = null,
+    reach: Double = SPAWN_REACH,
 ) {
     val spot = spotOf(block.location)
     for (drop in block.drops) {
@@ -125,8 +126,20 @@ internal fun expectDrops(
             origins.expectBox(stack, boxOwner, spot)
             NestedItems.mark(stack, boxOwner)
         }
-        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor)
+        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor, reach)
     }
+}
+
+// How far apart two blocks of one crater can stand, along any axis: an explosion drops each pile where
+// the first block of its kind stood, which can be anywhere in the crater.
+internal fun craterReach(blocks: Collection<Block>): Double {
+    if (blocks.isEmpty()) return SPAWN_REACH
+    val span = maxOf(
+        blocks.maxOf { it.x } - blocks.minOf { it.x },
+        blocks.maxOf { it.y } - blocks.minOf { it.y },
+        blocks.maxOf { it.z } - blocks.minOf { it.z },
+    )
+    return maxOf(SPAWN_REACH, span + 1.0)
 }
 
 /**
@@ -889,7 +902,7 @@ class BlockDestructionListener(
         val log = logs.get(world) ?: return
         // An explosion writes plain air over every position it clears, whatever the block was standing
         // in, so the after side is not derived from the fluid the way a break's is.
-        file(log, hit.map { Site(positionOf(it), it, it.blockData, AIR) } + extra, cause, by)
+        file(log, hit.map { Site(positionOf(it), it, it.blockData, AIR) } + extra, cause, by, dropReach = craterReach(hit))
     }
 
     // The snapshots carry the new state and the block behind each of them still holds the old one.
@@ -1032,6 +1045,7 @@ class BlockDestructionListener(
         // position is spoken for at the other end of the movement that brought it, and what leaves in
         // the hands of a falling block is spoken for where the block lands.
         carried: List<Site> = emptyList(),
+        dropReach: Double = SPAWN_REACH,
     ) {
         val real = sites.filter { unfiled(it) }
         val rows = real + carried.filter { unfiled(it) }
@@ -1042,7 +1056,7 @@ class BlockDestructionListener(
         // A block that moved carries itself to the position it arrived in and drops nothing on the way.
         for (site in gone) {
             if (site.went != null) continue
-            expectDrops(origins, codec, site.block, cause, by?.actor, packBox(site, by, timestamp))
+            expectDrops(origins, codec, site.block, cause, by?.actor, packBox(site, by, timestamp), dropReach)
         }
         by?.actor?.let { actor ->
             for (site in gone) {

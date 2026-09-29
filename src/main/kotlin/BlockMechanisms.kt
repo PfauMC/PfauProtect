@@ -45,7 +45,7 @@ private const val COMPOSTER_FULL_LEVEL = 7
 
 // An item entity that appears next to the block it came out of, and no further than a dispenser
 // throws.
-private const val SPAWN_REACH = 2.0
+internal const val SPAWN_REACH = 2.0
 
 data class Spot(val world: UUID, val x: Double, val y: Double, val z: Double)
 
@@ -98,6 +98,7 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         val entity: UUID?,
         var qty: Int,
         val actor: UUID?,
+        val reach: Double = SPAWN_REACH,
     ) {
         var swept = false
     }
@@ -134,9 +135,20 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         return null
     }
 
-    fun expect(from: Holder, cause: Cause, key: ItemKey, at: Spot, qty: Int, actor: UUID? = null) {
+    // `reach` is how far from its block the item may land. An explosion gathers what it breaks into
+    // one pile per kind and drops the pile where the first block of that kind stood, so its notes have
+    // to reach across the whole crater.
+    fun expect(
+        from: Holder,
+        cause: Cause,
+        key: ItemKey,
+        at: Spot,
+        qty: Int,
+        actor: UUID? = null,
+        reach: Double = SPAWN_REACH,
+    ) {
         if (qty <= 0) return
-        notes += Note(from, cause, key, at, null, qty, actor)
+        notes += Note(from, cause, key, at, null, qty, actor, reach)
     }
 
     fun expect(entity: UUID, from: Holder, cause: Cause, key: ItemKey, qty: Int, actor: UUID? = null) {
@@ -160,7 +172,7 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         // A note that names the entity is exact, so it goes first: a note left at the same block for
         // some other reason must not take the quantity out from under it.
         val named = take(entity, key, count) { it.entity == entity }
-        val nearby = take(entity, key, count - named) { it.entity == null && it.key == key && near(it.at!!, at) }
+        val nearby = take(entity, key, count - named) { it.entity == null && it.key == key && near(it.at!!, at, it.reach) }
         return named + nearby
     }
 
@@ -201,11 +213,11 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         NmsItemStack.isSameItem(expected, spawned) &&
             expected.get(DataComponents.CONTAINER) == spawned.get(DataComponents.CONTAINER)
 
-    private fun near(origin: Spot, spawn: Spot) =
+    private fun near(origin: Spot, spawn: Spot, reach: Double = SPAWN_REACH) =
         origin.world == spawn.world &&
-            abs(origin.x - spawn.x) <= SPAWN_REACH &&
-            abs(origin.y - spawn.y) <= SPAWN_REACH &&
-            abs(origin.z - spawn.z) <= SPAWN_REACH
+            abs(origin.x - spawn.x) <= reach &&
+            abs(origin.y - spawn.y) <= reach &&
+            abs(origin.z - spawn.z) <= reach
 }
 
 // Which bottles the brew actually changed. A stand runs with slots empty and with bottles the recipe

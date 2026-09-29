@@ -47,6 +47,19 @@ class SpawnOriginsTest {
         assertEquals(3, row.qty)
     }
 
+    // An explosion drops one pile per kind where the first block of that kind stood. The three blocks
+    // that fed this pile stood up to five blocks apart; with the crater's reach every one of them
+    // accounts for its share, and with a block's own reach only the one it landed on does.
+    @Test
+    fun `a pile an explosion gathered is explained by every block that fed it`() {
+        val first = Spot(world, 0.5, 64.0, 0.5)
+        for (x in listOf(0.5, 3.5, 5.5)) origins.expect(Void, Cause.BLK_TNT, stone, Spot(world, x, 64.0, 0.5), 1, reach = 6.0)
+        assertEquals(3, origins.claim(UUID.randomUUID(), first, stone, 3))
+
+        for (x in listOf(0.5, 3.5, 5.5)) origins.expect(Void, Cause.BLK_TNT, stone, Spot(world, x, 64.0, 0.5), 1)
+        assertEquals(1, origins.claim(UUID.randomUUID(), first, stone, 3))
+    }
+
     @Test
     fun `another form spawning nearby claims nothing`() {
         origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 1)
