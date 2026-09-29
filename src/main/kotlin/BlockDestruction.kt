@@ -46,7 +46,6 @@ import org.bukkit.event.block.BlockFromToEvent
 import org.bukkit.event.block.BlockGrowEvent
 import org.bukkit.event.block.BlockIgniteEvent
 import org.bukkit.event.block.BlockPhysicsEvent
-import org.bukkit.event.block.BlockPistonEvent
 import org.bukkit.event.block.BlockPistonExtendEvent
 import org.bukkit.event.block.BlockPistonRetractEvent
 import org.bukkit.event.block.BlockSpreadEvent
@@ -284,6 +283,23 @@ internal fun pistonHead(facing: Direction, sticky: Boolean): BlockData = Blocks.
     .setValue(BlockStateProperties.FACING, facing)
     .setValue(BlockStateProperties.PISTON_TYPE, if (sticky) PistonType.STICKY else PistonType.DEFAULT)
     .asBlockData()
+
+/**
+ * The base of a piston taking its head back, asked of the head. A sticky piston that cannot pull what
+ * stands in front of it raises no retract event at all: the server removes the head quietly, and the
+ * block plane went on saying a head stood there. What it does not hide is the physics update the base
+ * sends its neighbours once it has turned into the moving block, while the head is still standing to
+ * be read. An extending piston never looks like this: its base stays a piston, and the moving block
+ * stands where the head is going.
+ */
+internal fun retractingBase(head: Block): Block? {
+    // Asked on every physics update in the world, so the cheap question goes first.
+    if (head.type != Material.PISTON_HEAD) return null
+    val data = head.blockData as? PistonHead ?: return null
+    val base = head.getRelative(data.facing.oppositeFace)
+    if (base.type != Material.MOVING_PISTON) return null
+    return base.takeIf { (it.blockData as? Directional)?.facing == data.facing }
+}
 
 /**
  * The piston itself, which is the same block before and after and differs only in being extended. Both
@@ -740,11 +756,11 @@ class BlockDestructionListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPistonExtend(event: BlockPistonExtendEvent) =
-        piston(event, event.blocks, Cause.BLK_PISTON_EXTEND, extending = true)
+        piston(event.block, event.blocks, Cause.BLK_PISTON_EXTEND, extending = true)
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPistonRetract(event: BlockPistonRetractEvent) =
-        piston(event, event.blocks, Cause.BLK_PISTON_RETRACT, extending = false)
+        piston(event.block, event.blocks, Cause.BLK_PISTON_RETRACT, extending = false)
 
     /**
      * A flight that ended in anything but a landing: the block was destroyed in the air, fell out of
@@ -815,6 +831,12 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPhysics(event: BlockPhysicsEvent) {
         val block = event.block as CraftBlock
+        // Every retract passes through here too, and the ones that did raise their event have filed
+        // this same change already; the read-back refuses the second row.
+        retractingBase(block)?.let { base ->
+            piston(base, emptyList(), Cause.BLK_PISTON_RETRACT, extending = false)
+            return
+        }
         val state = block.blockState
         if (state.isAir || state.canSurvive(block.level, block.position)) return
         // The cause dictionary has no entry of its own for a block that could no longer stand where it
@@ -886,8 +908,7 @@ class BlockDestructionListener(
      * neither is who fired this piston, and the player who last touched it is not behind every block
      * the redstone around it shifts afterwards.
      */
-    private fun piston(event: BlockPistonEvent, moving: List<Block>, cause: Cause, extending: Boolean) {
-        val base = event.block
+    private fun piston(base: Block, moving: List<Block>, cause: Cause, extending: Boolean) {
         val log = logs.get(base.world.uid) ?: return
         val data = base.blockData
         // A retracting sticky piston is already the moving block here, and that block carries the

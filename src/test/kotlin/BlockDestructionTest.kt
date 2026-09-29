@@ -17,6 +17,7 @@ import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
 import org.bukkit.block.data.BlockData
 import org.bukkit.block.data.type.Bed
+import org.bukkit.craftbukkit.block.data.CraftBlockData
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Creeper
 import org.bukkit.entity.Entity
@@ -799,6 +800,29 @@ class BlockDestructionTest {
         assertNull(litBy(mob))
         // A fireball a player hit back.
         assertEquals(bob, litBy(stub(Fireball::class.java, mapOf("getShooter" to player)))?.uniqueId)
+    }
+
+    // A sticky piston against obsidian takes its head back without an event. The one trace is the
+    // head's physics update with the base already turned into the moving block.
+    @Test
+    fun `a head whose base has turned into the moving block is being taken back`() {
+        fun block(state: net.minecraft.world.level.block.state.BlockState, next: Block? = null): Block {
+            val data = state.asBlockData()
+            return stub(Block::class.java, mapOf("getType" to data.material, "getBlockData" to data, "getRelative" to next))
+        }
+        val head = (pistonHead(Direction.EAST, sticky = true) as CraftBlockData).state
+        val moving = Blocks.MOVING_PISTON.defaultBlockState().setValue(BlockStateProperties.FACING, Direction.EAST)
+        val retracting = block(moving)
+
+        assertSame(retracting, retractingBase(block(head, retracting)))
+        // An extended piston behind its head is a piston at rest.
+        val resting = block((pistonBase(Direction.EAST, sticky = true, extended = true) as CraftBlockData).state)
+        assertNull(retractingBase(block(head, resting)))
+        // A moving block facing elsewhere belongs to some other piston.
+        val other = block(moving.setValue(BlockStateProperties.FACING, Direction.UP))
+        assertNull(retractingBase(block(head, other)))
+        // Anything that is not a head is not asked about at all.
+        assertNull(retractingBase(block(Blocks.STONE.defaultBlockState(), retracting)))
     }
 
     @Test
