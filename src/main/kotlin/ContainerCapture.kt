@@ -689,6 +689,11 @@ class ContainerCaptureListener(
     fun onClose(event: InventoryCloseEvent) {
         val player = event.player as? Player ?: return
         if (!plugin.isEnabled) return
+        // The game hands back what was left in a crafting grid or a station, and the cursor with it,
+        // without a click of its own. A label and not a quantity: it renames what the pass pairs up.
+        // A click the game applied in this same tick with no label of its own is renamed
+        // too; telling them apart needs the pass to know which snapshot each edge came from.
+        intents.add(player.uniqueId, Intent(Cause.MENU_CLOSE_RETURN))
         player.scheduler.run(plugin, {
             recompute(player)
             rebaseline(player)
