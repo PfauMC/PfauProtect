@@ -79,14 +79,15 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 - SPEC-v2 covers item entities and player inventory. SPEC-v3 covers the block plane, attribution and plane sync.
   SPEC-v4 covers crafting and stations. Later specs override earlier ones, and SPEC-v3 supersedes BLOCKS-notes.
   PLAN-v1-iteration-1 is outdated.
-- The code deviates from SPEC-v4 in places:
-  - `MenuSlot` stays unaddressed.
-  - `MENU_CLOSE_RETURN` is declared but never written.
-  - Fuel is logged as `FURNACE_FUEL_CONSUME`, not `FUEL_BURN`.
+- SPEC-v4 §15 records how phase 4 was actually built and overrides §3–§13. Window slots are booked to
+  their real owner: the crafting grid to the player (`EntitySlot`), a station to its block (`Container`).
+  `MenuSlot` is left only for ownerless GUIs.
 - PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
 - TESTING-v3 / TESTING-v3-RESULTS is the manual test plan and its 2026-08-18 run. Sections B–F must be run in
-  survival.
+  survival. TESTING-v4 is the crafting and stations run, written but not yet run.
+- `/pp lookup` only reads by position, so rows booked to a player (inventory, crafting grid) are not visible
+  through any command. `/pp reconcile` is the only check for them.
 
 ## Conventions
 
