@@ -92,6 +92,8 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
   `MenuSlot` is left only for ownerless GUIs.
 - PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
+- TESTING-v5 is the live run for SPEC-v5, written and not yet run. TESTING-v4-RESULTS holds the v4 run,
+  the D1–D16 defects and the v3 leftovers (R1).
 - TESTING-v3 / TESTING-v3-RESULTS is the manual test plan and its 2026-08-18 run. Sections B–F must be run in
   survival. TESTING-v4 is the next live run, written but not yet run: crafting and
   stations, plus section R with the unrun v3 items and re-checks of every fix made since v3.
