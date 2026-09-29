@@ -200,6 +200,45 @@ class BlockCaptureTest {
         assertEquals(AIR, after(Blocks.BLUE_ICE.defaultBlockState(), below = stone))
     }
 
+    // A block in a world made of a map: whatever is not in it is air, and a neighbour is asked for by
+    // position like `CraftBlock` does, so two routes to one position meet as one block.
+    private fun blockIn(blocks: Map<BlockPos, NmsBlockState>, at: BlockPos): Block =
+        Proxy.newProxyInstance(Block::class.java.classLoader, arrayOf(Block::class.java)) { _, method, args ->
+            when (method.name) {
+                "getBlockData" -> (blocks[at] ?: Blocks.AIR.defaultBlockState()).asBlockData()
+                "getRelative" -> (args[0] as BlockFace).let {
+                    blockIn(blocks, at.offset(it.modX, it.modY, it.modZ))
+                }
+                "getX" -> at.x
+                "getY" -> at.y
+                "getZ" -> at.z
+                "equals" -> (args[0] as? Block)?.let { it.x == at.x && it.y == at.y && it.z == at.z } == true
+                "hashCode" -> at.hashCode()
+                else -> null
+            }
+        } as Block
+
+    // A log with a branch of leaves running east from it, one leaf a player placed on top of it, and
+    // a stretch past the game's reach. The leaves that would die without this log are the branch as far
+    // as six steps, and the placed leaf stays because the game never decays it.
+    @Test
+    fun `a felled log holds up the leaves within the game's reach and no placed ones`() {
+        val leaf = Blocks.OAK_LEAVES.defaultBlockState()
+        val blocks = HashMap<BlockPos, NmsBlockState>()
+        val log = BlockPos(0, 64, 0)
+        blocks[log] = Blocks.OAK_LOG.defaultBlockState()
+        for (x in 1..9) blocks[BlockPos(x, 64, 0)] = leaf
+        blocks[BlockPos(0, 65, 0)] = leaf.setValue(BlockStateProperties.PERSISTENT, true)
+
+        val held = leavesHeldBy(blockIn(blocks, log)) { true }.map { it.x to it.y }
+
+        assertEquals((1..6).map { it to 64 }, held)
+
+        // A leaf over the region border is not read at all, and what lies behind it is not reached.
+        val owned = leavesHeldBy(blockIn(blocks, log)) { it.x < 4 }.map { it.x }
+        assertEquals(listOf(1, 2, 3), owned)
+    }
+
     @Test
     fun `a position without a block entity has no payload and one with it keeps the whole tag`() {
         assertNull(payloadOf(null, registries))

@@ -14,6 +14,10 @@ internal const val NOTE_MILLIS = 30_000L
 // explosion included, so this window is what keeps the table the size of one tick's work.
 internal const val SUPPORT_MILLIS = 100L
 
+// Leaves decay on random ticks, a minute on average and several in the tail, long after the log that
+// held them is gone. The note is written when the log goes, so this only has to outlast the decay.
+internal const val FELLED_MILLIS = 10 * 60 * 1000L
+
 // Long enough for a block to fall from the build limit. An entity that never lands — one that fell
 // out of the world, or that a plugin took away — leaves its note behind, and nothing else drops it.
 internal const val FLIGHT_MILLIS = 60_000L
@@ -79,8 +83,9 @@ class Attribution(
     private val placements = ConcurrentHashMap<WorldBlock, Note>()
     private val removals = ConcurrentHashMap<WorldBlock, Note>()
     private val flights = ConcurrentHashMap<UUID, Flight>()
+    private val felled = ConcurrentHashMap<WorldBlock, Note>()
 
-    val isEmpty: Boolean get() = placements.isEmpty() && removals.isEmpty() && flights.isEmpty()
+    val isEmpty: Boolean get() = placements.isEmpty() && removals.isEmpty() && flights.isEmpty() && felled.isEmpty()
 
     /**
      * `state` is what was put down, and a note answers for that block and no other. A break notes the
@@ -156,6 +161,19 @@ class Attribution(
     }
 
     /**
+     * The leaves a felled log was holding up, noted when the log goes. Whoever fells last is who the
+     * leaves answer to: a tree two players cut is the second one's by the time it drops.
+     */
+    fun felled(leaves: Collection<WorldBlock>, actor: UUID) {
+        val note = Note(actor, now())
+        for (leaf in leaves) felled[leaf] = note
+    }
+
+    /** Who cut down what held this leaf up, taken once: a leaf decays only once. */
+    fun fellerOf(at: WorldBlock): Attributed? =
+        noted(felled, at, FELLED_MILLIS)?.let { felled.remove(at); Attributed(it.actor) }
+
+    /**
      * Who emptied this very position a moment ago. A silverfish comes out of the block that was broken,
      * where the support search never looks: it asks about the cells around a block, not the block.
      */
@@ -211,6 +229,7 @@ class Attribution(
         placements.values.removeIf { now - it.at > NOTE_MILLIS }
         removals.values.removeIf { now - it.at > SUPPORT_MILLIS }
         flights.values.removeIf { now - it.at > FLIGHT_MILLIS }
+        felled.values.removeIf { now - it.at > FELLED_MILLIS }
     }
 
     private fun noted(notes: Map<WorldBlock, Note>, at: WorldBlock, window: Long, block: String? = null): Note? {

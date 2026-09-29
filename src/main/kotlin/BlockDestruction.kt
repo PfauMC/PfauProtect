@@ -734,7 +734,7 @@ class BlockDestructionListener(
     fun onLeafDecay(event: LeavesDecayEvent) {
         val block = event.block
         val before = block.blockData
-        changed(block, before, leftBehind(before).asString, Cause.BLK_LEAF_DECAY, by = null)
+        changed(block, before, leftBehind(before).asString, Cause.BLK_LEAF_DECAY, attribution.fellerOf(positionOf(block)))
     }
 
     /**
@@ -1036,7 +1036,12 @@ class BlockDestructionListener(
             if (site.went != null) continue
             expectDrops(origins, codec, site.block, cause, by?.actor, packBox(site, by, timestamp))
         }
-        by?.actor?.let { actor -> for (site in gone) noteRemoval(site.at, site.after, actor) }
+        by?.actor?.let { actor ->
+            for (site in gone) {
+                noteRemoval(site.at, site.after, actor)
+                attribution.felledBy(site.block, actor)
+            }
+        }
         // The note saying what a position took over is cleared wherever the block it was written about
         // stopped standing there: left behind, it answers for a block that is not the one there.
         val positions = gone.map { it.at }

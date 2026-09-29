@@ -258,6 +258,26 @@ class AttributionTest {
         assertNull(attribution.removerAt(at(5, 64, 5)))
     }
 
+    // Leaves drop minutes after the log that held them, long after every other note is gone. Whoever
+    // fells last is who they answer to, each leaf answers once, and the note runs out eventually.
+    @Test
+    fun `a leaf answers to whoever last felled what held it, once and for a while`() {
+        val leaf = at(1, 70, 0)
+        attribution.felled(listOf(leaf, at(2, 70, 0)), alice)
+        clock += 1000
+        attribution.felled(listOf(leaf), bob)
+
+        val found = attribution.fellerOf(leaf)
+        assertEquals(bob, found?.actor)
+        assertEquals(Confidence.INFERRED, found?.confidence)
+        assertNull(attribution.fellerOf(leaf))
+
+        clock += FELLED_MILLIS
+        assertNull(attribution.fellerOf(at(2, 70, 0)))
+        attribution.sweep()
+        assertTrue(attribution.isEmpty)
+    }
+
     @Test
     fun `flight state is kept by entity and taken exactly once`() {
         val entity = UUID.randomUUID()
