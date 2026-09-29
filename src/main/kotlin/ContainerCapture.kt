@@ -48,6 +48,7 @@ import org.bukkit.inventory.GrindstoneInventory
 import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.InventoryView
 import org.bukkit.inventory.LoomInventory
+import org.bukkit.inventory.MerchantInventory
 import org.bukkit.inventory.PlayerInventory
 import org.bukkit.inventory.SmithingInventory
 import org.bukkit.inventory.SmithingTrimRecipe
@@ -282,6 +283,8 @@ internal fun shiftOf(top: Inventory): Shift? = when (top) {
     is StonecutterInventory -> Shift(Cause.STONECUTTER, Cause.STONECUTTER, Kind.MUTATE)
     is LoomInventory -> Shift(Cause.LOOM, Cause.LOOM, Kind.MUTATE)
     is CartographyInventory -> Shift(Cause.CARTOGRAPHY, Cause.CARTOGRAPHY, Kind.MUTATE)
+    // The payment is destroyed and the goods are made, both in the trader's window.
+    is MerchantInventory -> Shift(Cause.TRADE_PAYMENT, Cause.TRADE_RESULT, Kind.TRANSFER)
     else -> null
 }
 
@@ -369,7 +372,7 @@ internal fun causeOf(edge: Edge): Cause = when {
 internal fun previewSlot(top: Inventory): Int? = when (top) {
     // Ingredients first, result last, for every station built on a result inventory.
     is AnvilInventory, is GrindstoneInventory, is SmithingInventory,
-    is StonecutterInventory, is LoomInventory, is CartographyInventory,
+    is StonecutterInventory, is LoomInventory, is CartographyInventory, is MerchantInventory,
     -> top.size - 1
     // A crafting inventory is the other way round: the result is addressed ahead of the grid.
     is CraftingInventory -> 0

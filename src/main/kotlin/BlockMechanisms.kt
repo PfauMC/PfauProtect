@@ -293,6 +293,7 @@ class BlockMechanismListener(
         if (event is BlockDispenseArmorEvent) {
             val target = event.targetEntity
             val equipped = EntitySlot(target.uniqueId, equipmentSlotOf(target, item))
+            bookHeld(target, equipped.slot, key.form)
             pending.add(from, equipped, Cause.DISPENSER_BEHAVIOR, key, item.amount)
             return
         }
@@ -346,7 +347,7 @@ class BlockMechanismListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockDrop(event: BlockDropItemEvent) {
         val block = event.block
-        val broken = brokeHere(block) ?: return
+        val broken = brokeHere(block) ?: return revealed(event)
         val state = event.blockState
         val actor = event.player.uniqueId
         val timestamp = System.currentTimeMillis()
@@ -407,6 +408,19 @@ class BlockMechanismListener(
             origins.accounted(dropped.uniqueId, stack.amount)
         }
         sink(transaction)
+    }
+
+    // Brushing raises the drop event with no break behind it: the find comes out of the loot table and
+    // the block turns plain. The entities already exist, so their births are written here.
+    private fun revealed(event: BlockDropItemEvent) {
+        val type = event.blockState.type
+        if (type != Material.SUSPICIOUS_SAND && type != Material.SUSPICIOUS_GRAVEL) return
+        for (dropped in event.items) {
+            val key = key(dropped.itemStack) ?: continue
+            val amount = dropped.itemStack.amount
+            pending.add(Void, ItemEntityRef(dropped.uniqueId), Cause.BRUSHABLE_REVEAL, key, amount, event.player.uniqueId)
+            origins.accounted(dropped.uniqueId, amount)
+        }
     }
 
     // A furnace eats its fuel outright, and a bucket of lava leaves the empty bucket in its place.

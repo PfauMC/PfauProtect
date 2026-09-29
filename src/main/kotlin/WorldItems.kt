@@ -221,9 +221,13 @@ class WorldItemListener(
             )
             return
         }
+        val slot = equipmentSlotOf(picker, stack)
+        // Whatever it does with the item later — drops it, dies holding it, trades it — has to come
+        // out of this slot, so the mob remembers what went in.
+        bookHeld(picker, slot, encoded.form)
         pending.add(
             ItemEntityRef(item.uniqueId),
-            EntitySlot(picker.uniqueId, equipmentSlotOf(picker, stack)),
+            EntitySlot(picker.uniqueId, slot),
             Cause.ITEM_PICKUP_BY_MOB,
             encoded.key,
             encoded.count - event.remaining,

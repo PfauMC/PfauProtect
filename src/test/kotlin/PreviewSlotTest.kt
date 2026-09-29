@@ -8,6 +8,7 @@ import org.bukkit.inventory.FurnaceInventory
 import org.bukkit.inventory.GrindstoneInventory
 import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.LoomInventory
+import org.bukkit.inventory.MerchantInventory
 import org.bukkit.inventory.RecipeChoice
 import org.bukkit.inventory.SmithingInventory
 import org.bukkit.inventory.SmithingTrimRecipe
@@ -82,6 +83,25 @@ class PreviewSlotTest {
                 else -> null
             }
         } as Inventory
+    }
+
+    // The goods are computed from the payment the way a craft is from its grid, and taking them
+    // destroys the payment and makes the goods.
+    @Test
+    fun `a trade is a station whose result is its last slot`() {
+        val merchant = sized(MerchantInventory::class.java, 3)
+        assertEquals(2, previewSlot(merchant))
+        val shift = shiftOf(merchant)!!
+        assertEquals(Cause.TRADE_PAYMENT, shift.consume)
+        assertEquals(Cause.TRADE_RESULT, shift.result)
+    }
+
+    // A mob gives up the booked item out of the slot that took the same form, whichever it was.
+    @Test
+    fun `a dropped form comes out of the slot that booked it`() {
+        val held = mapOf(0 to "sword".toByteArray(), 5 to "gold_ingot".toByteArray())
+        assertEquals(5, heldSlotOf(held, "gold_ingot".toByteArray()))
+        assertNull(heldSlotOf(held, "rotten_flesh".toByteArray()))
     }
 
     private fun <T : Any> stub(type: Class<T>): T {
