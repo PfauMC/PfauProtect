@@ -268,6 +268,20 @@ internal fun shiftOf(top: Inventory): Shift? = when (top) {
     else -> null
 }
 
+// A block or an entity that is not the player changes its own slots: a furnace smelts, a stand brews,
+// a hopper fills the chest that is open, another player takes from it. Each of those is written by its
+// own listener, and the pass that saw the window change would write it a second time, as a movement out
+// of nowhere, and put the container's balance out by exactly that much. Only a transformation is the
+// player's own business on such a slot, and it is the one case that names a shift.
+internal fun withoutForeignEnds(moves: List<Move>, shift: Shift?): List<Move> {
+    if (shift != null) return moves
+    return moves.filterNot { move ->
+        (move.from == Void && isForeign(move.to)) || (move.to == Void && isForeign(move.from))
+    }
+}
+
+private fun isForeign(holder: Holder) = holder is Container || holder is EntitySlot
+
 internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
     if (shift == null) return moves.map { listOf(it) }
     val transformed = ArrayList<Move>()
@@ -781,7 +795,7 @@ class ContainerCaptureListener(
                 holder is PlayerHolder && holder.uuid == player.uniqueId && stack.key.form.contentEquals(form)
             }?.key
         }
-        for (group in transactions(moves, shift)) {
+        for (group in transactions(withoutForeignEnds(moves, shift), shift)) {
             val kind = if (shift != null && group.size > 1) shift.kind else Kind.TRANSFER
             sink(group.map { transferOf(it, timestamp, kind) })
         }
