@@ -85,7 +85,8 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 - PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
 - TESTING-v3 / TESTING-v3-RESULTS is the manual test plan and its 2026-08-18 run. Sections B–F must be run in
-  survival. TESTING-v4 is the crafting and stations run, written but not yet run.
+  survival. TESTING-v4 is the next live run, written but not yet run: crafting and
+  stations, plus section R with the unrun v3 items and re-checks of every fix made since v3.
 - `/pp lookup` reads by position, or with `player:<name>` by a player's own holders (inventory, equipment,
   cursor, ender chest, crafting grid). `user:` is something else: a filter on the actor of positional rows.
 
