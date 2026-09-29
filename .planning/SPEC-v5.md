@@ -1,0 +1,225 @@
+# SPEC-v5 — полное покрытие
+
+Фаза 5 закрывает всё, что прежние фазы сознательно отложили, и то, что они упустили. После неё
+`item_spawn`, `item_vanished` и `direct_new_item` в счётчике непокрытого означают дыру, а не
+«ещё не дошли руки».
+
+Отменяет:
+- SPEC-v2:41, :62–64 — «один класс на фазу» и «лут с мобов, рыбалка, торговля, бартер закрываются
+  обобщённым `item_spawn`»;
+- SPEC-v4:52, :69–72 и §14 (:338–344) — список отложенного;
+- SPEC-v1 приложение A остаётся каталогом; эта спека добавляет к нему строки (§3) и говорит, чем
+  каждая строка пишется.
+
+Основание — живой прогон 2026-09-29 (TESTING-v4-RESULTS, «Хвосты v3»): D10, D14–D16 — одна и та же
+картина, класс причин есть в словаре, писателя нет.
+
+---
+
+## 1. Принципы
+
+Не меняются:
+
+- **Слоты игрока пишет только проход** (`ContainerCapture.recompute`). Событие оставляет намерение:
+  - трата или приход — `Intent(cause, to|from, form, qty, holder = handSlot(...))`, образец `onConsume`
+    (`ContainerCapture.kt:642`);
+  - превращение одного в другое — `Intent(shift.consume, shift = Shift(C, C, Kind.MUTATE))`, образец
+    `onUseMap` (`:559`);
+  - метка без количества — только имя причины, ничего не пишет, если убыли не было.
+- **Сторона мира** пишется заметкой `origins.expect` (по UUID предмета или по месту,
+  `BlockMechanisms.kt:141/154`), строкой через `TickCoalescer` или парой `sink`.
+- **Снаряд** — это `EntitySlot(uuid снаряда, 0)`. Нового типа держателя нет, `SCHEMA_VERSION` не
+  растёт.
+- **Номера причин** только дописываются в свободные места класса (§3), старые не трогаются.
+- Каждая фаза — свой коммит, свои JUnit-тесты в существующих наборах.
+
+---
+
+## 2. Что упустили прежние спеки
+
+Сверено с каталогом SPEC-v1 (приложение A) и с событиями Paper/Canvas 26.3.
+
+| Что | Почему важно | Фаза |
+| --- | --- | --- |
+| Раздатчик, кроме выброса и брони: костная мука, вёдра, ножницы, бутылки, установка лодок, вагонеток, шалкеров, тыквы и TNT, яйца призыва, огненный заряд, седло и броня на моба | сейчас любой раздатчик ставит заметку «выбросит предмет»; когда предмет не выпал, а применился, слот раздатчика не списывается и баланс контейнера врёт | 5.1 |
+| Котёл: набор бутылки, слив зелья, отмывка кожи, знамени, шалкера | превращение предмета в руке, в каталоге его нет | 5.1 |
+| Бутылка из воды и улья | превращение, в каталоге только соты и мёд ножницами | 5.1 |
+| Маяк: плата слитком | `MenuSlot → Void` при подтверждении, писателя и причины нет | 5.1 |
+| Мешок, опустошённый из руки (D9) | `bundle_dump` в каталоге есть, пути нет | 5.1 |
+| Pick-block в выживании, обмен надетого по ПКМ (`PlayerSwapWithEquipmentSlotEvent`) | движение внутри инвентаря без метки | 5.1 |
+| Превращение моба (`EntityTransformEvent`: зомби → утопленник, житель → зомби-житель, свинья → зомбифицированный пиглин) | UUID меняется, снаряжение остаётся на старом держателе | 5.3 |
+| Смерть моба: снаряжение, которое не выпало | `EntitySlot → Void`, в каталоге только выпавшее | 5.3 |
+| Содержимое сущностей при сломе: лодка и вагонетка с сундуком, вагонетка-воронка, лошадь, осёл, лама с сундуком | `container_break_drop` описан только для блоков | 5.3 |
+| Слом рамки, картины, стойки, лодки, вагонетки, кристалла Края — сама сущность-предмет и то, что в ней | в каталоге есть только установка (`place_entity_item`), обратной строки нет | 5.4 |
+| Инвентари мобов: жители (урожай, семена, еда друг другу), пиглины, тихони, лисы | `item_pickup_by_mob_inv` и `mob_throw_item` без писателя; посадка семян жителем — вообще нигде | 5.2, 5.3 |
+| Новое в 26.x: полка (3 слота, обмен с хотбаром), сбруя счастливого гаста, серный куб (глотает и отдаёт предметы), медный голем (переносит между сундуками) | механик нет ни в одной спеке | 5.3, 5.4 |
+| Костёр: игрок кладёт сырое | в каталоге только выпадение приготовленного | 5.4 |
+| Предмет, сменивший измерение через портал | не проверено, сохраняет ли сущность UUID; если нет, строки оборвутся | 5.3 |
+| Правка текста таблички (D11) | блочная плоскость, нагрузка блока не пишется | 5.6 |
+| Имя мешка при первом присвоении (D8) | выведенные `−1/+1` на ровном месте | 5.6 |
+
+---
+
+## 3. Новые причины
+
+| Имя | Номер | Путь | Когда |
+| --- | --- | --- | --- |
+| `ITEM_USED` | 0x5B | PlayerInv → Void | предмет истрачен на блоке или сущности, и у пути нет своей причины (огненный заряд, ключ хранилища, аметист тихоне) |
+| `BOTTLE_FILL` | 0x5C | MUTATE | стеклянная бутылка → бутылка воды или мёда |
+| `CAULDRON_WASH` | 0x5D | MUTATE | отмывка кожи, знамени, шалкера в котле |
+| `BEACON_PAYMENT` | 0x5E | MenuSlot → Void | плата маяку |
+| `MOB_TRANSFORM` | 0x6C | EntitySlot → EntitySlot | снаряжение переходит на новую сущность при превращении |
+| `ENTITY_BREAK_DROP` | 0x6D | EntitySlot/Void → ItemEntity | сломанная сущность выпадает предметом вместе с содержимым |
+| `MOB_EQUIPMENT_LOST` | 0x6E | EntitySlot → Void | снаряжение моба, не выпавшее при смерти или деспавне |
+| `ITEM_DIMENSION_CHANGE` | 0x2A | ItemEntity → ItemEntity | только если проверка покажет, что UUID меняется |
+
+---
+
+## 4. Фазы
+
+Порядок: 5.1 → 5.2 → 5.3 → 5.4 → 5.5 → 5.6. Живой прогон (TESTING-v5, пишется перед ним) —
+после 5.2 и после 5.5.
+
+### 5.1. Использование предмета (0x50) и превращения в руке
+
+Всё в `ContainerCapture.kt`: одна таблица «предмет × цель → причина» и обработчики, которые из неё
+берут.
+
+| Путь | Событие | Причина | Как |
+| --- | --- | --- | --- |
+| костная мука | `BlockFertilizeEvent` (игрок) | `BONEMEAL_USE` | трата из руки |
+| светокамень в якорь | `PlayerInteractEvent` по якорю | `ITEM_INTO_SINGLE_BLOCK` | трата |
+| око в рамку портала | `PlayerInteractEvent` по рамке | `EYE_INTO_FRAME` | трата |
+| соты на медь | `EntityChangeBlockEvent` (игрок) / `PlayerInteractEvent` | `WAX_APPLY` | трата |
+| яйцо призыва | `PlayerInteractEvent` | `SPAWN_EGG_USE` | трата |
+| огненный заряд, ключ хранилища, прочее | `PlayerInteractEvent` / `PlayerInteractEntityEvent` | `ITEM_USED` | метка на трату |
+| вёдра: вода, лава, снег, молоко, котёл | `PlayerBucketEmptyEvent` / `PlayerBucketFillEvent` | `BUCKET_EMPTY` / `BUCKET_FILL` | превращение; закрывает D10 |
+| рыба, аксолотль, головастик | `PlayerBucketEntityEvent` | `BUCKET_CAPTURE_MOB` | превращение |
+| выпуск из ведра | `PlayerBucketEmptyEvent` с ведром сущности | `BUCKET_RELEASE_MOB` | превращение |
+| бутылка из воды или улья | `PlayerInteractEvent` со стеклянной бутылкой | `BOTTLE_FILL` | превращение |
+| котёл: зелье, отмывка | `CauldronLevelChangeEvent` (причина `BOTTLE_*`, `*_WASH`) | `BOTTLE_FILL` / `CAULDRON_WASH` | превращение |
+| маяк | `PlayerChangeBeaconEffectEvent` | `BEACON_PAYMENT` | метка на трату слота маяка |
+| мешок из руки (D9) | ПКМ мешком в руке, `PlayerInteractEvent` | `BUNDLE_DUMP` | содержимое → ItemEntity заметкой по месту |
+| морковка или гриб на удочке сломались | `PlayerItemBreakEvent` | `TRANSMUTE_ON_BREAK` | превращение вместо `DURABILITY_BREAK` |
+| pick-block | `PlayerPickItemEvent` | `HOTBAR_SWAP` | метка |
+| ПКМ надеваемым | `PlayerSwapWithEquipmentSlotEvent` | `EQUIP_ARMOR` | метка |
+
+Раздатчик (`BlockMechanisms.kt:253`): вместо заметки «выбросит» — по предмету и блоку перед ним
+решить, что будет. Если выброс — как сейчас. Иначе строка `DISPENSER_BEHAVIOR` из слота раздатчика:
+в Void (костная мука, заряд, TNT), в `WorldBlock` (установка), в `EntitySlot` (седло, броня), или
+превращение прямо в слоте (вёдра, бутылки). Проверка — сравнение слота раздатчика на следующий тик,
+тем же `defer`, что и для блоков.
+
+### 5.2. Снаряды (0x70)
+
+| Путь | Событие | Причина | Держатели |
+| --- | --- | --- | --- |
+| яйцо, снежок, жемчуг, зелья, пузырёк опыта, заряд ветра | `PlayerLaunchProjectileEvent` | `THROWN_CONSUMED` | рука → Void |
+| око Края брошено | `PlayerInteractEvent` в воздух с оком | `THROWN_CONSUMED` | рука → Void |
+| око уцелело / разбилось | `ItemSpawnEvent` рядом с исчезнувшим оком | `EYE_SURVIVE` / — | Void → ItemEntity заметкой по месту |
+| стрела из лука | `EntityShootBowEvent`, `shouldConsumeItem` | `PROJ_SHOT` | слот стрелы → `EntitySlot(стрела, 0)` |
+| стрела без расхода (бесконечность, креатив) | то же, `shouldConsumeItem = false` | `PROJ_SHOT_PHANTOM` | Void → `EntitySlot`, `INFERRED` не нужен |
+| трезубец брошен | `PlayerLaunchProjectileEvent` | `PROJ_SHOT` | рука → `EntitySlot(трезубец, 0)` |
+| подбор стрелы или трезубца | `PlayerPickupArrowEvent` | `PROJ_PICKUP` | `EntitySlot` → слот игрока (намерение) |
+| возврат по «Верности» | `EntityRemoveEvent` трезубца + подбор | `TRIDENT_LOYALTY_RETURN` | `EntitySlot` → слот игрока |
+| исчезновение снаряда | `EntityRemoveEvent` (DESPAWN, DISCARD, HIT) | `PROJ_DESPAWN` / `PROJ_HIT_VOID` | `EntitySlot` → Void |
+| трезубец упал предметом | `ItemSpawnEvent` у исчезнувшего трезубца | `TRIDENT_DROP` | `EntitySlot` → ItemEntity |
+| зарядка арбалета | `EntityLoadCrossbowEvent` | `CROSSBOW_LOAD` | стрела → `Nested(арбалет)` + превращение арбалета |
+| выстрел из арбалета | `EntityShootBowEvent` с арбалетом | `CROSSBOW_SHOOT` | `Nested` → `EntitySlot(стрела)` |
+| фейерверк на элитрах | `PlayerElytraBoostEvent` | `FIREWORK_LAUNCH` | рука → Void |
+| фейерверк с земли | `PlayerLaunchProjectileEvent` | `FIREWORK_LAUNCH` | рука → Void |
+| снаряд из раздатчика | `BlockDispenseEvent` + `ProjectileLaunchEvent` | `DISPENSED_PROJECTILE` | слот раздатчика → `EntitySlot` или Void |
+
+Стрелы скелетов не записываются: их нельзя подобрать, это не предметы.
+
+### 5.3. Рождения из мира (0x30) и смерть мобов
+
+| Путь | Событие | Причина | Как |
+| --- | --- | --- | --- |
+| яйцо курицы, подарок кошки, раскопки нюхача, щиток броненосца и черепахи, рог козы | `EntityDropItemEvent` | `GIFT_DROP` | заметка по UUID предмета; закрывает D14 |
+| бросок лисы, тихони, пиглина, дельфина, жителя | `EntityDropItemEvent` у моба с предметом в руке или инвентаре | `MOB_THROW_ITEM` | `EntitySlot` → ItemEntity |
+| смерть моба: лут | `EntityDeathEvent` (не игрок), `getDrops` | `MOB_DROP` | заметки по месту смерти; закрывает D15 |
+| смерть моба: снаряжение | то же | `MOB_EQUIPMENT_DROP` / `MOB_EQUIPMENT_LOST` | `EntitySlot` → ItemEntity или Void |
+| содержимое лошади, осла, ламы | то же | `CONTAINER_BREAK_DROP` | `EntitySlot` → ItemEntity |
+| превращение моба | `EntityTransformEvent` | `MOB_TRANSFORM` | `EntitySlot(старый)` → `EntitySlot(новый)` |
+| снаряжение при спавне | `CreatureSpawnEvent` | `MOB_SPAWN_EQUIPMENT` | Void → `EntitySlot`, без атрибуции |
+| подбор в инвентарь моба (житель, пиглин, тихоня) | `EntityPickupItemEvent` | `ITEM_PICKUP_BY_MOB_INV` | вместо общего `ITEM_PICKUP_BY_MOB` для мобов с инвентарём |
+| посадка семян жителем | `EntityChangeBlockEvent` (житель) | `BLOCK_PLACE` | `EntitySlot` → `WorldBlock` |
+| стрижка | `PlayerShearEntityEvent`, `BlockShearEntityEvent`, `PlayerShearBlockEvent` (тыква) | `SHEARING_DROP` | заметки по месту |
+| рыбалка | `PlayerFishEvent` (`CAUGHT_FISH`, `CAUGHT_ENTITY` с предметом) | `FISHING_CATCH` | заметка по UUID пойманного |
+| бартер | `PiglinBarterEvent` | `PIGLIN_BARTER` | золото из слота пиглина → Void, итог заметками |
+| торговля | окно жителя как станция: `shiftOf(MerchantInventory)` | `TRADE_PAYMENT` / `TRADE_RESULT` | превращение по клику по результату |
+| хранилище, испытательный спавнер | `BlockDispenseLootEvent` | `VAULT_REWARD` / `TRIAL_SPAWNER_REWARD` | заметки по месту |
+| ягоды, светящиеся лозы | `PlayerHarvestBlockEvent` | `BLOCK_INTERACT_DROP` | заметки |
+| кисть по подозрительному песку и гравию | `BlockDropItemEvent` без ломания | `BRUSHABLE_REVEAL` | заметка |
+| награда за достижение | `PlayerAdvancementDoneEvent` | `ADVANCEMENT_REWARD` | метка на приход |
+| серный куб отдал предмет | `EntityDropItemEvent` | `MOB_THROW_ITEM` | как бросок моба |
+| предмет сменил измерение | `EntityRemoveEvent` (`CHANGED_DIMENSION`) + `ItemSpawnEvent` | `ITEM_DIMENSION_CHANGE` | сначала проверить, меняется ли UUID; если нет — ничего не нужно |
+
+### 5.4. Использование по сущности (0x60), сущности-держатели и «полки»
+
+| Путь | Событие | Причина | Держатели |
+| --- | --- | --- | --- |
+| кормление, размножение | `PlayerInteractEntityEvent` / `EntityBreedEvent` | `FEED_MOB` | рука → Void |
+| приручение | `PlayerInteractEntityEvent` | `TAME_MOB` | рука → Void |
+| краситель на овцу, ошейник | `EntityDyeEvent` | `DYE_MOB` | рука → Void |
+| бирка | `PlayerNameEntityEvent` | `NAME_TAG` | рука → Void |
+| поводок | `PlayerLeashEntityEvent` / `EntityUnleashEvent` | `LEASH_ATTACH` / `LEASH_DROP` | рука → Void / Void → ItemEntity |
+| седло, конская броня, ковёр, сбруя гаста, броня волка | `PlayerInteractEntityEvent` + `EntityEquipmentChangedEvent` | `EQUIP_MOB` | рука → `EntitySlot(моб)` |
+| снятие ножницами седла и сбруи | `PlayerShearEntityEvent` | `SHEAR_MOB` | `EntitySlot` → ItemEntity |
+| предмет тихоне, золото пиглину, серному кубу | `PlayerInteractEntityEvent` / `SulfurCubeSwallowItemEvent` | `GIVE_ITEM_TO_MOB` | рука → `EntitySlot` |
+| стойка для брони | `PlayerArmorStandManipulateEvent` | `ARMOR_STAND_SWAP` | рука ⇄ `EntitySlot(стойка, слот)` |
+| рамка: положить, забрать | `PlayerItemFrameChangeEvent` | `PLACE_ENTITY_ITEM` / `CONTAINER_REMOVE` | рука ⇄ `EntitySlot(рамка, 0)` |
+| установка рамки, картины, стойки, лодки, вагонетки, кристалла | `HangingPlaceEvent`, `EntityPlaceEvent` | `PLACE_ENTITY_ITEM` | рука → `EntitySlot(сущность, 0)` |
+| слом этих сущностей | `HangingBreakEvent`, `EntityBreakEvent`, `VehicleDestroyEvent`, смерть стойки | `ENTITY_BREAK_DROP` | `EntitySlot(сущность, *)` → ItemEntity; содержимое сундука — `CONTAINER_BREAK_DROP` |
+| кафедра | `PlayerInsertLecternBookEvent` / `PlayerTakeLecternBookEvent` | `BOOK_ONTO_LECTERN` / `CONTAINER_REMOVE` | рука ⇄ `Container` |
+| цветочный горшок | `PlayerFlowerPotManipulateEvent` | `ITEM_INTO_SINGLE_BLOCK` | рука ⇄ `WorldBlock` |
+| проигрыватель, резная книжная полка, полка, декоративная ваза, костёр | только `PlayerInteractEvent` | `RECORD_INTO_JUKEBOX` / `ITEM_INTO_SINGLE_BLOCK` / `CONTAINER_REMOVE` | рука ⇄ `Container(блок, слот)` |
+
+Для последней строки событий с предметом и слотом нет. Новый механизм: при `PlayerInteractEvent` по
+такому блоку снять его содержимое, на следующий тик сравнить, и разницу записать как `Container`,
+а сторону игрока — намерением с той же причиной. Полка меняется местами со всем хотбаром — та же
+разница, только слотов три.
+
+### 5.5. Команды (0xF0) и творческий режим
+
+| Путь | Событие | Причина | Как |
+| --- | --- | --- | --- |
+| `/give` | `ServerCommandEvent`, `PlayerCommandPreprocessEvent`, `RemoteServerCommandEvent` | `CMD_GIVE` | метка на приход всем онлайн-игрокам на следующий тик; поддельный предмет от `/give` не пишется |
+| `/clear` | то же | `CMD_CLEAR` | метка на убыль |
+| `/item replace entity`, `/item modify`, `/enchant` | то же | `CMD_ITEM_REPLACE` / `CMD_ITEM_MODIFY` / `CMD_ENCHANT` | метки |
+| `/item replace block`, `/loot insert`, `/data modify block` | то же, координаты из аргументов | `CMD_ITEM_REPLACE` / `CMD_LOOT` / `CMD_DATA_MERGE` | сравнение контейнера до и после, как для полок в 5.4 |
+| `/summon item`, `/loot spawn` | то же + `ItemSpawnEvent` | `CMD_SUMMON_ITEMS` / `CMD_LOOT` | заметка по месту |
+| `/clone`, `/fill`, `/setblock` с контейнерами | то же | `CMD_CLONE_*` / `CMD_SETBLOCK_FILL_*` | только счётчик непокрытого: разбор областей не окупается |
+| творческий инвентарь | `InventoryCreativeEvent` | `CREATIVE_SET` | метка; выброс из творческого меню — заметка по месту игрока |
+| средний клик в творческом | то же, `ClickType.MIDDLE` | `CREATIVE_CLONE` | метка |
+| pick-block в творческом | `PlayerPickItemEvent` | `CREATIVE_PICK` | метка |
+
+### 5.6. Остатки
+
+- **D8:** первое присвоение имени мешку не должно давать `−1/+1`.
+- **D11:** `SignChangeEvent` → строка блочной плоскости с новой нагрузкой таблички.
+- **D13:** строка «сверено до конца» печатается и тогда, когда на последней странице только свежие
+  позиции (`PfauProtectPlugin.kt:303`).
+- Документы: SPEC-v4 §14 и SPEC-v2:64 — отсылка сюда.
+
+---
+
+## 5. Что не закрывается
+
+- **Медный голем** переносит предметы без единого события. Его ходы видны только как необъяснённые
+  убыль и приход у сундуков — сверка контейнеров это покажет. Опроса ради него не будет.
+- **Износ** — не движение предмета (SPEC-v4:207–216), строки нет. `TRANSMUTE_ON_BREAK` (морковка
+  на удочке → удочка) пишется как превращение по `PlayerItemBreakEvent` — в 5.1.
+- **Правки инвентаря офлайн** (`INVENTORY_LOAD`) остаются за сверкой при входе, строк нет.
+- **Плагины**, которые меняют инвентари напрямую, — непокрытое по определению.
+
+---
+
+## 6. Проверка
+
+- Каждая фаза — JUnit в существующих наборах: `IntentTest` (метки и превращения), `WorldItemsTest` и
+  `SpawnOriginsTest` (заметки), `MechanismTest` (раздатчик), `ForeignSlotTest` (сравнение блока до и
+  после).
+- TESTING-v5 пишется перед первым живым прогоном: по пункту на строку таблиц §4, цель — пустой счётчик
+  непокрытого, кроме заведомых дыр §5.

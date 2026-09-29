@@ -84,6 +84,9 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 - SPEC-v2 covers item entities and player inventory. SPEC-v3 covers the block plane, attribution and plane sync.
   SPEC-v4 covers crafting and stations. Later specs override earlier ones, and SPEC-v3 supersedes BLOCKS-notes.
   PLAN-v1-iteration-1 is outdated.
+- SPEC-v5 is full coverage: every cause class the earlier phases deferred (0x30 rest, 0x50, 0x60, 0x70,
+  0xF0, creative), what they missed, and the phase order 5.1–5.6. It overrides the "deferred" lists of
+  SPEC-v2 and SPEC-v4. Projectiles are `EntitySlot(uuid, 0)`, not a new holder type.
 - SPEC-v4 §15 records how phase 4 was actually built and overrides §3–§13. Window slots are booked to
   their real owner: the crafting grid to the player (`EntitySlot`), a station to its block (`Container`).
   `MenuSlot` is left only for ownerless GUIs.
