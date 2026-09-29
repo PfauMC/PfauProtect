@@ -371,6 +371,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         toTs: Long,
         reverse: Boolean = false,
         limit: Int = 100,
+        // The scan reads whole chunks. A caller that wants less than a chunk has to say so here and
+        // not afterwards: filtered after the limit, the newest rows of the rest of the chunk crowd the
+        // asked-for positions out of the page.
+        within: ((Holder) -> Boolean)? = null,
     ): EntryPage {
         val chunkX = (minOf(minX, maxX) shr 4)..(maxOf(minX, maxX) shr 4)
         val chunkZ = (minOf(minZ, maxZ) shr 4)..(maxOf(minZ, maxZ) shr 4)
@@ -399,7 +403,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                             continue
                         }
                         val page = scan(prefix, fromTs, toTs, reverse, room)
-                        found += page.entries
+                        found += if (within == null) page.entries else page.entries.filter { within(it.holder) }
                         complete = complete && page.complete
                     }
                 }

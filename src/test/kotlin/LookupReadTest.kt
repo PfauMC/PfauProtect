@@ -179,33 +179,40 @@ class LookupReadTest {
 
     // Keys inside a chunk sort by position before time, so a chunk read up to a limit hands back one
     // corner of itself. The asked-for position was in the crater and not in that corner, and the
-    // answer was silence about it.
+    // answer was silence about it. It is also older than everything in the corner, so a box applied
+    // after the newest rows of the whole chunk were cut would find nothing left of it.
     @Test
     fun `a busy corner of the chunk does not hide the position that was asked about`() {
         val corner = WorldBlock(world, 15, 64, -15)
         val here = WorldBlock(world, 10, 64, -3)
+        shared.submit(Transfer(Cause.BLK_TNT, here, Void, stone, null, 1, T0))
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0)))
         repeat(40) { i ->
-            shared.submit(Transfer(Cause.BLK_TNT, corner, Void, stone, null, 1, T0 + i))
+            shared.submit(Transfer(Cause.BLK_TNT, corner, Void, stone, null, 1, T0 + 1 + i))
+            log.submit(listOf(BlockChange(15, 64, -15, STONE, AIR, Cause.BLK_TNT, T0 + 1 + i)))
         }
-        shared.submit(Transfer(Cause.BLK_TNT, here, Void, stone, null, 1, T0 + 100))
         shared.drain()
+        log.drain()
 
-        val lines = said(LookupQuery(radius = 1, limit = 1))
+        // Two rows asked for, eight times that read: far fewer than the corner holds.
+        val lines = said(LookupQuery(radius = 1, limit = 2)).filter { it.contains("block 10 64 -3") }
 
-        assertTrue(lines.any { it.contains("block 10 64 -3") }, "$lines")
+        assertTrue(lines.any { !it.contains("->") }, "the item plane lost it: $lines")
+        assertTrue(lines.any { it.contains("->") }, "the block plane lost it: $lines")
     }
 
     // A read that stopped early answers about what it saw, not about what is there. Saying "no
     // entries" for a position it never reached clears somebody of what the rows behind the cut say.
     @Test
     fun `an empty answer says so when the read stopped early`() {
-        val elsewhereInTheChunk = WorldBlock(world, 15, 64, -15)
+        val nextDoor = WorldBlock(world, 11, 64, -3)
         repeat(40) { i ->
-            shared.submit(Transfer(Cause.BLK_TNT, elsewhereInTheChunk, Void, stone, null, 1, T0 + i))
+            shared.submit(Transfer(Cause.BLK_TNT, nextDoor, Void, stone, null, 1, T0 + i))
         }
         shared.drain()
 
-        val lines = said(LookupQuery(radius = 1, limit = 1))
+        // Forty rows inside the box, more than one row's worth of read, and none of them the kind asked for.
+        val lines = said(LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE)))
         assertTrue(lines.any { it.contains("stopped before the whole area") }, "$lines")
         assertTrue(lines.none { it.startsWith("No ledger entries") }, "$lines")
     }

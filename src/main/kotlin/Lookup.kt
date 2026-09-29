@@ -445,13 +445,13 @@ class Lookups(
         } else {
             val chunkX = ((target.x - radius) shr 4)..((target.x + radius) shr 4)
             val chunkZ = ((target.z - radius) shr 4)..((target.z + radius) shr 4)
+            val inBox = boxAround(target, radius)
             chunkX.flatMap { cx -> chunkZ.map { cz -> cx to cz } }
-                .flatMap { (cx, cz) -> log.inChunk(cx, cz, fromTs, Long.MAX_VALUE, limit = fetch, reverse = true) }
-                .filter { row ->
-                    row.x in (target.x - radius)..(target.x + radius) &&
-                        row.y in (target.y - radius)..(target.y + radius) &&
-                        row.z in (target.z - radius)..(target.z + radius)
+                .flatMap { (cx, cz) ->
+                    log.inChunk(cx, cz, fromTs, Long.MAX_VALUE, limit = fetch, reverse = true) { inBox(it.x, it.y, it.z) }
                 }
+                // Each chunk came back newest first; together they have to be again.
+                .sortedByDescending { it.timestamp }
         }
         val included = query.included.map(::normalizeItem).toSet()
         val excluded = query.excluded.map(::normalizeItem).toSet()
@@ -487,7 +487,8 @@ class Lookups(
                 pages.all { it.complete },
             )
         }
-        val region = ledger.regionPage(
+        val inBox = boxAround(target, radius)
+        return ledger.regionPage(
             world = target.world,
             minX = target.x - radius,
             minZ = target.z - radius,
@@ -497,25 +498,23 @@ class Lookups(
             toTs = Long.MAX_VALUE,
             reverse = true,
             limit = fetch,
-        )
-        // The scan reads whole chunks, so it comes back with rows the radius does not cover. The block
-        // plane filters itself to the box, and two planes disagreeing about what one radius means
-        // inside one answer reads as rows appearing and vanishing for no reason.
-        val inBox = { x: Int, y: Int, z: Int ->
-            x in (target.x - radius)..(target.x + radius) &&
-                y in (target.y - radius)..(target.y + radius) &&
-                z in (target.z - radius)..(target.z + radius)
-        }
-        return EntryPage(
-            region.entries.filter { entry ->
-                when (val holder = entry.holder) {
+            // The scan reads whole chunks, so it comes back with rows the radius does not cover. The
+            // block plane keeps to the box, and two planes disagreeing about what one radius means
+            // inside one answer reads as rows appearing and vanishing for no reason.
+            within = { holder ->
+                when (holder) {
                     is Container -> inBox(holder.x, holder.y, holder.z)
                     is WorldBlock -> inBox(holder.x, holder.y, holder.z)
                     else -> true
                 }
             },
-            region.complete,
         )
+    }
+
+    private fun boxAround(target: LookupTarget, radius: Int) = { x: Int, y: Int, z: Int ->
+        x in (target.x - radius)..(target.x + radius) &&
+            y in (target.y - radius)..(target.y + radius) &&
+            z in (target.z - radius)..(target.z + radius)
     }
 
     // Keeps one row more than asked for: the caller shows `limit` of them and needs the extra one to
