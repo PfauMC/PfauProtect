@@ -70,6 +70,13 @@ import org.bukkit.event.block.TNTPrimeEvent
 import org.bukkit.event.block.SpongeAbsorbEvent
 import com.destroystokyo.paper.event.block.AnvilDamagedEvent
 import io.papermc.paper.event.block.DragonEggFormEvent
+import io.papermc.paper.event.entity.EntityConstructEvent
+import org.bukkit.block.Sign
+import org.bukkit.block.CreatureSpawner
+import org.bukkit.block.TrialSpawner
+import org.bukkit.entity.LightningStrike
+import org.bukkit.entity.Vehicle
+import net.minecraft.world.level.block.ChestBlock
 import org.bukkit.event.block.Action
 import org.bukkit.event.block.BlockDispenseEvent
 import org.bukkit.event.block.BlockBurnEvent
@@ -642,6 +649,9 @@ private fun selfRevertingOf(name: String): Set<String> = when {
     name.endsWith("redstone_ore") -> setOf("lit")
     name == "minecraft:vault" -> setOf("vault_state")
     name == "minecraft:big_dripleaf" -> setOf("tilt")
+    // A brush stroke dusts the block a step and the block settles back if the brushing stops; only
+    // the brushing that finishes changes what stands there, and that changes the block's name.
+    name.startsWith("minecraft:suspicious_") -> setOf("dusted")
     else -> emptySet()
 }
 
@@ -683,14 +693,14 @@ private val PORTAL_FACES = listOf(
  * to that row. The journal cannot answer that in time: a submitted row is still queued for its writer.
  */
 class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
-    private class Touch(val at: Long, @Volatile var cause: Cause) {
+    private class Touch(val at: Long, @Volatile var cause: Cause, val by: Attributed?) {
         @Volatile var filed = false
     }
 
     private val pending = ConcurrentHashMap<WorldBlock, Touch>()
 
     /** True when this touch is the one to read the position back; a second one in the tick is not. */
-    fun touch(at: WorldBlock, cause: Cause = Cause.BLK_PLAYER_USE): Boolean {
+    fun touch(at: WorldBlock, cause: Cause = Cause.BLK_PLAYER_USE, by: Attributed? = null): Boolean {
         val taking = now()
         val held = pending[at]
         if (held != null && taking - held.at < TOUCH_STALE_MILLIS) {
@@ -698,9 +708,13 @@ class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
             if (cause != Cause.BLK_PLAYER_USE) held.cause = cause
             return false
         }
-        pending[at] = Touch(taking, cause)
+        pending[at] = Touch(taking, cause, by)
         return true
     }
+
+    /** Whoever touched the position and is still waiting for its read: a click the block answers with a
+     *  change of its own, like a dragon egg leaving. */
+    fun toucher(at: WorldBlock): Attributed? = pending[at]?.by
 
     fun filed(world: UUID, changes: List<BlockChange>) {
         if (pending.isEmpty()) return
@@ -753,6 +767,15 @@ class BlockDestructionListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onEntityExplode(event: EntityExplodeEvent) {
+        // A wind charge or a mace's burst opens doors and gates and puts out candles without breaking
+        // anything, and nothing else says so.
+        if (event.explosionResult == ExplosionResult.TRIGGER_BLOCK) {
+            val touched = event.blockList().flatMap { listOfNotNull(it, otherHalfOf(it)) }.distinct()
+            // A mace's burst is raised with the player who swung it as the source.
+            val source = event.entity
+            val by = (source as? Player)?.let { Attributed(it.uniqueId, Confidence.FACT) } ?: whoSetOff(source)
+            return readBack(touched, by, explosionCause(source.type))
+        }
         if (event.explosionResult !in DESTROYING) return
         val source = event.entity
         explode(event.blockList(), explosionCause(source.type), by = whoSetOff(source), extra = emptyList())
@@ -901,6 +924,9 @@ class BlockDestructionListener(
     fun onFromTo(event: BlockFromToEvent) {
         val to = event.toBlock
         val from = event.block
+        // A dragon egg struck or used jumps elsewhere, and this is its only announcement. It is a move:
+        // the egg leaves one position and arrives in the other, and the item it stands for goes along.
+        if (from.type == Material.DRAGON_EGG) return eggJumped(from, to)
         val by = attribution.carriedTo(positionOf(to), from.blockData.asString)
         if (!liquidDestroys((to as CraftBlock).blockState)) return
         defer(to, to.blockData, Cause.BLK_LIQUID_DESTROY, by)
@@ -918,10 +944,15 @@ class BlockDestructionListener(
         if (entity is Player) {
             val after = event.blockData.asString
             if (!handMade(block.blockData.asString, after)) return
-            return changed(block, block.blockData, after, Cause.BLK_PLAYER_USE, Attributed(entity.uniqueId, Confidence.FACT))
+            val by = Attributed(entity.uniqueId, Confidence.FACT)
+            // A double copper chest waxed or scraped on one half reshapes the other with no event.
+            chestPartnerOf(block)?.let { readBack(listOf(it), by) }
+            return changed(block, block.blockData, after, Cause.BLK_PLAYER_USE, by)
         }
+        // A burning arrow into dynamite primes it next, and the priming files the block on the shooter.
+        if (block.type == Material.TNT) return
         val cause = entityBlockCause(entity.type) ?: return
-        changed(block, block.blockData, event.blockData.asString, cause, entities.summonerOf(entity.uniqueId))
+        changed(block, block.blockData, event.blockData.asString, cause, behindChange(entity))
     }
 
     /**
@@ -945,25 +976,50 @@ class BlockDestructionListener(
     private fun readBack(blocks: List<Block>, by: Attributed?, cause: Cause = Cause.BLK_PLAYER_USE) {
         if (!plugin.isEnabled) return
         val touched = blocks
-            .filter { touches.touch(positionOf(it), cause) }
+            .filter { touches.touch(positionOf(it), cause, by) }
             // The block entity goes into the row as it was: a lectern, a jukebox or a pot put back by a
             // rollback needs what it held, not only its shape.
             .map { Site(positionOf(it), it, it.blockData, it.blockData.asString, payloadAt(it)) }
         val first = touched.firstOrNull()?.block ?: return
+        val marks = touched.associate { it.at to markOf(it.block) }
         val timestamp = System.currentTimeMillis()
         plugin.server.regionScheduler.execute(plugin, first.world, first.x shr 4, first.z shr 4) {
+            val log = logs.get(first.world.uid) ?: return@execute
+            val retouched = ArrayList<BlockChange>()
             val changed = touched.mapNotNull { site ->
                 val filedAs = touches.take(site.at) ?: return@mapNotNull null
                 val now = site.block.blockData.asString
-                if (!handMade(site.before.asString, now)) return@mapNotNull null
+                if (!handMade(site.before.asString, now)) {
+                    // The block is the same and only what its entity holds changed: a sign dyed or
+                    // waxed, a spawner given an egg.
+                    val was = marks[site.at]
+                    if (was != null && !was.contentEquals(markOf(site.block) ?: was)) {
+                        retouched += BlockChange(
+                            site.at.x, site.at.y, site.at.z, now, now, filedAs, timestamp,
+                            confidence = by?.confidence ?: Confidence.FACT, actor = by?.actor,
+                            payloadBefore = site.payload, payloadAfter = payloadAt(site.block),
+                        )
+                    }
+                    return@mapNotNull null
+                }
                 filedAs to Site(site.at, site.block, site.before, now, site.payload)
             }
-            if (changed.isEmpty()) return@execute
-            val log = logs.get(first.world.uid) ?: return@execute
+            if (retouched.isNotEmpty()) log.submit(retouched)
             for ((filedAs, sites) in changed.groupBy({ it.first }, { it.second })) {
                 file(log, sites, filedAs, by, timestamp)
             }
         }
+    }
+
+    // What a hand can change in a block entity without changing the block: the text side of a sign,
+    // and what a spawner spawns. A spawner's whole tag also counts down its timer every tick, so for
+    // one of those only the kind it spawns is compared.
+    private fun markOf(block: Block): ByteArray? = when (val state = block.getState(false)) {
+        is Sign -> payloadAt(block)
+        is CreatureSpawner -> (state.spawnedType?.name ?: "").toByteArray()
+        is TrialSpawner -> listOf(state.normalConfiguration.spawnedType, state.ominousConfiguration.spawnedType)
+            .joinToString { it?.name ?: "" }.toByteArray()
+        else -> null
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -1123,6 +1179,28 @@ class BlockDestructionListener(
     fun onAnvilWorn(event: AnvilDamagedEvent) {
         val block = event.inventory.location?.block ?: return
         readBack(listOf(block), Attributed(event.view.player.uniqueId, Confidence.FACT))
+    }
+
+    /**
+     * A golem or a wither built: the pumpkin or the last skull completes the pattern and the server
+     * clears it with no physics and no event but this one, raised just before. Whoever put the last
+     * block down is who the note over it names; a copper golem leaves a copper chest behind.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onConstruct(event: EntityConstructEvent) {
+        val blocks = event.blocks
+        if (blocks.isEmpty()) return
+        val by = blocks.firstNotNullOfOrNull { attribution.placerAt(positionOf(it), it.blockData.asString) }
+        readBack(blocks, by, Cause.BLK_FORM)
+    }
+
+    private fun eggJumped(from: Block, to: Block) {
+        val log = logs.get(from.world.uid) ?: return
+        val egg = from.blockData
+        val by = touches.toucher(positionOf(from))
+        val left = Site(positionOf(from), from, egg, leftBehind(egg).asString, went = positionOf(to))
+        val arrived = Site(positionOf(to), to, to.blockData, egg.asString, payload = null)
+        file(log, listOf(left), Cause.BLK_PLAYER_USE, by, carried = listOf(arrived), expectsDrops = false)
     }
 
     // The egg the dragon leaves on its podium, placed right after the event.
@@ -1525,6 +1603,24 @@ class BlockDestructionListener(
      */
     private fun placerOf(at: WorldBlock, standing: String): Attributed? =
         attribution.placerAt(at, standing) ?: attribution.journalPlacerAt(at, standing)
+
+    // Who stands behind an entity that changed a block: the shooter of an arrow, a trident or a thrown
+    // potion, whoever steers a boat, the player a trident's lightning answers to, and otherwise whoever
+    // brought the entity into the world.
+    private fun behindChange(entity: Entity): Attributed? {
+        litBy(entity)?.let { return Attributed(it.uniqueId, Confidence.FACT) }
+        (entity as? LightningStrike)?.causingPlayer?.let { return Attributed(it.uniqueId, Confidence.FACT) }
+        (entity as? Vehicle)?.passengers?.firstOrNull { it is Player }?.let { return Attributed(it.uniqueId, Confidence.FACT) }
+        return entities.summonerOf(firedBy(entity).uniqueId)
+    }
+
+    private fun chestPartnerOf(block: Block): Block? {
+        val chest = block.blockData as? org.bukkit.block.data.type.Chest ?: return null
+        if (chest.type == org.bukkit.block.data.type.Chest.Type.SINGLE) return null
+        val craft = block as CraftBlock
+        val at = ChestBlock.getConnectedBlockPos(craft.position, craft.blockState)
+        return block.world.getBlockAt(at.x, at.y, at.z)
+    }
 
     private fun whoSetOff(source: Entity): Attributed? {
         litBy(source)?.let { return Attributed(it.uniqueId, Confidence.FACT) }

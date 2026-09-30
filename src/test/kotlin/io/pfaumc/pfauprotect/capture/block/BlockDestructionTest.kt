@@ -1481,6 +1481,8 @@ class BlockDestructionTest {
         assertFalse(handMade("minecraft:red_bed[facing=east,occupied=false,part=head]",
             "minecraft:red_bed[facing=east,occupied=true,part=head]"))
         assertFalse(handMade("minecraft:redstone_ore[lit=false]", "minecraft:redstone_ore[lit=true]"))
+        assertFalse(handMade("minecraft:suspicious_sand[dusted=0]", "minecraft:suspicious_sand[dusted=2]"))
+        assertTrue(handMade("minecraft:suspicious_sand[dusted=3]", "minecraft:sand"))
         assertFalse(handMade(TORCH, TORCH))
     }
 
@@ -1492,8 +1494,10 @@ class BlockDestructionTest {
         val touches = HandTouches { clock }
         val at = WorldBlock(world, 1, 64, 1)
 
-        assertTrue(touches.touch(at))
+        val touchedBy = Attributed(alice, Confidence.FACT)
+        assertTrue(touches.touch(at, by = touchedBy))
         assertFalse(touches.touch(at))
+        assertEquals(touchedBy, touches.toucher(at))
         assertEquals(Cause.BLK_PLAYER_USE, touches.take(at))
 
         // The click comes before the bucket it carries, and the bucket's cause is the one kept.
