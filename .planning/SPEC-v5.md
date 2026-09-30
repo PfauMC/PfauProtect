@@ -181,7 +181,7 @@
 | установка рамки, картины, стойки, лодки, вагонетки, кристалла | `HangingPlaceEvent`, `EntityPlaceEvent` | `PLACE_ENTITY_ITEM` | рука → `EntitySlot(сущность, 0)` |
 | слом этих сущностей | `HangingBreakEvent`, `EntityBreakEvent`, `VehicleDestroyEvent`, смерть стойки | `ENTITY_BREAK_DROP` | `EntitySlot(сущность, *)` → ItemEntity; содержимое сундука — `CONTAINER_BREAK_DROP` |
 | кафедра | `PlayerInsertLecternBookEvent` / `PlayerTakeLecternBookEvent` | `BOOK_ONTO_LECTERN` / `CONTAINER_REMOVE` | рука ⇄ `Container` |
-| цветочный горшок | `PlayerFlowerPotManipulateEvent` | `ITEM_INTO_SINGLE_BLOCK` | рука ⇄ `WorldBlock` |
+| цветочный горшок | `PlayerFlowerPotManipulateEvent` | `ITEM_INTO_SINGLE_BLOCK` / `CONTAINER_REMOVE` | рука ⇄ Void: растение в горшке — отдельный блок |
 | проигрыватель, резная книжная полка, полка, узорчатая ваза, костёр | только `PlayerInteractEvent` | `RECORD_INTO_JUKEBOX` / `ITEM_INTO_SINGLE_BLOCK` / `CONTAINER_REMOVE` | рука ⇄ `Container(блок, слот)` |
 
 Для последней строки событий с предметом и слотом нет. Новый механизм: при `PlayerInteractEvent` по
