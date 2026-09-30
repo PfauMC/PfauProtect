@@ -381,6 +381,27 @@ class StorageTest {
         }
     }
 
+    // A region thread sets a note and reads it back within one event, long before the writer has put
+    // it in the database; a read in between has to see it, and a clear the same.
+    @Test
+    fun `a note is read back at once and written by the writer`() {
+        val world = UUID.randomUUID()
+        val here = WorldBlock(world, 1, 2, 3)
+        val there = WorldBlock(world, 4, 5, 6)
+        log.setFormAt(world, 4, 5, 6, pickaxe)
+        log.drain()
+
+        log.setFormAt(world, 1, 2, 3, pickaxe)
+        assertArrayEquals(pickaxe, log.formAt(world, 1, 2, 3))
+        assertEquals(setOf(here, there), log.formsAt(listOf(here, there)).keys)
+        log.clearFormsAt(listOf(there))
+        assertEquals(setOf(here), log.formsAt(listOf(here, there)).keys)
+
+        log.drain()
+        assertArrayEquals(pickaxe, log.formAt(world, 1, 2, 3))
+        assertNull(log.formAt(world, 4, 5, 6))
+    }
+
     // A shulker loses its mark when it is broken, so the name has to outlive the box standing there,
     // restarts included.
     @Test

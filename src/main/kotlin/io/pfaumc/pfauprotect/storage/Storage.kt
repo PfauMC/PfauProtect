@@ -90,6 +90,10 @@ data class BlockPostingsPage(val positions: List<BlockPostings>, val reachedEnd:
 // and names the wrong menu. The record version cannot say so — an ordinary entry is pinned to a
 // header byte of 0x00 — which leaves this the only number that can refuse such a database.
 private const val SCHEMA_VERSION = 4L
+
+// Which of the two note families a pending note belongs to.
+private const val FORMS = 0
+private const val OWNERS = 1
 private const val MAX_REGION_CHUNKS = 1024
 
 // What one region query may hold in memory at once. Reached only by a query over an area whose
@@ -208,6 +212,25 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private val blockPayloadsCf: ColumnFamilyHandle
 
     private val queue = LinkedBlockingQueue<List<Transfer>>()
+
+    // The notes a block position carries — the form it was placed from, the name its contents are
+    // filed under — are set and cleared from region threads, inside the events that change them. A
+    // region thread may not wait on the database: every write queues behind the writer's own, and the
+    // writer fsyncs its log once a second, which on a slow disk held a piston clock's region for five
+    // seconds at a time. So a note goes into this overlay at once, where every read looks first, and on
+    // to the writer, which takes it off the overlay once it is in the database. A null value is a note
+    // cleared.
+    private class NoteKey(val family: Int, val world: UUID, val x: Int, val y: Int, val z: Int) {
+        override fun equals(other: Any?) = other is NoteKey && family == other.family && world == other.world &&
+            x == other.x && y == other.y && z == other.z
+
+        override fun hashCode() = ((((family * 31 + world.hashCode()) * 31 + x) * 31 + y) * 31) + z
+    }
+
+    private class NoteWrite(val key: NoteKey, val value: ByteArray?)
+
+    private val pendingNotes = ConcurrentHashMap<NoteKey, NoteWrite>()
+    private val noteQueue = LinkedBlockingQueue<NoteWrite>()
     private val submitted = AtomicLong()
     private val written = AtomicLong()
 
@@ -599,63 +622,73 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     }
 
     override fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID? =
-        note(nestedOwnersCf, world, x, y, z)?.let { ByteReader(it).uuid() }
+        note(OWNERS, world, x, y, z)?.let { ByteReader(it).uuid() }
 
     override fun setOwnerAt(world: UUID, x: Int, y: Int, z: Int, owner: UUID) =
-        putNote(nestedOwnersCf, world, x, y, z, ByteWriter(16).uuid(owner).toByteArray())
+        putNote(OWNERS, world, x, y, z, ByteWriter(16).uuid(owner).toByteArray())
 
-    override fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int) =
-        clearNote(nestedOwnersCf, world, x, y, z)
+    override fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int) = putNote(OWNERS, world, x, y, z, null)
 
-    override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? =
-        note(placedFormsCf, world, x, y, z)
+    override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = note(FORMS, world, x, y, z)
 
-    override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) =
-        putNote(placedFormsCf, world, x, y, z, form)
+    override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) = putNote(FORMS, world, x, y, z, form)
 
-    override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) =
-        clearNote(placedFormsCf, world, x, y, z)
+    override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) = putNote(FORMS, world, x, y, z, null)
 
     // A position with no note comes back as a null in its own place, so the answers stay aligned with
     // the positions asked about and only the ones holding something are named.
     override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = dbLock.read {
         if (closed || positions.isEmpty()) return emptyMap()
-        val keys = positions.map { blockKey(it.world, it.x, it.y, it.z) }
-        val values = db.multiGetAsList(List(keys.size) { placedFormsCf }, keys)
         val forms = HashMap<WorldBlock, ByteArray>(positions.size)
-        positions.forEachIndexed { i, at -> values[i]?.let { forms[at] = it } }
+        val unsettled = positions.filter { at ->
+            val pending = pendingNotes[NoteKey(FORMS, at.world, at.x, at.y, at.z)] ?: return@filter true
+            pending.value?.let { forms[at] = it }
+            false
+        }
+        if (unsettled.isEmpty()) return forms
+        val keys = unsettled.map { blockKey(it.world, it.x, it.y, it.z) }
+        val values = db.multiGetAsList(List(keys.size) { placedFormsCf }, keys)
+        unsettled.forEachIndexed { i, at -> values[i]?.let { forms[at] = it } }
         forms
     }
 
     override fun clearFormsAt(positions: List<WorldBlock>) {
-        dbLock.read {
-            if (closed || positions.isEmpty()) return
-            WriteBatch().use { batch ->
-                for (at in positions) batch.delete(placedFormsCf, blockKey(at.world, at.x, at.y, at.z))
-                db.write(writeOptions, batch)
-            }
-        }
+        for (at in positions) putNote(FORMS, at.world, at.x, at.y, at.z, null)
     }
 
     // Both tables hold a note about what a block position is carrying while it stands there, so they
     // are read, written and cleared the same way and differ only in which family they land in.
-    private fun note(cf: ColumnFamilyHandle, world: UUID, x: Int, y: Int, z: Int): ByteArray? = dbLock.read {
-        if (closed) return null
-        db.get(cf, blockKey(world, x, y, z))
-    }
-
-    private fun putNote(cf: ColumnFamilyHandle, world: UUID, x: Int, y: Int, z: Int, value: ByteArray) {
-        dbLock.read {
-            if (closed) return
-            db.put(cf, blockKey(world, x, y, z), value)
+    private fun note(family: Int, world: UUID, x: Int, y: Int, z: Int): ByteArray? {
+        pendingNotes[NoteKey(family, world, x, y, z)]?.let { return it.value }
+        return dbLock.read {
+            if (closed) return null
+            db.get(familyOf(family), blockKey(world, x, y, z))
         }
     }
 
-    private fun clearNote(cf: ColumnFamilyHandle, world: UUID, x: Int, y: Int, z: Int) {
-        dbLock.read {
-            if (closed) return
-            db.delete(cf, blockKey(world, x, y, z))
+    private fun putNote(family: Int, world: UUID, x: Int, y: Int, z: Int, value: ByteArray?) {
+        if (closed) return
+        val write = NoteWrite(NoteKey(family, world, x, y, z), value)
+        pendingNotes[write.key] = write
+        submitted.incrementAndGet()
+        noteQueue.add(write)
+    }
+
+    private fun familyOf(family: Int) = if (family == FORMS) placedFormsCf else nestedOwnersCf
+
+    // On the writer thread. A note set again while this one waited stays on the overlay: only the
+    // write that is still the latest for its position comes off it.
+    private fun writeNotes(notes: List<NoteWrite>) = dbLock.read {
+        if (closed) return
+        WriteBatch().use { batch ->
+            for (note in notes) {
+                val key = blockKey(note.key.world, note.key.x, note.key.y, note.key.z)
+                val value = note.value
+                if (value == null) batch.delete(familyOf(note.key.family), key) else batch.put(familyOf(note.key.family), key, value)
+            }
+            db.write(writeOptions, batch)
         }
+        for (note in notes) pendingNotes.remove(note.key, note)
     }
 
     private fun blockKey(world: UUID, x: Int, y: Int, z: Int): ByteArray =
@@ -746,7 +779,13 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         try {
             while (true) {
                 val first = queue.poll(WRITER_POLL_MILLIS, TimeUnit.MILLISECONDS)
-                if (first == null && !running) return
+                val notes = ArrayList<NoteWrite>()
+                noteQueue.drainTo(notes)
+                if (notes.isNotEmpty()) {
+                    writeNotes(notes)
+                    written.addAndGet(notes.size.toLong())
+                }
+                if (first == null && !running && noteQueue.isEmpty()) return
                 if (first != null) {
                     val batched = ArrayList<List<Transfer>>(MAX_BATCH)
                     batched += first
