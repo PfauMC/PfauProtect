@@ -33,6 +33,7 @@ import org.bukkit.event.entity.ProjectileHitEvent
 import org.bukkit.event.player.PlayerFishEvent
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.vehicle.VehicleEntityCollisionEvent
+import org.bukkit.event.vehicle.VehicleMoveEvent
 import org.bukkit.event.weather.LightningStrikeEvent
 import org.bukkit.util.BoundingBox
 import java.util.Locale
@@ -409,6 +410,16 @@ class RedstoneListener(
     fun onCollide(event: VehicleEntityCollisionEvent) {
         val player = event.entity as? Player ?: return
         nudges.nudged(event.vehicle, Attributed(player.uniqueId, Confidence.INFERRED))
+    }
+
+    // A cart sped along by powered rails carries whoever powered them. Every moving vehicle raises
+    // this every tick, so all it costs off a powered rail is one comparison.
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onRoll(event: VehicleMoveEvent) {
+        val rail = event.to.block
+        if (rail.type != Material.POWERED_RAIL) return
+        val cart = event.vehicle as? Minecart ?: return
+        energy.near(positionOf(rail), reach = 1)?.let { nudges.nudged(cart, it) }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
