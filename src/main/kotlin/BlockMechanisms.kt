@@ -288,8 +288,10 @@ class BlockMechanismListener(
     // cache: it is the only thing that tells that call apart from a player brushing suspicious sand,
     // which raises the drop event on its own, with no break behind it and the block still standing.
     // The other half is found here as well: by the time the drop event arrives both halves are gone
-    // from the world, and looking for a partner then finds air.
-    private class Broken(val at: WorldBlock, val partner: WorldBlock?)
+    // from the world, and looking for a partner then finds air. So is what the block held: the state
+    // the drop event carries comes with the inventory of a jukebox, a bookshelf, a pot, a shelf or a
+    // campfire already empty.
+    private class Broken(val at: WorldBlock, val partner: WorldBlock?, val contents: Array<BukkitItemStack?>)
 
     private val breaking = ThreadLocal<Broken?>()
 
@@ -397,11 +399,13 @@ class BlockMechanismListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockBreak(event: BlockBreakEvent) {
-        breaking.set(Broken(positionOf(event.block), otherHalfOf(event.block)?.let(::positionOf)))
+        val block = event.block
+        // Copies: the stacks read here mirror the live slots, which the break empties before the drop.
+        val contents = spilled(block.getState(false)).map { it?.clone() }.toTypedArray()
+        breaking.set(Broken(positionOf(block), otherHalfOf(block)?.let(::positionOf), contents))
     }
 
-    // The state handed to this event is the one from before the break, so what spilled is still
-    // readable slot by slot while the entities carrying it already exist.
+    // What spilled is read slot by slot from the break, while the entities carrying it already exist.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockDrop(event: BlockDropItemEvent) {
         val block = event.block
@@ -434,7 +438,7 @@ class BlockMechanismListener(
         }
         // Read once: every getItem call builds a fresh mirror of the slot, and the inner loop runs
         // for each dropped entity.
-        val contents = spilled(state)
+        val contents = broken.contents
         val left = IntArray(contents.size) { contents[it]?.amount ?: 0 }
         for (dropped in event.items) {
             val stack = dropped.itemStack
@@ -628,7 +632,8 @@ class BlockMechanismListener(
     // chest does, and their slots are the ones a click filled.
     private fun spilled(state: BlockState): Array<BukkitItemStack?> = when (state) {
         is ShulkerBox -> emptyArray()
-        is ContainerBlock -> state.inventory.contents
+        // One half of a double chest: the inventory of a live chest is both halves together.
+        is ContainerBlock -> state.snapshotInventory.contents
         is TileStateInventoryHolder -> state.snapshotInventory.contents
         is Campfire -> Array(state.size) { state.getItem(it) }
         else -> emptyArray()

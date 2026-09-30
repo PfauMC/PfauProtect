@@ -12,6 +12,7 @@ import org.bukkit.entity.Chicken
 import org.bukkit.entity.Entity
 import org.bukkit.entity.Goat
 import org.bukkit.entity.Item
+import org.bukkit.entity.ItemFrame
 import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
 import org.bukkit.entity.Sniffer
@@ -21,12 +22,16 @@ import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.event.block.BlockDispenseLootEvent
 import org.bukkit.event.block.BlockShearEntityEvent
+import org.bukkit.event.entity.EntityDamageByEntityEvent
+import org.bukkit.event.entity.EntityDamageEvent
 import org.bukkit.event.entity.EntityDeathEvent
 import org.bukkit.event.entity.EntityDropItemEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.entity.EntityTransformEvent
 import org.bukkit.event.entity.EntityUnleashEvent
 import org.bukkit.event.entity.PiglinBarterEvent
+import org.bukkit.event.hanging.HangingBreakByEntityEvent
+import org.bukkit.event.hanging.HangingBreakEvent
 import org.bukkit.event.player.PlayerFishEvent
 import org.bukkit.event.player.PlayerHarvestBlockEvent
 import org.bukkit.event.player.PlayerShearEntityEvent
@@ -140,6 +145,44 @@ class MobItemListener(
         val slot = heldSlotOf(heldBy(piglin), key.form) ?: return
         unbookHeld(piglin, slot)
         pending.add(EntitySlot(piglin.uniqueId, slot), Void, Cause.PIGLIN_BARTER, key, 1)
+    }
+
+    // A frame or a painting drops what it holds without the drop event every other entity raises, so
+    // the hit that knocks the item out and the break leave the notes themselves, while the frame still
+    // books what it held.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onFrameHit(event: EntityDamageEvent) {
+        val frame = event.entity as? ItemFrame ?: return
+        if (frame.isFixed) return
+        val actor = ((event as? EntityDamageByEntityEvent)?.damager as? Player)?.uniqueId
+        expectOut(frame, listOf(0), Cause.CONTAINER_REMOVE, actor)
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onHangingBreak(event: HangingBreakEvent) {
+        val actor = ((event as? HangingBreakByEntityEvent)?.remover as? Player)?.uniqueId
+        expectOut(event.entity, listOf(0, ENTITY_ITEM_SLOT), Cause.ENTITY_BREAK_DROP, actor)
+    }
+
+    // The mark goes now, so a second hit or the removal after the break finds nothing left to book;
+    // what no spawn claims by the next tick was not dropped and is written off.
+    private fun expectOut(entity: Entity, slots: List<Int>, cause: Cause, actor: UUID?) {
+        val held = heldBy(entity).filterKeys { it in slots }
+        if (held.isEmpty()) return
+        val spot = spotOf(entity.location)
+        val framed = (entity as? ItemFrame)?.item?.let { codec.encodeOrNull(it)?.key }
+        val claims = held.map { (slot, form) ->
+            unbookHeld(entity, slot)
+            val from = EntitySlot(entity.uniqueId, slot)
+            // The item in a frame may be worn, and a spawn is matched on its damage as well.
+            val key = framed?.takeIf { slot == 0 && it.form.contentEquals(form) } ?: ItemKey(form, null)
+            Triple(from, key, origins.expect(from, cause, key, spot, 1, actor))
+        }
+        later(entity.location) {
+            for ((from, key, claimed) in claims) {
+                if (claimed() < 1) pending.add(from, Void, cause, key, 1, actor)
+            }
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
