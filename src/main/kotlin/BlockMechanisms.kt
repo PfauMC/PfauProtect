@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect
 
+import io.papermc.paper.event.block.BlockPreDispenseEvent
 import io.papermc.paper.event.block.CompostItemEvent
 import io.papermc.paper.event.block.PlayerShearBlockEvent
 import io.papermc.paper.block.TileStateInventoryHolder
@@ -284,12 +285,28 @@ class BlockMechanismListener(
 
     private val breaking = ThreadLocal<Broken?>()
 
+    // The dispense event is no anchor on its own: the default behaviour splits the item off its slot
+    // before raising it, so the last one leaves no slot to find, and a block the sulfur cube could
+    // swallow raises it twice for one dispense. The pre-dispense event comes once, before anything
+    // moved, with the slot, and the dispense that follows in the same call takes what it saw.
+    private class Loaded(val at: WorldBlock, val slot: Int, val before: List<Stack?>)
+
+    private val loaded = ThreadLocal<Loaded?>()
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPreDispense(event: BlockPreDispenseEvent) {
+        val before = contentsOf(event.block) ?: return
+        loaded.set(Loaded(positionOf(event.block), event.slot, before))
+    }
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDispense(event: BlockDispenseEvent) {
         val block = event.block
         val item = event.item
         val key = key(item) ?: return
-        val slot = slotHolding(block, item) ?: return
+        val load = loaded.get()?.takeIf { it.at == positionOf(block) } ?: return
+        loaded.remove()
+        val slot = load.slot
         val from = containerAt(block, slot)
         if (event is BlockDispenseArmorEvent) {
             val target = event.targetEntity
@@ -303,9 +320,8 @@ class BlockMechanismListener(
         // and the only way to know which is to look at the dispenser once the behaviour has run.
         val cause = if (block.type == Material.DROPPER) Cause.DROPPER_EJECT else Cause.DISPENSER_EJECT
         val ejected = origins.expect(from, cause, key, spotOf(block.location), item.amount)
-        val before = contentsOf(block) ?: return
         val projectile = CraftItemStack.asNMSCopy(item).item is ProjectileItem
-        later(block) { settleDispense(block, slot, before, ejected(), projectile) }
+        later(block) { settleDispense(block, slot, load.before, ejected(), projectile) }
     }
 
     private fun settleDispense(block: Block, slot: Int, before: List<Stack?>, ejected: Int, projectile: Boolean) {
@@ -584,11 +600,6 @@ class BlockMechanismListener(
         val data = state.blockData as CraftBlockData
         val stack = NmsItemStack(data.state.block.asItem())
         return if (stack.isEmpty) null else codec.encode(stack).form
-    }
-
-    private fun slotHolding(block: Block, item: BukkitItemStack): Int? {
-        val inventory = (block.getState(false) as? ContainerBlock)?.inventory ?: return null
-        return (0 until inventory.size).firstOrNull { inventory.getItem(it)?.isSimilar(item) == true }
     }
 
     private fun key(stack: BukkitItemStack?): ItemKey? = codec.encodeOrNull(stack)?.key
