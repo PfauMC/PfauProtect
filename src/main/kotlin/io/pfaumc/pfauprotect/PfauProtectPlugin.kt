@@ -181,7 +181,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val mechanisms = TickCoalescer(uncovered::submit)
         val origins = SpawnOrigins(mechanisms)
         val capture = ContainerCaptureListener(
-            this, uncovered::submit, codec, ledger.registries, origins, ledger,
+            this, uncovered::submit, codec, ledger.registries, origins, ledger, ledger::slotBalances,
         ) { intent, qty ->
             unspentDrop(mechanisms, intent, qty) { server.getPlayer(it)?.gameMode == GameMode.CREATIVE }
         }

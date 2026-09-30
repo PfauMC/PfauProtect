@@ -6,6 +6,7 @@ import io.papermc.paper.block.TileStateInventoryHolder
 import io.papermc.paper.event.entity.EntityCompostItemEvent
 import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.attribution.Energy
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.model.EntitySlot
@@ -130,6 +131,7 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         var qty: Int,
         val actor: UUID?,
         val reach: Double = SPAWN_REACH,
+        val confidence: Confidence = Confidence.FACT,
     ) {
         var swept = false
     }
@@ -187,9 +189,17 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         return { qty - note.qty }
     }
 
-    fun expect(entity: UUID, from: Holder, cause: Cause, key: ItemKey, qty: Int, actor: UUID? = null) {
+    fun expect(
+        entity: UUID,
+        from: Holder,
+        cause: Cause,
+        key: ItemKey,
+        qty: Int,
+        actor: UUID? = null,
+        confidence: Confidence = Confidence.FACT,
+    ) {
         if (qty <= 0) return
-        notes += Note(from, cause, key, null, entity, qty, actor)
+        notes += Note(from, cause, key, null, entity, qty, actor, confidence = confidence)
     }
 
     /** The birth of this entity is written by its own transaction, so the spawn must stay silent. */
@@ -220,7 +230,7 @@ class SpawnOrigins(private val pending: TickCoalescer) {
             if (!matches(note)) continue
             val qty = minOf(left, note.qty)
             if (note.from != null) {
-                pending.add(note.from, ItemEntityRef(entity), note.cause, key, qty, note.actor)
+                pending.add(note.from, ItemEntityRef(entity), note.cause, key, qty, note.actor, note.confidence)
             }
             left -= qty
             note.qty -= qty

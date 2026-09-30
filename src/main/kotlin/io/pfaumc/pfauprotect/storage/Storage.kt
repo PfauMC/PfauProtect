@@ -472,6 +472,30 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         totals
     }
 
+    /**
+     * What the ledger books to each of a player's own slots, by form, counting only rows written up
+     * to a moment: a pass that runs while this reads files rows about a later state than the one it
+     * is being compared with.
+     */
+    fun slotBalances(player: UUID, upTo: Long): Map<Holder, Map<FormKey, Int>> = dbLock.read {
+        val totals = HashMap<Holder, HashMap<FormKey, Int>>()
+        if (closed) return totals
+        val holders = listOf(
+            PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player), PlayerEnder(player, 0),
+        )
+        for (holder in holders) {
+            forEachUnder(EntryCodec.holderPrefix(holder, knownIds), reverse = false) { key, value ->
+                val entry = EntryCodec.decodeOrNull(key, value, registries)
+                val form = entry?.takeIf { it.timestamp <= upTo }?.let { forms.valueOf(it.itemFormId) }
+                if (entry != null && form != null) {
+                    totals.getOrPut(entry.holder) { HashMap() }.merge(FormKey(form), entry.qty, Int::plus)
+                }
+                true
+            }
+        }
+        totals
+    }
+
     // The standing test of the capture: an entry that does not face the void has a second half, and
     // the two cancel each other out. A half that is missing is not a dupe but a hole in the capture —
     // two ends of one movement that collapsed onto one key, or a write that never landed — and it is

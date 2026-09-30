@@ -1,6 +1,8 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.canvasmc.canvas.event.PlayerPostRespawnAsyncEvent
 import io.pfaumc.pfauprotect.model.Cause
+import kotlin.math.abs
+import io.pfaumc.pfauprotect.storage.EncodedItem
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
@@ -404,6 +406,38 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
     return rest
 }
 
+internal class LoadDifference(val holder: Holder, val form: ByteArray, val qty: Int, val gained: Boolean)
+
+/**
+ * Where a difference between a player's slots and the ledger shows. Counted by form and not by slot,
+ * so an item moved between two slots unseen stands against itself and writes nothing; what is left is
+ * put on the slots that hold more of the form than they were booked, or were booked more than they
+ * hold.
+ */
+internal fun loadDifferences(
+    live: Map<Holder, Map<FormKey, Int>>,
+    booked: Map<Holder, Map<FormKey, Int>>,
+): List<LoadDifference> {
+    val forms = (live.values.flatMap { it.keys } + booked.values.flatMap { it.keys }).toSet()
+    val differences = ArrayList<LoadDifference>()
+    for (form in forms) {
+        val excess = (live.keys + booked.keys).associateWith { holder ->
+            (live[holder]?.get(form) ?: 0) - (booked[holder]?.get(form) ?: 0)
+        }
+        val total = excess.values.sum()
+        if (total == 0) continue
+        val gained = total > 0
+        var left = abs(total)
+        for ((holder, own) in excess.entries.sortedByDescending { if (gained) it.value else -it.value }) {
+            val take = minOf(left, if (gained) own else -own)
+            if (take <= 0) break
+            differences += LoadDifference(holder, form.form, take, gained)
+            left -= take
+        }
+    }
+    return differences
+}
+
 internal fun transferOf(move: Move, timestamp: Long, kind: Kind = Kind.TRANSFER): Transfer = Transfer(
     cause = move.cause,
     from = move.from,
@@ -412,7 +446,9 @@ internal fun transferOf(move: Move, timestamp: Long, kind: Kind = Kind.TRANSFER)
     damage = move.key.damage,
     qty = move.qty,
     timestamp = timestamp,
-    kind = kind,
+    // A creative copy leaves the stack it was copied from where it was: the copy is a second carrier,
+    // not a movement, and SPEC-v1 gives it a kind of its own.
+    kind = if (move.cause == Cause.CREATIVE_CLONE) Kind.CLONE else kind,
     confidence = move.confidence,
     actor = move.actor,
 )
@@ -457,6 +493,8 @@ class ContainerCaptureListener(
     private val registries: Registries,
     private val origins: SpawnOrigins,
     private val placed: PlacedForms,
+    // What the ledger books to a player's own slots, from rows up to a moment.
+    private val booked: (UUID, Long) -> Map<Holder, Map<FormKey, Int>> = { _, _ -> emptyMap() },
     // What an intent asked for and the pass never found. An event that silenced a funnel of its own on
     // the promise that the pass would write the row has to hear about it when the pass could not.
     private val unspent: (Intent, Int) -> Unit = { _, _ -> },
@@ -472,9 +510,50 @@ class ContainerCaptureListener(
         scheduleRecompute(player)
     }
 
+    /**
+     * The join is the first moment the server holds a player's slots again, and whatever changed them
+     * while the player was away — an editor, a plugin, a restored backup — changed them with nothing
+     * watching. They are compared with the ledger here, off the region thread, and every difference is
+     * written as a guess before the first pass takes the join as its starting point.
+     */
     @EventHandler(priority = EventPriority.MONITOR)
     fun onJoin(event: PlayerJoinEvent) {
-        rebaseline(event.player)
+        val player = event.player
+        rebaseline(player)
+        val live = ownSlots(player)
+        val at = System.currentTimeMillis()
+        if (!plugin.isEnabled) return
+        plugin.server.asyncScheduler.runNow(plugin) {
+            val rows = loadDifferences(live, booked(player.uniqueId, at)).map { difference ->
+                Transfer(
+                    cause = Cause.INVENTORY_LOAD,
+                    from = if (difference.gained) Void else difference.holder,
+                    to = if (difference.gained) difference.holder else Void,
+                    form = difference.form,
+                    damage = null,
+                    qty = difference.qty,
+                    timestamp = at,
+                    confidence = Confidence.INFERRED,
+                )
+            }
+            if (rows.isNotEmpty()) sink(rows)
+        }
+    }
+
+    // Every slot the ledger files under the player's own name, ender chest included, by form.
+    private fun ownSlots(player: Player): Map<Holder, Map<FormKey, Int>> {
+        val slots = HashMap<Holder, HashMap<FormKey, Int>>()
+        fun count(holder: Holder, stack: BukkitItemStack?) {
+            val encoded = codec.encodeOrNull(stack) ?: return
+            slots.getOrPut(holder) { HashMap() }.merge(FormKey(encoded.form), encoded.count, Int::plus)
+        }
+        val inventory = player.inventory
+        val holders = playerHolders(player.uniqueId, inventory)
+        for (slot in 0 until inventory.size) count(holders(slot), inventory.getItem(slot))
+        count(PlayerCursor(player.uniqueId), player.itemOnCursor)
+        val ender = player.enderChest
+        for (slot in 0 until ender.size) count(PlayerEnder(player.uniqueId, slot), ender.getItem(slot))
+        return slots
     }
 
     // Scheduled work is dropped when the player's scheduler retires, which happens in the same block
@@ -609,6 +688,9 @@ class ContainerCaptureListener(
             intend(player, Intent(Cause.CREATIVE_SET, from = Void))
             intend(player, Intent(Cause.CREATIVE_SET, to = Void))
         }
+        // A middle click in creative copies a stack out of any window onto the cursor, a chest's
+        // included, and that window is no creative screen.
+        if (event.action == InventoryAction.CLONE_STACK) intend(player, Intent(Cause.CREATIVE_CLONE, from = Void))
         val top = event.view.topInventory
         val shift = if (event.rawSlot == previewSlot(top)) shiftOf(top) else null
         if (shift != null) intend(player, Intent(shift.consume, shift = shift))
@@ -700,6 +782,11 @@ class ContainerCaptureListener(
         }
         // Nothing open and the player's own inventory screen report the same type, so a drop out of
         // the survival inventory is indistinguishable from a drop out of the hand and reads as one.
+        closingDrop(player, drop.uniqueId, encoded)?.let { row ->
+            sink(listOf(row))
+            origins.accounted(drop.uniqueId, encoded.count)
+            return
+        }
         val inMenu = player.openInventory.type != InventoryType.CRAFTING
         intend(
             player,
@@ -856,10 +943,47 @@ class ContainerCaptureListener(
         // A click the game applied in this same tick with no label of its own is renamed
         // too; telling them apart needs the pass to know which snapshot each edge came from.
         intents.add(player.uniqueId, Intent(Cause.MENU_CLOSE_RETURN))
+        rememberClosing(player, event.view.topInventory)
         player.scheduler.run(plugin, {
+            closing.remove(player.uniqueId)
             recompute(player)
             rebaseline(player)
         }, null)
+    }
+
+    // What a station, a crafting grid or a beacon still held as its window closed. What does not fit
+    // back into the inventory is thrown at the player's feet inside the same call, and the only end
+    // that knows which slot it left is this one: the pass after it counts the window as foreign.
+    private class Leaving(val holder: Holder, val form: ByteArray)
+
+    private val closing = ConcurrentHashMap<UUID, MutableList<Leaving>>()
+
+    private fun rememberClosing(player: Player, top: Inventory) {
+        val holders = topHolders(player, top) ?: return
+        val preview = previewSlot(top)
+        val left = (0 until top.size).mapNotNullTo(ArrayList()) { slot ->
+            val holder = holders(slot)
+            if (slot == preview || holder is PlayerHolder) return@mapNotNullTo null
+            encode(top.getItem(slot))?.let { Leaving(holder, it.key.form) }
+        }
+        if (left.isNotEmpty()) closing[player.uniqueId] = left
+    }
+
+    // The drop out of a closing window, written from the slot it left, or null where it was not one.
+    private fun closingDrop(player: Player, drop: UUID, encoded: EncodedItem): Transfer? {
+        val left = closing[player.uniqueId] ?: return null
+        val at = left.indexOfFirst { it.form.contentEquals(encoded.form) }
+        if (at < 0) return null
+        return Transfer(
+            cause = Cause.DROP_MENU_CLOSE,
+            from = left.removeAt(at).holder,
+            to = ItemEntityRef(drop),
+            form = encoded.form,
+            damage = encoded.damage,
+            qty = encoded.count,
+            timestamp = System.currentTimeMillis(),
+            actor = player.uniqueId,
+        )
     }
 
     // What the click event knows and the diff cannot work out: a swap, a hotbar key, a double-click

@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
@@ -214,7 +215,12 @@ class MobItemListener(
             giftFrom(entity) -> Void to Cause.GIFT_DROP
             else -> Void to Cause.MOB_THROW_ITEM
         }
-        origins.expect(item.uniqueId, from, cause, encoded.key, encoded.count)
+        // A living mob throwing what nothing booked into it and that it does not make itself: the
+        // equipment it spawned with, or a way in nothing caught. The birth is real, where it came from
+        // is a guess, and the uncovered tally is where a guess belongs.
+        val guessed = entity is LivingEntity && from == Void && cause == Cause.MOB_THROW_ITEM
+        val confidence = if (guessed) Confidence.INFERRED else Confidence.FACT
+        origins.expect(item.uniqueId, from, cause, encoded.key, encoded.count, confidence = confidence)
     }
 
     // The lead comes off the mob as an item in the same call.

@@ -4,6 +4,7 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
+import io.pfaumc.pfauprotect.storage.FormKey
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerCursor
@@ -383,5 +384,22 @@ class DiffTest {
             listOf(Edge(Nested(bundle, 0), bag(1), key("stone"), 5, Confidence.FACT)),
             Netting.diff(filled, empty),
         )
+    }
+
+    // What an editor changed while the player was away, and nothing else: a stack moved between two
+    // slots unseen stands against itself, and only the surplus or the shortfall of a form is written.
+    @Test
+    fun `an offline change is written where it shows and a move writes nothing`() {
+        val diamond = FormKey("diamond".toByteArray())
+        val slot0 = PlayerInv(player, 0)
+        val slot7 = PlayerInv(player, 7)
+
+        assertTrue(loadDifferences(mapOf(slot7 to mapOf(diamond to 5)), mapOf(slot0 to mapOf(diamond to 5))).isEmpty())
+
+        val gained = loadDifferences(mapOf(slot0 to mapOf(diamond to 5), slot7 to mapOf(diamond to 2)), mapOf(slot0 to mapOf(diamond to 5)))
+        assertEquals(listOf(Triple(slot7, 2, true)), gained.map { Triple(it.holder, it.qty, it.gained) })
+
+        val lost = loadDifferences(mapOf(slot7 to mapOf(diamond to 4)), mapOf(slot0 to mapOf(diamond to 5)))
+        assertEquals(listOf(Triple(slot0 as Holder, 1, false)), lost.map { Triple(it.holder, it.qty, it.gained) })
     }
 }
