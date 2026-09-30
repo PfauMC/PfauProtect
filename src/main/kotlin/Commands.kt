@@ -79,13 +79,17 @@ class CommandListener(
                 use.loss?.let { Intent(it, to = Void, until = until) },
                 use.change?.let { mutation(it, until) },
             )
-            val leave = { reasons.forEach { capture.intend(player, it) } }
+            val leave: () -> Unit = {
+                reasons.forEach { capture.intend(player, it) }
+                // Read where the player stands by then: a teleport earlier in the same batch has moved
+                // them, and the ghost appears where they were moved to.
+                given?.let { origins.expect(Void, Cause.CMD_GIVE, it.key, spotOf(player.location), count) }
+            }
             // From another region the server hands the command to the player's scheduler a tick on,
             // queued behind the pass an intent left now would schedule: that pass would spend the reason
             // on an inventory the command has not touched yet. Left a tick later, the reason lands
             // before the command's action and its pass after it.
             if (Bukkit.isOwnedByCurrentRegion(player)) leave() else later(player, leave)
-            given?.let { origins.expect(Void, Cause.CMD_GIVE, it.key, spotOf(player.location), count) }
         }
     }
 
