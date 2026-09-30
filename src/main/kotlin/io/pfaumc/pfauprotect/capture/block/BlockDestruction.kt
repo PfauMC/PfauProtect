@@ -71,7 +71,7 @@ import org.bukkit.event.block.SpongeAbsorbEvent
 import com.destroystokyo.paper.event.block.AnvilDamagedEvent
 import io.papermc.paper.event.block.DragonEggFormEvent
 import io.papermc.paper.event.entity.EntityConstructEvent
-import io.papermc.paper.event.entity.EntityPortalReadyEvent
+import io.canvasmc.canvas.event.EntityPortalAsyncEvent
 import org.bukkit.block.Sign
 import org.bukkit.block.CreatureSpawner
 import org.bukkit.block.TrialSpawner
@@ -1232,11 +1232,11 @@ class BlockDestructionListener(
 
     private val travellers = ConcurrentHashMap<UUID, Pair<UUID, Long>>()
 
+    // Canvas takes an entity through a portal on a path of its own, and this is the one event on it.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    fun onPortalReady(event: EntityPortalReadyEvent) {
+    fun onPortalAsync(event: EntityPortalAsyncEvent) {
         val player = event.entity as? Player ?: return
-        val world = event.targetWorld ?: return
-        travellers[world.uid] = player.uniqueId to System.currentTimeMillis()
+        travellers[event.to.uid] = player.uniqueId to System.currentTimeMillis()
     }
 
     /**
