@@ -12,6 +12,7 @@ import org.bukkit.block.data.Powerable
 import org.bukkit.block.data.type.TripwireHook
 import org.bukkit.entity.Boat
 import org.bukkit.entity.Entity
+import org.bukkit.entity.HumanEntity
 import org.bukkit.entity.Item
 import org.bukkit.entity.Minecart
 import org.bukkit.entity.Player
@@ -30,11 +31,15 @@ import org.bukkit.event.entity.EntityInteractEvent
 import org.bukkit.event.entity.EntityKnockbackByEntityEvent
 import org.bukkit.event.entity.EntityPlaceEvent
 import org.bukkit.event.entity.ProjectileHitEvent
+import org.bukkit.event.inventory.InventoryClickEvent
+import org.bukkit.event.inventory.InventoryDragEvent
 import org.bukkit.event.player.PlayerFishEvent
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.vehicle.VehicleEntityCollisionEvent
 import org.bukkit.event.vehicle.VehicleMoveEvent
 import org.bukkit.event.weather.LightningStrikeEvent
+import org.bukkit.inventory.BlockInventoryHolder
+import org.bukkit.inventory.Inventory
 import org.bukkit.util.BoundingBox
 import java.util.Locale
 import java.util.UUID
@@ -410,6 +415,20 @@ class RedstoneListener(
     fun onCollide(event: VehicleEntityCollisionEvent) {
         val player = event.entity as? Player ?: return
         nudges.nudged(event.vehicle, Attributed(player.uniqueId, Confidence.INFERRED))
+    }
+
+    // A comparator reads what a player puts into a container or takes out of it, however long after
+    // opening it they do so.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onClick(event: InventoryClickEvent) = touched(event.view.topInventory, event.whoClicked)
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onDrag(event: InventoryDragEvent) = touched(event.view.topInventory, event.whoClicked)
+
+    private fun touched(inventory: Inventory, who: HumanEntity) {
+        if (inventory.holder !is BlockInventoryHolder) return
+        val at = inventory.location ?: return
+        energy.note(positionOf(at.block), Attributed(who.uniqueId, Confidence.FACT))
     }
 
     // A cart sped along by powered rails carries whoever powered them. Every moving vehicle raises
