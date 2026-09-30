@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
+import org.bukkit.craftbukkit.block.CraftBlock
+import net.minecraft.world.level.block.ShelfBlock
 import io.papermc.paper.event.entity.EntityEquipmentChangedEvent
 import io.papermc.paper.event.player.PlayerFlowerPotManipulateEvent
 import io.papermc.paper.event.player.PlayerInsertLecternBookEvent
@@ -98,29 +100,42 @@ class HolderListener(
         val type = block.type
         // Both have events of their own that name the item.
         if (!keepsItems(type) || type == Material.LECTERN || type == Material.FLOWER_POT) return
-        val before = slotsOf(block) ?: return
+        // A powered shelf swaps the whole hotbar with every shelf chained to it, not the hand alone.
+        val blocks = poweredChain(block) ?: listOf(block)
+        val before = blocks.map { slotsOf(it) ?: return }
         val player = event.player
         // A record comes out of the jukebox onto the ground rather than into the hand.
         if (type == Material.JUKEBOX) {
-            before.getOrNull(0)?.let {
+            before[0].getOrNull(0)?.let {
                 val spot = spotOf(block.location.add(0.5, 1.0, 0.5))
                 origins.expect(containerAt(block, 0), Cause.CONTAINER_REMOVE, it.key, spot, it.count, player.uniqueId)
             }
         }
-        val hand = capture.handSlot(player, event.hand)
+        val hand = if (blocks.size == 1 && poweredChain(block) == null) capture.handSlot(player, event.hand) else null
         val into = if (type == Material.JUKEBOX) Cause.RECORD_INTO_JUKEBOX else Cause.ITEM_INTO_SINGLE_BLOCK
         later(block) {
-            val after = slotsOf(block) ?: return@later
-            for (change in slotDiff(before, after)) {
-                val at = containerAt(block, change.slot)
-                val intent = if (change.gain) {
-                    Intent(into, to = at, form = change.key.form, qty = change.qty, holder = hand)
-                } else {
-                    Intent(Cause.CONTAINER_REMOVE, from = at, form = change.key.form, qty = change.qty)
+            blocks.forEachIndexed { index, part ->
+                val after = slotsOf(part) ?: return@forEachIndexed
+                for (change in slotDiff(before[index], after)) {
+                    val at = containerAt(part, change.slot)
+                    val intent = if (change.gain) {
+                        Intent(into, to = at, form = change.key.form, qty = change.qty, holder = hand)
+                    } else {
+                        Intent(Cause.CONTAINER_REMOVE, from = at, form = change.key.form, qty = change.qty)
+                    }
+                    capture.intend(player, intent)
                 }
-                capture.intend(player, intent)
             }
         }
+    }
+
+    private fun poweredChain(block: Block): List<Block>? {
+        val craft = block as CraftBlock
+        val state = craft.blockState
+        val shelf = state.block as? ShelfBlock ?: return null
+        if (!state.getValue(ShelfBlock.POWERED)) return null
+        return shelf.getAllBlocksConnectedTo(craft.level, craft.position).map { block.world.getBlockAt(it.x, it.y, it.z) }
+            .ifEmpty { null }
     }
 
     private fun slotsOf(block: Block): List<Stack?>? {
