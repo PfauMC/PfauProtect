@@ -1,11 +1,8 @@
 package io.pfaumc.pfauprotect.capture.item
-import kotlin.math.abs
-import io.pfaumc.pfauprotect.capture.block.SPAWN_REACH
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.model.Void
-import io.pfaumc.pfauprotect.capture.block.spotOf
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
@@ -19,6 +16,10 @@ import org.bukkit.event.server.ServerCommandEvent
 // How long a command's reason waits for the change it explains. The server applies a command to a
 // player in another region a tick or two after it is heard, and a pass can run in between.
 internal const val COMMAND_LINGER_MILLIS = 250L
+
+// How long the item a full inventory throws out may take to land: a teleport earlier in the batch has to
+// finish first, and across a world that loads chunks.
+private const val GIVE_DROP_MILLIS = 5_000L
 
 // A command's words, the way the server will read them: no slash, no namespace, lower case name.
 // `execute … run give …` runs the give; everything before the last `run` only changes who and where.
@@ -88,10 +89,9 @@ class CommandListener(
         val count = words.getOrNull(3)?.toIntOrNull() ?: 1
         val until = System.currentTimeMillis() + COMMAND_LINGER_MILLIS
         for (player in players) {
-            // Where the player stands now, for a give the server runs before the reason is left; the
-            // reason looks again once it is, for a teleport earlier in the same batch.
-            val heardAt = spotOf(player.location)
-            given?.let { origins.expect(Void, Cause.CMD_GIVE, it.key, heardAt, count) }
+            // What does not fit is thrown at the player's feet, as the player, wherever the player is
+            // by the time the command runs.
+            given?.let { origins.expectThrown(player.uniqueId, Void, Cause.CMD_GIVE, it.key, count, until + GIVE_DROP_MILLIS) }
             val reasons = listOfNotNull(
                 use.gain?.let { Intent(it, from = Void, form = given?.form, until = until) },
                 use.loss?.let { Intent(it, to = Void, until = until) },
@@ -99,10 +99,6 @@ class CommandListener(
             )
             val leave: () -> Unit = {
                 reasons.forEach { capture.intend(player, it) }
-                val now = spotOf(player.location)
-                val moved = now.world != heardAt.world || abs(now.x - heardAt.x) > SPAWN_REACH ||
-                    abs(now.y - heardAt.y) > SPAWN_REACH || abs(now.z - heardAt.z) > SPAWN_REACH
-                if (moved) given?.let { origins.expect(Void, Cause.CMD_GIVE, it.key, now, count) }
             }
             // From another region the server hands the command to the player's scheduler a tick on,
             // queued behind the pass an intent left now would schedule: that pass would spend the reason

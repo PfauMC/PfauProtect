@@ -156,4 +156,19 @@ class SpawnOriginsTest {
         origins.sweep()
         assertTrue(origins.isEmpty)
     }
+
+    // What a full inventory throws out after a give lands wherever its player has got to, so the note
+    // follows the thrower, outlives the sweeps and is left alone by a drop from anybody else.
+    @Test
+    fun `a note for a thrower is claimed by that thrower's drop anywhere`() {
+        val player = UUID.randomUUID()
+        origins.expectThrown(player, Void, Cause.CMD_GIVE, stone, 1, System.currentTimeMillis() + 60_000)
+        origins.sweep()
+        origins.sweep()
+        val far = Spot(at.world, at.x + 500, at.y, at.z)
+
+        assertEquals(0, origins.claim(UUID.randomUUID(), far, stone, 1, UUID.randomUUID()))
+        assertEquals(1, origins.claim(UUID.randomUUID(), far, stone, 1, player))
+        assertEquals(Cause.CMD_GIVE, rows().single().cause)
+    }
 }

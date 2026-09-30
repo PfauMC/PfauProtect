@@ -132,6 +132,10 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         val actor: UUID?,
         val reach: Double = SPAWN_REACH,
         val confidence: Confidence = Confidence.FACT,
+        // Matched by who threw the item rather than by where it landed, and kept until a moment
+        // rather than for two sweeps: a command's drop lands wherever its player is by the time it runs.
+        val thrower: UUID? = null,
+        val until: Long? = null,
     ) {
         var swept = false
     }
@@ -202,6 +206,11 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         notes += Note(from, cause, key, null, entity, qty, actor, confidence = confidence)
     }
 
+    fun expectThrown(thrower: UUID, from: Holder, cause: Cause, key: ItemKey, qty: Int, until: Long) {
+        if (qty <= 0) return
+        notes += Note(from, cause, key, null, null, qty, null, thrower = thrower, until = until)
+    }
+
     /** The birth of this entity is written by its own transaction, so the spawn must stay silent. */
     fun accounted(entity: UUID, qty: Int) {
         if (qty <= 0) return
@@ -214,12 +223,15 @@ class SpawnOrigins(private val pending: TickCoalescer) {
     // Returns how much of the spawn a note accounted for; what is left over is a birth nobody
     // explained, and the caller books it as such rather than letting it pass unrecorded.
     @Synchronized
-    fun claim(entity: UUID, at: Spot, key: ItemKey, count: Int): Int {
+    fun claim(entity: UUID, at: Spot, key: ItemKey, count: Int, thrower: UUID? = null): Int {
         // A note that names the entity is exact, so it goes first: a note left at the same block for
         // some other reason must not take the quantity out from under it.
         val named = take(entity, key, count) { it.entity == entity }
-        val nearby = take(entity, key, count - named) { it.entity == null && it.key == key && near(it.at!!, at, it.reach) }
-        return named + nearby
+        val thrown = if (thrower == null) 0 else take(entity, key, count - named) { it.thrower == thrower && it.key == key }
+        val nearby = take(entity, key, count - named - thrown) {
+            it.entity == null && it.thrower == null && it.key == key && near(it.at!!, at, it.reach)
+        }
+        return named + thrown + nearby
     }
 
     private inline fun take(entity: UUID, key: ItemKey, count: Int, matches: (Note) -> Boolean): Int {
@@ -243,9 +255,15 @@ class SpawnOrigins(private val pending: TickCoalescer) {
     // go before the spawn that follows it microseconds later.
     @Synchronized
     fun sweep() {
+        val now = System.currentTimeMillis()
         val notes = notes.iterator()
         while (notes.hasNext()) {
             val note = notes.next()
+            val until = note.until
+            if (until != null) {
+                if (now > until) notes.remove()
+                continue
+            }
             if (note.swept) notes.remove() else note.swept = true
         }
         val boxes = boxes.iterator()

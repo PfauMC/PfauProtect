@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.capture.item
+import org.bukkit.craftbukkit.entity.CraftItem
 import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.model.Cause
@@ -132,6 +133,9 @@ internal fun unspentDrop(pending: TickCoalescer, intent: Intent, qty: Int, creat
 // every way it stops existing. Both ends are written without exception, which is what makes the
 // balance of an item entity closed by construction — an entity that does not balance is then a hole
 // in the capture and not a rounding error, and the holes can be counted.
+// The pickup delay that means never, which is what makes an item a display rather than a thing.
+private const val NEVER_PICKED_UP = 32767
+
 class WorldItemListener(
     private val codec: ItemFormCodec,
     private val pending: TickCoalescer,
@@ -141,20 +145,26 @@ class WorldItemListener(
     private val entities: EntityOrigins = EntityOrigins(),
 ) : Listener {
 
+    private val ghosts = java.util.concurrent.ConcurrentHashMap.newKeySet<UUID>()
+
     // Every path that adds an entity to a world comes through here, so this is the only place a birth
     // can be written and the only place one can be missed. Whatever no note explained is still
     // written, as a guess, rather than passed over.
     //
-    // The ghost item /give makes is not filtered out. Nothing distinguishes it while the event runs —
-    // the server marks it fake only after the handler returns — and it despawns on the next tick, so
-    // its birth and its end cancel each other out.
+    // The ghost /give shows at the player's feet for the pickup animation is made fake before it joins
+    // the world: never to be picked up, and a tick from despawning. It stands for nothing — the item
+    // itself went into the inventory — so neither its birth nor its end is written.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onSpawn(event: ItemSpawnEvent) {
         val entity = event.entity
+        if (entity.pickupDelay == NEVER_PICKED_UP && (entity as CraftItem).handle.age > 0) {
+            ghosts += entity.uniqueId
+            return
+        }
         val spot = spotOf(entity.location)
         nameBox(entity, spot)
         val encoded = codec.encodeOrNull(entity.itemStack) ?: return
-        val unexplained = encoded.count - origins.claim(entity.uniqueId, spot, encoded.key, encoded.count)
+        val unexplained = encoded.count - origins.claim(entity.uniqueId, spot, encoded.key, encoded.count, entity.thrower)
         // What a block command broke while it ran, or an item a command summoned outright.
         val at = entity.location
         val command = CommandBirths.at(entity.world.uid, at.x, at.y, at.z)
@@ -199,6 +209,7 @@ class WorldItemListener(
     @EventHandler(priority = EventPriority.MONITOR)
     fun onRemove(event: EntityRemoveEvent) {
         val item = event.entity as? Item ?: return
+        if (ghosts.remove(item.uniqueId)) return
         // The server fires this before it checks whether the entity is already gone, so one removal
         // can arrive twice. The duplicate is the arrival that finds the entity already dead.
         if (item.isDead) return
