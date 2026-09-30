@@ -66,6 +66,10 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.Bukkit
+import org.bukkit.event.block.TNTPrimeEvent
+import org.bukkit.event.block.SpongeAbsorbEvent
+import com.destroystokyo.paper.event.block.AnvilDamagedEvent
+import io.papermc.paper.event.block.DragonEggFormEvent
 import org.bukkit.event.block.Action
 import org.bukkit.event.block.BlockDispenseEvent
 import org.bukkit.event.block.BlockBurnEvent
@@ -660,6 +664,11 @@ internal fun handMade(before: String, after: String): Boolean {
 // shut the position to every later touch.
 private const val TOUCH_STALE_MILLIS = 5_000L
 
+// Dynamite primed by these is filed by the capture of what primed it.
+private val PRIMED_ELSEWHERE = setOf(
+    TNTPrimeEvent.PrimeCause.EXPLOSION, TNTPrimeEvent.PrimeCause.FIRE, TNTPrimeEvent.PrimeCause.BLOCK_BREAK,
+)
+
 // The largest portal the game builds is 21 by 21.
 private const val PORTAL_MAX_BLOCKS = 21 * 21
 
@@ -1073,6 +1082,52 @@ class BlockDestructionListener(
         }
         for (part in sheet) defer(part, part.blockData, Cause.BLK_PORTAL_DESTROY, by, expectsDrops = false)
     }
+
+    /**
+     * Dynamite set off in place: by a flint, a fire charge or a burning arrow, by redstone, by a
+     * dispenser's flint. The block goes into the primed entity in the same call, so the row is written
+     * here and not read back. An explosion, a fire and a hand breaking unstable dynamite have filed the
+     * block through their own capture already.
+     *
+     * The row takes the block away, and with it the journal's answer to who put the dynamite there,
+     * which is what the explosion asks four seconds later. So a note is left over the position naming
+     * whoever lit it, or failing that whoever put it down.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPrime(event: TNTPrimeEvent) {
+        if (event.cause in PRIMED_ELSEWHERE) return
+        val block = event.block
+        val log = logs.get(block.world.uid) ?: return
+        val at = positionOf(block)
+        val lit = event.primingEntity.let { it as? Player ?: (it as? Projectile)?.shooter as? Player }
+        val by = lit?.let { Attributed(it.uniqueId, Confidence.FACT) }
+            ?: event.primingBlock?.let { energyAt(it, energy) }
+            ?: energyAt(block, energy)
+        val placer = placerOf(at, TNT)
+        val standing = block.blockData
+        file(log, listOf(Site(at, block, standing, AIR)), Cause.BLK_TNT, by ?: placer, expectsDrops = false)
+        (by ?: placer)?.culprit()?.let { attribution.placed(at, standing.asString, it) }
+    }
+
+    // A sponge drinking the water around it: the water and the plants in it go, and the sponge turns
+    // wet a moment later. Whoever put the sponge down is who the note over it names.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onSponge(event: SpongeAbsorbEvent) {
+        val sponge = event.block
+        val by = attribution.placerAt(positionOf(sponge), sponge.blockData.asString)
+        readBack(listOf(sponge) + event.blocks.map { it.block }, by, Cause.BLK_SPONGE)
+    }
+
+    // An anvil worn by a use at it, or broken by one: the wear is set right after the event.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onAnvilWorn(event: AnvilDamagedEvent) {
+        val block = event.inventory.location?.block ?: return
+        readBack(listOf(block), Attributed(event.view.player.uniqueId, Confidence.FACT))
+    }
+
+    // The egg the dragon leaves on its podium, placed right after the event.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onEggFormed(event: DragonEggFormEvent) = readBack(listOf(event.block), null, Cause.BLK_FORM)
 
     /**
      * A portal lit or built on the far side of a journey. The event hands over the new states while

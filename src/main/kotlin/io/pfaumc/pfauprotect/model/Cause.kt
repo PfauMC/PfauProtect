@@ -220,6 +220,8 @@ enum class Cause(val id: Int) {
     BLK_PLAYER_USE(0xCD),
     // A liquid or powder snow a player's bucket put down or took up.
     BLK_BUCKET(0xCC),
+    // Water, waterlogging and water plants a sponge drank, and the sponge turning wet.
+    BLK_SPONGE(0xCB),
 
     CMD_GIVE(0xF0),
     CMD_ITEM_REPLACE(0xF1),

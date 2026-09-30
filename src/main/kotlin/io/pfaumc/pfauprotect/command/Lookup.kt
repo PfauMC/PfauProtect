@@ -126,7 +126,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     ),
     FIRE(setOf(Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD), "fire", "burn", "burnt"),
     LIQUID(
-        setOf(Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM, Cause.BLK_BUCKET),
+        setOf(Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM, Cause.BLK_BUCKET, Cause.BLK_SPONGE),
         "liquid", "water", "lava", "bucket",
     ),
     PISTON(setOf(Cause.BLK_PISTON_EXTEND, Cause.BLK_PISTON_RETRACT), "piston", "pistons"),
@@ -181,7 +181,8 @@ private val USE_CAUSES = setOf(
 // The block plane's whole range, so a filter can name it without listing thirty-two causes.
 private val BLOCK_CAUSES: Set<Cause> =
     Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT + Cause.BLK_PLAYER_SWITCH +
-        Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE + Cause.BLK_BUCKET
+        Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE + Cause.BLK_BUCKET +
+        Cause.BLK_SPONGE
 
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
 private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")
