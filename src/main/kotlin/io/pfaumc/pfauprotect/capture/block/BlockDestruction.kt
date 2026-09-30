@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.capture.item.CommandBirths
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
 import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.attribution.Attribution
@@ -999,7 +1000,7 @@ class BlockDestructionListener(
     private fun readBack(blocks: List<Block>, by: Attributed?, cause: Cause = Cause.BLK_PLAYER_USE) {
         if (!plugin.isEnabled) return
         val touched = blocks
-            .filter { touches.touch(positionOf(it), cause, by) }
+            .filter { !commanded(it) && touches.touch(positionOf(it), cause, by) }
             // The block entity goes into the row as it was: a lectern, a jukebox or a pot put back by a
             // rollback needs what it held, not only its shape.
             .map { Site(positionOf(it), it, it.blockData, it.blockData.asString, payloadAt(it)) }
@@ -1142,6 +1143,8 @@ class BlockDestructionListener(
 
     // Every portal block joined to this one, read back: those the broken frame took with it are filed
     // on whoever broke the frame. The walk stays on the region that owns this block.
+    private fun commanded(block: Block) = CommandBirths.writing(block.world.uid, block.x, block.y, block.z)
+
     private fun portalShaken(block: Block) {
         val by = attribution.supportRemoverAt(positionOf(block))
         val sheet = LinkedHashSet<Block>()
@@ -1276,6 +1279,7 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockDestroy(event: BlockDestroyEvent) {
         val block = event.block
+        if (commanded(block)) return
         val by = attribution.supportRemoverAt(positionOf(block))
         // The drops follow this event inside the same call, so this is where they are expected, and
         // always: a cactus breaks a tick after its support, while the read-back the physics of that
@@ -1445,8 +1449,8 @@ class BlockDestructionListener(
         // A block the world overwrites rather than destroys drops nothing to wait for.
         expectsDrops: Boolean = true,
     ) {
-        val real = sites.filter { unfiled(it) }
-        val rows = real + carried.filter { unfiled(it) }
+        val real = sites.filter { unfiled(it) && !commanded(it.block) }
+        val rows = real + carried.filter { unfiled(it) && !commanded(it.block) }
         log.submit(rows.map { row(it, cause, by, timestamp) })
         for (site in rows) readBacks.filed(site.at, site.before.asString, site.after)
         val gone = real.filter { wentAway(it.before.asString, it.after) }
@@ -1578,7 +1582,7 @@ class BlockDestructionListener(
     private fun defer(block: Block, before: BlockData, cause: Cause, by: Attributed?, expectsDrops: Boolean = true) {
         // A task queued against a plugin already on its way down is refused outright, and an event can
         // still reach a handler while the server is taking the plugin apart.
-        if (!plugin.isEnabled) return
+        if (!plugin.isEnabled || commanded(block)) return
         val at = positionOf(block)
         // One position raises two physics events in one tick, and a second read-back of it would find
         // the same air the first did and file the disappearance again, in both planes.

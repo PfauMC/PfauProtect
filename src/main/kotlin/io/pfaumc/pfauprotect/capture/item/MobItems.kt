@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.capture.item
+import org.bukkit.event.vehicle.VehicleCreateEvent
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntitySlot
@@ -265,8 +266,13 @@ class MobItemListener(
      * left to its own first reading.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    fun onSummoned(event: EntitySpawnEvent) {
-        val entity = event.entity
+    fun onSummoned(event: EntitySpawnEvent) = summoned(event.entity)
+
+    // A boat or a minecart joins the world under an event of its own.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onVehicle(event: VehicleCreateEvent) = summoned(event.vehicle)
+
+    private fun summoned(entity: Entity) {
         if (entity is Item) return
         // Let out of a bucket, a mob brings back what it held when it went in.
         val cause = when (entity.entitySpawnReason) {

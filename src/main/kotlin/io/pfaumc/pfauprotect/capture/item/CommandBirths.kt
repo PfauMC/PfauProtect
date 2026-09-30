@@ -34,4 +34,14 @@ object CommandBirths {
     }
 
     internal fun at(world: UUID, x: Double, y: Double, z: Double): Area? = running.get()?.takeIf { it.holds(world, x, y, z) }
+
+    /**
+     * Whether a block command running on this thread is writing this position. The capture of the
+     * world stands aside there: the command's own reading files the change, and a destroy or a
+     * physics read-back raised inside it would file it a second time.
+     */
+    fun writing(world: UUID, x: Int, y: Int, z: Int): Boolean {
+        val area = running.get() ?: return false
+        return world == area.world && x in area.minX..area.maxX && y in area.minY..area.maxY && z in area.minZ..area.maxZ
+    }
 }
