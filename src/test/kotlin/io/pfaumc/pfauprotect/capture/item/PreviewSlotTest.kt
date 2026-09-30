@@ -75,6 +75,25 @@ class PreviewSlotTest {
         assertEquals(Cause.SMITHING_TRANSFORM, shiftOf(smithing(null))!!.consume)
     }
 
+    // A copy and a recolour go through the same grid as any craft; only the recipe the grid matched
+    // tells them apart, and only while the click is delivered.
+    @Test
+    fun `a special recipe in the crafting grid is named for what it does`() {
+        val cloning = Proxy.newProxyInstance(
+            org.bukkit.inventory.ComplexRecipe::class.java.classLoader,
+            arrayOf(org.bukkit.inventory.ComplexRecipe::class.java),
+        ) { _, method, _ -> if (method.name == "getKey") NamespacedKey.minecraft("book_cloning") else null }
+        val grid = Proxy.newProxyInstance(CraftingInventory::class.java.classLoader, arrayOf(CraftingInventory::class.java)) { _, method, _ ->
+            when (method.name) {
+                "getSize" -> 10
+                "getRecipe" -> cloning
+                else -> null
+            }
+        } as Inventory
+        assertEquals(Cause.BOOK_COPY, shiftOf(grid)!!.consume)
+        assertEquals(Cause.CRAFT_CONSUME, shiftOf(sized(CraftingInventory::class.java, 10))!!.consume)
+    }
+
     private fun smithing(recipe: Any?): Inventory {
         val type = SmithingInventory::class.java
         return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ ->

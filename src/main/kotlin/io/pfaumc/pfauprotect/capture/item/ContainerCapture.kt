@@ -70,6 +70,7 @@ import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.event.player.PlayerSwapHandItemsEvent
 import org.bukkit.event.world.LootGenerateEvent
+import org.bukkit.Keyed
 import org.bukkit.inventory.AnvilInventory
 import org.bukkit.inventory.BlockInventoryHolder
 import org.bukkit.inventory.CartographyInventory
@@ -340,8 +341,21 @@ internal fun playerHolders(uuid: UUID, inventory: PlayerInventory): (Int) -> Hol
 // only ever rearranges whole items — a workbench, and everything folded into it: dyeing, a signed
 // book, a copied banner, a scaled map — consumes and produces rather than mutates, so its two sides
 // carry the ordinary form. The rest hand back the very item that went in, changed.
+// The special recipes that copy or recolour rather than make, named by the game's own recipe key.
+private val SPECIAL_CRAFTS = mapOf(
+    "armor_dye" to Cause.DYE_ITEM,
+    "shulker_box_coloring" to Cause.DYE_ITEM,
+    "book_cloning" to Cause.BOOK_COPY,
+    "banner_duplicate" to Cause.BANNER_DUPLICATE,
+    "map_cloning" to Cause.MAP_CLONE,
+    "map_extending" to Cause.MAP_SCALE_LOCK,
+)
+
 internal fun shiftOf(top: Inventory): Shift? = when (top) {
-    is CraftingInventory -> Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
+    // Read while the click is delivered, like the smithing recipe below: the match is gone after it.
+    is CraftingInventory -> (top.recipe as? Keyed)?.key?.takeIf { it.namespace == "minecraft" }?.let { SPECIAL_CRAFTS[it.key] }
+        ?.let { Shift(it, it, Kind.TRANSFER, Cause.CRAFT_REMAINDER) }
+        ?: Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
     is AnvilInventory -> Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
     is GrindstoneInventory -> Shift(Cause.GRINDSTONE, Cause.GRINDSTONE, Kind.MUTATE)
     // The station itself names which of the two smithing recipes matched, and it only names it while
