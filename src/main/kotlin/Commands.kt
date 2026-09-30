@@ -45,6 +45,8 @@ class CommandListener(
     private val capture: ContainerCaptureListener,
     private val codec: ItemFormCodec,
     private val origins: SpawnOrigins,
+    // Runs a task on the player's own scheduler a tick later.
+    private val later: (Player, () -> Unit) -> Unit,
 ) : Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -67,9 +69,17 @@ class CommandListener(
         val given = if (words[0] == "give") words.getOrNull(2)?.let(::parse) else null
         val count = words.getOrNull(3)?.toIntOrNull() ?: 1
         for (player in players) {
-            use.gain?.let { capture.intend(player, Intent(it, from = Void, form = given?.form)) }
-            use.loss?.let { capture.intend(player, Intent(it, to = Void)) }
-            use.change?.let { capture.intend(player, mutation(it)) }
+            val reasons = listOfNotNull(
+                use.gain?.let { Intent(it, from = Void, form = given?.form) },
+                use.loss?.let { Intent(it, to = Void) },
+                use.change?.let { mutation(it) },
+            )
+            val leave = { reasons.forEach { capture.intend(player, it) } }
+            // From another region the server hands the command to the player's scheduler a tick on,
+            // queued behind the pass an intent left now would schedule: that pass would spend the reason
+            // on an inventory the command has not touched yet. Left a tick later, the reason lands
+            // before the command's action and its pass after it.
+            if (Bukkit.isOwnedByCurrentRegion(player)) leave() else later(player, leave)
             given?.let { origins.expect(Void, Cause.CMD_GIVE, it.key, spotOf(player.location), count) }
         }
     }
