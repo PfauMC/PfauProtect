@@ -10,6 +10,10 @@ import org.bukkit.event.player.PlayerCommandPreprocessEvent
 import org.bukkit.event.server.RemoteServerCommandEvent
 import org.bukkit.event.server.ServerCommandEvent
 
+// How long a command's reason waits for the change it explains. The server applies a command to a
+// player in another region a tick or two after it is heard, and a pass can run in between.
+internal const val COMMAND_LINGER_MILLIS = 250L
+
 // A command's words, the way the server will read them: no slash, no namespace, lower case name.
 internal fun commandWords(line: String): List<String> {
     val words = line.trim().removePrefix("/").split(' ').filter { it.isNotEmpty() }
@@ -68,11 +72,12 @@ class CommandListener(
         // pickup animation can both be recognised by it.
         val given = if (words[0] == "give") words.getOrNull(2)?.let(::parse) else null
         val count = words.getOrNull(3)?.toIntOrNull() ?: 1
+        val until = System.currentTimeMillis() + COMMAND_LINGER_MILLIS
         for (player in players) {
             val reasons = listOfNotNull(
-                use.gain?.let { Intent(it, from = Void, form = given?.form) },
-                use.loss?.let { Intent(it, to = Void) },
-                use.change?.let { mutation(it) },
+                use.gain?.let { Intent(it, from = Void, form = given?.form, until = until) },
+                use.loss?.let { Intent(it, to = Void, until = until) },
+                use.change?.let { mutation(it, until) },
             )
             val leave = { reasons.forEach { capture.intend(player, it) } }
             // From another region the server hands the command to the player's scheduler a tick on,

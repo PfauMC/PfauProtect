@@ -34,6 +34,21 @@ class IntentTest {
         assertEquals(listOf(Move(bag(0), placed, key("stone"), 1, Cause.BLOCK_PLACE, Confidence.FACT)), moves)
     }
 
+    // A command's reason is handed on by a pass that did not spend it, so the pass has to say which it
+    // spent: none when the inventory had not changed yet, the clear once the clear shows.
+    @Test
+    fun `a pass says which intents it spent and leaves the rest for the next one`() {
+        val clear = Intent(Cause.CMD_CLEAR, to = Void, until = 1L)
+        val give = Intent(Cause.CMD_GIVE, from = Void, form = "stone".toByteArray(), until = 1L)
+        val spent = HashSet<Intent>()
+        Intents.explain(emptyList(), listOf(clear, give), player, used = spent::add)
+        assertTrue(spent.isEmpty())
+
+        val moves = Intents.explain(listOf(lost("dirt", 5)), listOf(clear, give), player, used = spent::add)
+        assertEquals(setOf(clear), spent)
+        assertEquals(Cause.CMD_CLEAR, moves.single().cause)
+    }
+
     @Test
     fun `an intent explains a gain the pass could not pair`() {
         val moves = Intents.explain(

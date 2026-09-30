@@ -912,7 +912,10 @@ class ContainerCaptureListener(
         val timestamp = System.currentTimeMillis()
         // A bundle the player holds is theirs to empty: a drop out of it is still their drop.
         val carried = { nested: Nested -> nested.ownerId in was.containers }
-        val moves = Intents.explain(edges, taken, player.uniqueId, unspent, carried) { form ->
+        val spent = HashSet<Intent>()
+        // A transformation's reason is spent by whatever the pass gathered at all.
+        if (edges.isNotEmpty()) taken.filter { it.shift != null }.forEach(spent::add)
+        val moves = Intents.explain(edges, taken, player.uniqueId, unspent, carried, used = spent::add) { form ->
             after.stacks.entries.firstOrNull { (holder, stack) ->
                 holder is PlayerHolder && holder.uuid == player.uniqueId && stack.key.form.contentEquals(form)
             }?.key
@@ -923,6 +926,11 @@ class ContainerCaptureListener(
         }
         // After the movements, so a bundle picked up unnamed arrives under the form it was carried in.
         for (rows in namingRows(after, timestamp)) sink(rows)
+        val lingering = taken.filter { it.until != null && it.until > timestamp && it !in spent }
+        if (lingering.isNotEmpty()) {
+            for (intent in lingering) intents.add(player.uniqueId, intent)
+            scheduleRecompute(player)
+        }
     }
 
     private fun rebaseline(player: Player) {

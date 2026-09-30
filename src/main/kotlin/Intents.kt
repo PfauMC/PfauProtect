@@ -45,6 +45,10 @@ class Intent(
     // on nothing here; the pass reads it after the fact to gather its own unpaired ends into one
     // transaction.
     val shift: Shift? = null,
+    // Until when a pass that had nothing for it to explain hands it on to the next one instead of
+    // dropping it. A command from another region reaches the player's slots on its own schedule, and
+    // any pass in between would otherwise spend its reason on an inventory it has not touched yet.
+    val until: Long? = null,
 ) {
     // An intent is about the slots of the player who left it, so the end that is not its counterparty
     // has to be one of theirs. Matching on form alone lets an open container's own unpaired loss take
@@ -106,6 +110,8 @@ object Intents {
         // Whether a container item's contents are in this player's hands: a bundle they hold empties
         // under their own drop, the loss coming out of the bundle rather than out of a slot.
         carried: (Nested) -> Boolean = { false },
+        // Told of every intent that explained something, so one that lingers knows it was spent.
+        used: (Intent) -> Unit = {},
         // Any slot of this player's that is holding the form, for a netted pair neither intent gave a
         // slot of its own. The pass can see that and this cannot.
         carrying: (ByteArray) -> Holder? = { null },
@@ -120,6 +126,7 @@ object Intents {
                 // One click can spread a stack over a dozen slots and that is still one reason, so an
                 // intent used as a label is never used up by the edges it names.
                 val label = intents.firstOrNull { it.labels(edge, player) }
+                label?.let(used)
                 moves += Move(edge.from, edge.to, edge.key, edge.qty, label?.cause ?: causeOf(edge), Confidence.FACT)
                 continue
             }
@@ -133,6 +140,7 @@ object Intents {
                     break
                 }
                 val intent = intents[index]
+                used(intent)
                 val qty = minOf(remaining, left[index])
                 left[index] -= qty
                 remaining -= qty
@@ -173,6 +181,8 @@ object Intents {
                 val qty = minOf(left[out], left[into])
                 left[out] -= qty
                 left[into] -= qty
+                used(outgoing)
+                used(incoming)
                 val key = ItemKey(form, null)
                 moves += Move(holder, to, key, qty, outgoing.cause, Confidence.FACT, outgoing.actor)
                 moves += Move(from, holder, key, qty, incoming.cause, Confidence.FACT, incoming.actor)

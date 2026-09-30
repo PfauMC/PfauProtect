@@ -134,7 +134,7 @@ internal fun cauldronCause(reason: ChangeReason): Cause? = when (reason) {
 
 // A changed item carries every reason on both of its sides: the empty bucket went and the full one came,
 // and neither happened without the other.
-internal fun mutation(cause: Cause) = Intent(cause, shift = Shift(cause, cause, Kind.MUTATE))
+internal fun mutation(cause: Cause, until: Long? = null) = Intent(cause, shift = Shift(cause, cause, Kind.MUTATE), until = until)
 
 class ItemUseListener(
     private val capture: ContainerCaptureListener,
