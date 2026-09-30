@@ -16,6 +16,11 @@ import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.capture.item.Stack
+import org.bukkit.block.data.Directional
+import org.bukkit.Tag
+import io.pfaumc.pfauprotect.storage.NestedOwners
+import io.pfaumc.pfauprotect.model.Nested
+import io.pfaumc.pfauprotect.capture.item.NestedItems
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
@@ -270,6 +275,15 @@ private const val DISPENSE_REACH = 2.5
 
 internal class SlotChange(val slot: Int, val key: ItemKey, val qty: Int, val gain: Boolean)
 
+/**
+ * A dispense that put its item down as the block in front of it — a shulker box, a carved pumpkin, a
+ * skull: one item gone from the slot, nothing gained in its place, and the block in front changed into
+ * one that places as that item. A bucket emptied gains a bucket back and is a mutation instead, and a
+ * pumpkin that became a golem left no block to hold it.
+ */
+internal fun placedInFront(changes: List<SlotChange>, frontBefore: String, frontNow: String, placesAs: Material?, spent: Material) =
+    changes.size == 1 && !changes[0].gain && changes[0].qty == 1 && frontBefore != frontNow && placesAs == spent
+
 // What a dispense did to the dispenser beyond what came out of it as an entity. The slot it fired
 // from is one short or holds something else — a bucket filled, a bottle filled — and a transformation
 // that leaves a remainder puts the product in another slot, as a form that slot did not hold before.
@@ -302,6 +316,7 @@ class BlockMechanismListener(
     private val sink: (List<Transfer>) -> Unit,
     private val energy: Energy = Energy(),
     private val entities: EntityOrigins = EntityOrigins(),
+    private val owners: NestedOwners? = null,
     // Runs a task on the block's own region a tick later.
     private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
@@ -377,8 +392,13 @@ class BlockMechanismListener(
         // and the only way to know which is to look at the dispenser once the behaviour has run.
         val cause = if (block.type == Material.DROPPER) Cause.DROPPER_EJECT else Cause.DISPENSER_EJECT
         val ejected = origins.expect(from, cause, key, spotOf(block.location), item.amount, load.actor)
-        val projectile = CraftItemStack.asNMSCopy(item).item is ProjectileItem
-        later(block) { settleDispense(block, slot, load.before, ejected(), projectile, load.actor) }
+        val stack = CraftItemStack.asNMSCopy(item)
+        val projectile = stack.item is ProjectileItem
+        val front = (block.blockData as? Directional)?.facing?.let(block::getRelative)
+        val frontBefore = front?.blockData?.asString
+        later(block) {
+            settleDispense(block, slot, load.before, ejected(), projectile, load.actor, front, frontBefore, stack)
+        }
     }
 
     private fun settleDispense(
@@ -388,10 +408,20 @@ class BlockMechanismListener(
         ejected: Int,
         projectile: Boolean,
         actor: UUID?,
+        front: Block?,
+        frontBefore: String?,
+        spent: NmsItemStack,
     ) {
         val after = contentsOf(block) ?: return
         val changes = dispenseChanges(before, after, slot, ejected)
         if (changes.isEmpty()) return
+        if (front != null && frontBefore != null) {
+            val now = front.blockData
+            val material = CraftItemStack.asBukkitCopy(spent).type
+            if (placedInFront(changes, frontBefore, now.asString, now.placementMaterial, material)) {
+                return placedFromDispenser(block, changes.single(), front, spent, actor)
+            }
+        }
         // One item spent is a movement; one turned into another is a mutation of both sides together.
         val mutated = changes.any { it.gain }
         val cause = if (projectile && !mutated) Cause.DISPENSED_PROJECTILE else Cause.DISPENSER_BEHAVIOR
@@ -410,6 +440,45 @@ class BlockMechanismListener(
                 actor = actor,
             )
         })
+    }
+
+    // What a hand's placement writes, from the dispenser's slot: the position takes the item over, and a
+    // shulker box's contents move from the item's name into the block's slots.
+    private fun placedFromDispenser(block: Block, change: SlotChange, front: Block, spent: NmsItemStack, actor: UUID?) {
+        val at = positionOf(front)
+        val timestamp = System.currentTimeMillis()
+        placed.setFormAt(at.world, at.x, at.y, at.z, change.key.form)
+        val moves = arrayListOf(
+            Transfer(
+                cause = Cause.DISPENSER_BEHAVIOR,
+                from = containerAt(block, change.slot),
+                to = at,
+                form = change.key.form,
+                damage = change.key.damage,
+                qty = 1,
+                timestamp = timestamp,
+                actor = actor,
+            )
+        )
+        val owners = owners
+        if (owners != null && Tag.SHULKER_BOXES.isTagged(front.type)) {
+            val owner = NestedItems.ownerOf(spent) ?: UUID.randomUUID()
+            owners.setOwnerAt(at.world, at.x, at.y, at.z, owner)
+            for ((index, child) in NestedItems.contents(spent)) {
+                val encoded = codec.encode(child)
+                moves += Transfer(
+                    cause = Cause.CONTAINER_PLACE_UNPACK,
+                    from = Nested(owner, index),
+                    to = containerAt(front, index),
+                    form = encoded.key.form,
+                    damage = encoded.key.damage,
+                    qty = encoded.count,
+                    timestamp = timestamp,
+                    actor = actor,
+                )
+            }
+        }
+        sink(moves)
     }
 
     private fun contentsOf(block: Block): List<Stack?>? {

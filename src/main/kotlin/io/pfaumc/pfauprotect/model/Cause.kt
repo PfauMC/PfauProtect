@@ -218,6 +218,8 @@ enum class Cause(val id: Int) {
     // A block a player changed by hand without placing or breaking anything: a door opened, a log
     // stripped, a path dug, a repeater set, a cake eaten.
     BLK_PLAYER_USE(0xCD),
+    // A liquid or powder snow a player's bucket put down or took up.
+    BLK_BUCKET(0xCC),
 
     CMD_GIVE(0xF0),
     CMD_ITEM_REPLACE(0xF1),

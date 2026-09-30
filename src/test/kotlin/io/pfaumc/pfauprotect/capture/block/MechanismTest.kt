@@ -27,6 +27,7 @@ import org.bukkit.event.block.BlockCookEvent
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -56,6 +57,27 @@ class MechanismTest {
     private fun dirt(count: Int = 1) = ItemStack(Items.DIRT, count)
 
     private fun held(name: String, count: Int) = Stack(ItemKey(name.toByteArray(), null), count)
+
+    // A dispenser puts its item down only when one item went, nothing came back, and the block in front
+    // became one made of it: a bucket comes back as a bucket, and a pumpkin that became a golem is gone.
+    @Test
+    fun `a dispense that placed its item is told apart from one that spent it`() {
+        val box = ItemKey("shulker_box".toByteArray(), null)
+        val spent = listOf(SlotChange(4, box, 1, gain = false))
+        val air = "minecraft:air"
+        val shulker = "minecraft:shulker_box[facing=east]"
+
+        assertTrue(placedInFront(spent, air, shulker, Material.SHULKER_BOX, Material.SHULKER_BOX))
+        assertFalse(placedInFront(spent, air, air, Material.AIR, Material.SHULKER_BOX))
+        assertFalse(placedInFront(spent, air, "minecraft:stone", Material.STONE, Material.SHULKER_BOX))
+        val bucket = ItemKey("bucket".toByteArray(), null)
+        assertFalse(
+            placedInFront(
+                spent + SlotChange(4, bucket, 1, gain = true), air, "minecraft:water[level=0]", Material.AIR,
+                Material.WATER_BUCKET,
+            )
+        )
+    }
 
     // What came out as an entity is the spawn's to write; the dispenser only owes what it spent.
     @Test

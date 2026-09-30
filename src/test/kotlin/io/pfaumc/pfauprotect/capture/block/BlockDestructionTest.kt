@@ -1494,11 +1494,16 @@ class BlockDestructionTest {
 
         assertTrue(touches.touch(at))
         assertFalse(touches.touch(at))
-        assertFalse(touches.take(at))
+        assertEquals(Cause.BLK_PLAYER_USE, touches.take(at))
+
+        // The click comes before the bucket it carries, and the bucket's cause is the one kept.
+        assertTrue(touches.touch(at))
+        assertFalse(touches.touch(at, Cause.BLK_BUCKET))
+        assertEquals(Cause.BLK_BUCKET, touches.take(at))
 
         assertTrue(touches.touch(at))
         touches.filed(world, listOf(BlockChange(1, 64, 1, AIR, TORCH, Cause.BLK_PLAYER_PLACE, clock, actor = alice)))
-        assertTrue(touches.take(at))
+        assertNull(touches.take(at))
 
         // A read that never ran does not shut the position for good.
         assertTrue(touches.touch(at))

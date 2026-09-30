@@ -169,8 +169,9 @@ class LookupTest {
     @Test
     fun `the block plane is reachable by name and every block cause is under one of the filters`() {
         val blockRange = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT +
-            Cause.BLK_PLAYER_SWITCH + Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE
-        assertEquals(36, blockRange.size)
+            Cause.BLK_PLAYER_SWITCH + Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE +
+            Cause.BLK_BUCKET
+        assertEquals(37, blockRange.size)
         assertEquals(blockRange, Action.of("block")?.causes)
 
         val named = Action.entries.filter { it != Action.BLOCK }.flatMap { it.causes }.toSet()
@@ -184,7 +185,7 @@ class LookupTest {
     fun `no filter mixes the two planes`() {
         for (action in Action.entries) {
             if (action == Action.BLOCK) continue
-            val block = action.causes.count { it.id in 0xD0..0xEF }
+            val block = action.causes.count { it in Action.BLOCK.causes }
             assertTrue(
                 block == 0 || block == action.causes.size,
                 "${action.keys.first()} names causes from both planes",

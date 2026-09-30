@@ -237,7 +237,7 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(NestedCaptureListener(ledger, codec, mechanisms), this)
         server.pluginManager.registerEvents(
             BlockMechanismListener(
-                codec, mechanisms, origins, ledger, uncovered::submit, energy, entities,
+                codec, mechanisms, origins, ledger, uncovered::submit, energy, entities, ledger,
             ) { block, task ->
                 server.regionScheduler.run(this, block.location) { task() }
             },

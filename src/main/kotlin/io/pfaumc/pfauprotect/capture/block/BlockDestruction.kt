@@ -66,6 +66,7 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.event.block.Action
+import org.bukkit.event.block.BlockDispenseEvent
 import org.bukkit.event.block.BlockBurnEvent
 import org.bukkit.event.block.BlockExplodeEvent
 import org.bukkit.event.block.BlockFadeEvent
@@ -84,6 +85,7 @@ import org.bukkit.event.entity.EntityChangeBlockEvent
 import org.bukkit.event.entity.EntityExplodeEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.player.PlayerBucketEmptyEvent
+import org.bukkit.event.player.PlayerBucketFillEvent
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.world.StructureGrowEvent
 import org.bukkit.plugin.Plugin
@@ -657,24 +659,28 @@ internal fun handMade(before: String, after: String): Boolean {
 private const val TOUCH_STALE_MILLIS = 5_000L
 
 /**
- * Positions a player has just touched, waiting for the read a tick later that files what the touch
- * changed. Every row any capture submits passes through [filed], so a touch whose change was already
- * written by the capture that made it — a placement, a break, a switch, a sign — is left to that row.
- * The journal cannot answer that in time: a submitted row is still queued for its writer.
+ * Positions a player or a mechanism has just touched, waiting for the read a tick later that files
+ * what the touch changed. Every row any capture submits passes through [filed], so a touch whose change
+ * was already written by the capture that made it — a placement, a break, a switch, a sign — is left
+ * to that row. The journal cannot answer that in time: a submitted row is still queued for its writer.
  */
 class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
-    private class Touch(val at: Long) {
+    private class Touch(val at: Long, @Volatile var cause: Cause) {
         @Volatile var filed = false
     }
 
     private val pending = ConcurrentHashMap<WorldBlock, Touch>()
 
     /** True when this touch is the one to read the position back; a second one in the tick is not. */
-    fun touch(at: WorldBlock): Boolean {
+    fun touch(at: WorldBlock, cause: Cause = Cause.BLK_PLAYER_USE): Boolean {
         val taking = now()
         val held = pending[at]
-        if (held != null && taking - held.at < TOUCH_STALE_MILLIS) return false
-        pending[at] = Touch(taking)
+        if (held != null && taking - held.at < TOUCH_STALE_MILLIS) {
+            // The click comes first and the bucket after it, and the bucket names the change better.
+            if (cause != Cause.BLK_PLAYER_USE) held.cause = cause
+            return false
+        }
+        pending[at] = Touch(taking, cause)
         return true
     }
 
@@ -683,8 +689,8 @@ class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
         for (change in changes) pending[WorldBlock(world, change.x, change.y, change.z)]?.filed = true
     }
 
-    /** Ends the wait, answering whether some capture filed the position in the meantime. */
-    fun take(at: WorldBlock): Boolean = pending.remove(at)?.filed == true
+    /** Ends the wait: the cause to file under, or null where some capture filed the position already. */
+    fun take(at: WorldBlock): Cause? = pending.remove(at)?.takeIf { !it.filed }?.cause
 }
 
 /**
@@ -759,9 +765,9 @@ class BlockDestructionListener(
         explode(event.blockList(), cause, by, gone)
     }
 
-    // No row: an ignition puts fire where there was none and takes no block away. It is the root of
-    // every fire chain all the same, and without a note here the burning and the spreading that
-    // follow have no culprit to carry forward.
+    // The root of every fire chain: without a note here the burning and the spreading that follow
+    // have no culprit to carry forward. The fire itself, or the candle or campfire lit, is read back
+    // like any other touch; a dispenser's flint is the dispenser's read.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onIgnite(event: BlockIgniteEvent) {
         val player = event.player ?: return
@@ -771,6 +777,7 @@ class BlockDestructionListener(
         // fire answers nothing and the whole chain off it burns unattributed.
         val lit = BaseFireBlock.getState(block.level, block.position).asBlockData().asString
         attribution.placed(positionOf(block), lit, player.uniqueId)
+        readBack(listOf(block), Attributed(player.uniqueId, Confidence.FACT))
     }
 
     // The same for the other chain: emptying a bucket raises no placement, so the water it puts down
@@ -778,8 +785,27 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBucketEmpty(event: PlayerBucketEmptyEvent) {
         val block = event.block as CraftBlock
+        readBack(listOf(block), Attributed(event.player.uniqueId, Confidence.FACT), Cause.BLK_BUCKET)
         val placed = bucketPlaced(event.bucket, block.blockState) ?: return
         attribution.placed(positionOf(block), placed, event.player.uniqueId)
+    }
+
+    // A source taken up, a waterlogged block drained, powder snow scooped.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onBucketFill(event: PlayerBucketFillEvent) =
+        readBack(listOf(event.block), Attributed(event.player.uniqueId, Confidence.FACT), Cause.BLK_BUCKET)
+
+    /**
+     * Whatever a dispenser does to the block in front of it: a liquid put down or taken up, a shulker
+     * box, a carved pumpkin, powder snow, a fire, a beehive drained. The behaviour runs after the
+     * event, so the position is read back, and whoever set the dispenser off is who the energy around
+     * it names. What it throws and the entities it places are the item plane's.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onDispensed(event: BlockDispenseEvent) {
+        val block = event.block
+        val facing = (block.blockData as? Directional)?.facing ?: return
+        readBack(listOf(block.getRelative(facing)), energyAt(block, energy), Cause.BLK_DISPENSER)
     }
 
     /**
@@ -890,26 +916,35 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR)
     fun onTouch(event: PlayerInteractEvent) {
         if (event.action == Action.LEFT_CLICK_AIR || event.action == Action.RIGHT_CLICK_AIR) return
-        if (!plugin.isEnabled) return
         val clicked = event.clickedBlock ?: return
-        val touched = listOfNotNull(clicked, otherHalfOf(clicked))
-            .filter { touches.touch(positionOf(it)) }
+        readBack(listOfNotNull(clicked, otherHalfOf(clicked)), Attributed(event.player.uniqueId, Confidence.FACT))
+    }
+
+    /**
+     * Queues the positions for the read at the start of the next tick. All of them are next to each
+     * other, so the region of the first owns the rest.
+     */
+    private fun readBack(blocks: List<Block>, by: Attributed?, cause: Cause = Cause.BLK_PLAYER_USE) {
+        if (!plugin.isEnabled) return
+        val touched = blocks
+            .filter { touches.touch(positionOf(it), cause) }
             // The block entity goes into the row as it was: a lectern, a jukebox or a pot put back by a
             // rollback needs what it held, not only its shape.
             .map { Site(positionOf(it), it, it.blockData, it.blockData.asString, payloadAt(it)) }
-        if (touched.isEmpty()) return
-        val by = Attributed(event.player.uniqueId, Confidence.FACT)
+        val first = touched.firstOrNull()?.block ?: return
         val timestamp = System.currentTimeMillis()
-        plugin.server.regionScheduler.execute(plugin, clicked.world, clicked.x shr 4, clicked.z shr 4) {
+        plugin.server.regionScheduler.execute(plugin, first.world, first.x shr 4, first.z shr 4) {
             val changed = touched.mapNotNull { site ->
-                if (touches.take(site.at)) return@mapNotNull null
+                val filedAs = touches.take(site.at) ?: return@mapNotNull null
                 val now = site.block.blockData.asString
                 if (!handMade(site.before.asString, now)) return@mapNotNull null
-                Site(site.at, site.block, site.before, now, site.payload)
+                filedAs to Site(site.at, site.block, site.before, now, site.payload)
             }
             if (changed.isEmpty()) return@execute
-            val log = logs.get(clicked.world.uid) ?: return@execute
-            file(log, changed, Cause.BLK_PLAYER_USE, by, timestamp)
+            val log = logs.get(first.world.uid) ?: return@execute
+            for ((filedAs, sites) in changed.groupBy({ it.first }, { it.second })) {
+                file(log, sites, filedAs, by, timestamp)
+            }
         }
     }
 
@@ -1205,10 +1240,14 @@ class BlockDestructionListener(
         }
         // The note saying what a position took over is cleared wherever the block it was written about
         // stopped standing there: left behind, it answers for a block that is not the one there.
-        val positions = gone.map { it.at }
+        // A position that was empty released nothing, and a form noted there now belongs to whatever
+        // was just put in it: a dispenser's shulker box notes its form in the same tick this runs.
+        val releasing = gone.filter { !emptied(it.before.asString) }
+        if (releasing.isEmpty()) return
+        val positions = releasing.map { it.at }
         val remembered = placed.formsAt(positions)
         placed.clearFormsAt(positions)
-        val transaction = gone.flatMap { released(it, remembered[it.at], cause, by, timestamp) }
+        val transaction = releasing.flatMap { released(it, remembered[it.at], cause, by, timestamp) }
         if (transaction.isEmpty()) return
         // A position that took another block on is holding that one now, and that is what a break
         // there has to give back, so the note follows the position rather than staying cleared.
