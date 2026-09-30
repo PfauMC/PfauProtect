@@ -27,7 +27,14 @@ import java.util.concurrent.ConcurrentLinkedQueue
 // A recipe can also leave something behind in the grid — the bucket a cake was made with — which
 // arrives out of the Void exactly as the product does. `remainder` is what that is called; a station
 // that leaves nothing behind calls it the result.
-class Shift(val consume: Cause, val result: Cause, val kind: Kind, val remainder: Cause = result)
+class Shift(
+    val consume: Cause,
+    val result: Cause,
+    val kind: Kind,
+    val remainder: Cause = result,
+    // A consumed form that is spent for a reason of its own: the lapis beside the item enchanted.
+    val consumeOf: (ByteArray) -> Cause? = { null },
+)
 
 class Intent(
     val cause: Cause,

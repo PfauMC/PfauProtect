@@ -57,6 +57,13 @@ import org.bukkit.event.player.PlayerBucketFillEvent
 import org.bukkit.event.player.PlayerInteractEntityEvent
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.inventory.EquipmentSlot
+import net.minecraft.world.item.CushionItem
+import net.minecraft.world.item.PotionItem
+import net.minecraft.world.item.CompassItem
+import net.minecraft.tags.ItemTags
+import net.minecraft.tags.BlockTags
+import org.bukkit.craftbukkit.block.CraftBlock
+import org.bukkit.entity.Axolotl
 import net.minecraft.world.item.ItemStack as NmsItemStack
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
@@ -79,6 +86,8 @@ internal fun useCause(item: NmsItemStack, target: Material?): Cause? {
         // Set off from the ground rather than launched from a crossbow or a glide.
         kind is FireworkRocketItem -> if (target != null) Cause.FIREWORK_LAUNCH else null
         target == Material.RESPAWN_ANCHOR && item.`is`(Items.GLOWSTONE) -> Cause.ITEM_INTO_SINGLE_BLOCK
+        // A candle stuck into a whole cake raises no placement: the cake becomes a candle cake.
+        target == Material.CAKE && item.`is`(ItemTags.CANDLES) -> Cause.ITEM_INTO_SINGLE_BLOCK
         spentElsewhere(item) -> null
         else -> Cause.ITEM_USED
     }
@@ -122,7 +131,7 @@ private fun spentElsewhere(item: NmsItemStack): Boolean {
         kind is BottleItem || kind is EmptyMapItem || kind is BundleItem || kind is WritableBookItem ||
         // Each of these becomes an entity, and the entity's own placement event names where it went.
         kind is BoatItem || kind is MinecartItem || kind is ArmorStandItem || kind is EndCrystalItem ||
-        kind is HangingEntityItem
+        kind is HangingEntityItem || kind is CushionItem
 }
 
 // A cauldron changes the item in hand into another one; it spends and hands back in the same slot.
@@ -158,6 +167,19 @@ class ItemUseListener(
             return
         }
         val target = event.clickedBlock?.type
+        // Water poured onto dirt makes mud and leaves the bottle; a compass on a lodestone becomes a
+        // lodestone compass, in the slot or beside it.
+        val block = event.clickedBlock
+        if (live.item is PotionItem && block != null &&
+            (block as CraftBlock).blockState.`is`(BlockTags.CONVERTIBLE_TO_MUD)
+        ) {
+            capture.intend(player, mutation(Cause.BOTTLE_EMPTY))
+            return
+        }
+        if (live.item is CompassItem && target == Material.LODESTONE) {
+            capture.intend(player, mutation(Cause.ITEM_USED))
+            return
+        }
         // A block that keeps what is put into it has its own reckoning, slot by slot.
         if (target != null && keepsItems(target)) return
         val cause = useCause(live, target) ?: return
@@ -173,6 +195,16 @@ class ItemUseListener(
         val entity = event.rightClicked
         // A frame and a stand hold what they are given, and their own events say where.
         if (entity is ItemFrame || entity is ArmorStand) return
+        // A dancing allay takes an amethyst shard to split in two; the shard is gone, not held.
+        if (entity is Allay && entity.isDancing && stack.type == Material.AMETHYST_SHARD) {
+            spend(player, event.hand, stack, Cause.FEED_MOB)
+            return
+        }
+        // An axolotl eats the fish out of the bucket and hands the water back.
+        if (entity is Axolotl && stack.type == Material.TROPICAL_FISH_BUCKET) {
+            capture.intend(player, mutation(Cause.FEED_MOB))
+            return
+        }
         // A bowl held to a mooshroom comes back full of stew.
         if (entity is MushroomCow && stack.type == Material.BOWL) {
             capture.intend(player, mutation(Cause.ITEM_USED))

@@ -945,6 +945,12 @@ class BlockDestructionListener(
             val after = event.blockData.asString
             if (!handMade(block.blockData.asString, after)) return
             val by = Attributed(entity.uniqueId, Confidence.FACT)
+            // A hoe on rooted dirt knocks the hanging roots out of it.
+            if (block.type == Material.ROOTED_DIRT) {
+                codec.encodeOrNull(org.bukkit.inventory.ItemStack(Material.HANGING_ROOTS))?.let { roots ->
+                    origins.expect(Void, Cause.BLOCK_INTERACT_DROP, roots.key, spotOf(block.location), 1, entity.uniqueId)
+                }
+            }
             // A double copper chest waxed or scraped on one half reshapes the other with no event.
             chestPartnerOf(block)?.let { readBack(listOf(it), by) }
             return changed(block, block.blockData, after, Cause.BLK_PLAYER_USE, by)

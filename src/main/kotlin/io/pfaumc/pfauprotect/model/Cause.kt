@@ -87,6 +87,10 @@ enum class Cause(val id: Int) {
     CREATIVE_CLONE(0xB0),
     CREATIVE_PICK(0xB1),
     DIRECT_NEW_ITEM(0xB2),
+    // A page of a book and quill written or rewritten: the text is part of what the item is.
+    BOOK_EDIT(0xB3),
+    // The recipe book laying a recipe's ingredients into the grid out of the inventory.
+    RECIPE_BOOK_FILL(0xB4),
 
     CRAFT_CONSUME(0x40),
     CRAFT_RESULT(0x41),

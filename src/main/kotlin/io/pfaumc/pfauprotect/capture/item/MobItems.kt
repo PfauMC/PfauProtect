@@ -17,6 +17,8 @@ import org.bukkit.event.entity.EntitySpawnEvent
 import org.bukkit.inventory.InventoryHolder
 import org.bukkit.craftbukkit.CraftEquipmentSlot
 import org.bukkit.inventory.ItemStack as BukkitItemStack
+import org.bukkit.event.player.PlayerInteractEntityEvent
+import org.bukkit.event.player.PlayerBucketEntityEvent
 import org.bukkit.entity.AbstractArrow
 import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Armadillo
@@ -132,7 +134,7 @@ class MobItemListener(
 
     // Shearing and bartering throw their results through the same drop event as anything else a mob
     // lets go of, inside the same call as their own event. Marked for the tick it happened in.
-    private class Marked(val entity: java.util.UUID, val tick: Int)
+    private class Marked(val entity: java.util.UUID, val tick: Int, val actor: java.util.UUID? = null)
 
     private val sheared = ThreadLocal<Marked?>()
     private val bartered = ThreadLocal<Marked?>()
@@ -142,7 +144,30 @@ class MobItemListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onShear(event: PlayerShearEntityEvent) {
-        sheared.set(Marked(event.entity.uniqueId, Bukkit.getCurrentTick()))
+        sheared.set(Marked(event.entity.uniqueId, Bukkit.getCurrentTick(), event.player.uniqueId))
+    }
+
+    // Whoever is at a mob with an item in hand when it throws something out in the same call: shears
+    // taking off a saddle, armour or a harness raise no shear event of their own, a brush on an
+    // armadillo knocks off a scute.
+    private val handled = ThreadLocal<Marked?>()
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onHandled(event: PlayerInteractEntityEvent) {
+        val mark = Marked(event.rightClicked.uniqueId, Bukkit.getCurrentTick(), event.player.uniqueId)
+        handled.set(mark)
+        if (event.player.inventory.getItem(event.hand).type == Material.SHEARS) sheared.set(mark)
+    }
+
+    // A mob put into a bucket takes what it holds into the bucket with it, and brings it back out when
+    // it is let go: the ledger books it out with the capture and back with the release.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onBucketed(event: PlayerBucketEntityEvent) {
+        val mob = event.entity
+        for ((slot, form) in heldBy(mob)) {
+            unbookHeld(mob, slot)
+            pending.add(EntitySlot(mob.uniqueId, slot), Void, Cause.BUCKET_CAPTURE_MOB, ItemKey(form, null), 1, event.player.uniqueId)
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -230,7 +255,8 @@ class MobItemListener(
         // is a guess, and the uncovered tally is where a guess belongs.
         val guessed = entity is LivingEntity && from == Void && cause == Cause.MOB_THROW_ITEM
         val confidence = if (guessed) Confidence.INFERRED else Confidence.FACT
-        origins.expect(item.uniqueId, from, cause, encoded.key, encoded.count, confidence = confidence)
+        val actor = handled.get()?.takeIf { it.entity == entity.uniqueId && it.tick == Bukkit.getCurrentTick() }?.actor
+        origins.expect(item.uniqueId, from, cause, encoded.key, encoded.count, actor, confidence)
     }
 
     /**
@@ -241,7 +267,13 @@ class MobItemListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onSummoned(event: EntitySpawnEvent) {
         val entity = event.entity
-        if (entity.entitySpawnReason != CreatureSpawnEvent.SpawnReason.COMMAND || entity is Item) return
+        if (entity is Item) return
+        // Let out of a bucket, a mob brings back what it held when it went in.
+        val cause = when (entity.entitySpawnReason) {
+            CreatureSpawnEvent.SpawnReason.COMMAND -> Cause.CMD_SUMMON_ITEMS
+            CreatureSpawnEvent.SpawnReason.BUCKET -> Cause.BUCKET_RELEASE_MOB
+            else -> return
+        }
         val booked = ArrayList<Pair<Int, BukkitItemStack>>()
         (entity as? LivingEntity)?.equipment?.let { gear ->
             for (slot in org.bukkit.inventory.EquipmentSlot.entries) {
@@ -254,14 +286,14 @@ class MobItemListener(
         for ((slot, stack) in booked) {
             val encoded = codec.encodeOrNull(stack) ?: continue
             bookHeld(entity, slot, encoded.form)
-            pending.add(Void, EntitySlot(entity.uniqueId, slot), Cause.CMD_SUMMON_ITEMS, encoded.key, encoded.count)
+            pending.add(Void, EntitySlot(entity.uniqueId, slot), cause, encoded.key, encoded.count)
         }
         val inventory = (entity as? InventoryHolder)?.inventory
         if (inventory == null || carriesInventory(entity)) return
         val holders = containerHolders(inventory) ?: return
         for (slot in 0 until inventory.size) {
             val encoded = codec.encodeOrNull(inventory.getItem(slot)) ?: continue
-            pending.add(Void, holders(slot), Cause.CMD_SUMMON_ITEMS, encoded.key, encoded.count)
+            pending.add(Void, holders(slot), cause, encoded.key, encoded.count)
         }
     }
 

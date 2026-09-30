@@ -36,6 +36,9 @@ class ItemUseTest {
     fun `a use on a block is named by what was used and on what`() {
         assertEquals(Cause.BONEMEAL_USE, useCause(stack(Items.BONE_MEAL), Material.OAK_SAPLING))
         assertEquals(Cause.ITEM_INTO_SINGLE_BLOCK, useCause(stack(Items.GLOWSTONE), Material.RESPAWN_ANCHOR))
+        assertEquals(Cause.ITEM_INTO_SINGLE_BLOCK, useCause(stack(Items.CANDLE), Material.CAKE))
+        // A cushion becomes an entity, and its placement names where it went.
+        assertEquals(null, useCause(stack(Items.CUSHION.white()), Material.GRASS_BLOCK))
         assertEquals(Cause.EYE_INTO_FRAME, useCause(stack(Items.ENDER_EYE), Material.END_PORTAL_FRAME))
         assertEquals(Cause.WAX_APPLY, useCause(stack(Items.HONEYCOMB), Material.COPPER_BLOCK))
         assertEquals(Cause.SPAWN_EGG_USE, useCause(stack(Items.PIG_SPAWN_EGG), Material.GRASS_BLOCK))

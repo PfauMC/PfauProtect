@@ -710,11 +710,13 @@ class BlockMechanismListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onShearBlock(event: PlayerShearBlockEvent) {
         val block = event.block
-        if (block.type != Material.BEEHIVE && block.type != Material.BEE_NEST) return
+        // A hive gives its honeycomb, a pumpkin its seeds as it is carved.
+        val hive = block.type == Material.BEEHIVE || block.type == Material.BEE_NEST
+        val cause = if (hive) Cause.BEEHIVE_HARVEST else Cause.BLOCK_INTERACT_DROP
         val actor = event.player.uniqueId
         for (drop in event.drops) {
             val key = key(drop) ?: continue
-            origins.expect(Void, Cause.BEEHIVE_HARVEST, key, spotOf(block.location), drop.amount, actor)
+            origins.expect(Void, cause, key, spotOf(block.location), drop.amount, actor)
         }
     }
 

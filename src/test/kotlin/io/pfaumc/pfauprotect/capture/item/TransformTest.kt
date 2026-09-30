@@ -43,6 +43,24 @@ class TransformTest {
         assertEquals(moves.map { listOf(it) }, transactions(moves, null))
     }
 
+    // The lapis is spent on the enchantment beside the item it enchants, and says so by its form.
+    @Test
+    fun `a consumed form with a reason of its own keeps it`() {
+        val lapis = "lapis".toByteArray()
+        val enchant = Shift(Cause.ENCHANT_APPLY, Cause.ENCHANT_APPLY, Kind.MUTATE) { form ->
+            if (form.contentEquals(lapis)) Cause.ENCHANT_LAPIS_CONSUME else null
+        }
+        val moves = listOf(
+            move(table(0), Void, "sword", 1, Cause.CONTAINER_REMOVE),
+            move(table(1), Void, "lapis", 3, Cause.CONTAINER_REMOVE),
+            move(Void, table(0), "sword+sharpness", 1, Cause.CONTAINER_ADD),
+        )
+
+        val causes = transactions(moves, enchant).single().map { it.cause }
+
+        assertEquals(listOf(Cause.ENCHANT_APPLY, Cause.ENCHANT_LAPIS_CONSUME, Cause.ENCHANT_APPLY), causes)
+    }
+
     // The ingredients leave for the Void and the result arrives out of it. Apart they are unrelated
     // losses and an unexplained gain; together they are the recipe that was run.
     @Test

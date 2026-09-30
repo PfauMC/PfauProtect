@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.canvasmc.canvas.event.PlayerPostRespawnAsyncEvent
 import io.pfaumc.pfauprotect.model.Cause
+import com.destroystokyo.paper.event.player.PlayerRecipeBookClickEvent
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import io.pfaumc.pfauprotect.storage.EncodedItem
@@ -396,7 +397,7 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
     val rest = ArrayList<List<Move>>()
     for (move in moves) {
         when {
-            move.to == Void -> transformed += move.copy(cause = shift.consume)
+            move.to == Void -> transformed += move.copy(cause = shift.consumeOf(move.key.form) ?: shift.consume)
             // The product is taken to the player; what the recipe leaves behind stays in the grid.
             // A remainder that finds its grid slot still occupied — a stack of honey bottles —
             // is pushed into the inventory by the game and books as the result.
@@ -690,6 +691,9 @@ class ContainerCaptureListener(
         // the position took over, the tool would be handed back whole when the fire goes out, writing
         // off an item that is still in somebody's inventory.
         if (inHand.type.maxDurability > 0) return
+        // Wax, an eye of ender, a fire charge: the server raises a placement for what they do to a
+        // block, but they are not what the block is made of.
+        if (!inHand.type.isBlock) return
         val form = codec.encodeOrNull(inHand)?.form ?: return
         val block = event.block
         placed.setFormAt(block.world.uid, block.x, block.y, block.z, form)
@@ -750,15 +754,24 @@ class ContainerCaptureListener(
     // its own, so it needs a handler of its own. The table hands back the same item with the
     // enchantment on it, which the pass sees as one form leaving and another arriving in that slot.
     //
-    // Both sides carry the same reason. The lapis is spent applying the enchantment just as much as
-    // the item is, and there is no side to hang ENCHANT_LAPIS_CONSUME on that would not also catch the
-    // unenchanted item leaving.
-    // ponytail: telling them apart means a cause per form on the consumed side rather than one per
-    // transformation; worth building when a second transformation needs the same distinction.
+    // The lapis is spent applying the enchantment just as much as the item is, and it is told apart by
+    // its form on the consumed side.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onEnchant(event: EnchantItemEvent) {
-        val shift = Shift(Cause.ENCHANT_APPLY, Cause.ENCHANT_APPLY, Kind.MUTATE)
+        val lapis = lapisForm
+        val shift = Shift(Cause.ENCHANT_APPLY, Cause.ENCHANT_APPLY, Kind.MUTATE) { form ->
+            if (lapis != null && form.contentEquals(lapis)) Cause.ENCHANT_LAPIS_CONSUME else null
+        }
         intend(event.enchanter, Intent(shift.consume, shift = shift))
+    }
+
+    private val lapisForm by lazy { codec.encodeOrNull(BukkitItemStack(Material.LAPIS_LAZULI))?.form }
+
+    // The recipe book lays the ingredients into the grid by itself, with no click behind it.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onRecipeBook(event: PlayerRecipeBookClickEvent) {
+        recompute(event.player)
+        intend(event.player, Intent(Cause.RECIPE_BOOK_FILL))
     }
 
     // Using an empty map writes a filled one, in the hand that held it or beside it when the empty map
@@ -778,9 +791,9 @@ class ContainerCaptureListener(
     // up by whatever unrelated pass ran next and written as two strangers.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onEditBook(event: PlayerEditBookEvent) {
-        // The same event carries a plain page edit, which changes no form and has nothing to pair.
-        if (!event.isSigning) return
-        val shift = Shift(Cause.BOOK_SIGN, Cause.BOOK_SIGN, Kind.MUTATE)
+        // A plain page edit changes the form too: the pages are part of what a book and quill is.
+        val cause = if (event.isSigning) Cause.BOOK_SIGN else Cause.BOOK_EDIT
+        val shift = Shift(cause, cause, Kind.MUTATE)
         intend(event.player, Intent(shift.consume, shift = shift))
     }
 
