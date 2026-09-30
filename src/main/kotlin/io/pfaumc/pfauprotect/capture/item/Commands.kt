@@ -19,11 +19,19 @@ import org.bukkit.event.server.ServerCommandEvent
 internal const val COMMAND_LINGER_MILLIS = 250L
 
 // A command's words, the way the server will read them: no slash, no namespace, lower case name.
+// `execute … run give …` runs the give; everything before the last `run` only changes who and where.
 internal fun commandWords(line: String): List<String> {
     val words = line.trim().removePrefix("/").split(' ').filter { it.isNotEmpty() }
     if (words.isEmpty()) return words
-    return listOf(words[0].substringAfter(':').lowercase()) + words.drop(1)
+    val named = listOf(words[0].substringAfter(':').lowercase()) + words.drop(1)
+    if (named[0] != "execute") return named
+    val run = named.lastIndexOf("run")
+    return if (run < 0) named else commandWords(named.drop(run + 1).joinToString(" "))
 }
+
+// Whether the line runs its command through `execute`, which can make `@s` anybody.
+internal fun executed(line: String) =
+    line.trim().removePrefix("/").substringBefore(' ').substringAfter(':').lowercase() == "execute"
 
 // Which reasons a command leaves on the players it names, and who those players are, by argument.
 // Only commands that reach into a player's own slots are read here; one that fills a chest or spawns an
@@ -70,7 +78,7 @@ class CommandListener(
     private fun heard(sender: CommandSender, line: String) {
         val words = commandWords(line)
         val use = commandUse(words) ?: return
-        val players = targetsOf(sender, use.targets)
+        val players = targetsOf(sender, use.targets, executed(line))
         if (players.isEmpty()) return
         // /give names the item, so its gain and the ghost the server drops at the player's feet for the
         // pickup animation can both be recognised by it.
@@ -103,7 +111,9 @@ class CommandListener(
     // owns them — so anything but @s names every player online.
     // @p and @r over-name; a reason left on a player the command skipped explains nothing,
     // unless that player had an unexplained gain of their own in the same pass.
-    private fun targetsOf(sender: CommandSender, target: String?): List<Player> = when {
+    private fun targetsOf(sender: CommandSender, target: String?, executed: Boolean): List<Player> = when {
+        // Run through `execute as`, the command's own self is whoever that named.
+        executed && (target == null || target.startsWith("@")) -> Bukkit.getOnlinePlayers().toList()
         target == null || target == "@s" -> listOfNotNull(sender as? Player)
         target.startsWith("@") -> Bukkit.getOnlinePlayers().toList()
         else -> listOfNotNull(Bukkit.getPlayerExact(target))

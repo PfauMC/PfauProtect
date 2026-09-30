@@ -5,6 +5,7 @@ import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Transfer
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -15,6 +16,12 @@ class CommandsTest {
     fun `a command is read the way the server reads it`() {
         assertEquals(listOf("give", "Steve", "diamond", "3"), commandWords("/minecraft:GIVE Steve diamond 3"))
         assertEquals(emptyList<String>(), commandWords("  "))
+        // Only what runs counts: the give at the end of an execute chain, however deep.
+        assertEquals(
+            listOf("give", "@s", "diamond"),
+            commandWords("execute as @a at @s run execute if entity @s run minecraft:give @s diamond"),
+        )
+        assertTrue(executed("/minecraft:execute as Steve run clear @s"))
     }
 
     @Test
