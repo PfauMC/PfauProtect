@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.capture.item.Intent
 import io.papermc.paper.event.block.BlockPreDispenseEvent
 import io.papermc.paper.event.block.CompostItemEvent
 import io.papermc.paper.event.block.PlayerShearBlockEvent
@@ -345,6 +346,8 @@ class BlockMechanismListener(
     private val energy: Energy = Energy(),
     private val entities: EntityOrigins = EntityOrigins(),
     private val owners: NestedOwners? = null,
+    // Leaves a reason for the next pass over a player's slots, which are the pass's alone to write.
+    private val intend: (Player, Intent) -> Unit = { _, _ -> },
     // Runs a task on the block's own region a tick later.
     private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
@@ -410,6 +413,11 @@ class BlockMechanismListener(
         val from = containerAt(block, slot)
         if (event is BlockDispenseArmorEvent) {
             val target = event.targetEntity
+            // Armour put on a player lands in a slot of the player's own, written by the pass.
+            if (target is Player) {
+                intend(target, Intent(Cause.DISPENSER_BEHAVIOR, from = from, form = key.form, qty = item.amount, actor = load.actor))
+                return
+            }
             val equipped = EntitySlot(target.uniqueId, equipmentSlotOf(target, item))
             bookHeld(target, equipped.slot, key.form)
             pending.add(from, equipped, Cause.DISPENSER_BEHAVIOR, key, item.amount, load.actor)
