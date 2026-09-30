@@ -407,7 +407,13 @@ class BlockMechanismListener(
         val block = event.block
         val item = event.item
         val key = key(item) ?: return
-        val load = loaded.get()?.takeIf { it.at == positionOf(block) } ?: return
+        val at = positionOf(block)
+        // A carved pumpkin and a skull raise the plain event first and then, from inside the same call,
+        // the armour event when they end up on a head. The second takes over the dispense the first
+        // began, and the first's reading of the dispenser a tick later stands down.
+        val begun = if (event is BlockDispenseArmorEvent) dispensed.get()?.takeIf { it.at == at } else null
+        begun?.equipped = true
+        val load = begun?.load ?: loaded.get()?.takeIf { it.at == at } ?: return
         loaded.remove()
         val slot = load.slot
         val from = containerAt(block, slot)
@@ -432,10 +438,19 @@ class BlockMechanismListener(
         val projectile = stack.item is ProjectileItem
         val front = (block.blockData as? Directional)?.facing?.let(block::getRelative)
         val frontBefore = front?.blockData?.asString
+        val started = Dispensed(at, load)
+        dispensed.set(started)
         later(block) {
+            if (started.equipped) return@later
             settleDispense(block, slot, load.before, ejected(), projectile, load.actor, front, frontBefore, stack)
         }
     }
+
+    private class Dispensed(val at: WorldBlock, val load: Loaded) {
+        @Volatile var equipped = false
+    }
+
+    private val dispensed = ThreadLocal<Dispensed?>()
 
     private fun settleDispense(
         block: Block,
