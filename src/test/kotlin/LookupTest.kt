@@ -168,8 +168,9 @@ class LookupTest {
     // empty answer from a filter that sounds certain reads as "nothing happened there".
     @Test
     fun `the block plane is reachable by name and every block cause is under one of the filters`() {
-        val blockRange = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT
-        assertEquals(33, blockRange.size)
+        val blockRange = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT +
+            Cause.BLK_PLAYER_SWITCH
+        assertEquals(34, blockRange.size)
         assertEquals(blockRange, Action.of("block")?.causes)
 
         val named = Action.entries.filter { it != Action.BLOCK }.flatMap { it.causes }.toSet()

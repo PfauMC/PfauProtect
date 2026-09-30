@@ -209,6 +209,11 @@ enum class Cause(val id: Int) {
     BLK_PORTAL_CREATE(0xEE),
     BLK_PORTAL_DESTROY(0xEF),
 
+    // A player pressing a button or a lever, stepping on a pressure plate or through a tripwire: the
+    // start of whatever the redstone behind it does next. Outside the block plane's range, which is
+    // full, like BLK_SIGN_EDIT.
+    BLK_PLAYER_SWITCH(0xCE),
+
     CMD_GIVE(0xF0),
     CMD_ITEM_REPLACE(0xF1),
     CMD_ITEM_MODIFY(0xF2),

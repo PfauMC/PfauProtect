@@ -628,6 +628,7 @@ class BlockDestructionListener(
     private val placed: PlacedForms,
     private val owners: NestedOwners,
     private val sink: (List<Transfer>) -> Unit,
+    private val energy: Energy = Energy(),
 ) : Listener {
 
     private val growing = GrowClaims()
@@ -937,9 +938,10 @@ class BlockDestructionListener(
      * A piston writes plain air over those, whatever the block was standing in, so a waterlogged block
      * takes its water with it instead of leaving a source behind.
      *
-     * Nobody is named. The ladder answers who put a block somewhere and who took a support away;
-     * neither is who fired this piston, and the player who last touched it is not behind every block
-     * the redstone around it shifts afterwards.
+     * Whoever fired it is who the energy around it names: the redstone that reached the base carries
+     * the player who set the chain off, and the rows it writes carry that player on to what an observer
+     * sees move. The player who last touched the piston is not behind every block the redstone
+     * around it shifts afterwards, so nothing else is asked.
      */
     private fun piston(base: Block, moving: List<Block>, cause: Cause, extending: Boolean) {
         val log = logs.get(base.world.uid) ?: return
@@ -970,7 +972,9 @@ class BlockDestructionListener(
             pistonBase(notch, sticky, extended = extending).asString,
             payload = null,
         )
-        file(log, emptied, cause, by = null, carried = filled)
+        val by = energyAt(base, energy)
+        by?.let { energy.note(positionOf(base), it) }
+        file(log, emptied, cause, by, carried = filled)
     }
 
     /**
@@ -988,7 +992,9 @@ class BlockDestructionListener(
         if (!isLanding(carried, becomes)) {
             // Who took away what was holding it up, worked out here and kept under the entity: by the
             // time it lands, the position it left holds whatever has moved in behind it.
-            val by = attribution.supportRemoverAt(at)
+            // A block put down in the air falls the moment it is placed, with no support taken away:
+            // the player who put it there is who let it fall.
+            val by = attribution.supportRemoverAt(at) ?: attribution.placerAt(at, carried)
             attribution.tookOff(entity.uniqueId, Falling(at, carried, by, takeHeldForm(at, carried)))
             val site = Site(at, block, block.blockData, becomes)
             file(log, emptyList(), Cause.BLK_FALL_START, by, timestamp, carried = listOf(site))
@@ -1272,7 +1278,7 @@ class BlockDestructionListener(
     private fun capturing(block: Block) =
         (block.world as CraftWorld).handle.currentWorldData?.captureBlockStates == true
 
-    private companion object {
+    internal companion object {
         const val TNT = "minecraft:tnt"
     }
 }

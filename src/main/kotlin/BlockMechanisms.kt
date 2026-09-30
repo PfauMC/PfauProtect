@@ -25,6 +25,7 @@ import org.bukkit.event.block.BlockDispenseArmorEvent
 import org.bukkit.event.block.BlockDispenseEvent
 import org.bukkit.event.block.BlockDropItemEvent
 import org.bukkit.event.block.CrafterCraftEvent
+import org.bukkit.event.entity.EntitySpawnEvent
 import org.bukkit.event.inventory.BrewEvent
 import org.bukkit.event.inventory.BrewingStandFuelEvent
 import org.bukkit.event.inventory.FurnaceBurnEvent
@@ -240,6 +241,11 @@ internal fun brewed(
     if (was == became) null else Triple(slot, was, became)
 }
 
+// A dispense spawns what it spawns inside its own call, a tick at most after the pre-dispense event,
+// and in front of the dispenser.
+private const val DISPENSE_NANOS = 50_000_000L
+private const val DISPENSE_REACH = 2.5
+
 internal class SlotChange(val slot: Int, val key: ItemKey, val qty: Int, val gain: Boolean)
 
 // What a dispense did to the dispenser beyond what came out of it as an entity. The slot it fired
@@ -272,6 +278,8 @@ class BlockMechanismListener(
     private val origins: SpawnOrigins,
     private val placed: PlacedForms,
     private val sink: (List<Transfer>) -> Unit,
+    private val energy: Energy = Energy(),
+    private val entities: EntityOrigins = EntityOrigins(),
     // Runs a task on the block's own region a tick later.
     private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
@@ -289,14 +297,40 @@ class BlockMechanismListener(
     // before raising it, so the last one leaves no slot to find, and a block the sulfur cube could
     // swallow raises it twice for one dispense. The pre-dispense event comes once, before anything
     // moved, with the slot, and the dispense that follows in the same call takes what it saw.
-    private class Loaded(val at: WorldBlock, val slot: Int, val before: List<Stack?>)
+    private class Loaded(val at: WorldBlock, val slot: Int, val before: List<Stack?>, val actor: UUID?)
 
     private val loaded = ThreadLocal<Loaded?>()
 
+    // Whoever set the dispenser going, for the entities its behaviour spawns inside the same call: an
+    // item thrown out, primed TNT, an arrow, a boat. None of them names anybody on its own.
+    private class Dispensing(val at: WorldBlock, val actor: UUID, val nanos: Long)
+
+    private val dispensing = ThreadLocal<Dispensing?>()
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPreDispense(event: BlockPreDispenseEvent) {
-        val before = contentsOf(event.block) ?: return
-        loaded.set(Loaded(positionOf(event.block), event.slot, before))
+        val block = event.block
+        val before = contentsOf(block) ?: return
+        val at = positionOf(block)
+        val by = energyAt(block, energy)
+        by?.let { energy.note(at, it) }
+        val actor = by?.actor
+        loaded.set(Loaded(at, event.slot, before, actor))
+        dispensing.set(actor?.let { Dispensing(at, it, System.nanoTime()) })
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onSpawn(event: EntitySpawnEvent) {
+        val source = dispensing.get() ?: return
+        if (System.nanoTime() - source.nanos > DISPENSE_NANOS) return dispensing.remove()
+        val spot = event.location
+        if (spot.world.uid != source.at.world) return
+        if (abs(spot.x - source.at.x - 0.5) > DISPENSE_REACH || abs(spot.y - source.at.y - 0.5) > DISPENSE_REACH ||
+            abs(spot.z - source.at.z - 0.5) > DISPENSE_REACH
+        ) {
+            return
+        }
+        entities.appeared(event.entity.uniqueId, source.actor)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -312,19 +346,26 @@ class BlockMechanismListener(
             val target = event.targetEntity
             val equipped = EntitySlot(target.uniqueId, equipmentSlotOf(target, item))
             bookHeld(target, equipped.slot, key.form)
-            pending.add(from, equipped, Cause.DISPENSER_BEHAVIOR, key, item.amount)
+            pending.add(from, equipped, Cause.DISPENSER_BEHAVIOR, key, item.amount, load.actor)
             return
         }
         // An item that turns into an entity is claimed by its spawn. Everything else a dispenser does —
         // bone meal, a boat, TNT, a bucket filled, an arrow fired — spends or changes what it holds,
         // and the only way to know which is to look at the dispenser once the behaviour has run.
         val cause = if (block.type == Material.DROPPER) Cause.DROPPER_EJECT else Cause.DISPENSER_EJECT
-        val ejected = origins.expect(from, cause, key, spotOf(block.location), item.amount)
+        val ejected = origins.expect(from, cause, key, spotOf(block.location), item.amount, load.actor)
         val projectile = CraftItemStack.asNMSCopy(item).item is ProjectileItem
-        later(block) { settleDispense(block, slot, load.before, ejected(), projectile) }
+        later(block) { settleDispense(block, slot, load.before, ejected(), projectile, load.actor) }
     }
 
-    private fun settleDispense(block: Block, slot: Int, before: List<Stack?>, ejected: Int, projectile: Boolean) {
+    private fun settleDispense(
+        block: Block,
+        slot: Int,
+        before: List<Stack?>,
+        ejected: Int,
+        projectile: Boolean,
+        actor: UUID?,
+    ) {
         val after = contentsOf(block) ?: return
         val changes = dispenseChanges(before, after, slot, ejected)
         if (changes.isEmpty()) return
@@ -343,6 +384,7 @@ class BlockMechanismListener(
                 qty = change.qty,
                 timestamp = timestamp,
                 kind = if (mutated) Kind.MUTATE else Kind.TRANSFER,
+                actor = actor,
             )
         })
     }

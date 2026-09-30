@@ -119,7 +119,14 @@ class PfauProtectPlugin : JavaPlugin() {
 
     override fun onEnable() {
         val ledger = RocksItemLog(dataFolder.toPath().resolve("ledger"))
-        val blocks = BlockLogs(dataFolder.toPath().resolve("blocks"), ledger)
+        val energy = Energy()
+        // A row that names somebody is what an observer or a comparator next to it answers to.
+        val blocks = BlockLogs(dataFolder.toPath().resolve("blocks"), ledger) { world, changes ->
+            for (change in changes) {
+                val actor = change.actor ?: continue
+                energy.note(WorldBlock(world, change.x, change.y, change.z), Attributed(actor, change.confidence))
+            }
+        }
         val attribution = Attribution(ledger.registries, blocks)
         val uncovered = Uncovered(ledger)
         val codec = ItemFormCodec(ledger.registries, MinecraftServer.getServer().registryAccess())
@@ -133,6 +140,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val entities = EntityOrigins()
         val destruction = BlockDestructionListener(
             this, ledger.registries, blocks, attribution, codec, origins, entities, ledger, ledger, uncovered::submit,
+            energy,
         )
         val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)
@@ -157,6 +165,7 @@ class PfauProtectPlugin : JavaPlugin() {
         )
         server.pluginManager.registerEvents(destruction, this)
         server.pluginManager.registerEvents(EntityOriginListener(attribution, entities), this)
+        server.pluginManager.registerEvents(RedstoneListener(energy, blocks), this)
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
         server.pluginManager.registerEvents(ProjectileListener(capture, codec, mechanisms, origins), this)
@@ -176,12 +185,17 @@ class PfauProtectPlugin : JavaPlugin() {
         // drop under a form that has no owner on it and the chain of custody would end at the break.
         server.pluginManager.registerEvents(NestedCaptureListener(ledger, codec, mechanisms), this)
         server.pluginManager.registerEvents(
-            BlockMechanismListener(codec, mechanisms, origins, ledger, uncovered::submit) { block, task ->
+            BlockMechanismListener(
+                codec, mechanisms, origins, ledger, uncovered::submit, energy, entities,
+            ) { block, task ->
                 server.regionScheduler.run(this, block.location) { task() }
             },
             this,
         )
-        server.pluginManager.registerEvents(WorldItemListener(codec, mechanisms, origins, capture), this)
+        server.pluginManager.registerEvents(
+            WorldItemListener(codec, mechanisms, origins, capture, attribution, entities),
+            this,
+        )
         server.pluginManager.registerEvents(inspector, this)
         server.globalRegionScheduler.runAtFixedRate(this, {
             origins.sweep()
@@ -194,6 +208,7 @@ class PfauProtectPlugin : JavaPlugin() {
             {
                 attribution.sweep()
                 entities.sweep()
+                energy.sweep()
             },
             NOTE_MINUTES,
             NOTE_MINUTES,
