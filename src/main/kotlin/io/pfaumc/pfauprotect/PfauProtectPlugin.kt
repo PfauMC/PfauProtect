@@ -10,6 +10,7 @@ import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.capture.block.BlockCaptureListener
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
+import io.pfaumc.pfauprotect.capture.block.HandTouches
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.capture.block.BlockMechanismListener
 import io.pfaumc.pfauprotect.model.Cause
@@ -164,8 +165,11 @@ class PfauProtectPlugin : JavaPlugin() {
         val ledger = RocksItemLog(dataFolder.toPath().resolve("ledger"))
         val energy = Energy()
         val nudges = Nudges()
-        // A row that names somebody is what an observer or a comparator next to it answers to.
+        val touches = HandTouches()
+        // A row that names somebody is what an observer or a comparator next to it answers to, and any
+        // row at all is what a touch waiting to be read back leaves to the capture that filed it.
         val blocks = BlockLogs(dataFolder.toPath().resolve("blocks"), ledger) { world, changes ->
+            touches.filed(world, changes)
             for (change in changes) {
                 val actor = change.actor ?: continue
                 energy.note(WorldBlock(world, change.x, change.y, change.z), Attributed(actor, change.confidence))
@@ -184,7 +188,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val entities = EntityOrigins()
         val destruction = BlockDestructionListener(
             this, ledger.registries, blocks, attribution, codec, origins, entities, ledger, ledger, uncovered::submit,
-            energy,
+            energy, touches,
         )
         val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)

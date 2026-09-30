@@ -65,6 +65,7 @@ import org.bukkit.entity.TNTPrimed
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
+import org.bukkit.event.block.Action
 import org.bukkit.event.block.BlockBurnEvent
 import org.bukkit.event.block.BlockExplodeEvent
 import org.bukkit.event.block.BlockFadeEvent
@@ -83,6 +84,7 @@ import org.bukkit.event.entity.EntityChangeBlockEvent
 import org.bukkit.event.entity.EntityExplodeEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.player.PlayerBucketEmptyEvent
+import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.world.StructureGrowEvent
 import org.bukkit.plugin.Plugin
 import java.util.UUID
@@ -621,6 +623,70 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
     }
 }
 
+// Properties that carry the signal rather than the block, which the switch rows of phase 5.7 already
+// cover, and ones that a hand flips and the block flips back by itself. None of them is something a
+// rollback would have to put back.
+private val SIGNAL_PROPERTIES = setOf("powered", "power")
+
+private fun selfRevertingOf(name: String): Set<String> = when {
+    name == "minecraft:barrel" -> setOf("open")
+    name.endsWith("_bed") -> setOf("occupied")
+    name.endsWith("redstone_ore") -> setOf("lit")
+    name == "minecraft:vault" -> setOf("vault_state")
+    name == "minecraft:big_dripleaf" -> setOf("tilt")
+    else -> emptySet()
+}
+
+private fun propertiesOf(state: String): Map<String, String> =
+    state.substringAfter('[', "").removeSuffix("]").split(',').filter { it.isNotEmpty() }
+        .associate { it.substringBefore('=') to it.substringAfter('=') }
+
+/** Whether going from one state to the other is a change a hand made, rather than signal or noise. */
+internal fun handMade(before: String, after: String): Boolean {
+    if (before == after) return false
+    val name = blockNameOf(before)
+    if (name != blockNameOf(after)) return true
+    val was = propertiesOf(before)
+    val now = propertiesOf(after)
+    val ignored = SIGNAL_PROPERTIES + selfRevertingOf(name)
+    return (was.keys + now.keys).any { it !in ignored && was[it] != now[it] }
+}
+
+// Long enough that a read-back that never ran — its chunk gone before the region got to it — does not
+// shut the position to every later touch.
+private const val TOUCH_STALE_MILLIS = 5_000L
+
+/**
+ * Positions a player has just touched, waiting for the read a tick later that files what the touch
+ * changed. Every row any capture submits passes through [filed], so a touch whose change was already
+ * written by the capture that made it — a placement, a break, a switch, a sign — is left to that row.
+ * The journal cannot answer that in time: a submitted row is still queued for its writer.
+ */
+class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
+    private class Touch(val at: Long) {
+        @Volatile var filed = false
+    }
+
+    private val pending = ConcurrentHashMap<WorldBlock, Touch>()
+
+    /** True when this touch is the one to read the position back; a second one in the tick is not. */
+    fun touch(at: WorldBlock): Boolean {
+        val taking = now()
+        val held = pending[at]
+        if (held != null && taking - held.at < TOUCH_STALE_MILLIS) return false
+        pending[at] = Touch(taking)
+        return true
+    }
+
+    fun filed(world: UUID, changes: List<BlockChange>) {
+        if (pending.isEmpty()) return
+        for (change in changes) pending[WorldBlock(world, change.x, change.y, change.z)]?.filed = true
+    }
+
+    /** Ends the wait, answering whether some capture filed the position in the meantime. */
+    fun take(at: WorldBlock): Boolean = pending.remove(at)?.filed == true
+}
+
 /**
  * Every change to a block that no player signed, in both planes: what disappears, and what merely
  * moves. A block row carries the two states the position went between; the item row of a disappearance
@@ -655,6 +721,7 @@ class BlockDestructionListener(
     private val owners: NestedOwners,
     private val sink: (List<Transfer>) -> Unit,
     private val energy: Energy = Energy(),
+    private val touches: HandTouches = HandTouches(),
 ) : Listener {
 
     private val growing = GrowClaims()
@@ -801,9 +868,49 @@ class BlockDestructionListener(
         // A falling block is the one entity here that moves a block rather than changing one, and both
         // ends of that movement arrive on this same event.
         if (entity is FallingBlock) return fell(event, entity)
-        val cause = entityBlockCause(entity.type) ?: return
         val block = event.block
+        // A hoe, a shovel, an axe, a honeycomb, an eye of ender, a trampled field: the server names the
+        // player here, while the block is still the old one.
+        if (entity is Player) {
+            val after = event.blockData.asString
+            if (!handMade(block.blockData.asString, after)) return
+            return changed(block, block.blockData, after, Cause.BLK_PLAYER_USE, Attributed(entity.uniqueId, Confidence.FACT))
+        }
+        val cause = entityBlockCause(entity.type) ?: return
         changed(block, block.blockData, event.blockData.asString, cause, entities.summonerOf(entity.uniqueId))
+    }
+
+    /**
+     * The net under everything a hand changes that raises no event of its own: a door, a trapdoor, a
+     * gate, a repeater, a comparator, a note block, a daylight sensor, a cake, a candle, a composter.
+     * Every touch is read back at the start of the next tick, and whatever changed there and no other
+     * capture filed is written on the player. Not behind the cancellation: a refused touch changes
+     * nothing, and the read finds exactly that.
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onTouch(event: PlayerInteractEvent) {
+        if (event.action == Action.LEFT_CLICK_AIR || event.action == Action.RIGHT_CLICK_AIR) return
+        if (!plugin.isEnabled) return
+        val clicked = event.clickedBlock ?: return
+        val touched = listOfNotNull(clicked, otherHalfOf(clicked))
+            .filter { touches.touch(positionOf(it)) }
+            // The block entity goes into the row as it was: a lectern, a jukebox or a pot put back by a
+            // rollback needs what it held, not only its shape.
+            .map { Site(positionOf(it), it, it.blockData, it.blockData.asString, payloadAt(it)) }
+        if (touched.isEmpty()) return
+        val by = Attributed(event.player.uniqueId, Confidence.FACT)
+        val timestamp = System.currentTimeMillis()
+        plugin.server.regionScheduler.execute(plugin, clicked.world, clicked.x shr 4, clicked.z shr 4) {
+            val changed = touched.mapNotNull { site ->
+                if (touches.take(site.at)) return@mapNotNull null
+                val now = site.block.blockData.asString
+                if (!handMade(site.before.asString, now)) return@mapNotNull null
+                Site(site.at, site.block, site.before, now, site.payload)
+            }
+            if (changed.isEmpty()) return@execute
+            val log = logs.get(clicked.world.uid) ?: return@execute
+            file(log, changed, Cause.BLK_PLAYER_USE, by, timestamp)
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

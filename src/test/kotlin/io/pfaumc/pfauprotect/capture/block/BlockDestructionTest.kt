@@ -902,7 +902,9 @@ class BlockDestructionTest {
         for ((method, handler) in found) {
             assertEquals(EventPriority.MONITOR, handler.priority, method.name)
             // An entity being removed is announced after the fact and cannot be refused, so there is
-            // nothing for it to sit behind.
+            // nothing for it to sit behind. A touch is only read back: its cancelled flag speaks for
+            // the block's half of the click and not the item's, and a refused touch reads as nothing.
+            if (method.name == "onTouch") continue
             if (Cancellable::class.java.isAssignableFrom(method.parameterTypes.single())) {
                 assertTrue(handler.ignoreCancelled, method.name)
             }
@@ -1458,5 +1460,49 @@ class BlockDestructionTest {
         expectDrops(origins, ItemFormCodec(shared.registries, ServerRegistries.access), block, Cause.BLK_FADE, null)
 
         assertTrue(origins.isEmpty)
+    }
+
+    // What a hand leaves standing is kept; what the signal carries is the switch rows' business, and
+    // what flips back by itself would read as a change nobody made once it has.
+    @Test
+    fun `a change by hand is told apart from signal and from what flips back by itself`() {
+        assertTrue(handMade("minecraft:oak_door[facing=east,half=lower,hinge=left,open=false,powered=false]",
+            "minecraft:oak_door[facing=east,half=lower,hinge=left,open=true,powered=false]"))
+        assertTrue(handMade("minecraft:oak_log[axis=y]", "minecraft:stripped_oak_log[axis=y]"))
+        assertTrue(handMade("minecraft:repeater[delay=1,facing=north,locked=false,powered=false]",
+            "minecraft:repeater[delay=2,facing=north,locked=false,powered=false]"))
+        // A mode flipped by hand still counts when the output moves with it in the same read.
+        assertTrue(handMade("minecraft:comparator[facing=north,mode=compare,powered=false]",
+            "minecraft:comparator[facing=north,mode=subtract,powered=true]"))
+
+        assertFalse(handMade("minecraft:lever[face=floor,facing=east,powered=false]",
+            "minecraft:lever[face=floor,facing=east,powered=true]"))
+        assertFalse(handMade("minecraft:barrel[facing=up,open=false]", "minecraft:barrel[facing=up,open=true]"))
+        assertFalse(handMade("minecraft:red_bed[facing=east,occupied=false,part=head]",
+            "minecraft:red_bed[facing=east,occupied=true,part=head]"))
+        assertFalse(handMade("minecraft:redstone_ore[lit=false]", "minecraft:redstone_ore[lit=true]"))
+        assertFalse(handMade(TORCH, TORCH))
+    }
+
+    // A second hand in the same tick must not queue a second read, and a row filed by the capture that
+    // made the change is what the read leaves the position to.
+    @Test
+    fun `a touch is read back once and left to whoever filed it`() {
+        var clock = 1_000L
+        val touches = HandTouches { clock }
+        val at = WorldBlock(world, 1, 64, 1)
+
+        assertTrue(touches.touch(at))
+        assertFalse(touches.touch(at))
+        assertFalse(touches.take(at))
+
+        assertTrue(touches.touch(at))
+        touches.filed(world, listOf(BlockChange(1, 64, 1, AIR, TORCH, Cause.BLK_PLAYER_PLACE, clock, actor = alice)))
+        assertTrue(touches.take(at))
+
+        // A read that never ran does not shut the position for good.
+        assertTrue(touches.touch(at))
+        clock += 10_000
+        assertTrue(touches.touch(at))
     }
 }

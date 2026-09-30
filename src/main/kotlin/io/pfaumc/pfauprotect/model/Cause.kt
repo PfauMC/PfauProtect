@@ -215,6 +215,9 @@ enum class Cause(val id: Int) {
     // The same, set off by an entity. The payload names the entity, and the distance of the player
     // named when that player was only near.
     BLK_ENTITY_SWITCH(0xCF),
+    // A block a player changed by hand without placing or breaking anything: a door opened, a log
+    // stripped, a path dug, a repeater set, a cake eaten.
+    BLK_PLAYER_USE(0xCD),
 
     CMD_GIVE(0xF0),
     CMD_ITEM_REPLACE(0xF1),
