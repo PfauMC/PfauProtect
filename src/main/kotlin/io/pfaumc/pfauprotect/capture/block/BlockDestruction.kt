@@ -65,6 +65,7 @@ import org.bukkit.entity.TNTPrimed
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
+import org.bukkit.Bukkit
 import org.bukkit.event.block.Action
 import org.bukkit.event.block.BlockDispenseEvent
 import org.bukkit.event.block.BlockBurnEvent
@@ -87,6 +88,7 @@ import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.player.PlayerBucketEmptyEvent
 import org.bukkit.event.player.PlayerBucketFillEvent
 import org.bukkit.event.player.PlayerInteractEvent
+import org.bukkit.event.world.PortalCreateEvent
 import org.bukkit.event.world.StructureGrowEvent
 import org.bukkit.plugin.Plugin
 import java.util.UUID
@@ -658,6 +660,13 @@ internal fun handMade(before: String, after: String): Boolean {
 // shut the position to every later touch.
 private const val TOUCH_STALE_MILLIS = 5_000L
 
+// The largest portal the game builds is 21 by 21.
+private const val PORTAL_MAX_BLOCKS = 21 * 21
+
+private val PORTAL_FACES = listOf(
+    BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN,
+)
+
 /**
  * Positions a player or a mechanism has just touched, waiting for the read a tick later that files
  * what the touch changed. Every row any capture submits passes through [filed], so a touch whose change
@@ -1031,6 +1040,9 @@ class BlockDestructionListener(
             piston(base, emptyList(), Cause.BLK_PISTON_RETRACT, extending = false)
             return
         }
+        // A portal stands as long as its frame does, which is a shape rule and not a survival one, and
+        // the whole sheet goes at once when the frame is broken.
+        if (block.type == Material.NETHER_PORTAL) return portalShaken(block)
         val state = block.blockState
         if (state.isAir || state.canSurvive(block.level, block.position)) return
         // The cause dictionary has no entry of its own for a block that could no longer stand where it
@@ -1038,6 +1050,47 @@ class BlockDestructionListener(
         // What gives way under physics is destroyed through `Level.destroyBlock`, and its drops are
         // expected where that raises its own event.
         defer(block, block.blockData, Cause.BLK_FADE, attribution.supportRemoverAt(positionOf(block)), expectsDrops = false)
+    }
+
+    // Every portal block joined to this one, read back: those the broken frame took with it are filed
+    // on whoever broke the frame. The walk stays on the region that owns this block.
+    private fun portalShaken(block: Block) {
+        val by = attribution.supportRemoverAt(positionOf(block))
+        val sheet = LinkedHashSet<Block>()
+        var edge = listOf(block)
+        sheet += block
+        while (edge.isNotEmpty() && sheet.size < PORTAL_MAX_BLOCKS) {
+            val next = ArrayList<Block>()
+            for (at in edge) {
+                for (face in PORTAL_FACES) {
+                    val near = at.getRelative(face)
+                    if (near in sheet || near.type != Material.NETHER_PORTAL || !Bukkit.isOwnedByCurrentRegion(near)) continue
+                    sheet += near
+                    next += near
+                }
+            }
+            edge = next
+        }
+        for (part in sheet) defer(part, part.blockData, Cause.BLK_PORTAL_DESTROY, by, expectsDrops = false)
+    }
+
+    /**
+     * A portal lit or built on the far side of a journey. The event hands over the new states while
+     * the world still stands as it was, so both sides are read here; the frame a lit portal hands back
+     * unchanged is no change. The pair built for a traveller clears and overwrites whatever stood where
+     * it goes, and that is filed as taken away by the portal, on the traveller when that is a player.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPortalCreate(event: PortalCreateEvent) {
+        val log = logs.get(event.world.uid) ?: return
+        val by = (event.entity as? Player)?.let { Attributed(it.uniqueId, Confidence.FACT) }
+        val sites = event.blocks.mapNotNull { state ->
+            val block = state.block
+            val before = block.blockData
+            val after = state.blockData.asString
+            if (before.asString == after) null else Site(positionOf(block), block, before, after)
+        }
+        if (sites.isNotEmpty()) file(log, sites, Cause.BLK_PORTAL_CREATE, by, expectsDrops = false)
     }
 
     /**
@@ -1220,6 +1273,8 @@ class BlockDestructionListener(
         // the hands of a falling block is spoken for where the block lands.
         carried: List<Site> = emptyList(),
         dropReach: Double = SPAWN_REACH,
+        // A block the world overwrites rather than destroys drops nothing to wait for.
+        expectsDrops: Boolean = true,
     ) {
         val real = sites.filter { unfiled(it) }
         val rows = real + carried.filter { unfiled(it) }
@@ -1229,7 +1284,7 @@ class BlockDestructionListener(
         if (gone.isEmpty()) return
         // A block that moved carries itself to the position it arrived in and drops nothing on the way.
         for (site in gone) {
-            if (site.went != null) continue
+            if (site.went != null || !expectsDrops) continue
             expectDrops(origins, codec, site.block, cause, by.culprit(), packBox(site, by, timestamp), dropReach)
         }
         by.culprit()?.let { actor ->
