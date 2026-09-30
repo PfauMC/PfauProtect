@@ -412,7 +412,7 @@ internal fun wroteOff(
     damage = null,
     qty = 1,
     timestamp = timestamp,
-    actor = by?.actor,
+    actor = by.culprit(),
 )
 
 /**
@@ -436,7 +436,7 @@ internal fun moved(
     damage = null,
     qty = 1,
     timestamp = timestamp,
-    actor = by?.actor,
+    actor = by.culprit(),
 )
 
 /**
@@ -455,8 +455,8 @@ internal fun tookOver(
     by: Attributed?,
     timestamp: Long,
 ): List<Transfer> = listOf(
-    Transfer(cause, at, Void, held, null, 1, timestamp, Kind.MUTATE, actor = by?.actor),
-    Transfer(cause, Void, at, taken, null, 1, timestamp, Kind.MUTATE, actor = by?.actor),
+    Transfer(cause, at, Void, held, null, 1, timestamp, Kind.MUTATE, actor = by.culprit()),
+    Transfer(cause, Void, at, taken, null, 1, timestamp, Kind.MUTATE, actor = by.culprit()),
 )
 
 /**
@@ -891,7 +891,7 @@ class BlockDestructionListener(
         // always: a cactus breaks a tick after its support, while the read-back the physics of that
         // support queued still holds the position, and the note that read-back left may already have
         // been swept by then. A capture that filed the position this tick expected them itself.
-        if (!readBacks.settled(positionOf(block))) expectDrops(origins, codec, block, Cause.BLK_FADE, by?.actor)
+        if (!readBacks.settled(positionOf(block))) expectDrops(origins, codec, block, Cause.BLK_FADE, by.culprit())
         defer(block, block.blockData, Cause.BLK_FADE, by, expectsDrops = false)
     }
 
@@ -1000,7 +1000,7 @@ class BlockDestructionListener(
             file(log, emptyList(), Cause.BLK_FALL_START, by, timestamp, carried = listOf(site))
             // A column comes down one block at a time, and each take-off is what the block above it
             // finds: without a note here the chain would be attributed at its first step only.
-            by?.actor?.let { noteRemoval(at, becomes, it) }
+            by.culprit()?.let { noteRemoval(at, becomes, it) }
             return
         }
         val flight = attribution.landed(entity.uniqueId)
@@ -1062,9 +1062,9 @@ class BlockDestructionListener(
         // A block that moved carries itself to the position it arrived in and drops nothing on the way.
         for (site in gone) {
             if (site.went != null) continue
-            expectDrops(origins, codec, site.block, cause, by?.actor, packBox(site, by, timestamp), dropReach)
+            expectDrops(origins, codec, site.block, cause, by.culprit(), packBox(site, by, timestamp), dropReach)
         }
-        by?.actor?.let { actor ->
+        by.culprit()?.let { actor ->
             for (site in gone) {
                 noteRemoval(site.at, site.after, actor)
                 attribution.felledBy(site.block, actor)
@@ -1105,7 +1105,7 @@ class BlockDestructionListener(
                 damage = encoded.key.damage,
                 qty = encoded.count,
                 timestamp = timestamp,
-                actor = by?.actor,
+                actor = by.culprit(),
             )
         }
         if (packed.isNotEmpty()) sink(packed)
@@ -1193,7 +1193,7 @@ class BlockDestructionListener(
         val payload = payloadAt(block)
         // Here and not in the read-back: the items are already in the world by then, and a note that
         // arrives after the spawn it explains is a note nobody can claim.
-        if (expectsDrops) expectDrops(origins, codec, block, cause, by?.actor)
+        if (expectsDrops) expectDrops(origins, codec, block, cause, by.culprit())
         plugin.server.regionScheduler.execute(plugin, block.world, block.x shr 4, block.z shr 4) {
             readBacks.done(at)
             val now = block.blockData.asString
@@ -1202,7 +1202,7 @@ class BlockDestructionListener(
             if (alreadyFiled(log, at, before.asString, now)) return@execute
             val site = Site(at, block, before, now, payload)
             log.submit(listOf(row(site, cause, by, timestamp)))
-            by?.actor?.let { noteRemoval(at, now, it) }
+            by.culprit()?.let { noteRemoval(at, now, it) }
             // A tick has passed, and a position something has since been put into is no longer this
             // read's to speak for: the note standing there was written by whoever filled it, and
             // clearing it would cost that block its form when it is broken in turn.

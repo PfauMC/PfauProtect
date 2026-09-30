@@ -43,7 +43,10 @@ object BlockCodec {
     // a longer one is not.
     private const val MAX_STATE = 0xFFFF
 
-    private const val VERSION_MASK = 0x07
+    // Two bits of version, the third taken by the witness flag: the version has only ever been zero, so
+    // every row written before the flag existed reads as it always did.
+    private const val VERSION_MASK = 0x03
+    private const val NEARBY_FLAG = 0x04
     private const val CONFIDENCE_FLAG = 0x08
     private const val ACTOR_FLAG = 0x10
     private const val PAYLOAD_BEFORE_FLAG = 0x20
@@ -117,7 +120,11 @@ object BlockCodec {
             cause = cause,
             stateBefore = stateBefore,
             stateAfter = stateAfter,
-            confidence = if (header and CONFIDENCE_FLAG != 0) Confidence.INFERRED else Confidence.FACT,
+            confidence = when {
+                header and NEARBY_FLAG != 0 -> Confidence.NEARBY
+                header and CONFIDENCE_FLAG != 0 -> Confidence.INFERRED
+                else -> Confidence.FACT
+            },
             alongside = header and ALONGSIDE_FLAG != 0,
             actor = actor,
             payloadBefore = payloadBefore,
@@ -128,6 +135,7 @@ object BlockCodec {
     private fun header(row: BlockRow): Int =
         VERSION or
             (if (row.confidence == Confidence.INFERRED) CONFIDENCE_FLAG else 0) or
+            (if (row.confidence == Confidence.NEARBY) NEARBY_FLAG else 0) or
             (if (row.actor != null) ACTOR_FLAG else 0) or
             (if (row.payloadBefore != null) PAYLOAD_BEFORE_FLAG else 0) or
             (if (row.payloadAfter != null) PAYLOAD_AFTER_FLAG else 0) or

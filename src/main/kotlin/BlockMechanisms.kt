@@ -303,7 +303,7 @@ class BlockMechanismListener(
 
     // Whoever set the dispenser going, for the entities its behaviour spawns inside the same call: an
     // item thrown out, primed TNT, an arrow, a boat. None of them names anybody on its own.
-    private class Dispensing(val at: WorldBlock, val actor: UUID, val nanos: Long)
+    private class Dispensing(val at: WorldBlock, val by: Attributed, val nanos: Long)
 
     private val dispensing = ThreadLocal<Dispensing?>()
 
@@ -314,9 +314,8 @@ class BlockMechanismListener(
         val at = positionOf(block)
         val by = energyAt(block, energy)
         by?.let { energy.note(at, it) }
-        val actor = by?.actor
-        loaded.set(Loaded(at, event.slot, before, actor))
-        dispensing.set(actor?.let { Dispensing(at, it, System.nanoTime()) })
+        loaded.set(Loaded(at, event.slot, before, by.culprit()))
+        dispensing.set(by?.let { Dispensing(at, it, System.nanoTime()) })
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -330,7 +329,7 @@ class BlockMechanismListener(
         ) {
             return
         }
-        entities.appeared(event.entity.uniqueId, source.actor)
+        entities.appeared(event.entity.uniqueId, source.by.actor, source.by.confidence)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

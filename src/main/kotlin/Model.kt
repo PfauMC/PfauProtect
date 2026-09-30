@@ -13,7 +13,11 @@ enum class Kind(val id: Int) {
 }
 
 enum class Confidence(val id: Int) {
-    FACT(0), INFERRED(1), ;
+    FACT(0),
+    INFERRED(1),
+    // A player who was near when something set a mechanism off, and no more: nothing tied them to it.
+    NEARBY(2),
+    ;
 
     companion object {
         private val BY_ID = entries.associateBy { it.id }

@@ -122,7 +122,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     DISPENSER(setOf(Cause.BLK_DISPENSER), "dispenser", "dispensers"),
     PORTAL(setOf(Cause.BLK_PORTAL_CREATE, Cause.BLK_PORTAL_DESTROY), "portal", "portals"),
     SIGN(setOf(Cause.BLK_SIGN_EDIT), "sign", "signs", "edit"),
-    SWITCH(setOf(Cause.BLK_PLAYER_SWITCH), "switch", "switches", "pressed"),
+    SWITCH(setOf(Cause.BLK_PLAYER_SWITCH, Cause.BLK_ENTITY_SWITCH), "switch", "switches", "pressed"),
     ;
 
     companion object {
@@ -153,7 +153,8 @@ private val USE_CAUSES = setOf(
 
 // The block plane's whole range, so a filter can name it without listing thirty-two causes.
 private val BLOCK_CAUSES: Set<Cause> =
-    Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT + Cause.BLK_PLAYER_SWITCH
+    Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT + Cause.BLK_PLAYER_SWITCH +
+        Cause.BLK_ENTITY_SWITCH
 
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
 private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")
@@ -626,12 +627,15 @@ class Lookups(
      * culprit is no reason to leave a disappearance unrecorded — so it simply says so.
      */
     private fun describe(row: BlockRow): String {
+        val pressed = if (row.cause == Cause.BLK_ENTITY_SWITCH) row.payloadAfter?.let(::pressedBy) else null
         val by = when {
             row.actor == null -> "  by nobody named"
             row.confidence == Confidence.INFERRED -> "  by ${playerName(row.actor)} (worked out)"
+            row.confidence == Confidence.NEARBY ->
+                "  ${playerName(row.actor)} was nearby${pressed?.second?.let { " ($it blocks away)" } ?: ""}"
             else -> "  by ${playerName(row.actor)}"
         }
-        val payload = payloadLabel(row)
+        val payload = if (pressed != null) "  pressed by ${pressed.first}" else payloadLabel(row)
         // Two rows of a door or a bed are otherwise the same row twice, and which half was struck is
         // the whole of what an investigator is asking.
         val half = if (row.alongside) "  (other half)" else ""
@@ -652,6 +656,13 @@ class Lookups(
             before != null && after != null && before != after -> "  text $before -> $after"
             else -> "  text ${after ?: before}"
         }
+    }
+
+    // What pressed a switch, and how far the player named on the row stood from it when that player
+    // was only a witness: the payload of an entity switch row is that text and nothing else.
+    private fun pressedBy(payloadId: Long): Pair<String, String?>? {
+        val text = ledger.payload(payloadId)?.toString(Charsets.UTF_8) ?: return null
+        return text.substringBefore(' ') to text.substringAfter(' ', "").ifEmpty { null }
     }
 
     // A payload is kept byte for byte, so reading it can fail on a tag a later game version wrote; the

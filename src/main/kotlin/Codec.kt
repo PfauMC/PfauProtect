@@ -213,12 +213,16 @@ object EntryCodec {
 
     private const val VERSION_MASK = 0x07
 
-    // The upper reserved bit flags an actor; the lower one stays next to the version so that field
-    // can still grow into it without moving.
+    // The upper reserved bit flags an actor.
     private const val ACTOR_FLAG = 0x10
 
+    // The lower reserved bit is the high bit of the confidence, whose low bit sits at 0x20: every row
+    // written before a third confidence existed has it clear and reads as it always did.
+    private const val CONFIDENCE_HIGH = 0x08
+
     fun header(kind: Kind, confidence: Confidence, actor: Boolean = false): Int =
-        (kind.id shl 6) or (confidence.id shl 5) or (if (actor) ACTOR_FLAG else 0) or VERSION
+        (kind.id shl 6) or ((confidence.id and 1) shl 5) or (if (actor) ACTOR_FLAG else 0) or
+            (if (confidence.id and 2 != 0) CONFIDENCE_HIGH else 0) or VERSION
 
     fun key(holder: Holder, timestamp: Long, txId: Long, ordinal: Int, ids: IdResolver): ByteArray {
         require(ordinal in 0..MAX_ORDINAL) { "posting ordinal $ordinal does not fit in a byte" }
@@ -277,7 +281,7 @@ object EntryCodec {
         if (header and VERSION_MASK != VERSION) return null
         val kindId = (header ushr 6) and 0x03
         val kind = Kind.byId(kindId) ?: throw IllegalArgumentException("unknown entry kind $kindId")
-        val confidenceId = (header ushr 5) and 0x01
+        val confidenceId = ((header ushr 5) and 0x01) or (if (header and CONFIDENCE_HIGH != 0) 2 else 0)
         val confidence = Confidence.byId(confidenceId)
             ?: throw IllegalArgumentException("unknown confidence $confidenceId")
         val causeId = v.byte()

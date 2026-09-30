@@ -156,7 +156,7 @@ class WorldItemListener(
             val at = positionOf(source.location.block)
             attribution?.placerAt(at, BlockDestructionListener.TNT)?.let { return it.actor }
         }
-        return entities.summonerOf(firedBy(source).uniqueId)?.actor
+        return entities.summonerOf(firedBy(source).uniqueId).culprit()
     }
 
     // A box that fell out of a block something other than a hand broke is given the name its contents
@@ -186,7 +186,7 @@ class WorldItemListener(
             cause,
             blaster = if (cause == Cause.ITEM_DESTROY_EXPLOSION) blaster(item) else null,
             thrower = item.thrower,
-            dispensedBy = entities.summonerOf(item.uniqueId)?.actor,
+            dispensedBy = entities.summonerOf(item.uniqueId).culprit(),
         )
         pending.add(ItemEntityRef(item.uniqueId), Void, cause, encoded.key, encoded.count, by, confidence)
         // What spilled has already been claimed by its own spawn; everything else goes down with the box.

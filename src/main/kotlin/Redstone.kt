@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect
 
+import io.papermc.paper.entity.Leashable
 import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.Tag
@@ -9,12 +10,32 @@ import org.bukkit.block.data.AnaloguePowerable
 import org.bukkit.block.data.BlockData
 import org.bukkit.block.data.Powerable
 import org.bukkit.block.data.type.TripwireHook
+import org.bukkit.entity.Boat
+import org.bukkit.entity.Entity
+import org.bukkit.entity.Item
+import org.bukkit.entity.Minecart
+import org.bukkit.entity.Player
+import org.bukkit.entity.Projectile
+import org.bukkit.entity.TNTPrimed
+import org.bukkit.entity.Tameable
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.event.block.Action
+import org.bukkit.event.block.BlockReceiveGameEvent
 import org.bukkit.event.block.BlockRedstoneEvent
+import org.bukkit.event.entity.EntityBreedEvent
+import org.bukkit.event.entity.EntityExplodeEvent
+import org.bukkit.event.entity.EntityInteractEvent
+import org.bukkit.event.entity.EntityKnockbackByEntityEvent
+import org.bukkit.event.entity.EntityPlaceEvent
+import org.bukkit.event.entity.ProjectileHitEvent
+import org.bukkit.event.player.PlayerFishEvent
 import org.bukkit.event.player.PlayerInteractEvent
+import org.bukkit.event.vehicle.VehicleEntityCollisionEvent
+import org.bukkit.event.weather.LightningStrikeEvent
+import org.bukkit.util.BoundingBox
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -96,7 +117,10 @@ class Energy(private val now: () -> Long = System::currentTimeMillis) {
  * Alternate Current left no notes on the wire, the wire it touches. Read on the component's own
  * region; the walks stop at the region's edge rather than reach into a chunk another thread owns.
  */
-internal fun energyAt(block: Block, energy: Energy): Attributed? {
+// A player seen pressing is a fact; that the press is what moved this component is worked out.
+internal fun energyAt(block: Block, energy: Energy): Attributed? = found(block, energy)?.inferred()
+
+private fun found(block: Block, energy: Energy): Attributed? {
     energy.near(positionOf(block))?.let { return it }
     if (block.type == Material.TRIPWIRE_HOOK) return alongTripwire(block, energy)
     // A wire that found nothing around itself is one link of a line no event is walking; walking
@@ -164,6 +188,97 @@ internal fun powered(data: BlockData, current: Int): BlockData = data.clone().al
 private fun isSwitch(type: Material) =
     Tag.BUTTONS.isTagged(type) || Tag.PRESSURE_PLATES.isTagged(type) || type == Material.LEVER
 
+// How long a push, a pull or a knock stays behind the entity it moved: a mob stops within seconds, a
+// cart or a boat coasts on for a while.
+private const val NUDGE_MILLIS = 10_000L
+private const val VEHICLE_NUDGE_MILLIS = 60_000L
+
+// How far a player may stand from a switch and still be named as having been there.
+internal const val WITNESS_REACH = 16.0
+
+// A stack of riders is a handful of entities; this only stops a loop the server should never build.
+private const val MAX_STACK = 8
+
+/** Who stands behind what set a switch off, and how far away they were when they only stood near. */
+class Behind(val by: Attributed?, val distance: Double? = null)
+
+// A step taken is worked out, whatever was seen at the start of it.
+internal fun Attributed.inferred(): Attributed =
+    if (confidence == Confidence.FACT) copy(confidence = Confidence.INFERRED) else this
+
+/**
+ * The last player who moved an entity that goes on moving by itself: a knock, a wind charge, a
+ * fishing rod pulling it in, a cart or a boat shoved by hand. Refreshed by every new push.
+ */
+class Nudges(private val now: () -> Long = System::currentTimeMillis) {
+    private class Note(val by: Attributed, val until: Long)
+
+    private val notes = ConcurrentHashMap<UUID, Note>()
+
+    val size: Int get() = notes.size
+
+    fun nudged(entity: Entity, by: Attributed) {
+        val window = if (entity is Minecart || entity is Boat) VEHICLE_NUDGE_MILLIS else NUDGE_MILLIS
+        notes[entity.uniqueId] = Note(by.inferred(), now() + window)
+    }
+
+    fun of(entity: UUID): Attributed? = notes[entity]?.takeIf { now() <= it.until }?.by
+
+    fun sweep() {
+        val now = now()
+        notes.values.removeIf { now > it.until }
+    }
+}
+
+/**
+ * The player behind an entity, first rung that answers: the entity itself, whoever rides with it,
+ * whoever threw or shot it, whoever holds its lead, whoever last pushed it, whoever brought it into the
+ * world, whoever tamed it. Null when none of them is a player.
+ */
+internal fun behind(entity: Entity, nudges: Nudges, entities: EntityOrigins, depth: Int = 0): Attributed? {
+    if (entity is Player) return Attributed(entity.uniqueId, Confidence.FACT)
+    riderWith(entity)?.let { return Attributed(it.uniqueId, Confidence.FACT) }
+    val thrower = when (entity) {
+        is Item -> entity.thrower
+        is TNTPrimed -> (entity.source as? Player)?.uniqueId
+        is Projectile -> (entity.shooter as? Player)?.uniqueId
+        else -> null
+    }
+    thrower?.let { return Attributed(it, Confidence.FACT) }
+    // A skeleton's arrow is the skeleton's, and a skeleton somebody led there is theirs.
+    val shooter = (entity as? Projectile)?.shooter as? Entity
+    if (shooter != null && depth < 2) behind(shooter, nudges, entities, depth + 1)?.let { return it.inferred() }
+    val leashed = (entity as? Leashable)?.takeIf { it.isLeashed }?.leashHolder as? Player
+    leashed?.let { return Attributed(it.uniqueId, Confidence.FACT) }
+    nudges.of(entity.uniqueId)?.let { return it }
+    entities.summonerOf(entity.uniqueId)?.let { return it }
+    (entity as? Tameable)?.ownerUniqueId?.let { return Attributed(it, Confidence.INFERRED) }
+    return null
+}
+
+// Anybody riding anywhere in the stack the entity is part of: the pig under the player, the boat
+// under the pig.
+private fun riderWith(entity: Entity): Player? {
+    var root = entity
+    for (step in 0 until MAX_STACK) root = root.vehicle ?: break
+    val queue = ArrayDeque(listOf(root))
+    var seen = 0
+    while (queue.isNotEmpty() && seen++ < MAX_STACK * 4) {
+        val next = queue.removeFirst()
+        if (next is Player) return next
+        queue += next.passengers
+    }
+    return null
+}
+
+// The nearest player within reach of the switch, named as a witness and nothing more.
+private fun witness(block: Block): Behind {
+    val centre = block.location.add(0.5, 0.5, 0.5)
+    val nearest = block.world.getNearbyPlayers(centre, WITNESS_REACH).minByOrNull { it.location.distance(centre) }
+        ?: return Behind(null)
+    return Behind(Attributed(nearest.uniqueId, Confidence.NEARBY), nearest.location.distance(centre))
+}
+
 /**
  * The start of every chain a player sets off by hand, and each step of every chain after it.
  *
@@ -172,23 +287,45 @@ private fun isSwitch(type: Material) =
  * to. A switch also gets its own row, written from the redstone change it raises in the same call,
  * which is the one moment its state before and its current after are both known.
  */
-class RedstoneListener(private val energy: Energy, private val logs: BlockLogs) : Listener {
+class RedstoneListener(
+    private val energy: Energy,
+    private val logs: BlockLogs,
+    private val entities: EntityOrigins,
+    private val nudges: Nudges,
+) : Listener {
     private class Pressed(val at: WorldBlock, val actor: UUID, val nanos: Long)
 
+    // An entity on a switch, and who stands behind it, for the redstone change it raises in the same
+    // call.
+    private class Stepped(val at: WorldBlock, val type: String, val behind: Behind, val nanos: Long)
+
     private val pressing = ThreadLocal<Pressed?>()
+    private val stepping = ThreadLocal<Stepped?>()
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onInteract(event: PlayerInteractEvent) {
         if (event.action != Action.RIGHT_CLICK_BLOCK && event.action != Action.PHYSICAL) return
         val block = event.clickedBlock ?: return
         val at = positionOf(block)
-        val actor = event.player.uniqueId
-        energy.note(at, Attributed(actor, Confidence.FACT))
+        val by = Attributed(event.player.uniqueId, Confidence.FACT)
+        energy.note(at, by)
         when {
             // A tripwire raises nothing of its own: the change is on the hook, however far along.
-            block.type == Material.TRIPWIRE -> tripped(block, actor)
-            isSwitch(block.type) -> pressing.set(Pressed(at, actor, System.nanoTime()))
+            block.type == Material.TRIPWIRE -> tripped(block, Cause.BLK_PLAYER_SWITCH, Behind(by), null)
+            isSwitch(block.type) -> pressing.set(Pressed(at, by.actor, System.nanoTime()))
         }
+    }
+
+    // Pressure plates, tripwire and a button an arrow hits raise this for anything but a player.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onEntityInteract(event: EntityInteractEvent) {
+        val block = event.block
+        if (!isSwitch(block.type) && block.type != Material.TRIPWIRE) return
+        val entity = event.entity
+        val behind = behindSwitch(entity, block)
+        behind.by?.let { energy.note(positionOf(block), it) }
+        if (block.type == Material.TRIPWIRE) return tripped(block, Cause.BLK_ENTITY_SWITCH, behind, typeOf(entity))
+        stepping.set(Stepped(positionOf(block), typeOf(entity), behind, System.nanoTime()))
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -196,24 +333,118 @@ class RedstoneListener(private val energy: Energy, private val logs: BlockLogs) 
         if (event.oldCurrent == event.newCurrent) return
         val block = event.block
         val at = positionOf(block)
+        val after = powered(block.blockData, event.newCurrent)
+        val now = System.nanoTime()
         val press = pressing.get()
-        if (press != null && press.at == at && System.nanoTime() - press.nanos <= PRESS_NANOS) {
+        if (press != null && press.at == at && now - press.nanos <= PRESS_NANOS) {
             pressing.remove()
-            switched(block, powered(block.blockData, event.newCurrent), press.actor)
+            switched(block, after, Cause.BLK_PLAYER_SWITCH, Behind(Attributed(press.actor, Confidence.FACT)), null)
             return
+        }
+        val step = stepping.get()
+        if (step != null && step.at == at && now - step.nanos <= PRESS_NANOS) {
+            stepping.remove()
+            switched(block, after, Cause.BLK_ENTITY_SWITCH, step.behind, step.type)
+            return
+        }
+        // A detector rail raises nothing that names the cart on it, so the cart is looked for.
+        if (block.type == Material.DETECTOR_RAIL && event.newCurrent > 0) {
+            val cart = block.world.getNearbyEntities(BoundingBox.of(block)) { it is Minecart }.firstOrNull()
+            if (cart != null) {
+                switched(block, after, Cause.BLK_ENTITY_SWITCH, behindSwitch(cart, block), typeOf(cart))
+                return
+            }
         }
         energyAt(block, energy)?.let { energy.note(at, it) }
     }
 
-    private fun tripped(block: Block, actor: UUID) {
-        val data = block.blockData as? Powerable ?: return
-        if (data.isPowered) return
-        switched(block, powered(data, 1), actor)
+    // A vibration names what made it; the sensor answers some ticks later, and finds this note then.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onVibration(event: BlockReceiveGameEvent) {
+        val type = event.block.type
+        if (type != Material.SCULK_SENSOR && type != Material.CALIBRATED_SCULK_SENSOR) return
+        val entity = event.entity ?: return
+        behindSwitch(entity, event.block).by?.let { energy.note(positionOf(event.block), it.inferred()) }
     }
 
-    // The log notes the energy of the row itself, like every row it takes that names somebody.
-    private fun switched(block: Block, after: BlockData, actor: UUID) {
+    // A target block, and anything else a projectile strikes, answers to whoever shot it.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onHit(event: ProjectileHitEvent) {
+        val block = event.hitBlock ?: return
+        behind(event.entity)?.let { energy.note(positionOf(block), it.inferred()) }
+    }
+
+    // The explosion is announced before it presses the buttons and flips the levers, doors and
+    // trapdoors in its reach, so each of them finds the note of whoever set it off. A wind charge is
+    // the explosion a player sets off on purpose.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onExplode(event: EntityExplodeEvent) {
+        val by = behind(event.entity)?.inferred() ?: return
+        energy.note(positionOf(event.location.block), by)
+        for (block in event.blockList()) energy.note(positionOf(block), by)
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onLightning(event: LightningStrikeEvent) {
+        val player = event.lightning.causingPlayer ?: return
+        val struck = event.lightning.location.block
+        val by = Attributed(player.uniqueId, Confidence.INFERRED)
+        energy.note(positionOf(struck), by)
+        energy.note(positionOf(struck.getRelative(BlockFace.DOWN)), by)
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onKnockback(event: EntityKnockbackByEntityEvent) {
+        behind(event.sourceEntity)?.let { nudges.nudged(event.entity, it) }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onFish(event: PlayerFishEvent) {
+        if (event.state != PlayerFishEvent.State.CAUGHT_ENTITY) return
+        val caught = event.caught ?: return
+        nudges.nudged(caught, Attributed(event.player.uniqueId, Confidence.INFERRED))
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onCollide(event: VehicleEntityCollisionEvent) {
+        val player = event.entity as? Player ?: return
+        nudges.nudged(event.vehicle, Attributed(player.uniqueId, Confidence.INFERRED))
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onBreed(event: EntityBreedEvent) {
+        val breeder = event.breeder as? Player ?: return
+        entities.appeared(event.entity.uniqueId, breeder.uniqueId)
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPlace(event: EntityPlaceEvent) {
+        val player = event.player ?: return
+        entities.appeared(event.entity.uniqueId, player.uniqueId)
+    }
+
+    private fun behind(entity: Entity): Attributed? = behind(entity, nudges, entities)
+
+    // The ladder, then whatever set the mechanisms around the switch going — a piston that shoved the
+    // entity, a rail that sped the cart — and last the nearest player.
+    private fun behindSwitch(entity: Entity, block: Block): Behind {
+        behind(entity)?.let { return Behind(it) }
+        energy.near(positionOf(block))?.let { return Behind(it.inferred()) }
+        return witness(block)
+    }
+
+    private fun tripped(block: Block, cause: Cause, behind: Behind, type: String?) {
+        val data = block.blockData as? Powerable ?: return
+        if (data.isPowered) return
+        switched(block, powered(data, 1), cause, behind, type)
+    }
+
+    // The log notes the energy of the row itself, like every row it takes that names somebody. The
+    // payload of an entity's row is the entity's type, and the witness's distance when there is one.
+    private fun switched(block: Block, after: BlockData, cause: Cause, behind: Behind, type: String?) {
         val log = logs.get(block.world.uid) ?: return
+        val by = behind.by
+        val distance = behind.distance?.let { " " + String.format(Locale.ROOT, "%.1f", it) } ?: ""
         log.submit(
             listOf(
                 BlockChange(
@@ -222,10 +453,14 @@ class RedstoneListener(private val energy: Energy, private val logs: BlockLogs) 
                     z = block.z,
                     before = block.blockData.asString,
                     after = after.asString,
-                    cause = Cause.BLK_PLAYER_SWITCH,
-                    actor = actor,
+                    cause = cause,
+                    confidence = by?.confidence ?: Confidence.FACT,
+                    actor = by?.actor,
+                    payloadAfter = type?.let { (it + distance).toByteArray(Charsets.UTF_8) },
                 )
             )
         )
     }
 }
+
+private fun typeOf(entity: Entity) = entity.type.key.toString()

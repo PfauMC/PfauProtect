@@ -3,7 +3,14 @@ package io.pfaumc.pfauprotect
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
+import org.bukkit.entity.Entity
+import org.bukkit.entity.Item
+import org.bukkit.entity.Minecart
+import org.bukkit.entity.Pig
+import org.bukkit.entity.Player
+import org.bukkit.entity.Wolf
 import org.junit.jupiter.api.io.TempDir
+import java.lang.reflect.Proxy
 import java.nio.file.Path
 import java.util.UUID
 
@@ -74,5 +81,64 @@ class RedstoneTest {
                 assertEquals(listOf(world to change), seen)
             }
         }
+    }
+
+    // An entity stands in for itself with only what the ladder asks of it answered.
+    @Suppress("UNCHECKED_CAST")
+    private fun <T : Entity> entity(type: Class<T>, id: UUID, answers: Map<String, Any?> = emptyMap()): T =
+        Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ ->
+            when {
+                method.name == "getUniqueId" -> id
+                method.name in answers -> answers[method.name]
+                method.returnType == List::class.java -> emptyList<Entity>()
+                method.returnType == Boolean::class.javaPrimitiveType -> false
+                else -> null
+            }
+        } as T
+
+    private val nudges = Nudges { clock }
+    private val origins = EntityOrigins { clock }
+
+    @Test
+    fun `an item answers to its thrower and a mob to whoever rides it`() {
+        val item = entity(Item::class.java, UUID.randomUUID(), mapOf("getThrower" to alice))
+        assertEquals(Attributed(alice, Confidence.FACT), behind(item, nudges, origins))
+
+        val rider = entity(Player::class.java, bob)
+        val pig = entity(Pig::class.java, UUID.randomUUID(), mapOf("getPassengers" to listOf(rider)))
+        assertEquals(Attributed(bob, Confidence.FACT), behind(pig, nudges, origins))
+    }
+
+    // A push lasts while the thing pushed can still be rolling from it: seconds for a mob, a minute for
+    // a cart.
+    @Test
+    fun `a push names the pusher for as long as the entity can still be moving from it`() {
+        val pig = entity(Pig::class.java, UUID.randomUUID())
+        val cart = entity(Minecart::class.java, UUID.randomUUID())
+        nudges.nudged(pig, Attributed(alice, Confidence.FACT))
+        nudges.nudged(cart, Attributed(alice, Confidence.FACT))
+        assertEquals(Attributed(alice, Confidence.INFERRED), behind(pig, nudges, origins))
+
+        clock += 30_000
+        assertNull(behind(pig, nudges, origins))
+        assertEquals(alice, behind(cart, nudges, origins)?.actor)
+    }
+
+    @Test
+    fun `a tame animal answers to its owner and a wild one to nobody`() {
+        val wolf = entity(Wolf::class.java, UUID.randomUUID(), mapOf("getOwnerUniqueId" to bob))
+        assertEquals(Attributed(bob, Confidence.INFERRED), behind(wolf, nudges, origins))
+        assertNull(behind(entity(Pig::class.java, UUID.randomUUID()), nudges, origins))
+    }
+
+    // A witness is not a culprit: an item row, which cannot say how sure it is of its actor, leaves them
+    // off, and a step down the chain keeps them a witness.
+    @Test
+    fun `a witness stays a witness down the chain and off the item rows`() {
+        val witness = Attributed(alice, Confidence.NEARBY)
+        assertEquals(witness, witness.inferred())
+        assertNull(witness.culprit())
+        assertEquals(Attributed(alice, Confidence.INFERRED), Attributed(alice, Confidence.FACT).inferred())
+        assertEquals(alice, Attributed(alice, Confidence.INFERRED).culprit())
     }
 }

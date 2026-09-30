@@ -120,6 +120,7 @@ class PfauProtectPlugin : JavaPlugin() {
     override fun onEnable() {
         val ledger = RocksItemLog(dataFolder.toPath().resolve("ledger"))
         val energy = Energy()
+        val nudges = Nudges()
         // A row that names somebody is what an observer or a comparator next to it answers to.
         val blocks = BlockLogs(dataFolder.toPath().resolve("blocks"), ledger) { world, changes ->
             for (change in changes) {
@@ -165,7 +166,7 @@ class PfauProtectPlugin : JavaPlugin() {
         )
         server.pluginManager.registerEvents(destruction, this)
         server.pluginManager.registerEvents(EntityOriginListener(attribution, entities), this)
-        server.pluginManager.registerEvents(RedstoneListener(energy, blocks), this)
+        server.pluginManager.registerEvents(RedstoneListener(energy, blocks, entities, nudges), this)
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
         server.pluginManager.registerEvents(ProjectileListener(capture, codec, mechanisms, origins), this)
@@ -209,6 +210,7 @@ class PfauProtectPlugin : JavaPlugin() {
                 attribution.sweep()
                 entities.sweep()
                 energy.sweep()
+                nudges.sweep()
             },
             NOTE_MINUTES,
             NOTE_MINUTES,
