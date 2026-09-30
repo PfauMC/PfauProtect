@@ -1433,9 +1433,11 @@ class BlockDestructionListener(
         for (site in rows) readBacks.filed(site.at, site.before.asString, site.after)
         val gone = real.filter { wentAway(it.before.asString, it.after) }
         if (gone.isEmpty()) return
-        // A block that moved carries itself to the position it arrived in and drops nothing on the way.
+        // A block that moved carries itself to the position it arrived in and drops nothing on the way,
+        // and a position that was empty broke nothing: what stands there now arrived, and packing it
+        // up as though it had been broken would empty a shulker box a dispenser has just put down.
         for (site in gone) {
-            if (site.went != null || !expectsDrops) continue
+            if (site.went != null || !expectsDrops || emptied(site.before.asString)) continue
             expectDrops(origins, codec, site.block, cause, by.culprit(), packBox(site, by, timestamp), dropReach)
         }
         by.culprit()?.let { actor ->
