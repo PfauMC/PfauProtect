@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
+import kotlin.math.abs
+import io.pfaumc.pfauprotect.capture.block.SPAWN_REACH
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
@@ -86,6 +88,10 @@ class CommandListener(
         val count = words.getOrNull(3)?.toIntOrNull() ?: 1
         val until = System.currentTimeMillis() + COMMAND_LINGER_MILLIS
         for (player in players) {
+            // Where the player stands now, for a give the server runs before the reason is left; the
+            // reason looks again once it is, for a teleport earlier in the same batch.
+            val heardAt = spotOf(player.location)
+            given?.let { origins.expect(Void, Cause.CMD_GIVE, it.key, heardAt, count) }
             val reasons = listOfNotNull(
                 use.gain?.let { Intent(it, from = Void, form = given?.form, until = until) },
                 use.loss?.let { Intent(it, to = Void, until = until) },
@@ -93,9 +99,10 @@ class CommandListener(
             )
             val leave: () -> Unit = {
                 reasons.forEach { capture.intend(player, it) }
-                // Read where the player stands by then: a teleport earlier in the same batch has moved
-                // them, and the ghost appears where they were moved to.
-                given?.let { origins.expect(Void, Cause.CMD_GIVE, it.key, spotOf(player.location), count) }
+                val now = spotOf(player.location)
+                val moved = now.world != heardAt.world || abs(now.x - heardAt.x) > SPAWN_REACH ||
+                    abs(now.y - heardAt.y) > SPAWN_REACH || abs(now.z - heardAt.z) > SPAWN_REACH
+                if (moved) given?.let { origins.expect(Void, Cause.CMD_GIVE, it.key, now, count) }
             }
             // From another region the server hands the command to the player's scheduler a tick on,
             // queued behind the pass an intent left now would schedule: that pass would spend the reason

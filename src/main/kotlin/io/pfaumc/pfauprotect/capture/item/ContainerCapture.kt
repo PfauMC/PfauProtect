@@ -691,6 +691,12 @@ class ContainerCaptureListener(
         // the position took over, the tool would be handed back whole when the fire goes out, writing
         // off an item that is still in somebody's inventory.
         if (inHand.type.maxDurability > 0) return
+        // Powder snow out of its bucket is placed like a block and leaves the empty bucket, and the
+        // snow holds no item of its own.
+        if (inHand.type == Material.POWDER_SNOW_BUCKET) {
+            intend(event.player, mutation(Cause.BUCKET_EMPTY))
+            return
+        }
         // Wax, an eye of ender, a fire charge: the server raises a placement for what they do to a
         // block, but they are not what the block is made of.
         if (!inHand.type.isBlock) return
