@@ -11,8 +11,8 @@ went, spot items with no explained origin, and eventually roll back a culprit. K
 ```
 ./gradlew build                                                  # compile + tests + plugin jar
 ./gradlew test                                                   # all tests
-./gradlew test --tests 'io.pfaumc.pfauprotect.StorageTest'       # one class
-./gradlew test --tests 'io.pfaumc.pfauprotect.StorageTest.*name*'# one method (glob)
+./gradlew test --tests 'io.pfaumc.pfauprotect.storage.StorageTest'       # one class
+./gradlew test --tests 'io.pfaumc.pfauprotect.storage.StorageTest.*name*'# one method (glob)
 ./gradlew runServer                                              # Canvas server with the plugin (not on Windows, see below)
 scripts/test-server.sh start|stop|logs                           # the same server in a Linux container, for manual runs
 ```
@@ -33,7 +33,18 @@ scripts/test-server.sh start|stop|logs                           # the same serv
 
 ## Architecture
 
-One flat package `io.pfaumc.pfauprotect`. `PfauProtectPlugin.onEnable` wires everything into a `Running` object.
+Packages under `io.pfaumc.pfauprotect`; tests sit in the package of the code they test. `PfauProtectPlugin.onEnable`
+(root package) wires everything into a `Running` object.
+
+| Package | What |
+| --- | --- |
+| `model` | holders, transfers, `Cause`, `Kind`, `Confidence` |
+| `storage` | both RocksDB stores, codecs, registries, item forms |
+| `capture.item` | item movements: windows and the recompute pass, intents, entities, commands |
+| `capture.block` | block changes, mechanisms, `TickCoalescer` |
+| `attribution` | the culprit ladder, entity origins, redstone energy (phase 5.7) |
+| `check` | plane sync and reconciliation |
+| `command` | `/pp lookup` and inspect |
 
 **Item plane (`Storage.kt`, `RocksItemLog`).** Single RocksDB at `ledger/`, with column families entries,
 item_forms, registry, meta, nested_owners, tx, placed_forms and block_payloads, all written by one writer thread
