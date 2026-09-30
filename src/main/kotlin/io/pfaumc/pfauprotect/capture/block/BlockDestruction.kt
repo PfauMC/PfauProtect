@@ -71,6 +71,7 @@ import org.bukkit.event.block.SpongeAbsorbEvent
 import com.destroystokyo.paper.event.block.AnvilDamagedEvent
 import io.papermc.paper.event.block.DragonEggFormEvent
 import io.papermc.paper.event.entity.EntityConstructEvent
+import io.papermc.paper.event.entity.EntityPortalReadyEvent
 import org.bukkit.block.Sign
 import org.bukkit.block.CreatureSpawner
 import org.bukkit.block.TrialSpawner
@@ -688,6 +689,10 @@ private val PRIMED_ELSEWHERE = setOf(
     TNTPrimeEvent.PrimeCause.EXPLOSION, TNTPrimeEvent.PrimeCause.FIRE, TNTPrimeEvent.PrimeCause.BLOCK_BREAK,
 )
 
+// How long after stepping through a portal a player can still be who the far side was built for: the
+// journey loads the chunks there first.
+private const val TRAVEL_MILLIS = 30_000L
+
 // The largest portal the game builds is 21 by 21.
 private const val PORTAL_MAX_BLOCKS = 21 * 21
 
@@ -1225,6 +1230,15 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onEggFormed(event: DragonEggFormEvent) = readBack(listOf(event.block), null, Cause.BLK_FORM)
 
+    private val travellers = ConcurrentHashMap<UUID, Pair<UUID, Long>>()
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPortalReady(event: EntityPortalReadyEvent) {
+        val player = event.entity as? Player ?: return
+        val world = event.targetWorld ?: return
+        travellers[world.uid] = player.uniqueId to System.currentTimeMillis()
+    }
+
     /**
      * A portal lit or built on the far side of a journey. The event hands over the new states while
      * the world still stands as it was, so both sides are read here; the frame a lit portal hands back
@@ -1234,7 +1248,11 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPortalCreate(event: PortalCreateEvent) {
         val log = logs.get(event.world.uid) ?: return
+        // Canvas builds the far side of a journey with no traveller on the event; the player who last
+        // stepped through a portal towards this world is who it was built for.
         val by = (event.entity as? Player)?.let { Attributed(it.uniqueId, Confidence.FACT) }
+            ?: travellers[event.world.uid]?.takeIf { System.currentTimeMillis() - it.second <= TRAVEL_MILLIS }
+                ?.let { Attributed(it.first, Confidence.INFERRED) }
         val sites = event.blocks.mapNotNull { state ->
             val block = state.block
             val before = block.blockData
