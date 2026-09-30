@@ -30,6 +30,7 @@ import io.pfaumc.pfauprotect.command.Lookups
 import io.pfaumc.pfauprotect.command.MAX_RADIUS
 import io.pfaumc.pfauprotect.capture.block.MechanismCaptureListener
 import io.pfaumc.pfauprotect.check.Mismatch
+import io.pfaumc.pfauprotect.capture.item.MobInventories
 import io.pfaumc.pfauprotect.capture.item.MobItemListener
 import io.pfaumc.pfauprotect.capture.item.NestedCaptureListener
 import io.pfaumc.pfauprotect.attribution.Nudges
@@ -217,8 +218,12 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
         server.pluginManager.registerEvents(ProjectileListener(capture, codec, mechanisms, origins), this)
+        val inventories = MobInventories(codec, mechanisms, ledger, uncovered::submit) { entity, task ->
+            entity.scheduler.run(this, { task() }, null)
+        }
+        server.pluginManager.registerEvents(inventories, this)
         server.pluginManager.registerEvents(
-            MobItemListener(codec, mechanisms, origins) { at, task -> server.regionScheduler.run(this, at) { task() } },
+            MobItemListener(codec, mechanisms, origins, inventories) { at, task -> server.regionScheduler.run(this, at) { task() } },
             this,
         )
         server.pluginManager.registerEvents(

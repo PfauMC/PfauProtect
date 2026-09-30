@@ -276,6 +276,8 @@ class WorldItemListener(
             )
             return
         }
+        // A mob with a pocket is read by its pocket, where most of what it picks up goes.
+        if (carriesInventory(picker)) return
         val slot = equipmentSlotOf(picker, stack)
         // Whatever it does with the item later — drops it, dies holding it, trades it — has to come
         // out of this slot, so the mob remembers what went in.
