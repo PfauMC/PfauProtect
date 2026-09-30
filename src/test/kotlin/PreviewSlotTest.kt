@@ -104,6 +104,25 @@ class PreviewSlotTest {
         assertNull(heldSlotOf(held, "rotten_flesh".toByteArray()))
     }
 
+    // A boat is removed before it drops: its drop still finds the slot, once, and the rest is left to
+    // be written off.
+    @Test
+    fun `a removed entity's drop takes its slot out of what it held when it went`() {
+        val gone = mutableMapOf(16 to "oak_boat".toByteArray(), 0 to "chest".toByteArray())
+        assertEquals(16, claimHeld(emptyMap(), gone, "oak_boat".toByteArray()))
+        assertNull(claimHeld(emptyMap(), gone, "oak_boat".toByteArray()))
+        assertEquals(listOf(0), gone.keys.toList())
+        assertNull(claimHeld(emptyMap(), null, "oak_boat".toByteArray()))
+    }
+
+    // The saddle a click books and the saddle the window takes out are one slot.
+    @Test
+    fun `a horse window names its slots the way its equipment does`() {
+        assertEquals(net.minecraft.world.entity.EquipmentSlot.SADDLE.ordinal, horseSlot(0))
+        assertEquals(net.minecraft.world.entity.EquipmentSlot.BODY.ordinal, horseSlot(1))
+        assertEquals(17, horseSlot(2))
+    }
+
     private fun <T : Any> stub(type: Class<T>): T {
         @Suppress("UNCHECKED_CAST")
         return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, _, _ -> null } as T

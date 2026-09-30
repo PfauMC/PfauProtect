@@ -78,6 +78,9 @@ class ItemUseTest {
         // Worn or kept by the mob: its equipment change says where it went.
         assertNull(entityUseCause(stack(Items.SADDLE)))
         assertNull(entityUseCause(stack(Items.DIAMOND), EntityTarget(keeps = true)))
+        // A lead or a name tag on an allay is spent, not handed over.
+        assertEquals(Cause.LEASH_ATTACH, entityUseCause(stack(Items.LEAD), EntityTarget(keeps = true)))
+        assertEquals(Cause.NAME_TAG, entityUseCause(stack(Items.NAME_TAG), EntityTarget(keeps = true)))
     }
 
     // A record put in a jukebox is a gain of the slot; one taken back out, a loss. A slot that went on

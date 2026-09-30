@@ -170,7 +170,10 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
         server.pluginManager.registerEvents(ProjectileListener(capture, codec, mechanisms, origins), this)
-        server.pluginManager.registerEvents(MobItemListener(codec, mechanisms, origins), this)
+        server.pluginManager.registerEvents(
+            MobItemListener(codec, mechanisms, origins) { at, task -> server.regionScheduler.run(this, at) { task() } },
+            this,
+        )
         server.pluginManager.registerEvents(
             CommandListener(capture, codec, origins) { player, task -> player.scheduler.run(this, { task() }, null) },
             this,

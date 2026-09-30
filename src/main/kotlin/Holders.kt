@@ -220,8 +220,8 @@ class HolderListener(
     fun onEquipment(event: EntityEquipmentChangedEvent) {
         val mob = event.entity
         if (mob is Player) return
-        val click = handed.remove(mob.uniqueId) ?: return
-        if (Bukkit.getCurrentTick() - click.tick > EQUIP_TICKS) return
+        val click = handed.remove(mob.uniqueId)?.takeIf { Bukkit.getCurrentTick() - it.tick <= EQUIP_TICKS }
+            ?: return forgetEmptied(mob, event)
         for ((slot, change) in event.equipmentChanges) {
             val index = CraftEquipmentSlot.getNMS(slot).ordinal
             val put = codec.encodeOrNull(change.newItem())
@@ -253,6 +253,18 @@ class HolderListener(
     }
 
     // Out of the slot the ledger put it in, or out of nowhere for what the entity came with.
+    // A saddle taken out through the horse's window is written by the window; the mark saying it sits
+    // in that slot goes, or the horse's death would write the saddle off a second time.
+    private fun forgetEmptied(mob: Entity, event: EntityEquipmentChangedEvent) {
+        val held = heldBy(mob)
+        for ((slot, change) in event.equipmentChanges) {
+            val index = CraftEquipmentSlot.getNMS(slot).ordinal
+            val booked = held[index] ?: continue
+            val now = codec.encodeOrNull(change.newItem())?.form
+            if (now == null || !now.contentEquals(booked)) unbookHeld(mob, index)
+        }
+    }
+
     private fun takeFrom(entity: Entity, slot: Int, form: ByteArray): Holder {
         if (heldBy(entity)[slot]?.contentEquals(form) != true) return Void
         unbookHeld(entity, slot)

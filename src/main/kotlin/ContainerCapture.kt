@@ -14,6 +14,7 @@ import org.bukkit.block.Block
 import org.bukkit.craftbukkit.entity.CraftLivingEntity
 import org.bukkit.craftbukkit.inventory.CraftInventory
 import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
@@ -268,6 +269,10 @@ internal fun containerHolders(inventory: Inventory): ((Int) -> Holder)? {
     // A minecart rides the rails, so only its uuid addresses it; its position is where something
     // happened, not what it is.
     val cart = holder as? Entity
+    if (cart is AbstractHorse) {
+        val uuid = cart.uniqueId
+        return { slot -> EntitySlot(uuid, horseSlot(slot)) }
+    }
     if (cart != null) {
         val uuid = cart.uniqueId
         return { slot -> EntitySlot(uuid, slot) }

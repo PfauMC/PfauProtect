@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect
 
 import org.bukkit.Bukkit
+import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.NamespacedKey
 import org.bukkit.entity.AbstractArrow
@@ -31,6 +32,9 @@ import org.bukkit.event.player.PlayerHarvestBlockEvent
 import org.bukkit.event.player.PlayerShearEntityEvent
 import org.bukkit.event.player.PlayerUnleashEntityEvent
 import org.bukkit.persistence.PersistentDataType
+import java.util.UUID
+import net.minecraft.world.entity.EquipmentSlot as NmsEquipmentSlot
+import java.util.concurrent.ConcurrentHashMap
 
 // A mob's drops scatter around where it died, and a big one is wider than a block.
 private const val DEATH_REACH = 3.0
@@ -47,6 +51,15 @@ private fun heldKey(slot: Int) = NamespacedKey("pfauprotect", "held_$slot")
 
 // The item an entity was placed from — a boat, a stand, a frame — kept apart from anything it wears.
 internal const val ENTITY_ITEM_SLOT = 16
+
+// A horse's window numbers its own slots — saddle, body armour, then the chest of a donkey or a llama —
+// while a saddle put on with a click is booked by its equipment slot. The window is turned into the
+// equipment numbering so both name one slot, and the chest goes above the entity's own item slot.
+internal fun horseSlot(window: Int): Int = when (window) {
+    0 -> NmsEquipmentSlot.SADDLE.ordinal
+    1 -> NmsEquipmentSlot.BODY.ordinal
+    else -> ENTITY_ITEM_SLOT + window - 1
+}
 
 private val HELD_SLOTS = 0..ENTITY_ITEM_SLOT
 
@@ -72,6 +85,18 @@ internal fun giftFrom(entity: Entity) =
 internal fun heldSlotOf(held: Map<Int, ByteArray>, form: ByteArray): Int? =
     held.entries.firstOrNull { it.value.contentEquals(form) }?.key
 
+/**
+ * The slot a dropped form comes out of: what the entity still books, or, once it has been removed,
+ * what it booked when it went. A slot taken from the removed entity's list is gone from it, so the
+ * rest can be written off afterwards as what nothing dropped.
+ */
+internal fun claimHeld(live: Map<Int, ByteArray>, gone: MutableMap<Int, ByteArray>?, form: ByteArray): Int? {
+    heldSlotOf(live, form)?.let { return it }
+    val slot = gone?.let { heldSlotOf(it, form) } ?: return null
+    gone.remove(slot)
+    return slot
+}
+
 // What falls out of a living mob that is not dying, and everything that falls out of one that is. The
 // drops of a death never pass through the drop event — they are handed out after the death event — so
 // the death has to leave its notes by where the mob fell.
@@ -79,7 +104,13 @@ class MobItemListener(
     private val codec: ItemFormCodec,
     private val pending: TickCoalescer,
     private val origins: SpawnOrigins,
+    // Runs a task on the region of the location a tick later.
+    private val later: (Location, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
+    // A boat, a minecart, a frame is removed before it drops what it was made of: what it booked
+    // stays here for that drop until the next tick. Touched on the region that owns the entity.
+    private val removed = ConcurrentHashMap<UUID, MutableMap<Int, ByteArray>>()
+
     // Shearing and bartering throw their results through the same drop event as anything else a mob
     // lets go of, inside the same call as their own event. Marked for the tick it happened in.
     private class Marked(val entity: java.util.UUID, val tick: Int)
@@ -118,7 +149,7 @@ class MobItemListener(
         if (entity is Player || entity is AbstractArrow) return
         val item = event.itemDrop
         val encoded = codec.encodeOrNull(item.itemStack) ?: return
-        val slot = heldSlotOf(heldBy(entity), encoded.form)
+        val slot = claimHeld(heldBy(entity), removed[entity.uniqueId], encoded.form)
         val booked = slot?.let {
             unbookHeld(entity, it)
             EntitySlot(entity.uniqueId, it)
@@ -169,7 +200,10 @@ class MobItemListener(
                     val qty = minOf(need, left[slot])
                     left[slot] -= qty
                     need -= qty
-                    val from = EntitySlot(mob.uniqueId, slot)
+                    val booked = horseSlot(slot)
+                    // A saddle put on with a click is booked on the mob as well; it has fallen out here.
+                    held.remove(booked)
+                    val from = EntitySlot(mob.uniqueId, booked)
                     origins.expect(from, Cause.CONTAINER_BREAK_DROP, encoded.key, spot, qty, killer, DEATH_REACH)
                 }
             }
@@ -205,11 +239,18 @@ class MobItemListener(
             EntityRemoveEvent.Cause.DEATH -> if (living) return
             else -> Unit
         }
-        val cause = if (living) Cause.MOB_EQUIPMENT_LOST else Cause.ENTITY_BREAK_DROP
-        for ((slot, form) in heldBy(entity)) {
-            pending.add(EntitySlot(entity.uniqueId, slot), Void, cause, ItemKey(form, null), 1)
-            unbookHeld(entity, slot)
-        }
+        val held = heldBy(entity)
+        if (held.isEmpty()) return
+        for (slot in held.keys) unbookHeld(entity, slot)
+        val id = entity.uniqueId
+        if (living) return writtenOff(id, held, Cause.MOB_EQUIPMENT_LOST)
+        // Broken, it drops what it was right after this; what no drop took by the next tick is gone.
+        removed[id] = held.toMutableMap()
+        later(entity.location) { removed.remove(id)?.let { writtenOff(id, it, Cause.ENTITY_BREAK_DROP) } }
+    }
+
+    private fun writtenOff(entity: UUID, held: Map<Int, ByteArray>, cause: Cause) {
+        for ((slot, form) in held) pending.add(EntitySlot(entity, slot), Void, cause, ItemKey(form, null), 1)
     }
 
     // A zombie drowning, a villager struck by lightning: a new entity with a new id takes over what

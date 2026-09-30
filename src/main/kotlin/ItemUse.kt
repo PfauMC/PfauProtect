@@ -97,11 +97,13 @@ internal fun entityUseCause(item: NmsItemStack, target: EntityTarget = EntityTar
     val kind = item.item
     return when {
         kind is SpawnEggItem -> Cause.SPAWN_EGG_USE
+        // Before whatever the mob might take into a slot of its own: an allay on a lead does not hold
+        // the lead, the lead is spent on it.
+        kind is NameTagItem -> Cause.NAME_TAG
+        kind is LeadItem -> Cause.LEASH_ATTACH
         item.isDamageableItem || kind is BucketItem || kind is MobBucketItem -> null
         // Worn by the mob: the equipment change says which slot it went into.
         target.keeps || item.has(DataComponents.EQUIPPABLE) -> null
-        kind is NameTagItem -> Cause.NAME_TAG
-        kind is LeadItem -> Cause.LEASH_ATTACH
         kind is DyeItem && target.dyeable -> Cause.DYE_MOB
         target.untamed -> Cause.TAME_MOB
         target.breedsOn -> Cause.FEED_MOB
