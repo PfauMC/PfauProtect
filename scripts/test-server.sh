@@ -41,6 +41,7 @@ difficulty=normal
 EOF
     docker run -d --rm --name "$NAME" \
         -p 25565:25565 -p 127.0.0.1:25575:25575 \
+        -e TZ=Europe/Moscow \
         -v "$HOST_RUN:/server" -w /server \
         eclipse-temurin:25-jre sh -c '
             mkfifo /tmp/console
