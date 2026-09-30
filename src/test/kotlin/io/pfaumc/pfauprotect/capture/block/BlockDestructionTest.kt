@@ -1482,6 +1482,12 @@ class BlockDestructionTest {
             "minecraft:red_bed[facing=east,occupied=true,part=head]"))
         assertFalse(handMade("minecraft:redstone_ore[lit=false]", "minecraft:redstone_ore[lit=true]"))
         assertFalse(handMade("minecraft:suspicious_sand[dusted=0]", "minecraft:suspicious_sand[dusted=2]"))
+        // What the neighbours decide is theirs; what a vine clings to is the vine's.
+        assertFalse(handMade("minecraft:grass_block[snowy=false]", "minecraft:grass_block[snowy=true]"))
+        assertFalse(handMade("minecraft:oak_fence[east=false,north=false,south=false,waterlogged=false,west=false]",
+            "minecraft:oak_fence[east=true,north=false,south=false,waterlogged=false,west=false]"))
+        assertTrue(handMade("minecraft:vine[east=false,north=true,south=false,up=false,west=false]",
+            "minecraft:vine[east=true,north=true,south=false,up=false,west=false]"))
         assertTrue(handMade("minecraft:suspicious_sand[dusted=3]", "minecraft:sand"))
         assertFalse(handMade(TORCH, TORCH))
     }

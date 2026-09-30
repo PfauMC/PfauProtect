@@ -212,7 +212,7 @@ class PfauProtectPlugin : JavaPlugin() {
         // the load handler and after the bases opened by hand. Against the other handlers of equal
         // priority the order is free: nothing it reads is written by any of them.
         server.pluginManager.registerEvents(
-            BlockCaptureListener(blocks, attribution) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
+            BlockCaptureListener(blocks, attribution, touches) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
             this,
         )
         server.pluginManager.registerEvents(destruction, this)

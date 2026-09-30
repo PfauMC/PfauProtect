@@ -217,6 +217,7 @@ private fun replacedBy(event: BlockPlaceEvent) =
 class BlockCaptureListener(
     private val logs: BlockLogs,
     private val attribution: Attribution,
+    private val touches: HandTouches = HandTouches(),
     // Runs a task on the block's own region a tick later.
     private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
@@ -264,8 +265,19 @@ class BlockCaptureListener(
         val actor = event.player.uniqueId
         // The block already stands where it was put, and it is that block the note answers for.
         for (was in replaced) attribution.placed(positionOf(was.block), was.block.blockData.asString, actor)
+        // The server raises a placement for what a tool, wax, an eye of ender or a flint does to a block
+        // too, and the block change behind most of them is filed by its own event first. What is not a
+        // block in the hand did not put a block down: it changed one, or poured one out of a bucket.
+        val type = event.itemInHand.type
+        val cause = when {
+            type.isBlock -> Cause.BLK_PLAYER_PLACE
+            type.name.endsWith("_BUCKET") -> Cause.BLK_BUCKET
+            else -> Cause.BLK_PLAYER_USE
+        }
+        val unfiled = replaced.filterNot { touches.filedSinceTouch(positionOf(it.block)) }
+        if (unfiled.isEmpty()) return
         log.submit(
-            replaced.map { was ->
+            unfiled.map { was ->
                 val now = was.block
                 BlockChange(
                     x = now.x,
@@ -273,7 +285,7 @@ class BlockCaptureListener(
                     z = now.z,
                     before = was.blockData.asString,
                     after = now.blockData.asString,
-                    cause = Cause.BLK_PLAYER_PLACE,
+                    cause = cause,
                     actor = actor,
                     payloadAfter = payloadAt(now),
                 )

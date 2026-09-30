@@ -639,11 +639,20 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
 }
 
 // Properties that carry the signal rather than the block, which the switch rows of phase 5.7 already
-// cover, and ones that a hand flips and the block flips back by itself. None of them is something a
-// rollback would have to put back.
+// cover; ones a block takes from its neighbours — grass under snow, a stair's corner, which sides a
+// fence or a pane joins — which change with the neighbour that was filed; and ones that a hand flips
+// and the block flips back by itself. None of them is something a rollback would have to put back.
 private val SIGNAL_PROPERTIES = setOf("powered", "power")
 
+private val SIDES = setOf("north", "south", "east", "west", "up")
+
 private fun selfRevertingOf(name: String): Set<String> = when {
+    // Taken from the neighbours. A vine's or a lichen's sides are what it clings to, and are not.
+    name.endsWith("_fence") || name.endsWith("_pane") || name.endsWith("_wall") || name == "minecraft:iron_bars" ||
+        name == "minecraft:redstone_wire" || name == "minecraft:tripwire" -> SIDES + "attached"
+    name.endsWith("_stairs") -> setOf("shape")
+    name.endsWith("_fence_gate") -> setOf("in_wall")
+    name == "minecraft:grass_block" || name == "minecraft:podzol" || name == "minecraft:mycelium" -> setOf("snowy")
     name == "minecraft:barrel" -> setOf("open")
     name.endsWith("_bed") -> setOf("occupied")
     name.endsWith("redstone_ore") -> setOf("lit")
@@ -659,7 +668,7 @@ private fun propertiesOf(state: String): Map<String, String> =
     state.substringAfter('[', "").removeSuffix("]").split(',').filter { it.isNotEmpty() }
         .associate { it.substringBefore('=') to it.substringAfter('=') }
 
-/** Whether going from one state to the other is a change a hand made, rather than signal or noise. */
+/** Whether going from one state to the other is a change worth a row, rather than signal or noise. */
 internal fun handMade(before: String, after: String): Boolean {
     if (before == after) return false
     val name = blockNameOf(before)
@@ -720,6 +729,9 @@ class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
         if (pending.isEmpty()) return
         for (change in changes) pending[WorldBlock(world, change.x, change.y, change.z)]?.filed = true
     }
+
+    /** Whether some capture filed the position since it was touched, while its read still waits. */
+    fun filedSinceTouch(at: WorldBlock): Boolean = pending[at]?.filed == true
 
     /** Ends the wait: the cause to file under, or null where some capture filed the position already. */
     fun take(at: WorldBlock): Cause? = pending.remove(at)?.takeIf { !it.filed }?.cause
@@ -1484,7 +1496,7 @@ class BlockDestructionListener(
     // what the first had just made new.
     private fun unfiled(site: Site): Boolean {
         val before = site.before.asString
-        return before != site.after && !readBacks.wasFiled(site.at, before, site.after)
+        return handMade(before, site.after) && !readBacks.wasFiled(site.at, before, site.after)
     }
 
     private fun row(
