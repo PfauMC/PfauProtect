@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.canvasmc.canvas.event.PlayerPostRespawnAsyncEvent
 import io.pfaumc.pfauprotect.model.Cause
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import io.pfaumc.pfauprotect.storage.EncodedItem
 import io.pfaumc.pfauprotect.model.Confidence
@@ -406,6 +407,9 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
     return rest
 }
 
+// Long enough for every row about the moment of a reading to have left the writer's queue.
+private const val RECONCILE_DELAY_SECONDS = 2L
+
 internal class LoadDifference(val holder: Holder, val form: ByteArray, val qty: Int, val gained: Boolean)
 
 /**
@@ -493,8 +497,8 @@ class ContainerCaptureListener(
     private val registries: Registries,
     private val origins: SpawnOrigins,
     private val placed: PlacedForms,
-    // What the ledger books to a player's own slots, from rows up to a moment.
-    private val booked: (UUID, Long) -> Map<Holder, Map<FormKey, Int>> = { _, _ -> emptyMap() },
+    // What the ledger books to every slot under these holders, from rows up to a moment.
+    private val booked: (List<Holder>, Long) -> Map<Holder, Map<FormKey, Int>> = { _, _ -> emptyMap() },
     // What an intent asked for and the pass never found. An event that silenced a funnel of its own on
     // the promise that the pass would write the row has to hear about it when the pass could not.
     private val unspent: (Intent, Int) -> Unit = { _, _ -> },
@@ -524,20 +528,50 @@ class ContainerCaptureListener(
         val at = System.currentTimeMillis()
         if (!plugin.isEnabled) return
         plugin.server.asyncScheduler.runNow(plugin) {
-            val rows = loadDifferences(live, booked(player.uniqueId, at)).map { difference ->
-                Transfer(
-                    cause = Cause.INVENTORY_LOAD,
-                    from = if (difference.gained) Void else difference.holder,
-                    to = if (difference.gained) difference.holder else Void,
-                    form = difference.form,
-                    damage = null,
-                    qty = difference.qty,
-                    timestamp = at,
-                    confidence = Confidence.INFERRED,
-                )
-            }
-            if (rows.isNotEmpty()) sink(rows)
+            val id = player.uniqueId
+            val own = listOf(PlayerInv(id, 0), PlayerEquip(id, 0), PlayerCursor(id), PlayerEnder(id, 0))
+            written(loadDifferences(live, booked(own, at)), at)
         }
+    }
+
+    private fun written(differences: List<LoadDifference>, at: Long) {
+        val rows = differences.map { difference ->
+            Transfer(
+                cause = Cause.INVENTORY_LOAD,
+                from = if (difference.gained) Void else difference.holder,
+                to = if (difference.gained) difference.holder else Void,
+                form = difference.form,
+                damage = null,
+                qty = difference.qty,
+                timestamp = at,
+                confidence = Confidence.INFERRED,
+            )
+        }
+        if (rows.isNotEmpty()) sink(rows)
+    }
+
+    /**
+     * A container is compared with the ledger once a player is done with it, after the pass that
+     * wrote what the player did there. The one check that sees what reached into it with nobody
+     * watching — a plugin, an editor, a mob the capture does not know — and what it finds is written,
+     * as a guess, the way a player's own slots are at the join. The ledger is read a moment later, so
+     * rows about the moment of the reading have had time to land.
+     */
+    private fun reconcileContainer(top: Inventory) {
+        val holders = containerHolders(top) ?: return
+        val live = HashMap<Holder, HashMap<FormKey, Int>>()
+        val positions = LinkedHashSet<Holder>()
+        for (slot in 0 until top.size) {
+            val holder = holders(slot) as? Container ?: return
+            positions += holder.copy(slot = 0)
+            val encoded = codec.encodeOrNull(top.getItem(slot)) ?: continue
+            live.getOrPut(holder) { HashMap() }.merge(FormKey(encoded.form), encoded.count, Int::plus)
+        }
+        val at = System.currentTimeMillis()
+        if (!plugin.isEnabled) return
+        plugin.server.asyncScheduler.runDelayed(plugin, {
+            written(loadDifferences(live, booked(positions.toList(), at)), at)
+        }, RECONCILE_DELAY_SECONDS, TimeUnit.SECONDS)
     }
 
     // Every slot the ledger files under the player's own name, ender chest included, by form.
@@ -944,10 +978,13 @@ class ContainerCaptureListener(
         // too; telling them apart needs the pass to know which snapshot each edge came from.
         intents.add(player.uniqueId, Intent(Cause.MENU_CLOSE_RETURN))
         rememberClosing(player, event.view.topInventory)
+        val top = event.view.topInventory
         player.scheduler.run(plugin, {
             closing.remove(player.uniqueId)
             recompute(player)
             rebaseline(player)
+            // The container stands next to the player, on the same region.
+            if (top.location?.let(Bukkit::isOwnedByCurrentRegion) == true) reconcileContainer(top)
         }, null)
     }
 

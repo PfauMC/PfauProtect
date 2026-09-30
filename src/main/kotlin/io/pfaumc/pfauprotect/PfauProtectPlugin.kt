@@ -30,6 +30,7 @@ import io.pfaumc.pfauprotect.command.Lookups
 import io.pfaumc.pfauprotect.command.MAX_RADIUS
 import io.pfaumc.pfauprotect.capture.block.MechanismCaptureListener
 import io.pfaumc.pfauprotect.check.Mismatch
+import io.pfaumc.pfauprotect.capture.item.CopperGolemListener
 import io.pfaumc.pfauprotect.capture.item.MobInventories
 import io.pfaumc.pfauprotect.capture.item.MobItemListener
 import io.pfaumc.pfauprotect.capture.item.NestedCaptureListener
@@ -222,6 +223,12 @@ class PfauProtectPlugin : JavaPlugin() {
             entity.scheduler.run(this, { task() }, null)
         }
         server.pluginManager.registerEvents(inventories, this)
+        server.pluginManager.registerEvents(
+            CopperGolemListener(codec, uncovered::submit) { golem, look ->
+                golem.scheduler.runAtFixedRate(this, { task -> if (!look()) task.cancel() }, null, 1, 1)
+            },
+            this,
+        )
         server.pluginManager.registerEvents(
             MobItemListener(codec, mechanisms, origins, inventories) { at, task -> server.regionScheduler.run(this, at) { task() } },
             this,

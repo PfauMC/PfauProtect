@@ -473,17 +473,15 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     }
 
     /**
-     * What the ledger books to each of a player's own slots, by form, counting only rows written up
-     * to a moment: a pass that runs while this reads files rows about a later state than the one it
-     * is being compared with.
+     * What the ledger books to every slot under these holders, by form, counting only rows written up
+     * to a moment: a pass that runs while this reads files rows about a later state than the one it is
+     * being compared with. A holder stands for all its slots: a player's inventory, a container's
+     * position.
      */
-    fun slotBalances(player: UUID, upTo: Long): Map<Holder, Map<FormKey, Int>> = dbLock.read {
+    fun slotBalances(under: List<Holder>, upTo: Long): Map<Holder, Map<FormKey, Int>> = dbLock.read {
         val totals = HashMap<Holder, HashMap<FormKey, Int>>()
         if (closed) return totals
-        val holders = listOf(
-            PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player), PlayerEnder(player, 0),
-        )
-        for (holder in holders) {
+        for (holder in under) {
             forEachUnder(EntryCodec.holderPrefix(holder, knownIds), reverse = false) { key, value ->
                 val entry = EntryCodec.decodeOrNull(key, value, registries)
                 val form = entry?.takeIf { it.timestamp <= upTo }?.let { forms.valueOf(it.itemFormId) }

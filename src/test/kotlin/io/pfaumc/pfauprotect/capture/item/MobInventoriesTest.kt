@@ -38,4 +38,21 @@ class MobInventoriesTest {
         assertEquals(12, back[1].key.damage)
         assertEquals(null, back[0].key.damage)
     }
+
+    // A golem takes out of one slot and puts into the first that fits; whatever else changed in the
+    // chest meanwhile, in another form, is not read as its doing.
+    @Test
+    fun `a golem's move is read out of the chest by its own form only`() {
+        val world = java.util.UUID.randomUUID()
+        fun slot(i: Int): io.pfaumc.pfauprotect.model.Holder = io.pfaumc.pfauprotect.model.Container(world, 0, 64, 0, i)
+        val before = mapOf(slot(0) to Stack(wheat, 20), slot(3) to Stack(bread, 2))
+        val took = mapOf(slot(0) to Stack(wheat, 4), slot(3) to Stack(bread, 1))
+
+        assertEquals(listOf(slot(0) to 16), chestShifts(before, took, wheat.form, gave = true))
+        val put = mapOf(slot(0) to Stack(wheat, 64), slot(1) to Stack(wheat, 8))
+        assertEquals(
+            listOf(slot(0) to 44, slot(1) to 8),
+            chestShifts(before, put, wheat.form, gave = false),
+        )
+    }
 }
