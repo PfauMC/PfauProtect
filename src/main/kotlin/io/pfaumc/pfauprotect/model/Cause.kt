@@ -222,6 +222,8 @@ enum class Cause(val id: Int) {
     BLK_BUCKET(0xCC),
     // Water, waterlogging and water plants a sponge drank, and the sponge turning wet.
     BLK_SPONGE(0xCB),
+    // A block a command wrote: /setblock, /fill, /clone, /place. The actor is the player who ran it.
+    BLK_COMMAND(0xCA),
 
     CMD_GIVE(0xF0),
     CMD_ITEM_REPLACE(0xF1),

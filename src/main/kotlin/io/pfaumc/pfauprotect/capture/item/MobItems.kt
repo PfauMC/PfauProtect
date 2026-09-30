@@ -12,6 +12,11 @@ import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.NamespacedKey
+import org.bukkit.event.entity.CreatureSpawnEvent
+import org.bukkit.event.entity.EntitySpawnEvent
+import org.bukkit.inventory.InventoryHolder
+import org.bukkit.craftbukkit.CraftEquipmentSlot
+import org.bukkit.inventory.ItemStack as BukkitItemStack
 import org.bukkit.entity.AbstractArrow
 import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Armadillo
@@ -226,6 +231,38 @@ class MobItemListener(
         val guessed = entity is LivingEntity && from == Void && cause == Cause.MOB_THROW_ITEM
         val confidence = if (guessed) Confidence.INFERRED else Confidence.FACT
         origins.expect(item.uniqueId, from, cause, encoded.key, encoded.count, confidence = confidence)
+    }
+
+    /**
+     * An entity a command summoned with things on it: armour and a sword, a chest cart's load, a frame's
+     * item. Conjured from nothing and booked where the entity will give them back from. A pocket is
+     * left to its own first reading.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onSummoned(event: EntitySpawnEvent) {
+        val entity = event.entity
+        if (entity.entitySpawnReason != CreatureSpawnEvent.SpawnReason.COMMAND || entity is Item) return
+        val booked = ArrayList<Pair<Int, BukkitItemStack>>()
+        (entity as? LivingEntity)?.equipment?.let { gear ->
+            for (slot in org.bukkit.inventory.EquipmentSlot.entries) {
+                if (!entity.canUseEquipmentSlot(slot)) continue
+                val stack = gear.getItem(slot)
+                if (!stack.isEmpty) booked += CraftEquipmentSlot.getNMS(slot).ordinal to stack
+            }
+        }
+        (entity as? ItemFrame)?.item?.takeIf { !it.isEmpty }?.let { booked += 0 to it }
+        for ((slot, stack) in booked) {
+            val encoded = codec.encodeOrNull(stack) ?: continue
+            bookHeld(entity, slot, encoded.form)
+            pending.add(Void, EntitySlot(entity.uniqueId, slot), Cause.CMD_SUMMON_ITEMS, encoded.key, encoded.count)
+        }
+        val inventory = (entity as? InventoryHolder)?.inventory
+        if (inventory == null || carriesInventory(entity)) return
+        val holders = containerHolders(inventory) ?: return
+        for (slot in 0 until inventory.size) {
+            val encoded = codec.encodeOrNull(inventory.getItem(slot)) ?: continue
+            pending.add(Void, holders(slot), Cause.CMD_SUMMON_ITEMS, encoded.key, encoded.count)
+        }
     }
 
     // The lead comes off the mob as an item in the same call.

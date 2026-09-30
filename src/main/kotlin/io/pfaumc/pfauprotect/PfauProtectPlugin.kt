@@ -11,6 +11,8 @@ import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.capture.block.BlockCaptureListener
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.HandTouches
+import io.papermc.paper.command.brigadier.ApiMirrorRootNode
+import io.pfaumc.pfauprotect.capture.block.CommandBrackets
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.capture.block.BlockMechanismListener
 import io.pfaumc.pfauprotect.model.Cause
@@ -301,7 +303,7 @@ class PfauProtectPlugin : JavaPlugin() {
         )
         server.asyncScheduler.runAtFixedRate(this, { reportUncovered(uncovered) }, 1, 1, TimeUnit.DAYS)
         warnAboutSilencedHoppers()
-        registerCommand()
+        registerCommand(CommandBrackets(this, blocks, codec, ledger, uncovered::submit))
         logger.info(
             "ledger open, ${blocks.size} world bases, registry sizes: " +
                 RegistryNamespace.entries.joinToString { "${it.name.lowercase()}=${ledger.registries.size(it)}" }
@@ -420,7 +422,7 @@ class PfauProtectPlugin : JavaPlugin() {
         )
     }
 
-    private fun registerCommand() {
+    private fun registerCommand(brackets: CommandBrackets) {
         lifecycleManager.registerEventHandler(LifecycleEvents.COMMANDS) { event ->
             val root = Commands.literal("pfauprotect")
             for (alias in listOf("lookup", "l")) root.then(lookupNode(alias))
@@ -429,6 +431,8 @@ class PfauProtectPlugin : JavaPlugin() {
             for (alias in listOf("reconcile", "r")) root.then(reconcileNode(alias))
             for (alias in listOf("verify", "v")) root.then(verifyNode(alias))
             event.registrar().register(root.build(), "Item ledger lookup and inspector", listOf("pp"))
+            // The API hands out a mirror of the dispatcher; the nodes the server executes are behind it.
+            (event.registrar().dispatcher.root as? ApiMirrorRootNode)?.dispatcher?.let(brackets::wrap)
         }
     }
 

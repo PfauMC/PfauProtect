@@ -33,6 +33,7 @@ import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.entity.ItemMergeEvent
 import org.bukkit.event.entity.ItemSpawnEvent
+import org.bukkit.event.entity.CreatureSpawnEvent
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
 // There is no cause for the end of an item that nobody can name, so the cause for its unnamed
@@ -154,13 +155,18 @@ class WorldItemListener(
         nameBox(entity, spot)
         val encoded = codec.encodeOrNull(entity.itemStack) ?: return
         val unexplained = encoded.count - origins.claim(entity.uniqueId, spot, encoded.key, encoded.count)
+        // What a block command broke while it ran, or an item a command summoned outright.
+        val at = entity.location
+        val command = CommandBirths.at(entity.world.uid, at.x, at.y, at.z)
+        val summoned = entity.entitySpawnReason == CreatureSpawnEvent.SpawnReason.COMMAND
         pending.add(
             Void,
             ItemEntityRef(entity.uniqueId),
-            Cause.ITEM_SPAWN,
+            command?.cause ?: if (summoned) Cause.CMD_SUMMON_ITEMS else Cause.ITEM_SPAWN,
             encoded.key,
             unexplained,
-            confidence = Confidence.INFERRED,
+            actor = command?.actor,
+            confidence = if (command != null || summoned) Confidence.FACT else Confidence.INFERRED,
         )
     }
 

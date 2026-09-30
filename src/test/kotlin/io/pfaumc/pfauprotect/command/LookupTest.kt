@@ -170,8 +170,8 @@ class LookupTest {
     fun `the block plane is reachable by name and every block cause is under one of the filters`() {
         val blockRange = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT +
             Cause.BLK_PLAYER_SWITCH + Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE +
-            Cause.BLK_BUCKET + Cause.BLK_SPONGE
-        assertEquals(38, blockRange.size)
+            Cause.BLK_BUCKET + Cause.BLK_SPONGE + Cause.BLK_COMMAND
+        assertEquals(39, blockRange.size)
         assertEquals(blockRange, Action.of("block")?.causes)
 
         val named = Action.entries.filter { it != Action.BLOCK }.flatMap { it.causes }.toSet()

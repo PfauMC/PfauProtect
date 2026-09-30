@@ -150,6 +150,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     SIGN(setOf(Cause.BLK_SIGN_EDIT), "sign", "signs", "edit"),
     SWITCH(setOf(Cause.BLK_PLAYER_SWITCH, Cause.BLK_ENTITY_SWITCH), "switch", "switches", "pressed"),
     INTERACT(setOf(Cause.BLK_PLAYER_USE), "interact", "clicked", "toggled"),
+    COMMAND(setOf(Cause.BLK_COMMAND), "command", "commands", "worldedit"),
     ;
 
     companion object {
@@ -182,7 +183,7 @@ private val USE_CAUSES = setOf(
 private val BLOCK_CAUSES: Set<Cause> =
     Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT + Cause.BLK_PLAYER_SWITCH +
         Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE + Cause.BLK_BUCKET +
-        Cause.BLK_SPONGE
+        Cause.BLK_SPONGE + Cause.BLK_COMMAND
 
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
 private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")
