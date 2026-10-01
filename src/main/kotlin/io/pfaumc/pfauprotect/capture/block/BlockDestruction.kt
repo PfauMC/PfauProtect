@@ -26,6 +26,7 @@ import io.pfaumc.pfauprotect.capture.item.containerAt
 import io.pfaumc.pfauprotect.check.emptied
 import io.pfaumc.pfauprotect.attribution.energyAt
 import io.pfaumc.pfauprotect.attribution.culprit
+import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.capture.item.packShulker
 import io.pfaumc.pfauprotect.capture.item.positionOf
 import net.minecraft.core.Direction
@@ -765,6 +766,13 @@ class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
  * either, and a note seeded ahead of the refusal would spend its whole window offering the refused
  * player as the answer for whatever happens there next.
  */
+/**
+ * Who built a golem or a wither: whoever put down a block of the pattern, or else whoever set going the
+ * dispenser beside it, whose pumpkin or skull the pattern took in the same call it was put down.
+ */
+internal fun builderOf(placers: List<Attributed?>, positions: List<WorldBlock>, energy: Energy): Attributed? =
+    placers.firstNotNullOfOrNull { it } ?: energy.near(positions)?.inferred()
+
 class BlockDestructionListener(
     private val plugin: Plugin,
     private val registries: Registries,
@@ -1216,8 +1224,8 @@ class BlockDestructionListener(
     fun onConstruct(event: EntityConstructEvent) {
         val blocks = event.blocks
         if (blocks.isEmpty()) return
-        val by = blocks.firstNotNullOfOrNull { attribution.placerAt(positionOf(it), it.blockData.asString) }
-        readBack(blocks, by, Cause.BLK_FORM)
+        val placers = blocks.map { attribution.placerAt(positionOf(it), it.blockData.asString) }
+        readBack(blocks, builderOf(placers, blocks.map(::positionOf), energy), Cause.BLK_FORM)
     }
 
     private fun eggJumped(from: Block, to: Block) {

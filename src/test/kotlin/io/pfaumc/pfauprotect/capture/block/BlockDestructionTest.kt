@@ -720,6 +720,20 @@ class BlockDestructionTest {
         assertNull(otherBedHalf(Blocks.STONE.defaultBlockState().asBlockData()))
     }
 
+    // A dispenser puts the pumpkin down and the pattern takes it in the same call, so nobody placed a
+    // block of it; the note the dispenser left on itself names who set it going.
+    @Test
+    fun `a pattern nobody placed is built by whoever set the dispenser beside it going`() {
+        val energy = io.pfaumc.pfauprotect.attribution.Energy()
+        val head = WorldBlock(world, 0, 64, 0)
+        energy.note(WorldBlock(world, 0, 64, 1), Attributed(alice, Confidence.FACT))
+        assertEquals(Attributed(alice, Confidence.INFERRED), builderOf(listOf(null, null), listOf(head), energy))
+
+        val placer = Attributed(UUID.randomUUID())
+        assertEquals(placer, builderOf(listOf(null, placer), listOf(head), energy))
+        assertNull(builderOf(listOf(null), listOf(WorldBlock(world, 0, 64, 10)), energy))
+    }
+
     @Test
     fun `a read-back that finds the same block finds nothing to write`() {
         assertTrue(wentAway(TORCH, AIR))
