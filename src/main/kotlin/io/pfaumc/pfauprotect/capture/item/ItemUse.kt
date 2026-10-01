@@ -27,6 +27,7 @@ import net.minecraft.world.item.Items
 import net.minecraft.world.item.LeadItem
 import net.minecraft.world.item.MinecartItem
 import net.minecraft.world.item.MobBucketItem
+import net.minecraft.world.level.material.Fluids
 import net.minecraft.world.item.NameTagItem
 import net.minecraft.world.item.ProjectileItem
 import net.minecraft.world.item.SpawnEggItem
@@ -164,6 +165,11 @@ class ItemUseListener(
         // Water from a source or a hive, a bottle at a time, beside the stack the bottle came from.
         if (live.item is BottleItem) {
             capture.intend(player, mutation(Cause.BOTTLE_FILL))
+            return
+        }
+        // A sulfur cube's bucket holds no water, so letting the cube out raises no bucket event.
+        if ((live.item as? MobBucketItem)?.content == Fluids.EMPTY) {
+            capture.intend(player, mutation(Cause.BUCKET_RELEASE_MOB))
             return
         }
         val target = event.clickedBlock?.type
