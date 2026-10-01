@@ -39,6 +39,18 @@ class SpawnOriginsTest {
         assertEquals(1, row.qty)
     }
 
+    // A villager's harvest falls in another count than the roll the note was made from: the note takes
+    // the whole stack, and an exact note at the same spot is served first.
+    @Test
+    fun `a note made from a loot roll takes whatever of its form lands`() {
+        val carrot = ItemKey("carrot".toByteArray(), null)
+        origins.expect(Void, Cause.BLK_MOB_GRIEF, carrot, at, 2, rolled = true)
+        origins.expect(dropper, Cause.CONTAINER_BREAK_DROP, carrot, at, 1)
+
+        assertEquals(4, origins.claim(UUID.randomUUID(), at, carrot, 4))
+        assertEquals(listOf(dropper to 1, Void to 3), rows().map { it.from to it.qty })
+    }
+
     @Test
     fun `a harvest keeps the player who caused it`() {
         val actor = UUID.randomUUID()

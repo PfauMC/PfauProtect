@@ -172,7 +172,7 @@ internal fun expectDrops(
             origins.expectBox(stack, boxOwner, spot)
             NestedItems.mark(stack, boxOwner)
         }
-        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor, reach)
+        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor, reach, rolled = true)
     }
     // What it held spills out of the slots it was booked to, as from a hand's break.
     spilled(block.getState(false)).forEachIndexed { slot, item ->

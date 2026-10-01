@@ -137,6 +137,10 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         // rather than for two sweeps: a command's drop lands wherever its player is by the time it runs.
         val thrower: UUID? = null,
         val until: Long? = null,
+        // Made from a roll of the block's loot rather than from what really fell: carrots, seeds and
+        // the like come out in another count each roll, so the note takes whatever of its form lands
+        // near it until it is swept, and is asked only after every exact note has had its turn.
+        val rolled: Boolean = false,
     ) {
         var swept = false
     }
@@ -187,9 +191,10 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         qty: Int,
         actor: UUID? = null,
         reach: Double = SPAWN_REACH,
+        rolled: Boolean = false,
     ): () -> Int {
         if (qty <= 0) return { 0 }
-        val note = Note(from, cause, key, at, null, qty, actor, reach)
+        val note = Note(from, cause, key, at, null, qty, actor, reach, rolled = rolled)
         notes += note
         return { qty - note.qty }
     }
@@ -230,9 +235,12 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         val named = take(entity, key, count) { it.entity == entity }
         val thrown = if (thrower == null) 0 else take(entity, key, count - named) { it.thrower == thrower && it.key == key }
         val nearby = take(entity, key, count - named - thrown) {
-            it.entity == null && it.thrower == null && it.key == key && near(it.at!!, at, it.reach)
+            !it.rolled && it.entity == null && it.thrower == null && it.key == key && near(it.at!!, at, it.reach)
         }
-        return named + thrown + nearby
+        val rolled = take(entity, key, count - named - thrown - nearby) {
+            it.rolled && it.key == key && near(it.at!!, at, it.reach)
+        }
+        return named + thrown + nearby + rolled
     }
 
     private inline fun take(entity: UUID, key: ItemKey, count: Int, matches: (Note) -> Boolean): Int {
@@ -241,11 +249,12 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         while (notes.hasNext() && left > 0) {
             val note = notes.next()
             if (!matches(note)) continue
-            val qty = minOf(left, note.qty)
+            val qty = if (note.rolled) left else minOf(left, note.qty)
             if (note.from != null) {
                 pending.add(note.from, ItemEntityRef(entity), note.cause, key, qty, note.actor, note.confidence)
             }
             left -= qty
+            if (note.rolled) continue
             note.qty -= qty
             if (note.qty <= 0) notes.remove()
         }
