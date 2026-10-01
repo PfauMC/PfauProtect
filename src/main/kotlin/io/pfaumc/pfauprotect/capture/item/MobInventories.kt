@@ -19,6 +19,7 @@ import io.pfaumc.pfauprotect.storage.PlacedForms
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.Items
 import org.bukkit.NamespacedKey
+import org.bukkit.craftbukkit.CraftEquipmentSlot
 import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
@@ -34,6 +35,10 @@ import org.bukkit.inventory.InventoryHolder
 import org.bukkit.persistence.PersistentDataType
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import net.minecraft.world.entity.EquipmentSlot as NmsEquipmentSlot
+
+private val MAIN_HAND = NmsEquipmentSlot.MAINHAND.ordinal
+private val OFF_HAND = NmsEquipmentSlot.OFFHAND.ordinal
 
 // A mob's own pocket is booked past every number its equipment, a horse window and a placed entity use.
 internal const val MOB_INVENTORY_BASE = 100
@@ -239,13 +244,27 @@ class MobInventories(
         }
         // A pickup the pocket did not take went into a hand: a piglin's gold, a pillager's banner.
         for (label in waiting) {
-            val hand = label.hand ?: continue
+            val guess = label.hand ?: continue
             val form = label.form ?: continue
             if (label.qty <= 0) continue
+            val hand = handHolding(mob, form, guess)
             bookHeld(mob, hand, form)
             pending.add(label.other, EntitySlot(mob.uniqueId, hand), Cause.ITEM_PICKUP_BY_MOB, ItemKey(form, null), label.qty)
         }
         if (rows.isNotEmpty()) sink(rows)
+    }
+
+    // Where a picked-up item is held now: the slot the game would equip it to, unless the mob put it
+    // somewhere else — a piglin admires gold in its off hand and keeps its sword in the main one.
+    private fun handHolding(mob: Entity, form: ByteArray, guess: Int): Int {
+        val equipment = (mob as? LivingEntity)?.equipment ?: return guess
+        val booked = heldBy(mob)
+        for (slot in listOf(guess, OFF_HAND, MAIN_HAND).distinct()) {
+            val bukkit = CraftEquipmentSlot.getSlot(NmsEquipmentSlot.entries[slot])
+            if (booked[slot]?.contentEquals(form) == true) continue
+            if (codec.encodeOrNull(equipment.getItem(bukkit))?.form?.contentEquals(form) == true) return slot
+        }
+        return guess
     }
 
     private fun isWheat(form: ByteArray) = codec.decode(form, 1, null).`is`(Items.WHEAT)
