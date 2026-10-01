@@ -57,21 +57,16 @@ class MobInventoriesTest {
     }
 
     // The latest copy already shows the take when the hand change is announced, so the copy before it
-    // is read; without any copy, a take is still looked for where the form lies, not in the first slot.
+    // is read. A hand emptied with the chest unchanged, as by the golem's death, is no put at all.
     @Test
-    fun `a golem's take is read against the chest from before it reached in`() {
+    fun `a golem's move is what the chest shows against the copy from before it reached in`() {
         val world = java.util.UUID.randomUUID()
         fun slot(i: Int): io.pfaumc.pfauprotect.model.Holder = io.pfaumc.pfauprotect.model.Container(world, 0, 64, 0, i)
         val previous = mapOf(slot(0) to Stack(wheat, 16), slot(1) to Stack(bread, 10))
         val now = mapOf(slot(0) to Stack(wheat, 16))
 
-        assertEquals(
-            listOf(Triple(slot(1), 10, io.pfaumc.pfauprotect.model.Confidence.FACT)),
-            golemSlots(previous, now, bread.form, took = true, moved = 10, fallback = slot(0)),
-        )
-        assertEquals(
-            listOf(Triple(slot(1), 4, io.pfaumc.pfauprotect.model.Confidence.INFERRED)),
-            golemSlots(null, mapOf(slot(0) to Stack(wheat, 16), slot(1) to Stack(bread, 6)), bread.form, took = true, moved = 4, fallback = slot(0)),
-        )
+        assertEquals(listOf(slot(1) to 10), golemSlots(previous, now, bread.form, took = true, moved = 10))
+        assertEquals(emptyList<Pair<io.pfaumc.pfauprotect.model.Holder, Int>>(), golemSlots(now, now, bread.form, took = false, moved = 5))
+        assertEquals(emptyList<Pair<io.pfaumc.pfauprotect.model.Holder, Int>>(), golemSlots(null, now, bread.form, took = false, moved = 5))
     }
 }

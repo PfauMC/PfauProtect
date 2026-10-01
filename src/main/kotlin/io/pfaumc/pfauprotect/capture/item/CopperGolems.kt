@@ -2,7 +2,6 @@ package io.pfaumc.pfauprotect.capture.item
 
 import io.papermc.paper.event.entity.ItemTransportingEntityValidateTargetEvent
 import io.pfaumc.pfauprotect.model.Cause
-import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Transfer
@@ -105,16 +104,19 @@ class CopperGolemListener(
         val previous = target.previous
         target.previous = now
         target.seen = now
+        // A hand change the chest does not show is no move between them: a golem killed with a stack in
+        // hand drops it, and the drop is filed as that.
+        val slots = golemSlots(previous, now, form, took, moved)
+        if (slots.isEmpty()) return
         val hand = EntitySlot(golem.uniqueId, MAINHAND)
         val timestamp = System.currentTimeMillis()
         val key = (if (took) after else before)!!.key
-        val rows = golemSlots(previous, now, form, took, moved, containerAt(target.block, 0))
-            .map { (slot, qty, confidence) -> golemRow(took, slot, hand, key, qty, timestamp, confidence) }
+        val rows = slots.map { (slot, qty) -> golemRow(took, slot, hand, key, qty, timestamp) }
         if (took) bookHeld(golem, MAINHAND, form) else if (after == null) unbookHeld(golem, MAINHAND)
         sink(rows)
     }
 
-    private fun golemRow(took: Boolean, slot: Holder, hand: Holder, key: ItemKey, qty: Int, timestamp: Long, confidence: Confidence) =
+    private fun golemRow(took: Boolean, slot: Holder, hand: Holder, key: ItemKey, qty: Int, timestamp: Long) =
         Transfer(
             cause = if (took) Cause.CONTAINER_REMOVE else Cause.CONTAINER_ADD,
             from = if (took) slot else hand,
@@ -123,7 +125,6 @@ class CopperGolemListener(
             damage = key.damage,
             qty = qty,
             timestamp = timestamp,
-            confidence = confidence,
         )
 }
 
@@ -142,32 +143,13 @@ internal fun chestShifts(before: Map<Holder, Stack>, after: Map<Holder, Stack>, 
 }
 
 /**
- * The slots a golem's hand change came out of, or went into, with how sure each is: read against the
- * copy of the chest from before it reached in. What that copy cannot account for — there was none, or
- * another hand has changed the chest since — goes to the slot the game would have used, and a take is
- * looked for where the form lay before, because a slot the golem emptied holds none of it now.
+ * The slots a golem's hand change came out of, or went into, read against the copy of the chest from
+ * before it reached in, and never more than the hand changed by. Nothing when there is no copy or the
+ * chest shows no such change: the golem was not at the chest, or not the one changing it.
  */
-internal fun golemSlots(
-    previous: Map<Holder, Stack>?,
-    now: Map<Holder, Stack>,
-    form: ByteArray,
-    took: Boolean,
-    moved: Int,
-    fallback: Holder,
-): List<Triple<Holder, Int, Confidence>> {
-    val rows = ArrayList<Triple<Holder, Int, Confidence>>()
+internal fun golemSlots(previous: Map<Holder, Stack>?, now: Map<Holder, Stack>, form: ByteArray, took: Boolean, moved: Int): List<Pair<Holder, Int>> {
     var left = moved
-    for ((slot, qty) in previous?.let { chestShifts(it, now, form, gave = took) }.orEmpty()) {
-        if (left <= 0) break
-        val part = minOf(left, qty)
-        left -= part
-        rows += Triple(slot, part, Confidence.FACT)
+    return previous?.let { chestShifts(it, now, form, gave = took) }.orEmpty().mapNotNull { (slot, qty) ->
+        minOf(left, qty).takeIf { it > 0 }?.let { part -> left -= part; slot to part }
     }
-    if (left > 0) {
-        val lay = if (took) previous ?: now else now
-        val guess = lay.entries.filter { it.value.key.form.contentEquals(form) }
-            .minByOrNull { (it.key as? io.pfaumc.pfauprotect.model.Container)?.slot ?: 0 }?.key ?: fallback
-        rows += Triple(guess, left, Confidence.INFERRED)
-    }
-    return rows
 }
