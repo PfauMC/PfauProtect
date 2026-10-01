@@ -811,8 +811,10 @@ class ContainerCaptureListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDrag(event: InventoryDragEvent) {
         val player = event.whoClicked as? Player ?: return
-        // For the same reason as a click: the drag starts from whatever the window holds now.
-        recompute(player)
+        // For the same reason as a click: the drag starts from whatever the window holds now. The server
+        // has already put the remainder on the cursor, though, and fills the slots only after this, so
+        // the cursor is taken as it was before the drag.
+        recompute(player, cursor = event.oldCursor)
         intend(player, Intent(Cause.QUICK_CRAFT_DISTRIBUTE))
     }
 
@@ -1113,7 +1115,9 @@ class ContainerCaptureListener(
         player.scheduler.run(plugin, { recompute(player) }, null)
     }
 
-    internal fun recompute(player: Player) {
+    // `cursor` stands in for what the player holds on the cursor, for the one event that changes it
+    // before it is raised.
+    internal fun recompute(player: Player, cursor: BukkitItemStack? = null) {
         // Drained before anything can cut the pass short: a player who was already online when the
         // plugin came up has no baseline yet, and intents left behind would pile up until the first
         // one appeared and then explain a delta they had nothing to do with.
@@ -1125,7 +1129,7 @@ class ContainerCaptureListener(
             for (intent in taken) intent.qty?.let { unspent(intent, it) }
             return
         }
-        val after = snapshot(player, baseline.view)
+        val after = snapshot(player, baseline.view, cursor)
         baselines[player.uniqueId] = Baseline(baseline.view, after)
         val (was, now) = comparable(baseline.seen, after)
         // One item that became another is a mutation; a recipe that ate three and made one is not, so
@@ -1173,7 +1177,7 @@ class ContainerCaptureListener(
         return (0 until top.size).mapTo(HashSet()) { holders(it) }
     }
 
-    private fun snapshot(player: Player, view: InventoryView): Snapshot {
+    private fun snapshot(player: Player, view: InventoryView, cursor: BukkitItemStack? = null): Snapshot {
         val stacks = LinkedHashMap<Holder, Stack>()
         val containers = HashSet<UUID>()
         val named = HashMap<Holder, Naming>()
@@ -1189,7 +1193,7 @@ class ContainerCaptureListener(
         val inventory = player.inventory
         val holders = playerHolders(player.uniqueId, inventory)
         for (slot in 0 until inventory.size) record(stacks, containers, named, holders(slot), inventory.getItem(slot))
-        record(stacks, containers, named, PlayerCursor(player.uniqueId), player.itemOnCursor)
+        record(stacks, containers, named, PlayerCursor(player.uniqueId), cursor ?: player.itemOnCursor)
         return Snapshot(stacks, containers, named)
     }
 
