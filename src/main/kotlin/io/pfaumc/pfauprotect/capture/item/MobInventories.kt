@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
 
+import com.destroystokyo.paper.event.entity.EntityAddToWorldEvent
 import io.papermc.paper.event.entity.EntityCompostItemEvent
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Cause
@@ -94,6 +95,23 @@ internal fun villagerGuess(
         for (i in rest) causes[i] = Cause.CONSUME_FOOD
     }
     return causes
+}
+
+/**
+ * A pocket saved and loaded again is packed together: the game stores it as a list without slot
+ * numbers, so an empty slot closes up and everything after it moves down. The same items in the same
+ * counts at other slots are that and nothing else, each stack from where it was to where it is now;
+ * null when anything else differs too.
+ */
+internal fun pocketShifts(before: List<Pocket>, after: List<Pocket>): List<Pair<Pocket, Pocket>>? {
+    val left = after.toMutableList()
+    val moves = ArrayList<Pair<Pocket, Pocket>>()
+    for (was in before) {
+        val now = left.firstOrNull { it.count == was.count && it.key == was.key } ?: return null
+        left.remove(now)
+        if (now.slot != was.slot) moves += was to now
+    }
+    return if (left.isEmpty()) moves else null
 }
 
 internal fun encodePockets(pockets: List<Pocket>): ByteArray {
@@ -256,6 +274,36 @@ class MobInventories(
         confidence = confidence,
         actor = actor,
     )
+
+    // A pocket loaded with its chunk comes back packed; the slots it moved between are written before
+    // anything reads the pocket against its copy.
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onLoad(event: EntityAddToWorldEvent) {
+        val mob = event.entity
+        if (!carriesInventory(mob)) return
+        later(mob) { packed(mob) }
+    }
+
+    private fun packed(mob: Entity) {
+        if (!mob.isValid) return
+        val before = booked(mob)
+        val after = live(mob)
+        val moves = pocketShifts(before, after) ?: return
+        if (moves.isEmpty()) return
+        book(mob, after)
+        val timestamp = System.currentTimeMillis()
+        sink(moves.map { (was, now) ->
+            Transfer(
+                cause = Cause.INVENTORY_LOAD,
+                from = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + was.slot),
+                to = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + now.slot),
+                form = now.key.form,
+                damage = now.key.damage,
+                qty = now.count,
+                timestamp = timestamp,
+            )
+        })
+    }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPickup(event: EntityPickupItemEvent) {

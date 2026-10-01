@@ -40,6 +40,19 @@ class MobInventoriesTest {
         assertEquals(null, back[0].key.damage)
     }
 
+    // A villager whose second slot emptied comes back from its chunk with everything after it one slot
+    // lower; the same stacks are moves, and anything that differs as well is no packing.
+    @Test
+    fun `a pocket packed by loading is the same stacks in other slots`() {
+        val before = listOf(Pocket(0, wheat, 2), Pocket(2, bread, 5), Pocket(3, hoe, 1))
+        val after = listOf(Pocket(0, wheat, 2), Pocket(1, bread, 5), Pocket(2, hoe, 1))
+
+        val moves = pocketShifts(before, after)!!.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) }
+        assertEquals(listOf(Triple("bread", 2, 1), Triple("hoe", 3, 2)), moves)
+        assertEquals(emptyList<Pair<Pocket, Pocket>>(), pocketShifts(after, after))
+        assertEquals(null, pocketShifts(before, listOf(Pocket(0, wheat, 3), Pocket(1, bread, 5), Pocket(2, hoe, 1))))
+    }
+
     // A farmer bakes three wheat into a bread and eats twelve points of food to breed with no bed for the
     // child; neither raises an event, and anything else left over is an edit nobody saw.
     @Test
