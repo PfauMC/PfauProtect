@@ -66,6 +66,16 @@ class RedstoneTest {
         assertEquals(Attributed(alice, Confidence.FACT), energy.near(at(1)))
     }
 
+    // A wind charge pulls a lever from inside the explosion it announced a moment before; a switch it
+    // did not reach, or one that changes after the call, is somebody else's.
+    @Test
+    fun `a blast answers for the switches in its reach and only within the call`() {
+        val blast = Blast(setOf(at(0), at(1)), Cause.BLK_ENTITY_SWITCH, Behind(Attributed(alice)), "minecraft:wind_charge", 1_000L)
+        assertEquals(true, blast.covers(at(1), 1_000L + 1))
+        assertEquals(false, blast.covers(at(2), 1_000L + 1))
+        assertEquals(false, blast.covers(at(0), 1_000L + PRESS_NANOS + 1))
+    }
+
     @Test
     fun `an explosion is whoever set it off, and everything else whoever put the item there`() {
         assertEquals(bob, endedBy(Cause.ITEM_DESTROY_EXPLOSION, blaster = bob, thrower = alice, dispensedBy = null))
