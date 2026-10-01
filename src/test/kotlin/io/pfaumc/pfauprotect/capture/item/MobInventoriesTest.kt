@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
 
+import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.storage.ItemKey
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -37,6 +38,24 @@ class MobInventoriesTest {
         assertArrayEquals(hoe.form, back[1].key.form)
         assertEquals(12, back[1].key.damage)
         assertEquals(null, back[0].key.damage)
+    }
+
+    // A farmer bakes three wheat into a bread and eats twelve points of food to breed with no bed for the
+    // child; neither raises an event, and anything else left over is an edit nobody saw.
+    @Test
+    fun `what a villager does without an event is told apart from an unseen edit`() {
+        val carrot = ItemKey("carrot".toByteArray(), null)
+        val wheatOf = { form: ByteArray -> String(form) == "wheat" }
+        val breadOf = { form: ByteArray -> String(form) == "bread" }
+        val foodOf = { form: ByteArray -> String(form) == "bread" || String(form) == "carrot" }
+        fun guess(vararg changes: PocketChange) = villagerGuess(changes.toList(), wheatOf, breadOf, foodOf)
+
+        assertEquals(
+            listOf(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Cause.CONSUME_FOOD),
+            guess(PocketChange(0, wheat, 3, false), PocketChange(1, bread, 1, true), PocketChange(2, carrot, 10, false)),
+        )
+        assertEquals(listOf(Cause.INVENTORY_LOAD, Cause.INVENTORY_LOAD), guess(PocketChange(0, wheat, 2, false), PocketChange(1, bread, 1, true)))
+        assertEquals(listOf(Cause.INVENTORY_LOAD, Cause.INVENTORY_LOAD), guess(PocketChange(0, carrot, 4, false), PocketChange(1, hoe, 1, true)))
     }
 
     // A golem takes out of one slot and puts into the first that fits; whatever else changed in the

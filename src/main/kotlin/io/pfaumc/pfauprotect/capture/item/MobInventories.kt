@@ -15,11 +15,14 @@ import io.pfaumc.pfauprotect.storage.ByteWriter
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.storage.PlacedForms
+import net.minecraft.core.component.DataComponents
+import net.minecraft.world.item.Items
 import org.bukkit.NamespacedKey
 import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Mob
+import org.bukkit.entity.Villager
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
@@ -66,6 +69,33 @@ internal fun pocketChanges(before: List<Pocket>, after: List<Pocket>): List<Pock
     return changes
 }
 
+/**
+ * What a villager does with its pocket that raises no event, told from what the labels left
+ * unexplained: three wheat baked into a bread at its composter, and food eaten to breed, which it eats
+ * before it finds out there is no bed for a child. Anything else is an edit nobody saw.
+ */
+internal fun villagerGuess(
+    changes: List<PocketChange>,
+    wheat: (ByteArray) -> Boolean,
+    bread: (ByteArray) -> Boolean,
+    food: (ByteArray) -> Boolean,
+): List<Cause> {
+    val causes = MutableList(changes.size) { Cause.INVENTORY_LOAD }
+    val baked = changes.filter { it.gained && bread(it.key.form) }.sumOf { it.qty }
+    val spent = changes.filter { !it.gained && wheat(it.key.form) }.sumOf { it.qty }
+    if (baked > 0 && spent == 3 * baked) {
+        changes.forEachIndexed { i, change ->
+            if (!change.gained && wheat(change.key.form)) causes[i] = Cause.CRAFT_CONSUME
+            if (change.gained && bread(change.key.form)) causes[i] = Cause.CRAFT_RESULT
+        }
+    }
+    val rest = changes.indices.filter { causes[it] == Cause.INVENTORY_LOAD }
+    if (rest.isNotEmpty() && rest.all { !changes[it].gained && food(changes[it].key.form) }) {
+        for (i in rest) causes[i] = Cause.CONSUME_FOOD
+    }
+    return causes
+}
+
 internal fun encodePockets(pockets: List<Pocket>): ByteArray {
     val w = ByteWriter()
     w.varInt(pockets.size)
@@ -91,9 +121,9 @@ internal fun decodePockets(bytes: ByteArray?): List<Pocket> {
 /**
  * Keeps a copy of every pocket in the mob itself and reads the pocket against it whenever something is
  * known to have reached into it: a pickup, a planting, a breeding, a composter fed. What those explain
- * is written under their causes; whatever else the pocket did since the last reading — bread baked
- * from wheat, food eaten — is written too, as a guess, rather than left for the ledger to disagree with
- * the mob about for ever.
+ * is written under their causes; whatever else the pocket did since the last reading is written too, as
+ * a guess — bread baked from wheat and food eaten under causes of their own, the rest as a load nobody
+ * saw — rather than left for the ledger to disagree with the mob about for ever.
  */
 class MobInventories(
     private val codec: ItemFormCodec,
@@ -168,6 +198,7 @@ class MobInventories(
         val waiting = labels.remove(mob.uniqueId).orEmpty()
         val timestamp = System.currentTimeMillis()
         val rows = ArrayList<Transfer>()
+        val unexplained = ArrayList<PocketChange>()
         for (change in pocketChanges(before, after)) {
             val slot = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + change.slot)
             var left = change.qty
@@ -180,7 +211,13 @@ class MobInventories(
                 label.placing?.let { placed.setFormAt(it.world, it.x, it.y, it.z, change.key.form) }
                 rows += row(change, slot, label.other, label.cause, qty, timestamp, Confidence.FACT, label.actor)
             }
-            if (left > 0) rows += row(change, slot, Void, Cause.INVENTORY_LOAD, left, timestamp, Confidence.INFERRED, null)
+            if (left > 0) unexplained += PocketChange(change.slot, change.key, left, change.gained)
+        }
+        val guessed = if (mob is Villager) villagerGuess(unexplained, ::isWheat, ::isBread, ::isVillagerFood) else null
+        unexplained.forEachIndexed { i, change ->
+            val slot = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + change.slot)
+            val cause = guessed?.get(i) ?: Cause.INVENTORY_LOAD
+            rows += row(change, slot, Void, cause, change.qty, timestamp, Confidence.INFERRED, null)
         }
         // A pickup the pocket did not take went into a hand: a piglin's gold, a pillager's banner.
         for (label in waiting) {
@@ -192,6 +229,12 @@ class MobInventories(
         }
         if (rows.isNotEmpty()) sink(rows)
     }
+
+    private fun isWheat(form: ByteArray) = codec.decode(form, 1, null).`is`(Items.WHEAT)
+
+    private fun isBread(form: ByteArray) = codec.decode(form, 1, null).`is`(Items.BREAD)
+
+    private fun isVillagerFood(form: ByteArray) = codec.decode(form, 1, null).has(DataComponents.VILLAGER_FOOD)
 
     private fun row(
         change: PocketChange,
