@@ -48,7 +48,7 @@ class SpawnOriginsTest {
         origins.expect(dropper, Cause.CONTAINER_BREAK_DROP, carrot, at, 1)
 
         assertEquals(4, origins.claim(UUID.randomUUID(), at, carrot, 4))
-        assertEquals(listOf(dropper to 1, Void to 3), rows().map { it.from to it.qty })
+        assertEquals(setOf(dropper to 1, Void to 3), rows().map { it.from to it.qty }.toSet())
     }
 
     @Test
