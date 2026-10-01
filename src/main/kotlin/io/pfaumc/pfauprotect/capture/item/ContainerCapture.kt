@@ -343,18 +343,23 @@ internal fun playerHolders(uuid: UUID, inventory: PlayerInventory): (Int) -> Hol
 // book, a copied banner, a scaled map — consumes and produces rather than mutates, so its two sides
 // carry the ordinary form. The rest hand back the very item that went in, changed.
 // The special recipes that copy or recolour rather than make, named by the game's own recipe key.
+// Dyeing and copying a banner are a recipe per item or per colour: `leather_chestplate_dyed`,
+// `red_shulker_box`, `white_banner_duplicate`.
 private val SPECIAL_CRAFTS = mapOf(
-    "armor_dye" to Cause.DYE_ITEM,
-    "shulker_box_coloring" to Cause.DYE_ITEM,
     "book_cloning" to Cause.BOOK_COPY,
-    "banner_duplicate" to Cause.BANNER_DUPLICATE,
     "map_cloning" to Cause.MAP_CLONE,
     "map_extending" to Cause.MAP_SCALE_LOCK,
 )
 
+private fun specialCraft(key: String): Cause? = when {
+    key.endsWith("_dyed") || key.endsWith("_shulker_box") -> Cause.DYE_ITEM
+    key.endsWith("_banner_duplicate") -> Cause.BANNER_DUPLICATE
+    else -> SPECIAL_CRAFTS[key]
+}
+
 internal fun shiftOf(top: Inventory): Shift? = when (top) {
     // Read while the click is delivered, like the smithing recipe below: the match is gone after it.
-    is CraftingInventory -> (top.recipe as? Keyed)?.key?.takeIf { it.namespace == "minecraft" }?.let { SPECIAL_CRAFTS[it.key] }
+    is CraftingInventory -> (top.recipe as? Keyed)?.key?.takeIf { it.namespace == "minecraft" }?.let { specialCraft(it.key) }
         ?.let { Shift(it, it, Kind.TRANSFER, Cause.CRAFT_REMAINDER) }
         ?: Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
     is AnvilInventory -> Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)

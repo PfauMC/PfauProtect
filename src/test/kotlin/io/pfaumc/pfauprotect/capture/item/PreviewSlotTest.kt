@@ -79,18 +79,24 @@ class PreviewSlotTest {
     // tells them apart, and only while the click is delivered.
     @Test
     fun `a special recipe in the crafting grid is named for what it does`() {
-        val cloning = Proxy.newProxyInstance(
-            org.bukkit.inventory.ComplexRecipe::class.java.classLoader,
-            arrayOf(org.bukkit.inventory.ComplexRecipe::class.java),
-        ) { _, method, _ -> if (method.name == "getKey") NamespacedKey.minecraft("book_cloning") else null }
-        val grid = Proxy.newProxyInstance(CraftingInventory::class.java.classLoader, arrayOf(CraftingInventory::class.java)) { _, method, _ ->
-            when (method.name) {
-                "getSize" -> 10
-                "getRecipe" -> cloning
-                else -> null
-            }
-        } as Inventory
-        assertEquals(Cause.BOOK_COPY, shiftOf(grid)!!.consume)
+        fun grid(key: String): Inventory {
+            val recipe = Proxy.newProxyInstance(
+                org.bukkit.inventory.ComplexRecipe::class.java.classLoader,
+                arrayOf(org.bukkit.inventory.ComplexRecipe::class.java),
+            ) { _, method, _ -> if (method.name == "getKey") NamespacedKey.minecraft(key) else null }
+            return Proxy.newProxyInstance(CraftingInventory::class.java.classLoader, arrayOf(CraftingInventory::class.java)) { _, method, _ ->
+                when (method.name) {
+                    "getSize" -> 10
+                    "getRecipe" -> recipe
+                    else -> null
+                }
+            } as Inventory
+        }
+        assertEquals(Cause.BOOK_COPY, shiftOf(grid("book_cloning"))!!.consume)
+        assertEquals(Cause.DYE_ITEM, shiftOf(grid("leather_chestplate_dyed"))!!.consume)
+        assertEquals(Cause.DYE_ITEM, shiftOf(grid("red_shulker_box"))!!.consume)
+        assertEquals(Cause.BANNER_DUPLICATE, shiftOf(grid("white_banner_duplicate"))!!.consume)
+        assertEquals(Cause.CRAFT_CONSUME, shiftOf(grid("shulker_box"))!!.consume)
         assertEquals(Cause.CRAFT_CONSUME, shiftOf(sized(CraftingInventory::class.java, 10))!!.consume)
     }
 
