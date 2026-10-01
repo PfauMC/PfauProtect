@@ -295,7 +295,9 @@ class MobInventories(
     )
 
     // A pocket loaded with its chunk comes back packed; the slots it moved between are written before
-    // anything reads the pocket against its copy.
+    // anything reads the pocket against its copy. A pocket that differs by more than packing, as one a
+    // villager ate out of just before it was saved, is settled at once, or the next event is read
+    // against a stale copy.
     @EventHandler(priority = EventPriority.MONITOR)
     fun onLoad(event: EntityAddToWorldEvent) {
         val mob = event.entity
@@ -307,7 +309,7 @@ class MobInventories(
         if (!mob.isValid) return
         val before = booked(mob)
         val after = live(mob)
-        val moves = pocketShifts(before, after) ?: return
+        val moves = pocketShifts(before, after) ?: return settle(mob)
         if (moves.isEmpty()) return
         book(mob, after)
         val timestamp = System.currentTimeMillis()
