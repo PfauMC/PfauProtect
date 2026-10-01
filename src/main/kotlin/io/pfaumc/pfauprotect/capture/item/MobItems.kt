@@ -239,14 +239,15 @@ class MobItemListener(
         if (entity is Player || entity is AbstractArrow) return
         val item = event.itemDrop
         val encoded = codec.encodeOrNull(item.itemStack) ?: return
-        val slot = claimHeld(heldBy(entity), removed[entity.uniqueId], encoded.form)
+        // A villager sharing food, an allay handing over what it collected: out of the pocket, which
+        // has already given it up. Asked first, because an allay goes on holding the item it was given
+        // while it hands over the same kind out of its pocket.
+        val pocket = if (carriesInventory(entity)) inventories?.thrown(entity, encoded.form) else null
+        val slot = if (pocket != null) null else claimHeld(heldBy(entity), removed[entity.uniqueId], encoded.form)
         val booked = slot?.let {
             unbookHeld(entity, it)
             EntitySlot(entity.uniqueId, it)
         }
-        // A villager sharing food, an allay handing over what it collected: out of the pocket, which
-        // has already given it up.
-        val pocket = if (booked == null && carriesInventory(entity)) inventories?.thrown(entity, encoded.form) else null
         val (from, cause) = when {
             // A frame, a boat, a minecart: broken, it falls out as what it was made of and what it held.
             entity !is LivingEntity -> (booked ?: Void) to Cause.ENTITY_BREAK_DROP
