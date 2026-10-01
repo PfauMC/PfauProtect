@@ -33,8 +33,10 @@ private val MAINHAND = net.minecraft.world.entity.EquipmentSlot.MAINHAND.ordinal
  * What a copper golem carries between chests. It takes one stack of up to sixteen from the first slot
  * that holds anything and puts it into the first slot that fits, and the server raises nothing for
  * either: only its hand changing is announced, a tick later. Which slots gave and took is read by
- * comparing the chest with a copy taken while the golem stood at it — a copy the golem's own scheduler
- * takes before the golem's tick, so the last one is the chest just before it reached in.
+ * comparing the chest with a copy taken while the golem stood at it. The golem's own scheduler copies
+ * the chest every tick before the server ticks the golem, and the golem announces a hand change at the
+ * start of its next tick, so by then the latest copy already shows the move: the one before it is the
+ * chest just before the golem reached in.
  */
 class CopperGolemListener(
     private val codec: ItemFormCodec,
@@ -42,7 +44,12 @@ class CopperGolemListener(
     // Runs a task every tick on the entity's own scheduler until it answers false.
     private val watch: (CopperGolem, () -> Boolean) -> Unit = { _, _ -> },
 ) : Listener {
-    private class Target(val block: Block, @Volatile var seen: Map<Holder, Stack>? = null, @Volatile var ticks: Int = 0)
+    private class Target(
+        val block: Block,
+        @Volatile var previous: Map<Holder, Stack>? = null,
+        @Volatile var seen: Map<Holder, Stack>? = null,
+        @Volatile var ticks: Int = 0,
+    )
 
     private val targets = ConcurrentHashMap<UUID, Target>()
 
@@ -63,6 +70,7 @@ class CopperGolemListener(
         }
         val centre = target.block.location.add(0.5, 0.5, 0.5)
         if (centre.world == golem.world && centre.distanceSquared(golem.location) <= GOLEM_REACH_SQUARED) {
+            target.previous = target.seen
             target.seen = contents(target.block)
         }
         return true
@@ -94,27 +102,14 @@ class CopperGolemListener(
         val moved = if (took) after!!.count else before!!.count - (after?.takeIf { it.form.contentEquals(form) }?.count ?: 0)
         if (moved <= 0) return
         val now = contents(target.block) ?: return
-        val seen = target.seen
+        val previous = target.previous
+        target.previous = now
         target.seen = now
         val hand = EntitySlot(golem.uniqueId, MAINHAND)
-        val shifts = seen?.let { chestShifts(it, now, form, gave = took) }.orEmpty()
         val timestamp = System.currentTimeMillis()
-        val rows = ArrayList<Transfer>()
-        var left = moved
         val key = (if (took) after else before)!!.key
-        for ((slot, qty) in shifts) {
-            if (left <= 0) break
-            val part = minOf(left, qty)
-            left -= part
-            rows += golemRow(took, slot, hand, key, part, timestamp, Confidence.FACT)
-        }
-        // No copy of the chest from before, or one another hand has changed since: the slot the game
-        // would have used is the best guess there is.
-        if (left > 0) {
-            val guess = now.entries.firstOrNull { it.value.key.form.contentEquals(form) }?.key
-                ?: containerAt(target.block, 0)
-            rows += golemRow(took, guess, hand, key, left, timestamp, Confidence.INFERRED)
-        }
+        val rows = golemSlots(previous, now, form, took, moved, containerAt(target.block, 0))
+            .map { (slot, qty, confidence) -> golemRow(took, slot, hand, key, qty, timestamp, confidence) }
         if (took) bookHeld(golem, MAINHAND, form) else if (after == null) unbookHeld(golem, MAINHAND)
         sink(rows)
     }
@@ -144,4 +139,35 @@ internal fun chestShifts(before: Map<Holder, Stack>, after: Map<Holder, Stack>, 
         val qty = if (gave) -delta else delta
         if (qty > 0) holder to qty else null
     }.sortedBy { (it.first as? io.pfaumc.pfauprotect.model.Container)?.slot ?: 0 }
+}
+
+/**
+ * The slots a golem's hand change came out of, or went into, with how sure each is: read against the
+ * copy of the chest from before it reached in. What that copy cannot account for — there was none, or
+ * another hand has changed the chest since — goes to the slot the game would have used, and a take is
+ * looked for where the form lay before, because a slot the golem emptied holds none of it now.
+ */
+internal fun golemSlots(
+    previous: Map<Holder, Stack>?,
+    now: Map<Holder, Stack>,
+    form: ByteArray,
+    took: Boolean,
+    moved: Int,
+    fallback: Holder,
+): List<Triple<Holder, Int, Confidence>> {
+    val rows = ArrayList<Triple<Holder, Int, Confidence>>()
+    var left = moved
+    for ((slot, qty) in previous?.let { chestShifts(it, now, form, gave = took) }.orEmpty()) {
+        if (left <= 0) break
+        val part = minOf(left, qty)
+        left -= part
+        rows += Triple(slot, part, Confidence.FACT)
+    }
+    if (left > 0) {
+        val lay = if (took) previous ?: now else now
+        val guess = lay.entries.filter { it.value.key.form.contentEquals(form) }
+            .minByOrNull { (it.key as? io.pfaumc.pfauprotect.model.Container)?.slot ?: 0 }?.key ?: fallback
+        rows += Triple(guess, left, Confidence.INFERRED)
+    }
+    return rows
 }
