@@ -1193,7 +1193,7 @@ class ContainerCaptureListener(
         val inventory = player.inventory
         val holders = playerHolders(player.uniqueId, inventory)
         for (slot in 0 until inventory.size) record(stacks, containers, named, holders(slot), inventory.getItem(slot))
-        record(stacks, containers, named, PlayerCursor(player.uniqueId), cursor ?: player.itemOnCursor)
+        record(stacks, containers, named, PlayerCursor(player.uniqueId), cursor ?: (player.itemOnCursor as BukkitItemStack?))
         return Snapshot(stacks, containers, named)
     }
 
