@@ -107,6 +107,13 @@ internal fun heldSlotOf(held: Map<Int, ByteArray>, form: ByteArray): Int? =
     held.entries.firstOrNull { it.value.contentEquals(form) }?.key
 
 /**
+ * Whether a dying mob's drop of a booked form is what the slot held. Its own loot can be that form too
+ * and falls before its equipment; when a later drop of the form has the count the slot still holds,
+ * that one is the slot's.
+ */
+internal fun heldDrop(need: Int, holding: Int?, later: List<Int>): Boolean = holding == null || holding == need || holding !in later
+
+/**
  * The slot a dropped form comes out of: what the entity still books, or, once it has been removed,
  * what it booked when it went. A slot taken from the removed entity's list is gone from it, so the
  * rest can be written off afterwards as what nothing dropped.
@@ -330,8 +337,11 @@ class MobItemListener(
         // went, since a piglin's is already empty by the time this is raised.
         val pockets = if (carriesInventory(mob)) inventories?.booked(mob) else null
         val pocketLeft = IntArray(pockets?.size ?: 0) { pockets!![it].count }
-        for (dropped in event.drops) {
-            val encoded = codec.encodeOrNull(dropped) ?: continue
+        val drops = event.drops.map { codec.encodeOrNull(it) }
+        // The game clears a dying mob's equipment only after this event, so the slots still hold it.
+        val holding = held.mapNotNull { (slot, form) -> holding(mob, slot, form)?.let { slot to it } }.toMap()
+        for ((index, dropped) in event.drops.withIndex()) {
+            val encoded = drops[index] ?: continue
             var need = encoded.count
             if (inventory != null) {
                 for (slot in inventory.indices) {
@@ -361,7 +371,8 @@ class MobItemListener(
                 }
             }
             if (need <= 0) continue
-            val slot = heldSlotOf(held, encoded.form)
+            val later = drops.subList(index + 1, drops.size).mapNotNull { it?.takeIf { d -> d.form.contentEquals(encoded.form) }?.count }
+            val slot = heldSlotOf(held, encoded.form)?.takeIf { heldDrop(need, holding[it], later) }
             if (slot != null) {
                 held.remove(slot)
                 // A stand broken gives back the stand it was placed from, out of the slot that booked it.
@@ -373,7 +384,7 @@ class MobItemListener(
         }
         // Equipment drops by chance; what the ledger booked and the death did not drop went with it.
         for ((slot, form) in held) {
-            pending.add(EntitySlot(mob.uniqueId, slot), Void, Cause.MOB_EQUIPMENT_LOST, ItemKey(form, null), 1, killer)
+            pending.add(EntitySlot(mob.uniqueId, slot), Void, Cause.MOB_EQUIPMENT_LOST, ItemKey(form, null), holding[slot] ?: 1, killer)
         }
         for (slot in HELD_SLOTS) unbookHeld(mob, slot)
         pockets?.forEachIndexed { index, pocket ->
@@ -381,6 +392,14 @@ class MobItemListener(
             pending.add(from, Void, Cause.MOB_EQUIPMENT_LOST, pocket.key, pocketLeft[index], killer)
         }
         if (pockets != null) inventories?.forget(mob)
+    }
+
+    // How many of the booked form an equipment slot holds right now; nothing for a slot that is not
+    // equipment, such as the item a stand was placed from.
+    private fun holding(mob: LivingEntity, slot: Int, form: ByteArray): Int? {
+        val nms = NmsEquipmentSlot.entries.getOrNull(slot) ?: return null
+        val live = codec.encodeOrNull(mob.equipment?.getItem(CraftEquipmentSlot.getSlot(nms))) ?: return null
+        return live.count.takeIf { live.form.contentEquals(form) }
     }
 
     // A pocket that leaves the world other than by death or with its chunk: a villager struck into a

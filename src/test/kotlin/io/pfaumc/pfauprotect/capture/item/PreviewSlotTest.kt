@@ -124,6 +124,15 @@ class PreviewSlotTest {
         assertNull(heldSlotOf(held, "rotten_flesh".toByteArray()))
     }
 
+    // A golem dies holding three copper ingots and its loot is one more: the one falls first and is the
+    // loot, the three after it are the hand.
+    @Test
+    fun `a mob's own loot of the form it holds is not taken for what it held`() {
+        assertEquals(false, heldDrop(need = 1, holding = 3, later = listOf(3)))
+        assertEquals(true, heldDrop(need = 3, holding = 3, later = emptyList()))
+        assertEquals(true, heldDrop(need = 1, holding = null, later = listOf(3)))
+    }
+
     // A boat is removed before it drops: its drop still finds the slot, once, and the rest is left to
     // be written off.
     @Test
