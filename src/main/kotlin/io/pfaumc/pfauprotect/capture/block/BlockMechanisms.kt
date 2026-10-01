@@ -297,6 +297,18 @@ internal fun brewed(
     if (was == became) null else Triple(slot, was, became)
 }
 
+// A shulker keeps what it held inside the item it drops, and that move is written elsewhere.
+// A jukebox, a bookshelf, a pot, a lectern, a shelf and a campfire spill what they hold just as a
+// chest does, and their slots are the ones a click filled.
+internal fun spilled(state: BlockState?): Array<BukkitItemStack?> = when (state) {
+    is ShulkerBox -> emptyArray()
+    // One half of a double chest: the inventory of a live chest is both halves together.
+    is ContainerBlock -> state.snapshotInventory.contents
+    is TileStateInventoryHolder -> state.snapshotInventory.contents
+    is Campfire -> Array(state.size) { state.getItem(it) }
+    else -> emptyArray()
+}
+
 // A dispense spawns what it spawns inside its own call, a tick at most after the pre-dispense event,
 // and in front of the dispenser.
 private const val DISPENSE_NANOS = 50_000_000L
@@ -770,18 +782,6 @@ class BlockMechanismListener(
     private fun rememberedAt(at: WorldBlock) = placed.formAt(at.world, at.x, at.y, at.z)
 
     private fun forget(at: WorldBlock) = placed.clearFormAt(at.world, at.x, at.y, at.z)
-
-    // A shulker keeps what it held inside the item it drops, and that move is written elsewhere.
-    // A jukebox, a bookshelf, a pot, a lectern, a shelf and a campfire spill what they hold just as a
-    // chest does, and their slots are the ones a click filled.
-    private fun spilled(state: BlockState): Array<BukkitItemStack?> = when (state) {
-        is ShulkerBox -> emptyArray()
-        // One half of a double chest: the inventory of a live chest is both halves together.
-        is ContainerBlock -> state.snapshotInventory.contents
-        is TileStateInventoryHolder -> state.snapshotInventory.contents
-        is Campfire -> Array(state.size) { state.getItem(it) }
-        else -> emptyArray()
-    }
 
     // What the block was made of, not what breaking it yields: a crop answers with the seed it was
     // planted from, and a block with no item form of its own — fire, a liquid, a portal — answers

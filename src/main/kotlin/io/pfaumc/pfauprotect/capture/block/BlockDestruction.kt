@@ -174,6 +174,11 @@ internal fun expectDrops(
         }
         origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor, reach)
     }
+    // What it held spills out of the slots it was booked to, as from a hand's break.
+    spilled(block.getState(false)).forEachIndexed { slot, item ->
+        val encoded = codec.encodeOrNull(item) ?: return@forEachIndexed
+        origins.expect(containerAt(block, slot), Cause.CONTAINER_BREAK_DROP, encoded.key, spot, encoded.count, actor, reach)
+    }
 }
 
 // How far apart two blocks of one crater can stand, along any axis: an explosion drops each pile where

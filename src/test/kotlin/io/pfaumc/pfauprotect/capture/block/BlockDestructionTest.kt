@@ -158,6 +158,7 @@ class BlockDestructionTest {
         data: BlockData,
         neighbours: Map<BlockFace, Block> = emptyMap(),
         drops: Collection<org.bukkit.inventory.ItemStack> = emptyList(),
+        state: org.bukkit.block.BlockState? = null,
     ) =
         Proxy.newProxyInstance(Block::class.java.classLoader, arrayOf(Block::class.java)) { _, method, args ->
             val stubWorld = stub(World::class.java, mapOf("getUID" to world))
@@ -165,6 +166,7 @@ class BlockDestructionTest {
                 "getWorld" -> stubWorld
                 "getLocation" -> Location(stubWorld, x.toDouble(), y.toDouble(), z.toDouble())
                 "getDrops" -> drops
+                "getState" -> state
                 "getBlockData" -> data
                 "getRelative" -> neighbours[args[0] as BlockFace]
                 "getX" -> x
@@ -1465,6 +1467,25 @@ class BlockDestructionTest {
 
         val key = ItemFormCodec(shared.registries, ServerRegistries.access).encodeOrNull(cactus)!!.key
         assertEquals(1, origins.claim(UUID.randomUUID(), Spot(world, 5.3, 64.0, 7.6), key, 1))
+    }
+
+    // A barrel a creeper takes away spills what it held: the diamonds come out of the slot they were
+    // booked to, not out of nowhere.
+    @Test
+    fun `a container the world destroys expects its contents out of their slots`() {
+        val diamonds = CraftItemStack.asBukkitCopy(NmsItemStack(Items.DIAMOND, 3))
+        val inventory = stub(org.bukkit.inventory.Inventory::class.java, mapOf("getContents" to arrayOf(null, diamonds)))
+        val barrel = stub(org.bukkit.block.Barrel::class.java, mapOf("getSnapshotInventory" to inventory))
+        val block = blockStub(5, 64, 7, Blocks.BARREL.defaultBlockState().asBlockData(), state = barrel)
+        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
+
+        expectDrops(origins, codec, block, Cause.BLK_CREEPER, alice)
+
+        assertEquals(3, origins.claim(UUID.randomUUID(), Spot(world, 5.5, 64.0, 7.5), codec.encodeOrNull(diamonds)!!.key, 3))
+        coalescer.flush()
+        val row = spawned.single()
+        assertEquals(io.pfaumc.pfauprotect.model.Container(world, 5, 64, 7, 1), row.from)
+        assertEquals(Cause.CONTAINER_BREAK_DROP, row.cause)
     }
 
     @Test
