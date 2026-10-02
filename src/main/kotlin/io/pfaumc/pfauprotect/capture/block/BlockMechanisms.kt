@@ -212,6 +212,16 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         notes += Note(from, cause, key, null, entity, qty, actor, confidence = confidence)
     }
 
+    /**
+     * Whatever lands by a block the world destroyed in a form no other note names. A drop left to chance
+     * is rolled again by the server, and its roll can bring what the roll a note was made from did not:
+     * a vine one time in three, a sapling out of leaves, flint out of gravel. Asked after every other
+     * note, so it takes only what nothing else explains.
+     */
+    fun expectAny(from: Holder, cause: Cause, at: Spot, actor: UUID?, reach: Double = SPAWN_REACH) {
+        notes += Note(from, cause, null, at, null, 0, actor, reach, rolled = true)
+    }
+
     fun expectThrown(thrower: UUID, from: Holder, cause: Cause, key: ItemKey, qty: Int, until: Long) {
         if (qty <= 0) return
         notes += Note(from, cause, key, null, null, qty, null, thrower = thrower, until = until)
@@ -240,7 +250,10 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         val rolled = take(entity, key, count - named - thrown - nearby) {
             it.rolled && it.key == key && near(it.at!!, at, it.reach)
         }
-        return named + thrown + nearby + rolled
+        val anyForm = take(entity, key, count - named - thrown - nearby - rolled) {
+            it.rolled && it.key == null && near(it.at!!, at, it.reach)
+        }
+        return named + thrown + nearby + rolled + anyForm
     }
 
     private inline fun take(entity: UUID, key: ItemKey, count: Int, matches: (Note) -> Boolean): Int {

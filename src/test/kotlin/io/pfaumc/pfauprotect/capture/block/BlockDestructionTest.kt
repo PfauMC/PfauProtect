@@ -1547,13 +1547,20 @@ class BlockDestructionTest {
         assertEquals(Cause.CONTAINER_BREAK_DROP, row.cause)
     }
 
+    // Glass the world breaks drops nothing, and one roll cannot tell it from a vine that drops one time
+    // in three, so it too leaves the note for any form. That note is the tick's and no longer: it is
+    // gone by the second sweep, like every note nothing claimed.
     @Test
-    fun `a block that drops nothing leaves no note behind`() {
+    fun `a block that drops nothing leaves nothing past the tick`() {
         val block = blockStub(5, 64, 7, Blocks.GLASS.defaultBlockState().asBlockData())
 
         expectDrops(origins, ItemFormCodec(shared.registries, ServerRegistries.access), block, Cause.BLK_FADE, null)
+        origins.sweep()
+        origins.sweep()
 
         assertTrue(origins.isEmpty)
+        coalescer.flush()
+        assertTrue(spawned.isEmpty())
     }
 
     // What a hand leaves standing is kept; what the signal carries is the switch rows' business, and

@@ -51,6 +51,21 @@ class SpawnOriginsTest {
         assertEquals(setOf(dropper to 1, Void to 3), rows().map { it.from to it.qty }.toSet())
     }
 
+    // A vine drops itself one time in three, and the roll a note was made from need not be the roll the
+    // server made. What lands by the block in a form no note names still came out of it, after every
+    // note that names its form has had its share, and only near the block.
+    @Test
+    fun `a note for any form takes what no other note names`() {
+        val vine = ItemKey("twisting_vines".toByteArray(), null)
+        origins.expect(dropper, Cause.CONTAINER_BREAK_DROP, vine, at, 1)
+        origins.expectAny(Void, Cause.BLK_FADE, at, null)
+
+        assertEquals(2, origins.claim(UUID.randomUUID(), at, vine, 2))
+        assertEquals(setOf(dropper to 1, Void to 1), rows().map { it.from to it.qty }.toSet())
+        assertEquals(Cause.BLK_FADE, rows().single { it.from == Void }.cause)
+        assertEquals(0, origins.claim(UUID.randomUUID(), Spot(world, 40.0, 70.0, 8.0), vine, 1))
+    }
+
     @Test
     fun `a harvest keeps the player who caused it`() {
         val actor = UUID.randomUUID()
