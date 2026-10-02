@@ -26,6 +26,7 @@ import org.bukkit.entity.Armadillo
 import org.bukkit.entity.Cat
 import org.bukkit.entity.Chicken
 import org.bukkit.entity.Entity
+import org.bukkit.entity.FallingBlock
 import org.bukkit.entity.Goat
 import org.bukkit.entity.Item
 import org.bukkit.entity.ItemFrame
@@ -235,8 +236,10 @@ class MobItemListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDrop(event: EntityDropItemEvent) {
         val entity = event.entity
-        // A player's drop is the capture's; an arrow's is the projectile listener's.
-        if (entity is Player || entity is AbstractArrow) return
+        // A player's drop is the capture's; an arrow's is the projectile listener's. A falling block
+        // that broke on landing is removed before it drops itself, and the block capture expects that
+        // drop out of the position it fell from; one that timed out in the air drops while still here.
+        if (entity is Player || entity is AbstractArrow || entity is FallingBlock && !entity.isValid) return
         val item = event.itemDrop
         val encoded = codec.encodeOrNull(item.itemStack) ?: return
         // A villager sharing food, an allay handing over what it collected: out of the pocket, which

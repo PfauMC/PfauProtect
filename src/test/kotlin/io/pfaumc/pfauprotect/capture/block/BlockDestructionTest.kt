@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.attribution.Falling
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
+import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.capture.item.NestedItems
 import io.pfaumc.pfauprotect.check.PlaneGap
@@ -188,6 +189,7 @@ class BlockDestructionTest {
     private fun listener(
         attribution: Attribution = Attribution(shared.registries, logs),
         sink: (List<Transfer>) -> Unit = {},
+        later: (Location, () -> Unit) -> Unit = { _, _ -> },
     ) = BlockDestructionListener(
         // Disabled, so a read-back is never queued: there is no region scheduler to queue it on.
         plugin = stub(Plugin::class.java, mapOf("isEnabled" to false)),
@@ -200,6 +202,7 @@ class BlockDestructionTest {
         placed = shared,
         owners = shared,
         sink = sink,
+        later = later,
     )
 
     // The claim a handler leaves is what the event behind it reads, and it is the only trace either
@@ -1236,17 +1239,23 @@ class BlockDestructionTest {
         assertEquals(emptyList<String>(), shared.sweep(100).gaps)
     }
 
+    private fun fallingStub(entity: UUID, x: Double, y: Double, z: Double) = stub(
+        FallingBlock::class.java,
+        mapOf("getUniqueId" to entity, "getLocation" to Location(stub(World::class.java, mapOf("getUID" to world)), x, y, z)),
+    )
+
     /**
      * A flight that ends in anything but a landing — destroyed in the air, out of the world, turned
      * into an item — is not a movement at all: the position it left really did lose its block, and what
-     * it was holding is written off there. The note it was holding goes with it, or whatever is put
-     * down there next would be given back as a block somebody else paid for.
+     * it was holding is written off there once no drop has taken it. The note it was holding goes with
+     * it, or whatever is put down there next would be given back as a block somebody else paid for.
      */
     @Test
     fun `a flight that never landed is written off where it started`() {
         val attribution = Attribution(shared.registries, logs)
         val written = ArrayList<List<Transfer>>()
-        val listener = listener(attribution) { written += it }
+        val nextTick = ArrayList<() -> Unit>()
+        val listener = listener(attribution, { written += it }) { _, task -> nextTick += task }
         val entity = UUID.fromString("00000000-0000-4000-8000-0000000000f1")
         val from = WorldBlock(world, 2, 70, 2)
         // A form the position remembers only outranks the bare shell where it is the same item, so the
@@ -1260,12 +1269,10 @@ class BlockDestructionTest {
         // the table now would take whatever has moved in behind it instead.
         attribution.tookOff(entity, Falling(from, SAND, Attributed(bob), named))
 
-        listener.onEntityRemove(
-            EntityRemoveEvent(
-                stub(FallingBlock::class.java, mapOf("getUniqueId" to entity)),
-                EntityRemoveEvent.Cause.OUT_OF_WORLD,
-            )
-        )
+        listener.onEntityRemove(EntityRemoveEvent(fallingStub(entity, 2.5, -70.0, 2.5), EntityRemoveEvent.Cause.OUT_OF_WORLD))
+        // Nothing until the tick in which a drop could have claimed it is over.
+        assertEquals(emptyList<List<Transfer>>(), written)
+        nextTick.forEach { it() }
 
         val off = written.single().single()
         assertEquals(from, off.from)
@@ -1283,6 +1290,36 @@ class BlockDestructionTest {
         val report = PlaneSync(shared, logs).pass(100, now)
         assertEquals(emptyList<PlaneGap>(), report.gaps)
         assertEquals(emptyList<String>(), shared.sweep(100).gaps)
+    }
+
+    /**
+     * Sand that comes down on a torch is removed and then drops itself inside the same call, and that
+     * item is what the position gave up: one movement out of the position into the item, on whoever
+     * let the sand fall, and nothing left over to write off.
+     */
+    @Test
+    fun `a flight broken on landing drops out of the position it left`() {
+        val attribution = Attribution(shared.registries, logs)
+        val written = ArrayList<List<Transfer>>()
+        val nextTick = ArrayList<() -> Unit>()
+        val listener = listener(attribution, { written += it }) { _, task -> nextTick += task }
+        val entity = UUID.fromString("00000000-0000-4000-8000-0000000000f3")
+        val from = WorldBlock(world, 4, 70, 4)
+        val sand = byteArrayOf(5)
+        attribution.tookOff(entity, Falling(from, SAND, Attributed(bob), sand))
+
+        listener.onEntityRemove(EntityRemoveEvent(fallingStub(entity, 4.5, 64.0, 4.5), EntityRemoveEvent.Cause.DISCARD))
+        val item = UUID.randomUUID()
+        assertEquals(1, origins.claim(item, Spot(world, 4.5, 64.0, 4.5), ItemKey(sand, null), 1))
+        nextTick.forEach { it() }
+
+        assertEquals(emptyList<List<Transfer>>(), written)
+        coalescer.flush()
+        val row = spawned.single()
+        assertEquals(from, row.from)
+        assertEquals(ItemEntityRef(item), row.to)
+        assertEquals(Cause.BLK_FALL_START, row.cause)
+        assertEquals(bob, row.actor)
     }
 
     // A read-back files its row a tick after the change, and the row carries the time of the event.
@@ -1306,7 +1343,7 @@ class BlockDestructionTest {
     fun `a flight whose chunk unloads is not an ending`() {
         val attribution = Attribution(shared.registries, logs)
         val written = ArrayList<List<Transfer>>()
-        val listener = listener(attribution) { written += it }
+        val listener = listener(attribution, { written += it })
         val entity = UUID.fromString("00000000-0000-4000-8000-0000000000f2")
         val from = WorldBlock(world, 3, 70, 3)
         attribution.tookOff(entity, Falling(from, SAND, Attributed(bob), byteArrayOf(5)))

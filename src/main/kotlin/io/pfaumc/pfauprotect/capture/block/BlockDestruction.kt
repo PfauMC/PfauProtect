@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.attribution.Energy
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.attribution.Falling
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
+import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.capture.item.NestedItems
@@ -42,6 +43,7 @@ import net.minecraft.world.level.block.state.properties.PistonType
 import net.minecraft.world.level.material.FlowingFluid
 import net.minecraft.world.level.material.PushReaction
 import org.bukkit.ExplosionResult
+import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
@@ -791,6 +793,8 @@ class BlockDestructionListener(
     private val sink: (List<Transfer>) -> Unit,
     private val energy: Energy = Energy(),
     private val touches: HandTouches = HandTouches(),
+    // Runs a task on the region of the location a tick later.
+    private val later: (Location, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
 
     private val growing = GrowClaims()
@@ -1070,11 +1074,13 @@ class BlockDestructionListener(
     /**
      * A flight that ended in anything but a landing: the block was destroyed in the air, fell out of
      * the world, or turned into an item. The position it left really did lose its block then, so what
-     * it was holding is written off there rather than handed on. A landing takes the flight itself, so
+     * it was holding leaves it here rather than being handed on. A landing takes the flight itself, so
      * what reaches here is only what nothing else claimed.
      *
-     * The item a broken flight leaves behind is born unexplained: the removal is announced before the
-     * drop, and by the time the drop exists there is nothing left saying the two belong together.
+     * A block that breaks on a torch is removed first and drops itself right after, inside the same
+     * call, and that item is what the position gave up: the drop is expected out of the position. Only
+     * what no drop took by the next tick — a block gone out of the world, drops switched off — is
+     * written off there.
      */
     @EventHandler(priority = EventPriority.MONITOR)
     fun onEntityRemove(event: EntityRemoveEvent) {
@@ -1086,7 +1092,12 @@ class BlockDestructionListener(
         if (event.cause == EntityRemoveEvent.Cause.UNLOAD) return
         val flight = attribution.landed(entity.uniqueId) ?: return
         val form = flight.form ?: return
-        sink(listOf(wroteOff(flight.from, form, Cause.BLK_FALL_START, flight.by, System.currentTimeMillis())))
+        val timestamp = System.currentTimeMillis()
+        val at = entity.location
+        val dropped = origins.expect(flight.from, Cause.BLK_FALL_START, ItemKey(form, null), spotOf(at), 1, flight.by.culprit())
+        later(at) {
+            if (dropped() < 1) sink(listOf(wroteOff(flight.from, form, Cause.BLK_FALL_START, flight.by, timestamp)))
+        }
     }
 
     /**

@@ -193,7 +193,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val destruction = BlockDestructionListener(
             this, ledger.registries, blocks, attribution, codec, origins, entities, ledger, ledger, uncovered::submit,
             energy, touches,
-        )
+        ) { at, task -> server.regionScheduler.run(this, at) { task() } }
         val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
