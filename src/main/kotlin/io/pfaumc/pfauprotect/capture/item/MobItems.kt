@@ -23,6 +23,7 @@ import org.bukkit.event.player.PlayerBucketEntityEvent
 import org.bukkit.entity.AbstractArrow
 import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Armadillo
+import org.bukkit.entity.Boat
 import org.bukkit.entity.Cat
 import org.bukkit.entity.Chicken
 import org.bukkit.entity.Entity
@@ -31,6 +32,7 @@ import org.bukkit.entity.Goat
 import org.bukkit.entity.Item
 import org.bukkit.entity.ItemFrame
 import org.bukkit.entity.LivingEntity
+import org.bukkit.entity.Minecart
 import org.bukkit.entity.Player
 import org.bukkit.entity.Sniffer
 import org.bukkit.entity.Turtle
@@ -300,6 +302,11 @@ class MobItemListener(
             }
         }
         (entity as? ItemFrame)?.item?.takeIf { !it.isEmpty }?.let { booked += 0 to it }
+        // A cart or a boat gives itself back when broken, as one put down by hand does. A summoned stand,
+        // frame or painting can drop something other than what picking it names, and is left alone.
+        if (cause == Cause.CMD_SUMMON_ITEMS && (entity is Minecart || entity is Boat)) {
+            booked += ENTITY_ITEM_SLOT to entity.pickItemStack
+        }
         for ((slot, stack) in booked) {
             val encoded = codec.encodeOrNull(stack) ?: continue
             bookHeld(entity, slot, encoded.form)
