@@ -20,6 +20,7 @@ import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.Items
 import org.bukkit.NamespacedKey
 import org.bukkit.craftbukkit.CraftEquipmentSlot
+import org.bukkit.craftbukkit.entity.CraftVillager
 import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
@@ -36,6 +37,7 @@ import org.bukkit.persistence.PersistentDataType
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import net.minecraft.world.entity.EquipmentSlot as NmsEquipmentSlot
+import net.minecraft.world.entity.npc.villager.Villager as NmsVillager
 
 private val MAIN_HAND = NmsEquipmentSlot.MAINHAND.ordinal
 private val OFF_HAND = NmsEquipmentSlot.OFFHAND.ordinal
@@ -44,6 +46,22 @@ private val OFF_HAND = NmsEquipmentSlot.OFFHAND.ordinal
 internal const val MOB_INVENTORY_BASE = 100
 
 private val POCKET_KEY = NamespacedKey("pfauprotect", "pocket")
+
+// A villager's food points at the reading the pocket copy was taken at.
+private val FOOD_KEY = NamespacedKey("pfauprotect", "pocket_food")
+
+private val foodLevelField by lazy { NmsVillager::class.java.getDeclaredField("foodLevel").apply { isAccessible = true } }
+
+/**
+ * Whether food gone from a villager's pocket went into the villager. Eating is the only thing that raises
+ * its food points, and a try at breeding — with a bed for the child or without — eats and then takes
+ * twelve straight off; so the points of what went, less the rise, come to twelve for every try, and to
+ * anything else when the food went some other way.
+ */
+internal fun ateToBreed(eaten: Int, before: Int, after: Int): Boolean {
+    val digested = eaten - (after - before)
+    return eaten > 0 && digested > 0 && digested % 12 == 0
+}
 
 /**
  * A mob with a pocket of its own: a villager, a piglin, an allay, a pillager. What it picks up goes
@@ -236,7 +254,15 @@ class MobInventories(
     private fun book(mob: Entity, pockets: List<Pocket>) {
         if (pockets.isEmpty()) mob.persistentDataContainer.remove(POCKET_KEY)
         else mob.persistentDataContainer.set(POCKET_KEY, PersistentDataType.BYTE_ARRAY, encodePockets(pockets))
+        foodLevelOf(mob)?.let { mob.persistentDataContainer.set(FOOD_KEY, PersistentDataType.INTEGER, it) }
     }
+
+    private fun foodLevelOf(mob: Entity): Int? = (mob as? CraftVillager)?.let { foodLevelField.getInt(it.handle) }
+
+    private fun bookedFood(mob: Entity): Int? = mob.persistentDataContainer.get(FOOD_KEY, PersistentDataType.INTEGER)
+
+    private fun foodPoints(change: PocketChange) =
+        (codec.decode(change.key.form, 1, null).get(DataComponents.VILLAGER_FOOD)?.nutrition() ?: 0) * change.qty
 
     internal fun forget(mob: Entity) = book(mob, emptyList())
 
@@ -271,6 +297,7 @@ class MobInventories(
     private fun settle(mob: Entity) {
         if (!mob.isValid) return
         val before = booked(mob)
+        val foodBefore = bookedFood(mob)
         val after = live(mob)
         book(mob, after)
         val waiting = labels.remove(mob.uniqueId).orEmpty()
@@ -283,16 +310,33 @@ class MobInventories(
             label.placing?.let { placed.setFormAt(it.world, it.x, it.y, it.z, change.key.form) }
             rows += row(change, slot, label.other, label.cause, change.qty, timestamp, Confidence.FACT, label.actor)
         }
-        rows += guessed(mob, explained.filter { it.second == null }.map { it.first }, timestamp)
+        // A breeding names what both parents ate, and their food points moved for that as well.
+        val fed = explained.filter { it.second?.cause == Cause.CONSUME_FOOD }.sumOf { foodPoints(it.first) }
+        rows += guessed(mob, explained.filter { it.second == null }.map { it.first }, timestamp, foodBefore, fed)
         if (rows.isNotEmpty()) sink(rows)
     }
 
-    // What no event explains, as a guess: a villager's baking and eating under causes of their own.
-    private fun guessed(mob: Entity, unexplained: List<PocketChange>, timestamp: Long): List<Transfer> {
+    /**
+     * What no event explains, as a guess: a villager's baking and eating under causes of their own. Eating
+     * to breed raises no event, but it moves the villager's own food points, and food the points show was
+     * eaten is written as eaten rather than guessed at.
+     */
+    private fun guessed(
+        mob: Entity,
+        unexplained: List<PocketChange>,
+        timestamp: Long,
+        foodBefore: Int?,
+        fed: Int = 0,
+    ): List<Transfer> {
         val causes = if (mob is Villager) villagerGuess(unexplained, ::isWheat, ::isBread, ::isVillagerFood) else null
+        val eaten = unexplained.indices.filter { causes?.get(it) == Cause.CONSUME_FOOD }.sumOf { foodPoints(unexplained[it]) }
+        val foodAfter = foodLevelOf(mob)
+        val ate = foodBefore != null && foodAfter != null && ateToBreed(fed + eaten, foodBefore, foodAfter)
         return unexplained.mapIndexed { i, change ->
             val slot = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + change.slot)
-            row(change, slot, Void, causes?.get(i) ?: Cause.INVENTORY_LOAD, change.qty, timestamp, Confidence.INFERRED, null)
+            val cause = causes?.get(i) ?: Cause.INVENTORY_LOAD
+            val confidence = if (ate && cause == Cause.CONSUME_FOOD) Confidence.FACT else Confidence.INFERRED
+            row(change, slot, Void, cause, change.qty, timestamp, confidence, null)
         }
     }
 
@@ -360,12 +404,13 @@ class MobInventories(
     private fun packed(mob: Entity) {
         if (!mob.isValid) return
         val before = booked(mob)
+        val foodBefore = bookedFood(mob)
         val after = live(mob)
         val (moves, rest) = pocketShifts(before, after)
         if (moves.isEmpty() && rest.isEmpty()) return
         book(mob, after)
         val timestamp = System.currentTimeMillis()
-        sink(guessed(mob, rest, timestamp) + moves.map { (was, now) ->
+        sink(guessed(mob, rest, timestamp, foodBefore) + moves.map { (was, now) ->
             Transfer(
                 cause = Cause.INVENTORY_LOAD,
                 from = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + was.slot),
