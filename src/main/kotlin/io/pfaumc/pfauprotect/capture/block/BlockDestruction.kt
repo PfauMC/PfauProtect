@@ -13,6 +13,7 @@ import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.attribution.Falling
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
+import io.pfaumc.pfauprotect.storage.itemTypeIdOf
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.capture.item.NestedItems
@@ -34,8 +35,11 @@ import net.minecraft.core.Direction
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.resources.Identifier
 import net.minecraft.world.item.BucketItem
+import net.minecraft.world.item.Item
+import net.minecraft.world.item.Items
 import net.minecraft.world.level.block.AbstractCauldronBlock
 import net.minecraft.world.level.block.BaseFireBlock
+import net.minecraft.world.level.block.GrowingPlantBodyBlock
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.LiquidBlockContainer
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
@@ -405,6 +409,18 @@ internal fun wentAway(before: String, now: String) = blockNameOf(before) != bloc
 // whether anything an item was ever made into is standing there now.
 internal fun blockBehind(state: String): NmsBlock =
     BuiltInRegistries.BLOCK.getValue(Identifier.parse(blockNameOf(state)))
+
+/**
+ * The item a block is made of. A stem — twisting and weeping vines, kelp, cave vines — is a block of its
+ * own with no item: a tip turns into one the moment something is put or grows on top of it, and what was
+ * put down there was the tip. Without this the stem gives back nothing when it breaks, and the position
+ * holds the tip's item for ever. The game names each stem after its tip, and gives no public way to ask.
+ */
+internal fun itemOf(block: NmsBlock): Item {
+    val own = block.asItem()
+    if (own != Items.AIR || block !is GrowingPlantBodyBlock) return own
+    return blockBehind(BuiltInRegistries.BLOCK.getKey(block).toString().removeSuffix("_plant")).asItem()
+}
 
 private fun payloadAt(block: Block): ByteArray? {
     val level = (block as CraftBlock).level
@@ -1589,6 +1605,12 @@ class BlockDestructionListener(
         }
         val held = heldForm(remembered, shell, twoPositions) ?: return emptyList()
         val taken = shellForm(site.after) ?: return emptyList()
+        // A vine tip that turned into stem under the next one is the same vine: taken over by itself it
+        // would be a mutation of nothing, and the name it was put down under has to stay with it.
+        if (itemTypeIdOf(held) == itemTypeIdOf(taken)) {
+            remembered?.let { placed.setFormAt(site.at.world, site.at.x, site.at.y, site.at.z, it) }
+            return emptyList()
+        }
         return tookOver(site.at, held, taken, cause, by, timestamp)
     }
 
@@ -1708,7 +1730,7 @@ class BlockDestructionListener(
     // What the block was made of, which a block with no item form of its own — fire, a liquid, a
     // portal — answers with nothing at all.
     private fun shellForm(block: NmsBlock): ByteArray? {
-        val stack = NmsItemStack(block.asItem())
+        val stack = NmsItemStack(itemOf(block))
         return if (stack.isEmpty) null else codec.encode(stack).form
     }
 

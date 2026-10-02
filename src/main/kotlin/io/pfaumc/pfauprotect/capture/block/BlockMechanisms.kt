@@ -797,7 +797,7 @@ class BlockMechanismListener(
     // with nothing and so is never written off.
     private fun shellForm(state: BlockState): ByteArray? {
         val data = state.blockData as CraftBlockData
-        val stack = NmsItemStack(data.state.block.asItem())
+        val stack = NmsItemStack(itemOf(data.state.block))
         return if (stack.isEmpty) null else codec.encode(stack).form
     }
 

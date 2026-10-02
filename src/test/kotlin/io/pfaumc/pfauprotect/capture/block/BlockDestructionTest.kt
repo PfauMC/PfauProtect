@@ -1322,6 +1322,28 @@ class BlockDestructionTest {
         assertEquals(bob, row.actor)
     }
 
+    /**
+     * A vine tip turns into stem the moment the next one is put on it, and a stem has no item of its own.
+     * It is still the vine that was put down: the turn moves nothing and keeps the name the vine was put
+     * down under, and the stem gives the vine back when it breaks.
+     */
+    @Test
+    fun `a vine stem is the vine it was put down as`() {
+        val listener = listener()
+        val at = WorldBlock(world, 3, 64, 3)
+        val vine = ItemFormCodec(shared.registries, ServerRegistries.access).encode(NmsItemStack(Items.TWISTING_VINES)).form
+        val tip = Blocks.TWISTING_VINES.defaultBlockState().asBlockData()
+        val stem = Blocks.TWISTING_VINES_PLANT.defaultBlockState().asBlockData()
+
+        val off = releasedBy(listener, at, stem, AIR).single()
+        assertEquals(Void, off.to)
+        assertArrayEquals(vine, off.form)
+
+        val named = vine + 1
+        assertEquals(emptyList<Transfer>(), releasedBy(listener, at, tip, stem.asString, remembered = named))
+        assertArrayEquals(named, shared.formAt(world, 3, 64, 3))
+    }
+
     // A read-back files its row a tick after the change, and the row carries the time of the event.
     // Filed under the time of the read it would sort after changes that really came later.
     @Test
