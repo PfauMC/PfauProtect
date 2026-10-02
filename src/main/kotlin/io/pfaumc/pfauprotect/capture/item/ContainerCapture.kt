@@ -1157,7 +1157,9 @@ class ContainerCaptureListener(
         }
         // After the movements, so a bundle picked up unnamed arrives under the form it was carried in.
         for (rows in namingRows(after, timestamp)) sink(rows)
-        val lingering = taken.filter { it.until != null && it.until > timestamp && it !in spent }
+        // Only a command leaves a reason that can wait, so most passes have nothing to ask the tick for.
+        val waiting = taken.filter { it.untilTick != null && it !in spent }
+        val lingering = if (waiting.isEmpty()) waiting else Bukkit.getCurrentTick().let { tick -> waiting.filter { it.lingers(tick) } }
         if (lingering.isNotEmpty()) {
             for (intent in lingering) intents.add(player.uniqueId, intent)
             scheduleRecompute(player)

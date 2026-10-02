@@ -13,9 +13,12 @@ import org.bukkit.event.player.PlayerCommandPreprocessEvent
 import org.bukkit.event.server.RemoteServerCommandEvent
 import org.bukkit.event.server.ServerCommandEvent
 
-// How long a command's reason waits for the change it explains. The server applies a command to a
-// player in another region a tick or two after it is heard, and a pass can run in between.
-internal const val COMMAND_LINGER_MILLIS = 250L
+// How many of the player's own ticks a command's reason waits for the change it explains. The server
+// applies a command to a player in another region a tick or two after it is heard, and a pass can run
+// in between. Counted from the moment the reason reaches the player's thread and in that region's
+// ticks: a quarter of a second, counted from hearing, ran out right after a join, when the region
+// takes longer than that over a single tick, and the command's change was written as nobody's.
+internal const val COMMAND_LINGER_TICKS = 5
 
 // How long the item a full inventory throws out may take to land: a teleport earlier in the batch has to
 // finish first, and across a world that loads chunks.
@@ -87,18 +90,19 @@ class CommandListener(
         // pickup animation can both be recognised by it.
         val given = if (words[0] == "give") words.getOrNull(2)?.let(::parse) else null
         val count = words.getOrNull(3)?.toIntOrNull() ?: 1
-        val until = System.currentTimeMillis() + COMMAND_LINGER_MILLIS
+        val thrownUntil = System.currentTimeMillis() + GIVE_DROP_MILLIS
         for (player in players) {
             // What does not fit is thrown at the player's feet, as the player, wherever the player is
             // by the time the command runs.
-            given?.let { origins.expectThrown(player.uniqueId, Void, Cause.CMD_GIVE, it.key, count, until + GIVE_DROP_MILLIS) }
-            val reasons = listOfNotNull(
-                use.gain?.let { Intent(it, from = Void, form = given?.form, until = until) },
-                use.loss?.let { Intent(it, to = Void, until = until) },
-                use.change?.let { mutation(it, until) },
-            )
+            given?.let { origins.expectThrown(player.uniqueId, Void, Cause.CMD_GIVE, it.key, count, thrownUntil) }
             val leave: () -> Unit = {
-                reasons.forEach { capture.intend(player, it) }
+                // On the player's own thread, so the tick is the one the player's region counts.
+                val until = Bukkit.getCurrentTick() + COMMAND_LINGER_TICKS
+                listOfNotNull(
+                    use.gain?.let { Intent(it, from = Void, form = given?.form, untilTick = until) },
+                    use.loss?.let { Intent(it, to = Void, untilTick = until) },
+                    use.change?.let { mutation(it, until) },
+                ).forEach { capture.intend(player, it) }
             }
             // From another region the server hands the command to the player's scheduler a tick on,
             // queued behind the pass an intent left now would schedule: that pass would spend the reason

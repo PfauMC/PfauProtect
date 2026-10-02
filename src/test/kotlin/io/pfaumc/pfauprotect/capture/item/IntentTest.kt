@@ -14,6 +14,7 @@ import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.check.emptied
 import io.pfaumc.pfauprotect.attribution.inferred
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -47,12 +48,23 @@ class IntentTest {
         assertEquals(listOf(Move(bag(0), placed, key("stone"), 1, Cause.BLOCK_PLACE, Confidence.FACT)), moves)
     }
 
+    // A command's reason waits through the player's own ticks it was given, however long each of them
+    // takes, and a reason left by an event that saw its change happen waits for nothing.
+    @Test
+    fun `a command's reason lingers through the ticks it was given and no further`() {
+        val clear = Intent(Cause.CMD_CLEAR, to = Void, untilTick = 105)
+        assertTrue(clear.lingers(100))
+        assertTrue(clear.lingers(105))
+        assertFalse(clear.lingers(106))
+        assertFalse(Intent(Cause.CMD_CLEAR, to = Void).lingers(0))
+    }
+
     // A command's reason is handed on by a pass that did not spend it, so the pass has to say which it
     // spent: none when the inventory had not changed yet, the clear once the clear shows.
     @Test
     fun `a pass says which intents it spent and leaves the rest for the next one`() {
-        val clear = Intent(Cause.CMD_CLEAR, to = Void, until = 1L)
-        val give = Intent(Cause.CMD_GIVE, from = Void, form = "stone".toByteArray(), until = 1L)
+        val clear = Intent(Cause.CMD_CLEAR, to = Void, untilTick = 1)
+        val give = Intent(Cause.CMD_GIVE, from = Void, form = "stone".toByteArray(), untilTick = 1)
         val spent = HashSet<Intent>()
         Intents.explain(emptyList(), listOf(clear, give), player, used = spent::add)
         assertTrue(spent.isEmpty())
