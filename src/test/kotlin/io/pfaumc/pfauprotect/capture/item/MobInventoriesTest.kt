@@ -41,16 +41,25 @@ class MobInventoriesTest {
     }
 
     // A villager whose second slot emptied comes back from its chunk with everything after it one slot
-    // lower; the same stacks are moves, and anything that differs as well is no packing.
+    // lower; the same stacks are moves. One that ate its first slot empty just before it was saved comes
+    // back with the rest moved down and the food gone.
     @Test
-    fun `a pocket packed by loading is the same stacks in other slots`() {
+    fun `a pocket packed by loading is the same stacks in other slots and what changed besides`() {
+        fun moves(before: List<Pocket>, after: List<Pocket>) =
+            pocketShifts(before, after).first.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) }
         val before = listOf(Pocket(0, wheat, 2), Pocket(2, bread, 5), Pocket(3, hoe, 1))
         val after = listOf(Pocket(0, wheat, 2), Pocket(1, bread, 5), Pocket(2, hoe, 1))
 
-        val moves = pocketShifts(before, after)!!.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) }
-        assertEquals(listOf(Triple("bread", 2, 1), Triple("hoe", 3, 2)), moves)
-        assertEquals(emptyList<Pair<Pocket, Pocket>>(), pocketShifts(after, after))
-        assertEquals(null, pocketShifts(before, listOf(Pocket(0, wheat, 3), Pocket(1, bread, 5), Pocket(2, hoe, 1))))
+        assertEquals(listOf(Triple("bread", 2, 1), Triple("hoe", 3, 2)), moves(before, after))
+        assertEquals(emptyList<PocketChange>(), pocketShifts(before, after).second)
+        assertEquals(emptyList<Triple<String, Int, Int>>(), moves(after, after))
+
+        val carrot = ItemKey("carrot".toByteArray(), null)
+        val ate = pocketShifts(listOf(Pocket(0, carrot, 12)) + after.map { Pocket(it.slot + 1, it.key, it.count) }, after)
+        assertEquals(listOf(Triple("wheat", 1, 0), Triple("bread", 2, 1), Triple("hoe", 3, 2)), ate.first.map { (was, now) ->
+            Triple(String(was.key.form), was.slot, now.slot)
+        })
+        assertEquals(listOf(Triple(0, "carrot", -12)), ate.second.map { Triple(it.slot, String(it.key.form), if (it.gained) it.qty else -it.qty) })
     }
 
     // A farmer bakes three wheat into a bread and eats twelve points of food to breed with no bed for the
