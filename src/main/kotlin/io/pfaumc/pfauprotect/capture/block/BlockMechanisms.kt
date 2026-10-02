@@ -240,23 +240,34 @@ class SpawnOrigins(private val pending: TickCoalescer) {
     // explained, and the caller books it as such rather than letting it pass unrecorded.
     @Synchronized
     fun claim(entity: UUID, at: Spot, key: ItemKey, count: Int, thrower: UUID? = null): Int {
+        val into = ItemEntityRef(entity)
         // A note that names the entity is exact, so it goes first: a note left at the same block for
         // some other reason must not take the quantity out from under it.
-        val named = take(entity, key, count) { it.entity == entity }
-        val thrown = if (thrower == null) 0 else take(entity, key, count - named) { it.thrower == thrower && it.key == key }
-        val nearby = take(entity, key, count - named - thrown) {
-            !it.rolled && it.entity == null && it.thrower == null && it.key == key && near(it.at!!, at, it.reach)
-        }
-        val rolled = take(entity, key, count - named - thrown - nearby) {
+        val named = take(into, key, count) { it.entity == entity }
+        val thrown = if (thrower == null) 0 else take(into, key, count - named) { it.thrower == thrower && it.key == key }
+        val nearby = take(into, key, count - named - thrown) { placedFor(it, at, key) }
+        val rolled = take(into, key, count - named - thrown - nearby) {
             it.rolled && it.key == key && near(it.at!!, at, it.reach)
         }
-        val anyForm = take(entity, key, count - named - thrown - nearby - rolled) {
+        val anyForm = take(into, key, count - named - thrown - nearby - rolled) {
             it.rolled && it.key == null && near(it.at!!, at, it.reach)
         }
         return named + thrown + nearby + rolled + anyForm
     }
 
-    private inline fun take(entity: UUID, key: ItemKey, count: Int, matches: (Note) -> Boolean): Int {
+    /**
+     * An item a dispenser puts down as an entity of another kind — a cart on a rail, a boat on water —
+     * claimed by that entity, into the slot it holds the item in, from the note the dispenser left for
+     * the item to come out. Only a note naming the item at that spot will do: a block's drop is never a
+     * cart.
+     */
+    @Synchronized
+    fun claimInto(into: Holder, at: Spot, key: ItemKey): Boolean = take(into, key, 1) { placedFor(it, at, key) } == 1
+
+    private fun placedFor(note: Note, at: Spot, key: ItemKey) =
+        !note.rolled && note.entity == null && note.thrower == null && note.key == key && near(note.at!!, at, note.reach)
+
+    private inline fun take(into: Holder, key: ItemKey, count: Int, matches: (Note) -> Boolean): Int {
         var left = count
         val notes = notes.iterator()
         while (notes.hasNext() && left > 0) {
@@ -264,7 +275,7 @@ class SpawnOrigins(private val pending: TickCoalescer) {
             if (!matches(note)) continue
             val qty = if (note.rolled) left else minOf(left, note.qty)
             if (note.from != null) {
-                pending.add(note.from, ItemEntityRef(entity), note.cause, key, qty, note.actor, note.confidence)
+                pending.add(note.from, into, note.cause, key, qty, note.actor, note.confidence)
             }
             left -= qty
             if (note.rolled) continue

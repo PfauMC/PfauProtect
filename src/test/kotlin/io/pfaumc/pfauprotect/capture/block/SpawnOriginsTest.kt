@@ -1,11 +1,13 @@
 package io.pfaumc.pfauprotect.capture.block
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -64,6 +66,24 @@ class SpawnOriginsTest {
         assertEquals(setOf(dropper to 1, Void to 1), rows().map { it.from to it.qty }.toSet())
         assertEquals(Cause.BLK_FADE, rows().single { it.from == Void }.cause)
         assertEquals(0, origins.claim(UUID.randomUUID(), Spot(world, 40.0, 70.0, 8.0), vine, 1))
+    }
+
+    // A cart a dispenser put on a rail takes the note the dispenser left for its item, into the slot the
+    // cart holds it in, and the dispenser counts the item gone out. A block's drop is never a cart.
+    @Test
+    fun `a cart a dispenser put down takes the note left for its item`() {
+        val cart = ItemKey("minecart".toByteArray(), null)
+        val held = EntitySlot(UUID.randomUUID(), 16)
+        origins.expectAny(Void, Cause.BLK_FADE, at, null)
+        assertFalse(origins.claimInto(held, at, cart))
+
+        val ejected = origins.expect(dropper, Cause.DISPENSER_EJECT, cart, at, 1)
+        assertTrue(origins.claimInto(held, Spot(world, 5.6, 70.0, 8.5), cart))
+        assertEquals(1, ejected())
+        val row = rows().single()
+        assertEquals(dropper, row.from)
+        assertEquals(held, row.to)
+        assertEquals(Cause.DISPENSER_EJECT, row.cause)
     }
 
     @Test

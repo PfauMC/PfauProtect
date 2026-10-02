@@ -283,7 +283,21 @@ class MobItemListener(
 
     // A boat or a minecart joins the world under an event of its own.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    fun onVehicle(event: VehicleCreateEvent) = summoned(event.vehicle)
+    fun onVehicle(event: VehicleCreateEvent) {
+        dispensed(event.vehicle)
+        summoned(event.vehicle)
+    }
+
+    // A cart or a boat a dispenser put down: the server names no reason for it but the default, the one
+    // a hand's has too, and what ties it to the dispenser is the note left there for the item to come out
+    // of its slot. Taken by the entity, the item is held on it as a hand's is, and the dispenser counts it
+    // gone out rather than spent.
+    private fun dispensed(entity: Entity) {
+        if (entity !is Minecart && entity !is Boat) return
+        val encoded = codec.encodeOrNull(entity.pickItemStack) ?: return
+        val held = EntitySlot(entity.uniqueId, ENTITY_ITEM_SLOT)
+        if (origins.claimInto(held, spotOf(entity.location), encoded.key)) bookHeld(entity, ENTITY_ITEM_SLOT, encoded.form)
+    }
 
     private fun summoned(entity: Entity) {
         if (entity is Item) return
