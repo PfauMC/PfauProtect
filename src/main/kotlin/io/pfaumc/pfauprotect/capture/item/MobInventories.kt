@@ -105,9 +105,10 @@ internal fun villagerGuess(
 /**
  * A pocket saved and loaded again is packed together: the game stores it as a list without slot
  * numbers, so an empty slot closes up and everything after it moves down. The same items in the same
- * counts at other slots are that, each stack from where it was to where it is now. What is left over on
- * either side changed besides, as a villager eats a slot empty just before it is saved, and comes back
- * slot by slot.
+ * counts at other slots are that, each stack from where it was to where it is now. A stack of the same
+ * item that came back smaller and lower down was partly eaten as well as moved: what is left of it moved,
+ * and the rest went from where it was. What is left over on either side after that changed besides, as
+ * a villager eats a slot empty just before it is saved, and comes back slot by slot.
  */
 internal fun pocketShifts(before: List<Pocket>, after: List<Pocket>): Pair<List<Pair<Pocket, Pocket>>, List<PocketChange>> {
     val left = after.toMutableList()
@@ -121,6 +122,14 @@ internal fun pocketShifts(before: List<Pocket>, after: List<Pocket>): Pair<List<
         }
         left.remove(now)
         if (now.slot != was.slot) moves += was to now
+    }
+    // Only smaller and only lower: eating takes from a stack and packing moves it down, and neither
+    // can do anything else to it.
+    for (was in gone.toList()) {
+        val now = left.firstOrNull { it.key == was.key && it.slot < was.slot && it.count < was.count } ?: continue
+        left.remove(now)
+        moves += was to now
+        gone[gone.indexOf(was)] = Pocket(was.slot, was.key, was.count - now.count)
     }
     return moves to pocketChanges(gone, left)
 }

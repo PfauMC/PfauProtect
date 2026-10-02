@@ -62,6 +62,30 @@ class MobInventoriesTest {
         assertEquals(listOf(Triple(0, "carrot", -12)), ate.second.map { Triple(it.slot, String(it.key.form), if (it.gained) it.qty else -it.qty) })
     }
 
+    // A villager that ate its bread and part of its carrots just before it was saved: the carrots left
+    // come back a slot lower. They moved, and what was eaten went from the slot they were in. A stack
+    // that came back higher up was not packed there, and stays a loss and a gain.
+    @Test
+    fun `a stack partly eaten and moved down by loading is a move and a loss`() {
+        val carrot = ItemKey("carrot".toByteArray(), null)
+        fun signed(changes: List<PocketChange>) = changes.map { Triple(it.slot, String(it.key.form), if (it.gained) it.qty else -it.qty) }
+        val (moves, rest) = pocketShifts(
+            listOf(Pocket(0, bread, 3), Pocket(1, carrot, 12), Pocket(2, wheat, 5)),
+            listOf(Pocket(0, carrot, 7), Pocket(1, wheat, 5)),
+        )
+
+        assertEquals(
+            listOf(Triple("wheat", 2, 1), Triple("carrot", 1, 0)),
+            moves.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) },
+        )
+        assertEquals(7, moves.last().second.count)
+        assertEquals(listOf(Triple(0, "bread", -3), Triple(1, "carrot", -5)), signed(rest))
+
+        val (none, up) = pocketShifts(listOf(Pocket(0, carrot, 5)), listOf(Pocket(1, carrot, 3)))
+        assertEquals(emptyList<Pair<Pocket, Pocket>>(), none)
+        assertEquals(listOf(Triple(0, "carrot", -5), Triple(1, "carrot", 3)), signed(up))
+    }
+
     // A farmer bakes three wheat into a bread and eats twelve points of food to breed with no bed for the
     // child; neither raises an event, and anything else left over is an edit nobody saw.
     @Test
