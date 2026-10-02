@@ -708,7 +708,7 @@ class ContainerCaptureListener(
         }
         // Wax, an eye of ender, a fire charge: the server raises a placement for what they do to a
         // block, but they are not what the block is made of.
-        if (!inHand.type.isBlock) return
+        if (!placesBlock(inHand.type)) return
         val form = codec.encodeOrNull(inHand)?.form ?: return
         val block = event.block
         placed.setFormAt(block.world.uid, block.x, block.y, block.z, form)

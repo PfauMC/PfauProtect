@@ -12,7 +12,9 @@ import org.bukkit.Material
 import org.bukkit.event.block.CauldronLevelChangeEvent.ChangeReason
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -31,6 +33,21 @@ class ItemUseTest {
     }
 
     private fun stack(item: Item) = NmsItemStack(item)
+
+    // A carrot plants carrots and redstone lays wire: blocks under another name, and placements all the
+    // same. Powder snow's bucket puts a block down too, which is why the bucket is asked about first.
+    // What only changes a block, or pours a fluid out, puts nothing down.
+    @Test
+    fun `an item that plants or lays a block under another name puts a block down`() {
+        val down = listOf(
+            Material.CARROT, Material.WHEAT_SEEDS, Material.REDSTONE, Material.STRING,
+            Material.SWEET_BERRIES, Material.COCOA_BEANS, Material.OAK_SIGN, Material.POWDER_SNOW_BUCKET,
+        )
+        for (type in down) assertTrue(placesBlock(type), "$type")
+        for (type in listOf(Material.HONEYCOMB, Material.ENDER_EYE, Material.FLINT_AND_STEEL, Material.WATER_BUCKET)) {
+            assertFalse(placesBlock(type), "$type")
+        }
+    }
 
     @Test
     fun `a use on a block is named by what was used and on what`() {

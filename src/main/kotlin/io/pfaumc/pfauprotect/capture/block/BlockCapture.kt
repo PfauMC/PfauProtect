@@ -3,6 +3,7 @@ import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.capture.item.placesBlock
 import io.pfaumc.pfauprotect.capture.item.positionOf
 import net.minecraft.core.BlockPos
 import net.minecraft.core.HolderLookup
@@ -266,12 +267,13 @@ class BlockCaptureListener(
         // The block already stands where it was put, and it is that block the note answers for.
         for (was in replaced) attribution.placed(positionOf(was.block), was.block.blockData.asString, actor)
         // The server raises a placement for what a tool, wax, an eye of ender or a flint does to a block
-        // too, and the block change behind most of them is filed by its own event first. What is not a
-        // block in the hand did not put a block down: it changed one, or poured one out of a bucket.
+        // too, and the block change behind most of them is filed by its own event first. What does not
+        // put a block down changed one, or poured one out of a bucket; powder snow is asked about first,
+        // since its bucket puts a block down as well.
         val type = event.itemInHand.type
         val cause = when {
-            type.isBlock -> Cause.BLK_PLAYER_PLACE
             type.name.endsWith("_BUCKET") -> Cause.BLK_BUCKET
+            placesBlock(type) -> Cause.BLK_PLAYER_PLACE
             else -> Cause.BLK_PLAYER_USE
         }
         val unfiled = replaced.filterNot { touches.filedSinceTouch(positionOf(it.block)) }

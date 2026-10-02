@@ -35,6 +35,7 @@ import net.minecraft.world.item.WritableBookItem
 import org.bukkit.GameMode
 import org.bukkit.Material
 import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.craftbukkit.util.CraftMagicNumbers
 import org.bukkit.entity.Allay
 import org.bukkit.entity.Animals
 import org.bukkit.entity.ArmorStand
@@ -125,9 +126,18 @@ internal fun entityUseCause(item: NmsItemStack, target: EntityTarget = EntityTar
     }
 }
 
+/**
+ * Whether the item puts a block down when it is used: under the block's own name, or under another — a
+ * carrot plants carrots, a seed plants wheat, redstone lays wire, string strings a tripwire. Asked of
+ * `Material.isBlock`, the second kind are all items, and their placement would read as a use of the block
+ * and the item as gone nowhere. The use capture leaves every such item to the placement event, so the two
+ * have to agree on which items these are.
+ */
+internal fun placesBlock(type: Material) = CraftMagicNumbers.getItem(type) is BlockItem
+
 private fun spentElsewhere(item: NmsItemStack): Boolean {
     val kind = item.item
-    return kind is BlockItem || item.isDamageableItem || item.has(DataComponents.CONSUMABLE) ||
+    return kind is BlockItem ||item.isDamageableItem || item.has(DataComponents.CONSUMABLE) ||
         item.has(DataComponents.EQUIPPABLE) || kind is BucketItem || kind is MobBucketItem ||
         (kind is ProjectileItem && kind !is FireChargeItem) || kind is EnderpearlItem ||
         kind is BottleItem || kind is EmptyMapItem || kind is BundleItem || kind is WritableBookItem ||
