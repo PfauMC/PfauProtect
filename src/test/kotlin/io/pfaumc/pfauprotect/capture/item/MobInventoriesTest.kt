@@ -71,6 +71,34 @@ class MobInventoriesTest {
         assertEquals(listOf(Cause.INVENTORY_LOAD, Cause.INVENTORY_LOAD), guess(PocketChange(0, carrot, 4, false), PocketChange(1, hoe, 1, true)))
     }
 
+    // A farmer replants the carrot it picks up within one reading, and the pocket shows nothing; a
+    // villager picks one up while it eats unseen; a piglin's gold is in its hand, not the pocket.
+    @Test
+    fun `a pickup the pocket shows nothing of went through it unless a hand holds it`() {
+        val carrot = ItemKey("carrot".toByteArray(), null)
+        val item = io.pfaumc.pfauprotect.model.ItemEntityRef(java.util.UUID.randomUUID())
+        val block = io.pfaumc.pfauprotect.model.WorldBlock(java.util.UUID.randomUUID(), 0, -60, 0)
+        fun pickup() = PocketLabel(carrot.form, true, item, Cause.ITEM_PICKUP_BY_MOB_INV, 1, hand = 0)
+        fun read(before: List<Pocket>, after: List<Pocket>, vararg labels: PocketLabel, held: Boolean = false) =
+            explainPocket(before, after, labels.toList()) { held }
+                .map { (change, label) -> Triple(change.slot, if (change.gained) change.qty else -change.qty, label?.cause) }
+
+        val five = listOf(Pocket(2, carrot, 5))
+        assertEquals(
+            listOf(Triple(2, 1, Cause.ITEM_PICKUP_BY_MOB_INV), Triple(2, -1, Cause.BLOCK_PLACE)),
+            read(five, five, pickup(), PocketLabel(null, false, block, Cause.BLOCK_PLACE, 1)),
+        )
+        assertEquals(
+            listOf(Triple(0, -11, null), Triple(0, 1, Cause.ITEM_PICKUP_BY_MOB_INV), Triple(0, -1, null)),
+            read(listOf(Pocket(0, carrot, 12)), listOf(Pocket(0, carrot, 1)), pickup()),
+        )
+        assertEquals(emptyList<Triple<Int, Int, Cause?>>(), read(five, five, pickup(), held = true))
+        assertEquals(
+            listOf(Triple(0, 1, Cause.ITEM_PICKUP_BY_MOB_INV), Triple(0, -1, Cause.BLOCK_PLACE)),
+            read(emptyList(), emptyList(), pickup(), PocketLabel(null, false, block, Cause.BLOCK_PLACE, 1)),
+        )
+    }
+
     // A golem takes out of one slot and puts into the first that fits; whatever else changed in the
     // chest meanwhile, in another form, is not read as its doing.
     @Test

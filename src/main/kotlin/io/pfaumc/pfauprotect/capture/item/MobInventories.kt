@@ -119,6 +119,63 @@ internal fun pocketShifts(before: List<Pocket>, after: List<Pocket>): List<Pair<
     return if (left.isEmpty()) moves else null
 }
 
+// What an event said about the next reading of one mob's pocket. A null form matches any loss:
+// a planting names the block, not the seed.
+internal class PocketLabel(
+    val form: ByteArray?,
+    val gained: Boolean,
+    val other: Holder,
+    val cause: Cause,
+    var qty: Int,
+    val actor: UUID? = null,
+    val placing: WorldBlock? = null,
+    // Where a pickup the pocket did not take went instead.
+    val hand: Int? = null,
+) {
+    fun fits(change: PocketChange) =
+        qty > 0 && gained == change.gained && (form == null || form.contentEquals(change.key.form))
+}
+
+/**
+ * Lays the labels over what the pocket did between two readings; a null label is what none of them
+ * explains. A pickup the readings show nothing of is either in a hand now, which [held] books, or went
+ * into the pocket and out again before the second reading: a farmer replants the carrot it has just
+ * picked up, a villager eats it along with the rest. That is a gain and a loss through the slot such a
+ * stack lies in, and the loss is explained like any other.
+ */
+internal fun explainPocket(
+    before: List<Pocket>,
+    after: List<Pocket>,
+    waiting: List<PocketLabel>,
+    held: (PocketLabel) -> Boolean,
+): List<Pair<PocketChange, PocketLabel?>> {
+    val out = ArrayList<Pair<PocketChange, PocketLabel?>>()
+    fun explain(change: PocketChange) {
+        var left = change.qty
+        for (label in waiting) {
+            if (left <= 0) break
+            if (!label.fits(change)) continue
+            val qty = minOf(left, label.qty)
+            label.qty -= qty
+            left -= qty
+            out += PocketChange(change.slot, change.key, qty, change.gained) to label
+        }
+        if (left > 0) out += PocketChange(change.slot, change.key, left, change.gained) to null
+    }
+    pocketChanges(before, after).forEach(::explain)
+    for (label in waiting) {
+        val form = label.form ?: continue
+        if (label.hand == null || label.qty <= 0 || held(label)) continue
+        val slot = (after + before).firstOrNull { it.key.form.contentEquals(form) }?.slot
+            ?: generateSequence(0) { it + 1 }.first { free -> after.none { it.slot == free } }
+        val through = PocketChange(slot, ItemKey(form, null), label.qty, gained = true)
+        out += through to label
+        label.qty = 0
+        explain(PocketChange(slot, through.key, through.qty, gained = false))
+    }
+    return out
+}
+
 internal fun encodePockets(pockets: List<Pocket>): ByteArray {
     val w = ByteWriter()
     w.varInt(pockets.size)
@@ -156,24 +213,7 @@ class MobInventories(
     // Runs a task on the entity's own scheduler a tick later.
     private val later: (Entity, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
-    // What an event said about the next reading of one mob's pocket. A null form matches any loss:
-    // a planting names the block, not the seed.
-    private class Label(
-        val form: ByteArray?,
-        val gained: Boolean,
-        val other: Holder,
-        val cause: Cause,
-        var qty: Int,
-        val actor: UUID? = null,
-        val placing: WorldBlock? = null,
-        // Where a pickup the pocket did not take went instead.
-        val hand: Int? = null,
-    ) {
-        fun fits(change: PocketChange) =
-            qty > 0 && gained == change.gained && (form == null || form.contentEquals(change.key.form))
-    }
-
-    private val labels = ConcurrentHashMap<UUID, MutableList<Label>>()
+    private val labels = ConcurrentHashMap<UUID, MutableList<PocketLabel>>()
 
     internal fun booked(mob: Entity): List<Pocket> =
         decodePockets(mob.persistentDataContainer.get(POCKET_KEY, PersistentDataType.BYTE_ARRAY))
@@ -192,7 +232,7 @@ class MobInventories(
         }
     }
 
-    private fun label(mob: Entity, label: Label) {
+    private fun label(mob: Entity, label: PocketLabel) {
         labels.computeIfAbsent(mob.uniqueId) { ArrayList() }.let { synchronized(it) { it += label } }
         later(mob) { settle(mob) }
     }
@@ -220,51 +260,45 @@ class MobInventories(
         book(mob, after)
         val waiting = labels.remove(mob.uniqueId).orEmpty()
         val timestamp = System.currentTimeMillis()
+        val explained = explainPocket(before, after, waiting) { held(mob, it) }
         val rows = ArrayList<Transfer>()
-        val unexplained = ArrayList<PocketChange>()
-        for (change in pocketChanges(before, after)) {
+        for ((change, label) in explained) {
+            if (label == null) continue
             val slot = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + change.slot)
-            var left = change.qty
-            for (label in waiting) {
-                if (left <= 0) break
-                if (!label.fits(change)) continue
-                val qty = minOf(left, label.qty)
-                label.qty -= qty
-                left -= qty
-                label.placing?.let { placed.setFormAt(it.world, it.x, it.y, it.z, change.key.form) }
-                rows += row(change, slot, label.other, label.cause, qty, timestamp, Confidence.FACT, label.actor)
-            }
-            if (left > 0) unexplained += PocketChange(change.slot, change.key, left, change.gained)
+            label.placing?.let { placed.setFormAt(it.world, it.x, it.y, it.z, change.key.form) }
+            rows += row(change, slot, label.other, label.cause, change.qty, timestamp, Confidence.FACT, label.actor)
         }
+        val unexplained = explained.filter { it.second == null }.map { it.first }
         val guessed = if (mob is Villager) villagerGuess(unexplained, ::isWheat, ::isBread, ::isVillagerFood) else null
         unexplained.forEachIndexed { i, change ->
             val slot = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + change.slot)
             val cause = guessed?.get(i) ?: Cause.INVENTORY_LOAD
             rows += row(change, slot, Void, cause, change.qty, timestamp, Confidence.INFERRED, null)
         }
-        // A pickup the pocket did not take went into a hand: a piglin's gold, a pillager's banner.
-        for (label in waiting) {
-            val guess = label.hand ?: continue
-            val form = label.form ?: continue
-            if (label.qty <= 0) continue
-            val hand = handHolding(mob, form, guess)
-            bookHeld(mob, hand, form)
-            pending.add(label.other, EntitySlot(mob.uniqueId, hand), Cause.ITEM_PICKUP_BY_MOB, ItemKey(form, null), label.qty)
-        }
         if (rows.isNotEmpty()) sink(rows)
     }
 
+    // A pickup the pocket did not take, held now in a hand: a piglin's gold, a pillager's banner.
+    private fun held(mob: Entity, label: PocketLabel): Boolean {
+        val form = label.form ?: return false
+        val hand = handHolding(mob, form, label.hand ?: return false) ?: return false
+        bookHeld(mob, hand, form)
+        pending.add(label.other, EntitySlot(mob.uniqueId, hand), Cause.ITEM_PICKUP_BY_MOB, ItemKey(form, null), label.qty)
+        return true
+    }
+
     // Where a picked-up item is held now: the slot the game would equip it to, unless the mob put it
-    // somewhere else — a piglin admires gold in its off hand and keeps its sword in the main one.
-    private fun handHolding(mob: Entity, form: ByteArray, guess: Int): Int {
-        val equipment = (mob as? LivingEntity)?.equipment ?: return guess
+    // somewhere else — a piglin admires gold in its off hand and keeps its sword in the main one. None
+    // when no hand holds it beyond what was booked there already.
+    private fun handHolding(mob: Entity, form: ByteArray, guess: Int): Int? {
+        val equipment = (mob as? LivingEntity)?.equipment ?: return null
         val booked = heldBy(mob)
         for (slot in listOf(guess, OFF_HAND, MAIN_HAND).distinct()) {
             val bukkit = CraftEquipmentSlot.getSlot(NmsEquipmentSlot.entries[slot])
             if (booked[slot]?.contentEquals(form) == true) continue
             if (codec.encodeOrNull(equipment.getItem(bukkit))?.form?.contentEquals(form) == true) return slot
         }
-        return guess
+        return null
     }
 
     private fun isWheat(form: ByteArray) = codec.decode(form, 1, null).`is`(Items.WHEAT)
@@ -334,7 +368,7 @@ class MobInventories(
         val taken = encoded.count - event.remaining
         if (taken <= 0) return
         val hand = equipmentSlotOf(mob as LivingEntity, event.item.itemStack)
-        label(mob, Label(encoded.form, true, ItemEntityRef(event.item.uniqueId), Cause.ITEM_PICKUP_BY_MOB_INV, taken, hand = hand))
+        label(mob, PocketLabel(encoded.form, true, ItemEntityRef(event.item.uniqueId), Cause.ITEM_PICKUP_BY_MOB_INV, taken, hand = hand))
     }
 
     // A farmer planting from its pocket; a harvest raises the same event and takes nothing out of it.
@@ -342,14 +376,14 @@ class MobInventories(
     fun onFarm(event: EntityChangeBlockEvent) {
         val mob = event.entity
         if (!carriesInventory(mob) || event.blockData.material.isAir) return
-        label(mob, Label(null, false, positionOf(event.block), Cause.BLOCK_PLACE, 1, placing = positionOf(event.block)))
+        label(mob, PocketLabel(null, false, positionOf(event.block), Cause.BLOCK_PLACE, 1, placing = positionOf(event.block)))
     }
 
     // Villagers eat out of their pockets to breed.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBreed(event: EntityBreedEvent) {
         for (parent in listOf(event.mother, event.father)) {
-            if (carriesInventory(parent)) label(parent, Label(null, false, Void, Cause.CONSUME_FOOD, Int.MAX_VALUE))
+            if (carriesInventory(parent)) label(parent, PocketLabel(null, false, Void, Cause.CONSUME_FOOD, Int.MAX_VALUE))
         }
     }
 
@@ -359,6 +393,6 @@ class MobInventories(
         val mob = event.entity
         if (!carriesInventory(mob)) return
         val form = codec.encodeOrNull(event.item)?.form ?: return
-        label(mob, Label(form, false, containerAt(event.block, 0), Cause.COMPOSTER_CONSUME, 1))
+        label(mob, PocketLabel(form, false, containerAt(event.block, 0), Cause.COMPOSTER_CONSUME, 1))
     }
 }
