@@ -95,6 +95,21 @@ class BlockStoreTest {
         log = logs.open(world)
     }
 
+    // A world's base keeps its memtable inside the ledger's cache, under the one bound the plugin's native
+    // memory has: rows written to the world alone, with every state they name already interned in the
+    // ledger, still show in the ledger's cache. A base with a cache of its own would leave it as it was.
+    @Test
+    fun `a world base keeps its memtable inside the ledger's cache`() {
+        log.submit(listOf(BlockChange(0, 64, 0, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
+        log.drain()
+        val before = shared.blockCache.usage
+
+        log.submit((1..2000).map { BlockChange(it, 64, 0, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + it) })
+        log.drain()
+
+        assertTrue(shared.blockCache.usage > before, "${shared.blockCache.usage} after, $before before")
+    }
+
     @Test
     fun `a row carries both states, the actor and both payloads through the bytes`() {
         val row = BlockRow(

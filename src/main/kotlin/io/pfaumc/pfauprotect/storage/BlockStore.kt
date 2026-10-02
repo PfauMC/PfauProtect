@@ -1,13 +1,11 @@
 package io.pfaumc.pfauprotect.storage
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
-import org.rocksdb.BlockBasedTableConfig
 import org.rocksdb.BloomFilter
 import org.rocksdb.ColumnFamilyDescriptor
 import org.rocksdb.ColumnFamilyHandle
 import org.rocksdb.ColumnFamilyOptions
 import org.rocksdb.DBOptions
-import org.rocksdb.LRUCache
 import org.rocksdb.Options
 import org.rocksdb.ReadOptions
 import org.rocksdb.RocksDB
@@ -83,10 +81,13 @@ class BlockLog(
     // Shown every list the log accepts, on the thread that submitted it.
     private val watch: (List<BlockChange>) -> Unit = {},
 ) : AutoCloseable {
-    private val dbOptions = DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true)
-    private val blockCache = LRUCache(BLOCK_CACHE_BYTES)
+    // The ledger's cache and memtable budget, so a world loaded is not another bound of its own.
+    private val dbOptions = DBOptions()
+        .setCreateIfMissing(true)
+        .setCreateMissingColumnFamilies(true)
+        .setWriteBufferManager(shared.writeBuffers)
     private val bloom = BloomFilter(BLOOM_BITS_PER_KEY)
-    private val filteredTable = BlockBasedTableConfig().setBlockCache(blockCache).setFilterPolicy(bloom)
+    private val filteredTable = tableIn(shared.blockCache, bloom)
 
     private val rowsOptions = compressed()
         .setTableFormatConfig(filteredTable)
@@ -493,9 +494,9 @@ class BlockLog(
         writeOptions.close()
         rowsOptions.close()
         metaOptions.close()
-        // The table config holds these, so they may only go once nothing can reach them.
+        // The table config holds the filter, so it may only go once nothing can reach it. The cache is
+        // the ledger's to close.
         bloom.close()
-        blockCache.close()
         dbOptions.close()
     }
 
