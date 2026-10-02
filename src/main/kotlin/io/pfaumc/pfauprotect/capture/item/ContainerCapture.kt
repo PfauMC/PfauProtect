@@ -3,7 +3,6 @@ import io.canvasmc.canvas.event.PlayerPostRespawnAsyncEvent
 import io.pfaumc.pfauprotect.model.Cause
 import com.destroystokyo.paper.event.player.PlayerRecipeBookClickEvent
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 import io.pfaumc.pfauprotect.storage.EncodedItem
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
@@ -430,33 +429,38 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
 // Long enough for every row about the moment of a reading to have left the writer's queue.
 private const val RECONCILE_DELAY_SECONDS = 2L
 
-internal class LoadDifference(val holder: Holder, val form: ByteArray, val qty: Int, val gained: Boolean)
+internal class LoadDifference(val from: Holder, val to: Holder, val form: ByteArray, val qty: Int)
 
 /**
- * Where a difference between a player's slots and the ledger shows. Counted by form and not by slot,
- * so an item moved between two slots unseen stands against itself and writes nothing; what is left is
- * put on the slots that hold more of the form than they were booked, or were booked more than they
- * hold.
+ * Where a difference between a player's slots and the ledger shows, slot by slot. Within a form, a
+ * slot booked more than it holds and one holding more than it was booked are a move nobody saw, and
+ * are written as one: left alone, the ledger would go on placing the item in a slot that never held
+ * it. What is left over on either side came from nowhere or went nowhere.
  */
 internal fun loadDifferences(
     live: Map<Holder, Map<FormKey, Int>>,
     booked: Map<Holder, Map<FormKey, Int>>,
 ): List<LoadDifference> {
+    fun ArrayDeque<Pair<Holder, Int>>.spend(qty: Int) {
+        val (holder, left) = removeFirst()
+        if (left > qty) addFirst(holder to left - qty)
+    }
     val forms = (live.values.flatMap { it.keys } + booked.values.flatMap { it.keys }).toSet()
     val differences = ArrayList<LoadDifference>()
     for (form in forms) {
         val excess = (live.keys + booked.keys).associateWith { holder ->
             (live[holder]?.get(form) ?: 0) - (booked[holder]?.get(form) ?: 0)
         }
-        val total = excess.values.sum()
-        if (total == 0) continue
-        val gained = total > 0
-        var left = abs(total)
-        for ((holder, own) in excess.entries.sortedByDescending { if (gained) it.value else -it.value }) {
-            val take = minOf(left, if (gained) own else -own)
-            if (take <= 0) break
-            differences += LoadDifference(holder, form.form, take, gained)
-            left -= take
+        // Largest first, so a stack moved whole is one row.
+        val over = ArrayDeque(excess.filterValues { it > 0 }.entries.sortedByDescending { it.value }.map { it.key to it.value })
+        val short = ArrayDeque(excess.filterValues { it < 0 }.entries.sortedBy { it.value }.map { it.key to -it.value })
+        while (over.isNotEmpty() || short.isNotEmpty()) {
+            val (to, wanted) = over.firstOrNull() ?: (Void to Int.MAX_VALUE)
+            val (from, spare) = short.firstOrNull() ?: (Void to Int.MAX_VALUE)
+            val qty = minOf(wanted, spare)
+            differences += LoadDifference(from, to, form.form, qty)
+            if (over.isNotEmpty()) over.spend(qty)
+            if (short.isNotEmpty()) short.spend(qty)
         }
     }
     return differences
@@ -558,8 +562,8 @@ class ContainerCaptureListener(
         val rows = differences.map { difference ->
             Transfer(
                 cause = Cause.INVENTORY_LOAD,
-                from = if (difference.gained) Void else difference.holder,
-                to = if (difference.gained) difference.holder else Void,
+                from = difference.from,
+                to = difference.to,
                 form = difference.form,
                 damage = null,
                 qty = difference.qty,
