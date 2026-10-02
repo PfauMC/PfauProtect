@@ -1290,6 +1290,11 @@ class BlockDestructionListener(
      * the world still stands as it was, so both sides are read here; the frame a lit portal hands back
      * unchanged is no change. The pair built for a traveller clears and overwrites whatever stood where
      * it goes, and that is filed as taken away by the portal, on the traveller when that is a player.
+     *
+     * Overwriting drops nothing, but the frame goes down with its neighbours told, and a plant standing
+     * where the portal will be — crimson roots on nylium the frame replaces — breaks off and drops before
+     * the portal fills its place. The break finds its position already filed and leaves the drop to the
+     * capture that filed it, so this one has to expect it.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPortalCreate(event: PortalCreateEvent) {
@@ -1305,7 +1310,7 @@ class BlockDestructionListener(
             val after = state.blockData.asString
             if (before.asString == after) null else Site(positionOf(block), block, before, after)
         }
-        if (sites.isNotEmpty()) file(log, sites, Cause.BLK_PORTAL_CREATE, by, expectsDrops = false)
+        if (sites.isNotEmpty()) file(log, sites, Cause.BLK_PORTAL_CREATE, by)
     }
 
     /**
