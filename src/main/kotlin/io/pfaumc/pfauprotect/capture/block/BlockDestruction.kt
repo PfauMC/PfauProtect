@@ -4,6 +4,8 @@ import com.destroystokyo.paper.event.block.BlockDestroyEvent
 import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.storage.BlockChange
+import io.pfaumc.pfauprotect.storage.EntityChange
+import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.model.Cause
@@ -158,6 +160,10 @@ internal class Site(
  * than written, so a block that survives after all, or a drop chance that came up empty, costs the
  * note and nothing else.
  */
+// How long after a break its drops are named: they spawn in the call that breaks the block, or in the
+// tick after it for a read-back.
+private const val DROPS_SETTLE_TICKS = 2L
+
 internal fun expectDrops(
     origins: SpawnOrigins,
     codec: ItemFormCodec,
@@ -169,6 +175,9 @@ internal fun expectDrops(
     // named the same way before its spawn reads it.
     boxOwner: UUID? = null,
     reach: Double = SPAWN_REACH,
+    // Under which event the block's own drops are remembered. Not what it held: that is already tied to
+    // its slots by the movement out of them.
+    tag: Any? = null,
 ) {
     val spot = spotOf(block.location)
     for (drop in block.drops) {
@@ -178,11 +187,11 @@ internal fun expectDrops(
             origins.expectBox(stack, boxOwner, spot)
             NestedItems.mark(stack, boxOwner)
         }
-        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor, reach, rolled = true)
+        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor, reach, rolled = true, tag = tag)
     }
     // The roll above is this capture's own and the drop comes out of the server's, and where chance
     // decides the two can disagree on more than the count.
-    origins.expectAny(Void, cause, spot, actor, reach)
+    origins.expectAny(Void, cause, spot, actor, reach, tag)
     // What it held spills out of the slots it was booked to, as from a hand's break.
     spilled(block.getState(false)).forEachIndexed { slot, item ->
         val encoded = codec.encodeOrNull(item) ?: return@forEachIndexed
@@ -1333,7 +1342,7 @@ class BlockDestructionListener(
         // always: a cactus breaks a tick after its support, while the read-back the physics of that
         // support queued still holds the position, and the note that read-back left may already have
         // been swept by then. A capture that filed the position this tick expected them itself.
-        if (!readBacks.settled(positionOf(block))) expectDrops(origins, codec, block, Cause.BLK_FADE, by.culprit())
+        if (!readBacks.settled(positionOf(block))) dropsOf(block, Cause.BLK_FADE, by)
         defer(block, block.blockData, Cause.BLK_FADE, by, expectsDrops = false)
     }
 
@@ -1508,7 +1517,7 @@ class BlockDestructionListener(
         // up as though it had been broken would empty a shulker box a dispenser has just put down.
         for (site in gone) {
             if (site.went != null || !expectsDrops || emptied(site.before.asString)) continue
-            expectDrops(origins, codec, site.block, cause, by.culprit(), packBox(site, by, timestamp), dropReach)
+            dropsOf(site.block, cause, by, packBox(site, by, timestamp), dropReach)
         }
         by.culprit()?.let { actor ->
             for (site in gone) {
@@ -1633,6 +1642,29 @@ class BlockDestructionListener(
     // The read has to happen on the region that owns the block, and this is queued rather than run
     // inline, so it lands at the start of that region's next tick with the tick that raised the event
     // already finished.
+    /**
+     * The drops of a block broken by something other than a hand, expected under its position; a couple of
+     * ticks on, once they have spawned, the position says which items they were (SPEC-v6 §2.5). A rollback
+     * that puts the block back takes those back from whoever picked them up.
+     */
+    private fun dropsOf(block: Block, cause: Cause, by: Attributed?, boxOwner: UUID? = null, reach: Double = SPAWN_REACH) {
+        val at = positionOf(block)
+        expectDrops(origins, codec, block, cause, by.culprit(), boxOwner, reach, tag = at)
+        if (!plugin.isEnabled) return
+        plugin.server.regionScheduler.runDelayed(plugin, block.world, block.x shr 4, block.z shr 4, {
+            val drops = origins.droppedFor(at)
+            if (drops.isEmpty()) return@runDelayed
+            logs.get(block.world.uid)?.submit(
+                listOf(
+                    EntityChange(
+                        at.x, at.y, at.z, EntityKind.DROPPED, cause, "minecraft:item", drops.first(),
+                        confidence = by?.confidence ?: Confidence.FACT, actor = by.culprit(), drops = drops,
+                    )
+                )
+            )
+        }, DROPS_SETTLE_TICKS)
+    }
+
     private fun defer(block: Block, before: BlockData, cause: Cause, by: Attributed?, expectsDrops: Boolean = true) {
         // A task queued against a plugin already on its way down is refused outright, and an event can
         // still reach a handler while the server is taking the plugin apart.
@@ -1649,7 +1681,7 @@ class BlockDestructionListener(
         val payload = payloadAt(block)
         // Here and not in the read-back: the items are already in the world by then, and a note that
         // arrives after the spawn it explains is a note nobody can claim.
-        if (expectsDrops) expectDrops(origins, codec, block, cause, by.culprit())
+        if (expectsDrops) dropsOf(block, cause, by)
         plugin.server.regionScheduler.execute(plugin, block.world, block.x shr 4, block.z shr 4) {
             readBacks.done(at)
             val now = block.blockData.asString
