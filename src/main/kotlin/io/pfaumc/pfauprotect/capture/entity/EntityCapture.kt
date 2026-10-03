@@ -108,6 +108,8 @@ internal val VOLATILE = setOf(
     "Offers", "Xp", "LastRestock", "RestocksToday", "LastGossipDecay", "Gossips", "FoodLevel", "EatingHaystack",
     "Paper.Origin", "Paper.OriginWorld", "Paper.SpawnReason", "Spigot.ticksLived", "Bukkit.updateLevel",
     "Bukkit.Aware", "WorldUUIDLeast", "WorldUUIDMost",
+    // A pet sat down or stood up: only its owner can, so it is never anybody else's doing.
+    "Sitting",
 )
 
 internal fun nbtOf(bytes: ByteArray): CompoundTag = NbtIo.read(DataInputStream(ByteArrayInputStream(bytes)))
@@ -216,7 +218,10 @@ class EntityCapture(
      * to walk.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    fun onLeash(event: PlayerLeashEntityEvent) = led(event.entity, event.player)
+    fun onLeash(event: PlayerLeashEntityEvent) {
+        // Tied to a fence, a mob passes from the player's lead to the knot: led already, by the same player.
+        if (event.leashHolder !is LeashHitch) led(event.entity, event.player)
+    }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onMount(event: EntityMountEvent) {
@@ -354,6 +359,8 @@ class EntityCapture(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onHang(event: HangingPlaceEvent) {
         val player = event.player ?: return
+        // A knot is the lead's, and the lead is on the mob's own NBT.
+        if (event.entity is LeashHitch) return
         created(event.entity, Cause.PLACE_ENTITY_ITEM, Attributed(player.uniqueId, Confidence.FACT))
     }
 
