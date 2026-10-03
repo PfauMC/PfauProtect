@@ -143,14 +143,22 @@ class Confiscations(
 
     fun owedFor(tally: Tally): List<Owed> = owedFor(ledger, tally)
 
-    fun describe(owed: List<Owed>): String = owed.groupBy { it.taker }.entries.joinToString("; ") { (taker, all) ->
-        val who = when (taker) {
-            is Carrier -> (Bukkit.getOfflinePlayer(taker.player).name ?: taker.player.toString()) +
+    // Players one by one; piles together, since there can be dozens of them and none has a name.
+    fun describe(owed: List<Owed>): String {
+        val players = owed.filter { it.taker is Carrier }.groupBy { it.taker as Carrier }.map { (taker, all) ->
+            val who = (Bukkit.getOfflinePlayer(taker.player).name ?: taker.player.toString()) +
                 if (Bukkit.getPlayer(taker.player) == null) " (offline, at their next join)" else ""
-            is Lying -> "an item lying in the world"
+            "$who: ${amounts(all)}"
         }
-        "$who: " + all.joinToString(", ") { "${it.qty} ${name(it.formId)}" }
+        val piles = owed.filter { it.taker is Lying }
+        val lying = if (piles.isEmpty()) emptyList() else {
+            listOf("${piles.map { it.taker }.distinct().size} items lying in the world: ${amounts(piles)}")
+        }
+        return (players + lying).joinToString("; ")
     }
+
+    private fun amounts(owed: List<Owed>) =
+        owed.groupBy { it.formId }.entries.joinToString(", ") { (form, all) -> "${all.sumOf { it.qty }} ${name(form)}" }
 
     fun take(owed: List<Owed>, actor: UUID?, sender: CommandSender) {
         for ((taker, all) in owed.groupBy { it.taker }) {

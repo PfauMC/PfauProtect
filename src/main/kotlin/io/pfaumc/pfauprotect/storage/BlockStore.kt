@@ -52,13 +52,27 @@ data class BlockStanding(val row: BlockRow?, val torn: Boolean)
 // of a place and report it done.
 data class BlockWindow(val rows: List<BlockRow>, val unreadable: Int, val complete: Boolean, val walked: Int)
 
+// The positions an actor's rows stand at in a window, and whether the walk got to its end.
+data class ActorTouches(val positions: Set<List<Int>>, val complete: Boolean)
+
 // Raised by a change to the key layout or to the set of column families. The record version in the
 // value covers neither: keys carry a version this build reads, so without the bump an older database
 // opens and every key is parsed as something it never was.
-private const val BLOCK_SCHEMA_VERSION = 1L
+//
+// Version 2 adds the index of rows by actor. A version 1 base is the same base with the index still to
+// build, and it is built from its rows the first time it opens.
+private const val BLOCK_SCHEMA_VERSION = 2L
+private const val INDEXED_FROM = 1L
+
+// How many index rows a base being indexed for the first time writes per batch.
+private const val INDEX_BATCH = 10_000
+
+private const val ACTOR_KEY_SIZE = 4 + BlockCodec.KEY_SIZE
+private val NOTHING = ByteArray(0)
 
 private val ROWS_CF = "rows".toByteArray()
 private val BLOCK_META_CF = "meta".toByteArray()
+private val BY_ACTOR_CF = "by_actor".toByteArray()
 
 private val META_SCHEMA_KEY = "schema".toByteArray()
 private val META_EVENT_ID = "event_id".toByteArray()
@@ -107,11 +121,20 @@ class BlockLog(
         .setTableFormatConfig(filteredTable)
         .setWriteBufferSize(COLD_WRITE_BUFFER_BYTES)
 
+    // Walked by actor and time, never asked for one key.
+    private val byActorOptions = compressed().setTableFormatConfig(tableIn(shared.blockCache))
+
     private val writeOptions = WriteOptions()
     private val cfHandles = ArrayList<ColumnFamilyHandle>()
     private val db: RocksDB
     private val rowsCf: ColumnFamilyHandle
     private val metaCf: ColumnFamilyHandle
+
+    // Every row that names an actor, again, under the actor: the player number, the time, the event, the
+    // ordinal and the position as the key, nothing as the value. The ordinal is counted per position, so
+    // the position has to be in the key or two positions of one event would share it. A block row has no
+    // ends to file it under, so without this "everything this player did" is a walk of the whole world.
+    private val byActorCf: ColumnFamilyHandle
 
     private val queue = LinkedBlockingQueue<List<BlockChange>>()
     private val submitted = AtomicLong()
@@ -140,7 +163,7 @@ class BlockLog(
         // at all. A database refused for its schema has to be left exactly as it was found.
         val stored = try {
             storedSchema(path)?.also {
-                require(it == BLOCK_SCHEMA_VERSION) {
+                require(it == BLOCK_SCHEMA_VERSION || it == INDEXED_FROM) {
                     "block database schema $it cannot be read by this build (schema $BLOCK_SCHEMA_VERSION)"
                 }
             }
@@ -152,6 +175,7 @@ class BlockLog(
             RocksDB.DEFAULT_COLUMN_FAMILY to metaOptions,
             ROWS_CF to rowsOptions,
             BLOCK_META_CF to metaOptions,
+            BY_ACTOR_CF to byActorOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
         // A stale lock file or a truncated manifest fails the open, and the options, the cache and the
         // filter behind it answer to nothing afterwards: the bindings free no native memory on their
@@ -164,11 +188,13 @@ class BlockLog(
         }
         rowsCf = cfHandles[1]
         metaCf = cfHandles[2]
+        byActorCf = cfHandles[3]
 
         // Nothing outside reaches a constructor that threw, so a failure here would hold the file
         // lock and the native memory until the process ends and no later open could succeed.
         try {
-            if (stored == null) db.put(metaCf, META_SCHEMA_KEY, longBytes(BLOCK_SCHEMA_VERSION))
+            if (stored == INDEXED_FROM) indexActors()
+            if (stored != BLOCK_SCHEMA_VERSION) db.put(metaCf, META_SCHEMA_KEY, longBytes(BLOCK_SCHEMA_VERSION))
             nextEventId = readCounter(META_EVENT_ID)
             lastTs = readCounter(META_LAST_TS)
         } catch (failure: Throwable) {
@@ -176,6 +202,80 @@ class BlockLog(
             throw failure
         }
     }
+
+    // Once, on the first open of a base written before the index existed, and before the schema says it
+    // has one: a crash halfway through leaves the old stamp, and the next open starts again, writing the
+    // same keys over themselves.
+    private fun indexActors() {
+        ReadOptions().setTotalOrderSeek(true).use { options ->
+            db.newIterator(rowsCf, options).use { iter ->
+                var batch = WriteBatch()
+                try {
+                    iter.seekToFirst()
+                    while (iter.isValid) {
+                        val key = iter.key()
+                        val actor = BlockCodec.actorNumberOf(iter.value())
+                        if (actor != null && key.size == BlockCodec.KEY_SIZE) {
+                            batch.put(byActorCf, actorKey(actor, key), NOTHING)
+                        }
+                        if (batch.count() >= INDEX_BATCH) {
+                            db.write(writeOptions, batch)
+                            batch.close()
+                            batch = WriteBatch()
+                        }
+                        iter.next()
+                    }
+                    db.write(writeOptions, batch)
+                } finally {
+                    batch.close()
+                }
+            }
+        }
+    }
+
+    /**
+     * Where an actor's rows in the window stand: the positions, from the index, without reading a row.
+     * `budget` bounds the index rows walked, and a walk that reaches it says so.
+     */
+    fun touchedBy(actor: UUID, fromTs: Long, toTs: Long, budget: Int): ActorTouches = dbLock.read {
+        val number = shared.registries.lookupKey(RegistryNamespace.PLAYER, actor.toString())
+        if (closed) return ActorTouches(emptySet(), false)
+        if (number == null) return ActorTouches(emptySet(), true)
+        val prefix = actorPrefix(number)
+        val positions = HashSet<List<Int>>()
+        var walked = 0
+        val lower = Slice(ByteWriter(12).bytes(prefix).longBE(fromTs).toByteArray())
+        val upper = Slice(afterPrefix(prefix))
+        try {
+            ReadOptions().setIterateLowerBound(lower).setIterateUpperBound(upper).use { options ->
+                db.newIterator(byActorCf, options).use { iter ->
+                    iter.seekToFirst()
+                    while (iter.isValid) {
+                        val ts = ByteReader(iter.key()).also { it.bytes(prefix.size) }.longBE()
+                        if (ts > toTs) break
+                        if (walked++ >= budget) return ActorTouches(positions, false)
+                        positions += Zcode.decode(iter.key(), ACTOR_KEY_SIZE - Zcode.SIZE).toList()
+                        iter.next()
+                    }
+                }
+            }
+        } finally {
+            lower.close()
+            upper.close()
+        }
+        ActorTouches(positions, true)
+    }
+
+    private fun actorPrefix(actor: Int): ByteArray =
+        ByteWriter(4).byte(actor ushr 24).byte(actor ushr 16).byte(actor ushr 8).byte(actor).toByteArray()
+
+    // The actor's number, then the row key turned round: time, event and ordinal, then the position.
+    private fun actorKey(actor: Int, rowKey: ByteArray): ByteArray =
+        ByteWriter(ACTOR_KEY_SIZE)
+            .bytes(actorPrefix(actor))
+            .bytes(rowKey.copyOfRange(Zcode.SIZE, BlockCodec.KEY_SIZE))
+            .bytes(rowKey.copyOf(Zcode.SIZE))
+            .toByteArray()
 
     private val writerThread =
         Thread(::runWriter, "pfauprotect-block-writer-${dir.fileName}").apply { isDaemon = true }
@@ -492,11 +592,12 @@ class BlockLog(
             payloadBefore = payloadBefore,
             payloadAfter = payloadAfter,
         )
-        batch.put(
-            rowsCf,
-            BlockCodec.key(change.x, change.y, change.z, ts, eventId, ordinal),
-            BlockCodec.value(row, shared.registries),
-        )
+        val key = BlockCodec.key(change.x, change.y, change.z, ts, eventId, ordinal)
+        batch.put(rowsCf, key, BlockCodec.value(row, shared.registries))
+        // In the same batch as the row, so the index never names a row that is not there or misses one.
+        change.actor?.let { actor ->
+            batch.put(byActorCf, actorKey(shared.registries.id(RegistryNamespace.PLAYER, actor), key), NOTHING)
+        }
         batchTs[here] = ts
     }
 
@@ -544,6 +645,7 @@ class BlockLog(
         writeOptions.close()
         rowsOptions.close()
         metaOptions.close()
+        byActorOptions.close()
         // The table config holds the filter, so it may only go once nothing can reach it. The cache is
         // the ledger's to close.
         bloom.close()
@@ -573,6 +675,8 @@ class BlockLogs(
         logs.computeIfAbsent(world) { BlockLog(dirOf(it), shared) { changes -> watch(it, changes) } }
 
     fun get(world: UUID): BlockLog? = logs[world]
+
+    val worlds: Set<UUID> get() = logs.keys.toSet()
 
     val size: Int get() = logs.size
 

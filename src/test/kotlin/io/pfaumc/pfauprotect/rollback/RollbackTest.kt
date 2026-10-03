@@ -184,6 +184,29 @@ class RollbackTest {
         assertTrue(plain.chunks.isEmpty(), "a rollback's rows are not touched unless named")
     }
 
+    // Without a radius a player's history is found where it stands: the blocks they changed through the
+    // block plane's index, and the chests they took from as the far ends of their own rows, however far
+    // apart. Somebody else's rows at the same places are not theirs to undo.
+    @Test
+    fun `a player's rollback without a radius finds every place they touched`() {
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 2, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.drain()
+        val far = Container(world, 5000, 64, -5000, 2)
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, far, PlayerInv(alice, 0), diamond, null, 3, T0))
+        shared.drain()
+
+        val reader = RollbackReader(shared, logs)
+        val touched = reader.touchedBy(setOf(alice), 0, Long.MAX_VALUE)!!
+        assertEquals(setOf(WorldBlock(world, 1, 64, 1), WorldBlock(world, 5000, 64, -5000)), touched.getValue(world))
+        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
+        val planned = reader.at(world, touched.getValue(world) + WorldBlock(world, 1, 64, 2), 0, Long.MAX_VALUE, filter::keeps, filter::keeps)
+            as Planned
+        val positions = planned.chunks.flatMap { it.positions }.associateBy { it.at }
+        assertEquals(setOf(WorldBlock(world, 1, 64, 1), WorldBlock(world, 5000, 64, -5000)), positions.keys)
+        assertEquals(3, positions.getValue(WorldBlock(world, 5000, 64, -5000)).refills.single().qty)
+    }
+
     // The widest radius reads a square of chunks larger than any lookup does, and has to stay inside
     // what the region read allows; a world with no open base has no history to roll back over.
     @Test

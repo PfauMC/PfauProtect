@@ -1,8 +1,13 @@
 package io.pfaumc.pfauprotect.rollback
 
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.LedgerEntry
+import io.pfaumc.pfauprotect.model.PlayerCursor
+import io.pfaumc.pfauprotect.model.PlayerEnder
+import io.pfaumc.pfauprotect.model.PlayerEquip
+import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockLogs
@@ -145,6 +150,74 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         return plan(world, rows, slots, positions.filter { it.qty < 0 }, unreadable + page.unreadable)
     }
 
+    /**
+     * Where the players' rows in the window stand, world by world: the block plane's index of rows by
+     * actor, and the positions they traded items with — the far ends of the rows under their own slots.
+     * Only worlds whose history is open are seen; a world that is not loaded cannot be rolled back.
+     */
+    fun touchedBy(users: Set<UUID>, fromTs: Long, toTs: Long): Map<UUID, Set<WorldBlock>>? {
+        val touched = HashMap<UUID, MutableSet<WorldBlock>>()
+        for (world in blocks.worlds) {
+            val log = blocks.get(world) ?: continue
+            for (user in users) {
+                val found = log.touchedBy(user, fromTs, toTs, MAX_ROLLBACK_ROWS)
+                if (!found.complete) return null
+                for ((x, y, z) in found.positions) touched.getOrPut(world) { HashSet() } += WorldBlock(world, x, y, z)
+            }
+        }
+        for (user in users) {
+            val own = listOf(PlayerInv(user, 0), PlayerEquip(user, 0), PlayerCursor(user), PlayerEnder(user, 0), EntitySlot(user, 0))
+            for (holder in own) {
+                val page = ledger.holderPage(holder, fromTs, toTs, limit = MAX_ROLLBACK_ROWS)
+                if (!page.complete || page.unreadable > 0) return null
+                for (entry in page.entries) {
+                    val at = when (val far = entry.counterparty) {
+                        is Container -> WorldBlock(far.world, far.x, far.y, far.z)
+                        is WorldBlock -> far
+                        else -> continue
+                    }
+                    if (blocks.get(at.world) != null) touched.getOrPut(at.world) { HashSet() } += at
+                }
+            }
+        }
+        return touched
+    }
+
+    /** What a rollback would undo at these positions of one world, read position by position. */
+    fun at(
+        world: UUID,
+        positions: Set<WorldBlock>,
+        fromTs: Long,
+        toTs: Long,
+        keepsRow: (BlockRow) -> Boolean,
+        keepsEntry: (LedgerEntry) -> Boolean,
+    ): Reading {
+        val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
+        if (positions.size > MAX_ROLLBACK_POSITIONS) return tooMany(positions.size)
+        val rows = ArrayList<BlockRow>()
+        val slots = ArrayList<LedgerEntry>()
+        val losses = ArrayList<LedgerEntry>()
+        var unreadable = 0
+        var budget = BLOCK_WALK_BUDGET
+        for (at in positions) {
+            val window = log.windowAt(at.x, at.y, at.z, fromTs, toTs, budget)
+            if (!window.complete) return tooMuch()
+            budget -= window.walked
+            unreadable += window.unreadable
+            window.rows.filterTo(rows, keepsRow)
+            for (holder in listOf(Container(world, at.x, at.y, at.z, 0), at)) {
+                val page = ledger.holderPage(holder, fromTs, toTs, limit = MAX_ROLLBACK_ROWS)
+                if (!page.complete) return tooMuch()
+                unreadable += page.unreadable
+                for (entry in page.entries.filter(keepsEntry)) {
+                    if (entry.holder is Container) slots += entry else if (entry.qty < 0) losses += entry
+                }
+            }
+            if (rows.size + slots.size > MAX_ROLLBACK_ROWS) return tooMuch()
+        }
+        return plan(world, rows, slots, losses, unreadable)
+    }
+
     private fun plan(
         world: UUID,
         rows: List<BlockRow>,
@@ -186,12 +259,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         }
         if (unnamed > 0) return unreadable(unnamed)
         val positions = steps.keys + refills.keys
-        if (positions.size > MAX_ROLLBACK_POSITIONS) {
-            return Refused(
-                "${positions.size} positions changed in that window, more than the $MAX_ROLLBACK_POSITIONS " +
-                    "one rollback may write; narrow the radius or the time"
-            )
-        }
+        if (positions.size > MAX_ROLLBACK_POSITIONS) return tooMany(positions.size)
         val breaks = losses.groupBy { it.holder as WorldBlock }
         val chunks = positions
             .map { PositionPlan(it, steps[it].orEmpty(), refills[it].orEmpty(), breaks[it].orEmpty()) }
@@ -201,6 +269,11 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     }
 
     private fun state(id: Int): String? = ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, id)
+
+    internal fun tooMany(positions: Int) = Refused(
+        "$positions positions changed in that window, more than the $MAX_ROLLBACK_POSITIONS one rollback " +
+            "may write; narrow the radius or the time"
+    )
 
     private fun tooMuch() = Refused(
         "that window holds more history than one rollback reads; narrow the radius or the time"

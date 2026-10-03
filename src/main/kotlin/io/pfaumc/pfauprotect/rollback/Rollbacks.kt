@@ -9,6 +9,7 @@ import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.LookupTarget
 import io.pfaumc.pfauprotect.command.Lookups
+import io.pfaumc.pfauprotect.command.RowFilter
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.PostingRef
@@ -278,8 +279,8 @@ class Rollbacks(
     private fun refusalOf(query: LookupQuery): String? = when {
         query.secondsBack == null -> "A rollback needs time: how far back to undo, for example time:1h."
         query.players.isNotEmpty() -> "player: reads what a player carries and has no place to roll back; use user:."
-        query.radius == null -> "A rollback needs radius: the blocks around you it covers."
-        query.global -> "A rollback of the whole world needs the actor index; give a radius."
+        query.radius == null -> "A rollback needs radius: the blocks around you it covers, or global with user:."
+        query.global && query.users.isEmpty() -> "radius:global undoes what named players did; give user: as well."
         else -> null
     }
 
@@ -298,19 +299,30 @@ class Rollbacks(
                 // The writers run on threads of their own, and what they still hold is history the
                 // rollback would not see.
                 ledger.drain()
-                blocks.get(target.world)?.drain()
+                for (world in blocks.worlds) blocks.get(world)?.drain()
                 val now = System.currentTimeMillis()
                 val from = now - query.secondsBack!! * 1000
-                val reading = reader.around(
-                    target.world, target.x, target.y, target.z, query.radius!!, from, now, keeps::keeps, keeps::keeps,
-                )
-                val where = "${query.radius} blocks around ${target.label} since ${TIME_FORMAT.format(Instant.ofEpochMilli(from))}"
-                when (reading) {
-                    is Refused -> {
-                        sender.sendMessage("Rollback refused: ${reading.reason}.")
+                val since = TIME_FORMAT.format(Instant.ofEpochMilli(from))
+                val readings = if (query.global) {
+                    everywhere(users, from, now, keeps)
+                } else {
+                    listOf(reader.around(target.world, target.x, target.y, target.z, query.radius!!, from, now, keeps::keeps, keeps::keeps))
+                }
+                val where = if (query.global) "everything ${query.users.joinToString(", ")} did since $since"
+                else "${query.radius} blocks around ${target.label} since $since"
+                val refused = readings.filterIsInstance<Refused>().firstOrNull()
+                val plans = readings.filterIsInstance<Planned>()
+                val positions = plans.sumOf { it.positions }
+                when {
+                    refused != null -> {
+                        sender.sendMessage("Rollback refused: ${refused.reason}.")
                         release()
                     }
-                    is Planned -> dispatch(sender, reading, where, apply, release)
+                    positions > MAX_ROLLBACK_POSITIONS -> {
+                        sender.sendMessage("Rollback refused: ${reader.tooMany(positions).reason}.")
+                        release()
+                    }
+                    else -> dispatch(sender, plans, where, apply, release, global = query.global)
                 }
             } catch (failure: Throwable) {
                 plugin.logger.log(Level.SEVERE, "the rollback at ${target.label} failed", failure)
@@ -320,17 +332,33 @@ class Rollbacks(
         }
     }
 
-    private fun dispatch(sender: CommandSender, plan: Planned, where: String, apply: Boolean, release: () -> Unit) {
-        val level = (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle
-        if (plan.chunks.isEmpty() || level == null) {
-            sender.sendMessage(if (level == null) "Rollback refused: the world is not loaded." else "Nothing to roll back in $where.")
+    // Every loaded world, read at the positions the players' rows stand at.
+    private fun everywhere(users: Set<UUID>, from: Long, now: Long, keeps: RowFilter): List<Reading> {
+        val touched = reader.touchedBy(users, from, now)
+            ?: return listOf(Refused("those players did more in that window than one rollback reads; narrow the time"))
+        return touched.map { (world, positions) -> reader.at(world, positions, from, now, keeps::keeps, keeps::keeps) }
+    }
+
+    private fun dispatch(
+        sender: CommandSender,
+        plans: List<Planned>,
+        where: String,
+        apply: Boolean,
+        release: () -> Unit,
+        global: Boolean,
+    ) {
+        val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
+            .flatMap { (level, plan) -> plan.chunks.map { level to it } }
+        val read = "${plans.sumOf { it.rows }} block rows, ${plans.sumOf { it.postings }} slot rows read"
+        if (work.isEmpty()) {
+            sender.sendMessage("Nothing to roll back: $where.")
             release()
             return
         }
         val actor = (sender as? Player)?.uniqueId
         val total = Tally()
-        val left = AtomicInteger(plan.chunks.size)
-        for (chunk in plan.chunks) {
+        val left = AtomicInteger(work.size)
+        for ((level, chunk) in work) {
             // A chunk's neighbours are loaded with it, so a block on its edge can tell them it changed.
             level.`canvas$loadOrRunAtChunksAsync`(
                 chunk.chunkX - 1, chunk.chunkX + 1, chunk.chunkZ - 1, chunk.chunkZ + 1, Priority.NORMAL,
@@ -345,7 +373,7 @@ class Rollbacks(
                     // region thread may not.
                     if (left.decrementAndGet() == 0) Bukkit.getAsyncScheduler().runNow(plugin) {
                         try {
-                            finish(sender, total, plan, where, apply, actor)
+                            finish(sender, total, read, where, apply, actor, global)
                         } catch (failure: Throwable) {
                             plugin.logger.log(Level.SEVERE, "taking back what the rollback at $where gave back failed", failure)
                             sender.sendMessage("Taking back what the rollback gave back failed; the server log has the details.")
@@ -358,9 +386,9 @@ class Rollbacks(
         }
     }
 
-    private fun finish(sender: CommandSender, total: Tally, plan: Planned, where: String, apply: Boolean, actor: UUID?) {
+    private fun finish(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, global: Boolean) {
         val owed = confiscations.owedFor(total)
-        report(sender, total, plan, where, apply)
+        report(sender, total, read, where, apply, global)
         if (owed.isEmpty()) return
         val whom = confiscations.describe(owed)
         if (!apply) {
@@ -371,13 +399,15 @@ class Rollbacks(
         confiscations.take(owed, actor, sender)
     }
 
-    private fun report(sender: CommandSender, total: Tally, plan: Planned, where: String, apply: Boolean) {
+    private fun report(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, global: Boolean) {
         val blocks = "${total.changed} blocks ${if (apply) "put back" else "would change"}, " +
             "${total.unchanged} already as they were, ${total.conflicts} stopped by a later change"
         val slots = "${total.slots} slot postings ${if (apply) "given back" else "to give back"}"
         if (!apply) {
-            sender.sendMessage("Rollback preview for $where: $blocks; $slots (${plan.rows} block rows, ${plan.postings} slot rows read).")
-            sender.sendMessage("  /pp apply within 5 minutes runs it, /pp cancel drops it; /pp lookup with the same words shows the rows.")
+            sender.sendMessage("Rollback preview for $where: $blocks; $slots ($read).")
+            // A world-wide lookup has no index to read by, so it cannot show the rows of a global one.
+            val rows = if (global) "" else "; /pp lookup with the same words shows the rows"
+            sender.sendMessage("  /pp apply within 5 minutes runs it, /pp cancel drops it$rows.")
             return
         }
         sender.sendMessage("Rolled back $where: $blocks; $slots.")

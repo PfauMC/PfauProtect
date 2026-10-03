@@ -82,6 +82,24 @@ object BlockCodec {
     }
 
     /**
+     * The player number a row names as its actor, read straight from the bytes: the index of rows by
+     * actor is built from rows already on disk, before anything has to know who the number is. Null for
+     * a row with no actor, and for one this build cannot read.
+     */
+    fun actorNumberOf(value: ByteArray): Int? = try {
+        val v = ByteReader(value)
+        val header = v.byte()
+        if (header and VERSION_MASK != VERSION || header and ACTOR_FLAG == 0) {
+            null
+        } else {
+            v.bytes(1 + 2 + 2)
+            v.varInt()
+        }
+    } catch (failure: IllegalArgumentException) {
+        null
+    }
+
+    /**
      * Returns null for a record this build cannot read: one written in another layout version, and
      * one whose bytes stop short. A row cut off by a torn write costs its own row, not every row
      * the scan that met it would otherwise have answered with.
