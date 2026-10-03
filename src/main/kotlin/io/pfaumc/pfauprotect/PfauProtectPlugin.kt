@@ -54,6 +54,8 @@ import io.pfaumc.pfauprotect.storage.fillTypeRegistries
 import io.pfaumc.pfauprotect.check.heldForms
 import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.command.lookupTargetAt
+import io.pfaumc.pfauprotect.rollback.ChunkRollback
+import io.pfaumc.pfauprotect.rollback.Rollbacks
 import io.pfaumc.pfauprotect.capture.item.unspentDrop
 import net.minecraft.server.MinecraftServer
 import org.bukkit.GameMode
@@ -87,6 +89,7 @@ private const val LOOKUP_PERMISSION = "pfauprotect.lookup"
 private const val INSPECT_PERMISSION = "pfauprotect.inspect"
 private const val RECONCILE_PERMISSION = "pfauprotect.reconcile"
 private const val VERIFY_PERMISSION = "pfauprotect.verify"
+private const val ROLLBACK_PERMISSION = "pfauprotect.rollback"
 
 // A pass of each self-check is bounded so it cannot walk a years-old journal in one go, and a run
 // that stops on that bound says so: a check that quietly covered a fraction of the store reads as a
@@ -160,6 +163,7 @@ private class Running(
     val inspector: Inspector,
     val reconciliation: Reconciliation,
     val planes: PlaneSync,
+    val rollbacks: Rollbacks,
 )
 
 class PfauProtectPlugin : JavaPlugin() {
@@ -198,9 +202,10 @@ class PfauProtectPlugin : JavaPlugin() {
         val inspector = Inspector(lookups)
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
         // the way back down.
+        val rollbacks = Rollbacks(this, ledger, blocks, lookups, ChunkRollback(this, codec, blocks, ledger, uncovered::submit))
         val running = Running(
             ledger, blocks, attribution, uncovered, codec, capture, destruction, mechanisms, origins,
-            lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks),
+            lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks), rollbacks,
         )
         this.running = running
         ledger.staged { fillTypeRegistries(ledger.registries) }
@@ -430,6 +435,17 @@ class PfauProtectPlugin : JavaPlugin() {
             for (alias in listOf("inspect", "i")) root.then(inspectNode(alias))
             for (alias in listOf("reconcile", "r")) root.then(reconcileNode(alias))
             for (alias in listOf("verify", "v")) root.then(verifyNode(alias))
+            for (alias in listOf("rollback", "rb")) root.then(rollbackNode(alias))
+            root.then(
+                Commands.literal("apply")
+                    .requires { it.sender.hasPermission(ROLLBACK_PERMISSION) }
+                    .executes { rollbacks(it.source) { rollbacks, sender -> rollbacks.applyPreview(sender) } }
+            )
+            root.then(
+                Commands.literal("cancel")
+                    .requires { it.sender.hasPermission(ROLLBACK_PERMISSION) }
+                    .executes { rollbacks(it.source) { rollbacks, sender -> rollbacks.cancelPreview(sender) } }
+            )
             event.registrar().register(root.build(), "Item ledger lookup and inspector", listOf("pp"))
             // The API hands out a mirror of the dispatcher; the nodes the server executes are behind it.
             (event.registrar().dispatcher.root as? ApiMirrorRootNode)?.dispatcher?.let(brackets::wrap)
@@ -468,6 +484,31 @@ class PfauProtectPlugin : JavaPlugin() {
         .requires { it.sender.hasPermission(VERIFY_PERMISSION) }
         .executes { verify(it.source, judgeRecent = false) }
         .then(Commands.literal("recent").executes { verify(it.source, judgeRecent = true) })
+
+    // Centred where the command was run from, like `near`: what a rollback covers is the place around
+    // whoever runs it, not the one block they happen to be looking at.
+    private fun rollbackNode(literal: String) = Commands.literal(literal)
+        .requires { it.sender.hasPermission(ROLLBACK_PERMISSION) }
+        .executes { context ->
+            rollbacks(context.source) { rollbacks, sender ->
+                rollbacks.preview(sender, lookupTargetAt(context.source.location), LookupQuery())
+            }
+        }
+        .then(
+            Commands.argument("query", LookupArgument())
+                .executes { context ->
+                    val query = context.getArgument("query", LookupQuery::class.java)
+                    rollbacks(context.source) { rollbacks, sender ->
+                        rollbacks.preview(sender, lookupTargetAt(context.source.location), query)
+                    }
+                }
+        )
+
+    private fun rollbacks(source: CommandSourceStack, action: (Rollbacks, CommandSender) -> Unit): Int {
+        val rollbacks = running?.rollbacks ?: return notReady(source)
+        action(rollbacks, source.sender)
+        return Command.SINGLE_SUCCESS
+    }
 
     private fun reconcileNode(literal: String) = Commands.literal(literal)
         .requires { it.sender.hasPermission(RECONCILE_PERMISSION) }

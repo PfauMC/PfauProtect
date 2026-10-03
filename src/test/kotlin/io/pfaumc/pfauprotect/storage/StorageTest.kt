@@ -352,22 +352,22 @@ class StorageTest {
     @Test
     fun `a posting given back stays given back until the giving back is given back`() {
         val theft = log.holderEntries(chest, 0, Long.MAX_VALUE).single { it.qty == -5 }
-        assertEquals(emptySet<PostingRef>(), log.compensated(listOf(theft.ref)))
+        assertEquals(emptySet<PostingRef>(), log.compensated(listOf(theft.ref)).keys)
 
         log.submit(Transfer(Cause.ROLLBACK, Void, chestUpperSlot, cobblestone, null, 5, T0 + 100, reverts = listOf(theft.ref)))
         log.drain()
-        assertEquals(setOf(theft.ref), log.compensated(listOf(theft.ref)))
+        assertEquals(setOf(theft.ref), log.compensated(listOf(theft.ref)).keys)
 
         val givenBack = log.holderEntries(chest, T0 + 100, T0 + 100).single()
         log.submit(Transfer(Cause.ROLLBACK, chestUpperSlot, Void, cobblestone, null, 5, T0 + 200, reverts = listOf(givenBack.ref)))
         log.drain()
-        assertEquals(emptySet<PostingRef>(), log.compensated(listOf(theft.ref)))
-        assertEquals(setOf(givenBack.ref), log.compensated(listOf(givenBack.ref)))
+        assertEquals(emptySet<PostingRef>(), log.compensated(listOf(theft.ref)).keys)
+        assertEquals(setOf(givenBack.ref), log.compensated(listOf(givenBack.ref)).keys)
 
         val undone = log.holderEntries(chest, T0 + 200, T0 + 200).single()
         log.submit(Transfer(Cause.ROLLBACK, Void, chestUpperSlot, cobblestone, null, 5, T0 + 300, reverts = listOf(undone.ref)))
         log.drain()
-        assertEquals(setOf(theft.ref), log.compensated(listOf(theft.ref)))
+        assertEquals(setOf(theft.ref), log.compensated(listOf(theft.ref)).keys)
     }
 
     // A rollback goes ahead on what a region read hands it, so a row the read could not decode has to

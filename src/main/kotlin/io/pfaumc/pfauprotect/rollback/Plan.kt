@@ -126,7 +126,11 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
 
     private fun plan(world: UUID, rows: List<BlockRow>, kept: List<LedgerEntry>, unreadable: Int): Reading {
         if (unreadable > 0) return unreadable(unreadable)
-        val givenBack = ledger.compensated(kept.map { it.ref })
+        // Given back once already, a posting is skipped — unless what gave it back is being rolled back
+        // in this same run. Undoing a rollback together with its own undo has to leave both halves in,
+        // or the slots come out of it as the first rollback left them while the blocks do not.
+        val undoing = kept.mapTo(HashSet()) { it.txId }
+        val givenBack = ledger.compensated(kept.map { it.ref }).filterValues { it !in undoing }
         val entries = kept.filter { it.ref !in givenBack }
         val steps = HashMap<WorldBlock, MutableList<Step>>()
         var unnamed = 0

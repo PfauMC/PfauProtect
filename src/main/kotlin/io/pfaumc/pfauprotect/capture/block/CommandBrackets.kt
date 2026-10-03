@@ -10,6 +10,9 @@ import com.mojang.brigadier.tree.CommandNode
 import io.pfaumc.pfauprotect.capture.item.CommandBirths
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.Kind
+import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
@@ -79,7 +82,92 @@ internal class Area(
 }
 
 // What stood at one position: the state, and for a block entity the whole tag and what it held.
-private class Standing(val state: NmsBlockState, val payload: ByteArray?, val contents: List<Pair<ItemKey, Int>?>?)
+internal class Standing(val state: NmsBlockState, val payload: ByteArray?, val contents: List<Pair<ItemKey, Int>?>?)
+
+internal fun standingAt(level: ServerLevel, pos: BlockPos, codec: ItemFormCodec): Standing {
+    val entity = level.getBlockEntity(pos)
+    val contents = (entity as? NmsContainer)?.let { container ->
+        (0 until container.containerSize).map { slot ->
+            val stack = container.getItem(slot)
+            if (stack.isEmpty) null else codec.encode(stack).let { it.key to it.count }
+        }
+    }
+    return Standing(level.getBlockState(pos), payloadOf(entity, level.registryAccess()), contents)
+}
+
+/**
+ * What something other than a hand did to a set of positions, from a reading of each before and after:
+ * a block row where the state or the tag changed, and per slot the items that went or came. A slot that
+ * kept its item and changed its count moves only the difference. A position whose block was replaced is
+ * collected in `replaced`, because the item a player built it from is still booked to it and has to be
+ * written off, off the region thread.
+ */
+internal class Difference(
+    private val world: UUID,
+    private val cause: Cause,
+    private val emptied: Cause,
+    private val filled: Cause,
+    private val made: Kind,
+    private val actor: UUID?,
+    val timestamp: Long,
+) {
+    private class Move(val from: Holder, val to: Holder, val key: ItemKey, val qty: Int, val cause: Cause, val kind: Kind)
+
+    val rows = ArrayList<BlockChange>()
+    val replaced = ArrayList<WorldBlock>()
+    private val moves = ArrayList<Move>()
+
+    val moved: Boolean get() = moves.isNotEmpty()
+
+    fun add(x: Int, y: Int, z: Int, was: Standing, now: Standing, blockRow: Boolean = true) {
+        val stateChanged = was.state != now.state
+        val payloadChanged = !(was.payload ?: EMPTY).contentEquals(now.payload ?: EMPTY)
+        if (blockRow && (stateChanged || payloadChanged)) {
+            rows += BlockChange(
+                x, y, z,
+                was.state.asBlockData().asString, now.state.asBlockData().asString,
+                cause, timestamp, actor = actor,
+                payloadBefore = was.payload, payloadAfter = now.payload,
+            )
+        }
+        if (was.state.block != now.state.block) replaced += WorldBlock(world, x, y, z)
+        val old = was.contents.orEmpty()
+        val new = now.contents.orEmpty()
+        for (slot in 0 until maxOf(old.size, new.size)) {
+            val gone = old.getOrNull(slot)
+            val come = new.getOrNull(slot)
+            val at = Container(world, x, y, z, slot)
+            if (gone != null && come != null && gone.first == come.first) {
+                val difference = come.second - gone.second
+                if (difference > 0) moves += Move(Void, at, come.first, difference, filled, made)
+                if (difference < 0) moves += Move(at, Void, gone.first, -difference, emptied, Kind.TRANSFER)
+                continue
+            }
+            gone?.let { moves += Move(at, Void, it.first, it.second, emptied, Kind.TRANSFER) }
+            come?.let { moves += Move(Void, at, it.first, it.second, filled, made) }
+        }
+    }
+
+    /** The slot movements as one transaction; `reverts` rides on it into the table of compensations. */
+    fun transfers(reverts: List<PostingRef> = emptyList()): List<Transfer> = moves.mapIndexed { i, move ->
+        Transfer(
+            move.cause, move.from, move.to, move.key.form, move.key.damage, move.qty, timestamp, move.kind,
+            actor = actor, reverts = if (i == 0) reverts else emptyList(),
+        )
+    }
+
+    // A block a player put down still holds the item it was made from; whatever replaced it took it away.
+    fun writeOff(plugin: Plugin, placed: PlacedForms, sink: (List<Transfer>) -> Unit) {
+        if (replaced.isEmpty() || !plugin.isEnabled) return
+        val positions = ArrayList(replaced)
+        plugin.server.asyncScheduler.runNow(plugin) {
+            val forms = placed.formsAt(positions)
+            placed.clearFormsAt(positions)
+            val gone = forms.map { (at, form) -> Transfer(emptied, at, Void, form, null, 1, timestamp, actor = actor) }
+            if (gone.isNotEmpty()) sink(gone)
+        }
+    }
+}
 
 /**
  * The block commands, bracketed. Each one is let run on the region that owns the area it writes, with
@@ -171,20 +259,10 @@ class CommandBrackets(
     }
 
     private fun read(area: Area): Array<Standing> {
-        val level = area.level
-        val registries = level.registryAccess()
         val cursor = BlockPos.MutableBlockPos()
         val out = ArrayList<Standing>(area.volume.toInt())
         for (x in area.minX..area.maxX) for (y in area.minY..area.maxY) for (z in area.minZ..area.maxZ) {
-            cursor.set(x, y, z)
-            val entity = level.getBlockEntity(cursor)
-            val contents = (entity as? NmsContainer)?.let { container ->
-                (0 until container.containerSize).map { slot ->
-                    val stack = container.getItem(slot)
-                    if (stack.isEmpty) null else codec.encode(stack).let { it.key to it.count }
-                }
-            }
-            out += Standing(level.getBlockState(cursor), payloadOf(entity, registries), contents)
+            out += standingAt(area.level, cursor.set(x, y, z), codec)
         }
         return out.toTypedArray()
     }
@@ -193,38 +271,15 @@ class CommandBrackets(
         if (before == null) return
         val after = read(area)
         val world = area.level.world.uid
-        val rows = ArrayList<BlockChange>()
-        val items = ArrayList<Transfer>()
-        val replaced = ArrayList<WorldBlock>()
-        val timestamp = System.currentTimeMillis()
+        val made = if (kind == Writes.CLONE) Kind.CLONE else Kind.TRANSFER
+        val difference = Difference(world, Cause.BLK_COMMAND, kind.emptied, kind.filled, made, actor, System.currentTimeMillis())
         var index = 0
         for (x in area.minX..area.maxX) for (y in area.minY..area.maxY) for (z in area.minZ..area.maxZ) {
-            val was = before[index]
-            val now = after[index]
+            difference.add(x, y, z, before[index], after[index])
             index++
-            val stateChanged = was.state != now.state
-            val payloadChanged = !(was.payload ?: EMPTY).contentEquals(now.payload ?: EMPTY)
-            if (!stateChanged && !payloadChanged) continue
-            rows += BlockChange(
-                x, y, z,
-                was.state.asBlockData().asString, now.state.asBlockData().asString,
-                Cause.BLK_COMMAND, timestamp, actor = actor,
-                payloadBefore = was.payload, payloadAfter = now.payload,
-            )
-            if (was.state.block != now.state.block) replaced += WorldBlock(world, x, y, z)
-            if (sameContents(was.contents, now.contents)) continue
-            was.contents?.forEachIndexed { slot, held ->
-                val (key, count) = held ?: return@forEachIndexed
-                items += Transfer(kind.emptied, Container(world, x, y, z, slot), Void, key.form, key.damage, count, timestamp, actor = actor)
-            }
-            now.contents?.forEachIndexed { slot, held ->
-                val (key, count) = held ?: return@forEachIndexed
-                val made = if (kind == Writes.CLONE) io.pfaumc.pfauprotect.model.Kind.CLONE else io.pfaumc.pfauprotect.model.Kind.TRANSFER
-                items += Transfer(kind.filled, Void, Container(world, x, y, z, slot), key.form, key.damage, count, timestamp, made, actor = actor)
-            }
         }
         // The server may finish the write a tick after the call that asked for it; read again once.
-        if (rows.isEmpty()) {
+        if (difference.rows.isEmpty()) {
             if (retries > 0 && plugin.isEnabled) {
                 Bukkit.getRegionScheduler().runDelayed(plugin, area.level.world, area.minX shr 4, area.minZ shr 4, {
                     settle(area, before, kind, actor, retries - 1)
@@ -232,29 +287,9 @@ class CommandBrackets(
             }
             return
         }
-        logs.get(world)?.submit(rows)
-        if (items.isNotEmpty()) sink(items)
-        if (replaced.isEmpty() || !plugin.isEnabled) return
-        // A block a player put down still holds the item it was made from; the command took it away.
-        plugin.server.asyncScheduler.runNow(plugin) {
-            val forms = placed.formsAt(replaced)
-            placed.clearFormsAt(replaced)
-            val gone = forms.map { (at, form) ->
-                Transfer(kind.emptied, at, Void, form, null, 1, timestamp, actor = actor)
-            }
-            if (gone.isNotEmpty()) sink(gone)
-        }
-    }
-
-    private fun sameContents(a: List<Pair<ItemKey, Int>?>?, b: List<Pair<ItemKey, Int>?>?): Boolean {
-        if (a == null || b == null) return a == null && b == null
-        if (a.size != b.size) return false
-        return a.indices.all { i ->
-            val x = a[i]
-            val y = b[i]
-            if (x == null || y == null) x == null && y == null
-            else x.second == y.second && x.first.form.contentEquals(y.first.form) && x.first.damage == y.first.damage
-        }
+        logs.get(world)?.submit(difference.rows)
+        if (difference.moved) sink(difference.transfers())
+        difference.writeOff(plugin, placed, sink)
     }
 
     /** Swaps every executor under the block commands for its bracket; a reload builds them anew. */

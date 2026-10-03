@@ -917,19 +917,21 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private fun refKey(ref: PostingRef): ByteArray = ByteWriter(9).longBE(ref.txId).byte(ref.ordinal).toByteArray()
 
     /**
-     * Which of these postings a rollback has already given back. A giving back can be given back in
-     * turn — a rollback undone by rolling back its own rows — and then the posting is owed again, so
-     * the chain is followed to its end: an odd number of links is given back, an even one is not. A
-     * compensating transaction counts as undone when any of its postings was given back.
+     * Which of these postings a rollback has already given back, each with the transaction that gave
+     * it back. A giving back can be given back in turn — a rollback undone by rolling back its own rows
+     * — and then the posting is owed again, so the chain is followed to its end: an odd number of links
+     * is given back, an even one is not. A compensating transaction counts as undone when any of its
+     * postings was given back.
      */
-    fun compensated(refs: Collection<PostingRef>): Set<PostingRef> = dbLock.read {
-        if (closed || refs.isEmpty()) return emptySet()
+    fun compensated(refs: Collection<PostingRef>): Map<PostingRef, Long> = dbLock.read {
+        if (closed || refs.isEmpty()) return emptyMap()
         val asked = refs.toList()
         val by = db.multiGetAsList(List(asked.size) { compensatedCf }, asked.map(::refKey))
-        val given = HashSet<PostingRef>()
+        val given = HashMap<PostingRef, Long>()
         db.newIterator(compensatedCf).use { iter ->
             asked.forEachIndexed { index, ref ->
-                var giver = by[index]?.let { ByteReader(it).longBE() } ?: return@forEachIndexed
+                val first = by[index]?.let { ByteReader(it).longBE() } ?: return@forEachIndexed
+                var giver = first
                 var givenBack = true
                 var ended = false
                 for (step in 0 until MAX_UNDO_DEPTH) {
@@ -943,7 +945,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                     giver = ByteReader(iter.value()).longBE()
                     givenBack = !givenBack
                 }
-                if (givenBack || !ended) given += ref
+                if (givenBack || !ended) given[ref] = first
             }
         }
         given

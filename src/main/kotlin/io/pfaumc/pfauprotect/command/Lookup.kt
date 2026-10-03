@@ -549,7 +549,7 @@ class Lookups(
 
     // Every name has to be known: dropping the one that was misspelt would answer about the rest as
     // if it were the whole question.
-    private fun resolveAll(sender: CommandSender, names: List<String>): Set<UUID>? {
+    internal fun resolveAll(sender: CommandSender, names: List<String>): Set<UUID>? {
         val named = names.associateWith { idOf(it) }
         val unknown = named.filterValues { it == null }.keys
         if (unknown.isNotEmpty()) {

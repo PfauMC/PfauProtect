@@ -23,8 +23,12 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import io.pfaumc.pfauprotect.ServerRegistries
+import net.minecraft.world.SimpleContainer
+import net.minecraft.world.item.Items
 import java.nio.file.Path
 import java.util.UUID
+import net.minecraft.world.item.ItemStack as NmsItemStack
 
 private const val T0 = 1_700_000_000_000L
 private const val AIR = "minecraft:air"
@@ -162,6 +166,24 @@ class RollbackTest {
         assertTrue(planned.chunks.isEmpty(), "${planned.chunks.flatMap { it.positions }.map { it.at }}")
     }
 
+    // A rollback undone and then both rolled back together by `action:rollback`: the blocks of the two
+    // cancel out, so the slots have to as well. Skipping the first rollback's posting because the undo
+    // gave it back would empty the chest the blocks leave standing.
+    @Test
+    fun `a rollback rolled back together with its undo leaves both slot postings in`() {
+        val chest = Container(world, 6, 64, 5, 0)
+        shared.submit(Transfer(Cause.ROLLBACK, chest, Void, diamond, null, 5, T0))
+        shared.drain()
+        val first = shared.holderEntries(chest, 0, Long.MAX_VALUE).single()
+        shared.submit(Transfer(Cause.ROLLBACK, Void, chest, diamond, null, 5, T0 + 10, reverts = listOf(first.ref)))
+        shared.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(causes = Action.ROLLBACK.causes), emptySet(), emptySet(), rollback = true))
+        assertEquals(listOf(-5, 5), planned.chunks.single().positions.single().refills.map { it.qty })
+        val plain = around(RowFilter(shared, LookupQuery(), emptySet(), emptySet(), rollback = true))
+        assertTrue(plain.chunks.isEmpty(), "a rollback's rows are not touched unless named")
+    }
+
     // The widest radius reads a square of chunks larger than any lookup does, and has to stay inside
     // what the region read allows; a world with no open base has no history to roll back over.
     @Test
@@ -174,6 +196,35 @@ class RollbackTest {
             UUID.randomUUID(), 0, 64, 0, 4, 0, Long.MAX_VALUE, { true }, { true },
         )
         assertTrue(refused is Refused, "a world with no open base has nothing to roll back over")
+    }
+
+    // A stolen stack goes back into the slot it left; when somebody has filled that slot since, it goes
+    // wherever else in the same chest it fits, and what fits nowhere is said rather than lost quietly.
+    @Test
+    fun `a slot posting goes back into its own slot first and then wherever it fits`() {
+        ServerRegistries.access
+        val chest = SimpleContainer(3)
+        val diamonds = NmsItemStack(Items.DIAMOND)
+        chest.setItem(1, NmsItemStack(Items.DIRT, 64))
+
+        assertEquals(10, putBack(chest, 0, diamonds, 10) { false })
+        assertEquals(10, chest.getItem(0).count)
+        assertEquals(64, putBack(chest, 1, diamonds, 64) { false })
+        assertEquals(64, chest.getItem(0).count, "topped up where the same item already lay")
+        assertEquals(10, chest.getItem(2).count, "and the rest into the free slot")
+        assertEquals(54, putBack(chest, 1, diamonds, 200) { false }, "54 more fit, the rest has no room")
+    }
+
+    // What arrived is taken out again from wherever it lies by now, and no more than is there.
+    @Test
+    fun `a slot posting taken out is looked for in the whole chest`() {
+        ServerRegistries.access
+        val chest = SimpleContainer(3)
+        chest.setItem(2, NmsItemStack(Items.TNT, 5))
+        val isTnt = { stack: NmsItemStack -> stack.item == Items.TNT }
+
+        assertEquals(5, putBack(chest, 0, NmsItemStack(Items.TNT), -8, isTnt))
+        assertTrue(chest.getItem(2).isEmpty)
     }
 
     private fun around(filter: RowFilter): Planned {
