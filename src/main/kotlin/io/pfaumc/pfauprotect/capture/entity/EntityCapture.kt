@@ -39,6 +39,8 @@ import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.event.entity.CreatureSpawnEvent
 import org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason
+import org.bukkit.event.entity.EntityCombustByBlockEvent
+import org.bukkit.event.entity.EntityDamageByBlockEvent
 import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.event.entity.EntityPlaceEvent
 import org.bukkit.event.hanging.HangingPlaceEvent
@@ -138,6 +140,9 @@ class EntityCapture(
     private val laterOn: (Entity, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
     private val seen = ConcurrentHashMap<UUID, Long>()
+
+    // Who set an entity alight, and when, until it dies or the burning is long over.
+    private val alight = ConcurrentHashMap<UUID, Pair<Attributed, Long>>()
 
     // One reading of an entity a player is handling at a time: a click raises two events on an armour stand.
     private val handling = ConcurrentHashMap.newKeySet<UUID>()
@@ -252,8 +257,10 @@ class EntityCapture(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDeath(event: EntityDeathEvent) {
         val entity = event.entity
-        if (entity is Player || !keepsItsPlace((entity as CraftEntity).handle)) return
-        removed(entity, culpritOf(entity, Cause.ENTITY_KILLED))
+        if (entity is Player) return
+        val lit = alight.remove(entity.uniqueId)
+        if (!keepsItsPlace((entity as CraftEntity).handle)) return
+        removed(entity, culpritOf(entity, Cause.ENTITY_KILLED, lit))
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -299,7 +306,7 @@ class EntityCapture(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPlayerDeath(event: PlayerDeathEvent) {
         val victim = event.entity
-        val culprit = culpritOf(victim, Cause.PLAYER_KILLED)
+        val culprit = culpritOf(victim, Cause.PLAYER_KILLED, alight.remove(victim.uniqueId))
         val killer = culprit.by.culprit() ?: return
         if (killer == victim.uniqueId) return
         val log = logs.get(victim.world.uid) ?: return
@@ -403,17 +410,34 @@ class EntityCapture(
     }
 
     /**
-     * Who killed it: the player the game names as killer; else what hit it last, followed to whoever stands
-     * behind that; else the fire or the lava it burned in, to whoever put that down.
+     * Lava or fire set it alight: whoever put that block down, kept for the burning that outlasts it. The
+     * tracker alone — this fires on every tick spent in lava — and flowing lava carries its note along.
      */
-    private fun culpritOf(entity: Entity, own: Cause): Culprit {
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onCombust(event: EntityCombustByBlockEvent) {
+        val block = event.combuster ?: return
+        val by = attribution.placerAt(positionOf(block), block.blockData.asString) ?: return
+        val now = System.currentTimeMillis()
+        if (alight.size > SEEN_CAP) alight.values.removeIf { now - it.second > BURN_MILLIS }
+        alight[event.entity.uniqueId] = by to now
+    }
+
+    /**
+     * Who killed it: the player the game names as killer; else what hit it last, followed to whoever stands
+     * behind that; else the fire or the lava it burned in, to whoever put that down. `lit` is who set it
+     * alight, taken off the table by the death.
+     */
+    private fun culpritOf(entity: Entity, own: Cause, lit: Pair<Attributed, Long>? = alight[entity.uniqueId]): Culprit {
         (entity as? LivingEntity)?.killer?.let { return Culprit(own, Attributed(it.uniqueId, Confidence.FACT)) }
         val damage = entity.lastDamageCause
         (damage as? EntityDamageByEntityEvent)?.damager?.let { return byEntity(it, own) }
         val at = positionOf(entity.location.block)
         val by = when (damage?.cause) {
-            DamageCause.FIRE, DamageCause.FIRE_TICK -> attribution.placerAt(at, "minecraft:fire")
-            DamageCause.LAVA -> attribution.placerAt(at, "minecraft:lava")
+            DamageCause.FIRE, DamageCause.FIRE_TICK, DamageCause.LAVA ->
+                // Lava burns from the block it touches, which is not always the block the mob stands in.
+                (damage as? EntityDamageByBlockEvent)?.damager?.let { attribution.placerAt(positionOf(it), it.blockData.asString) }
+                    ?: lit?.takeIf { System.currentTimeMillis() - it.second <= BURN_MILLIS }?.first
+                    ?: attribution.placerAt(at, if (damage.cause == DamageCause.LAVA) "minecraft:lava" else "minecraft:fire")
             else -> null
         }
         return Culprit(own, by?.copy(confidence = Confidence.INFERRED))
@@ -437,6 +461,8 @@ class EntityCapture(
 
     private companion object {
         const val SEEN_CAP = 1024
+        // Lava sets a mob burning for fifteen seconds after it climbs out.
+        const val BURN_MILLIS = 20_000L
         // Buckets that pour out something other than a mob.
         val NOT_A_MOB = setOf("water_bucket", "lava_bucket", "powder_snow_bucket", "milk_bucket", "bucket")
         val BUILT = setOf(SpawnReason.BUILD_IRONGOLEM, SpawnReason.BUILD_SNOWMAN, SpawnReason.BUILD_WITHER, SpawnReason.BUILD_COPPERGOLEM)
