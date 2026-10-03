@@ -352,6 +352,11 @@ class EntityCapture(
             SpawnReason.BREEDING -> Cause.MOB_BRED to entities.summonerOf(entity.uniqueId)?.copy(confidence = Confidence.FACT)
             SpawnReason.BUCKET -> Cause.BUCKET_RELEASE_MOB to bucket?.let { Attributed(it, Confidence.FACT) }
             in BUILT -> Cause.BLK_FORM to entities.summonerOf(entity.uniqueId)
+            // The dispenser's own capture notes who powered it, and it hears this spawn after this does.
+            SpawnReason.DISPENSE_EGG -> {
+                later(entity.location) { entities.summonerOf(entity.uniqueId)?.let { created(entity, Cause.SPAWN_EGG_USE, it) } }
+                return
+            }
             else -> return
         }
         created(entity, cause, by ?: return)
