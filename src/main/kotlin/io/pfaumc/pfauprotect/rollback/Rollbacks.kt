@@ -24,6 +24,9 @@ import net.minecraft.server.level.ServerLevel
 import net.minecraft.util.ProblemReporter
 import net.minecraft.world.Clearable
 import net.minecraft.world.level.block.Block
+import net.minecraft.world.level.block.entity.BlockEntity
+import net.minecraft.world.level.block.entity.CampfireBlockEntity
+import net.minecraft.world.level.block.entity.LecternBlockEntity
 import net.minecraft.world.level.storage.TagValueInput
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
@@ -90,39 +93,88 @@ class Tally {
     }
 }
 
+// How long a campfire cooks what is put back on it: what every vanilla campfire recipe takes.
+private const val CAMPFIRE_COOK_TICKS = 600
+
+/**
+ * A block's item slots, as a rollback puts things into them and takes them out. A container is its own;
+ * a lectern keeps its book behind a container of its own, which sets the book and the lectern's state
+ * together; a campfire keeps its food in a list no container wraps, one item a slot.
+ */
+internal interface Slots {
+    val size: Int
+    fun get(slot: Int): NmsItemStack
+    fun set(slot: Int, stack: NmsItemStack)
+    fun canPlace(slot: Int, stack: NmsItemStack): Boolean
+    fun room(stack: NmsItemStack): Int
+    fun changed()
+}
+
+internal class ContainerSlots(private val container: NmsContainer) : Slots {
+    override val size: Int get() = container.containerSize
+    override fun get(slot: Int): NmsItemStack = container.getItem(slot)
+    override fun set(slot: Int, stack: NmsItemStack) = container.setItem(slot, stack)
+    override fun canPlace(slot: Int, stack: NmsItemStack) = container.canPlaceItem(slot, stack)
+    override fun room(stack: NmsItemStack) = minOf(stack.maxStackSize, container.getMaxStackSize(stack))
+    override fun changed() = container.setChanged()
+}
+
+internal class CampfireSlots(private val campfire: CampfireBlockEntity) : Slots {
+    override val size: Int get() = campfire.items.size
+    override fun get(slot: Int): NmsItemStack = campfire.items[slot]
+    override fun set(slot: Int, stack: NmsItemStack) {
+        campfire.items[slot] = stack
+        campfire.cookingProgress[slot] = 0
+        campfire.cookingTime[slot] = CAMPFIRE_COOK_TICKS
+    }
+    override fun canPlace(slot: Int, stack: NmsItemStack) = true
+    override fun room(stack: NmsItemStack) = 1
+    override fun changed() {
+        campfire.setChanged()
+        campfire.level?.sendBlockUpdated(campfire.blockPos, campfire.blockState, campfire.blockState, Block.UPDATE_ALL)
+    }
+}
+
+internal fun slotsOf(entity: BlockEntity?): Slots? = when (entity) {
+    is NmsContainer -> ContainerSlots(entity)
+    is LecternBlockEntity -> ContainerSlots(entity.bookAccess)
+    is CampfireBlockEntity -> CampfireSlots(entity)
+    else -> null
+}
+
 /**
  * Puts back (`qty` above zero) or takes out (below zero) one slot posting: in its own slot first, then
  * wherever else in the same block the item fits or is found. Returns how much of it moved; the rest had
  * no room or was not there.
  */
-internal fun putBack(container: NmsContainer, slot: Int, template: NmsItemStack, qty: Int, same: (NmsItemStack) -> Boolean): Int {
-    val order = listOf(slot).filter { it < container.containerSize } + (0 until container.containerSize).filter { it != slot }
+internal fun putBack(slots: Slots, slot: Int, template: NmsItemStack, qty: Int, same: (NmsItemStack) -> Boolean): Int {
+    val order = listOf(slot).filter { it < slots.size } + (0 until slots.size).filter { it != slot }
     var left = abs(qty)
     for (i in order) {
         if (left == 0) break
-        val here = container.getItem(i)
+        val here = slots.get(i)
         if (qty > 0) {
-            val room = minOf(template.maxStackSize, container.getMaxStackSize(template))
+            val room = slots.room(template)
             if (here.isEmpty) {
                 // The slot the row names held this item once; any other has to take it.
-                if (i != slot && !container.canPlaceItem(i, template)) continue
+                if (i != slot && !slots.canPlace(i, template)) continue
                 val n = minOf(left, room)
-                container.setItem(i, template.copyWithCount(n))
+                slots.set(i, template.copyWithCount(n))
                 left -= n
             } else if (NmsItemStack.isSameItemSameComponents(here, template)) {
                 val n = minOf(left, room - here.count)
                 if (n <= 0) continue
-                container.setItem(i, here.copyWithCount(here.count + n))
+                slots.set(i, here.copyWithCount(here.count + n))
                 left -= n
             }
         } else {
             if (here.isEmpty || !same(here)) continue
             val n = minOf(left, here.count)
-            container.setItem(i, if (n == here.count) NmsItemStack.EMPTY else here.copyWithCount(here.count - n))
+            slots.set(i, if (n == here.count) NmsItemStack.EMPTY else here.copyWithCount(here.count - n))
             left -= n
         }
     }
-    container.setChanged()
+    slots.changed()
     return abs(qty) - left
 }
 
@@ -155,7 +207,7 @@ class ChunkRollback(
             // A container standing where it stood keeps what it holds: its contents are the slot
             // postings' business, and its tag would hand back what they already give back.
             val retagged = !reshaped && back?.payloadBefore?.contentEquals(was.payload) == false &&
-                level.getBlockEntity(spots[i]) !is NmsContainer
+                slotsOf(level.getBlockEntity(spots[i])) == null
             if (!reshaped && !retagged) {
                 if (plan.steps.isNotEmpty()) tally.unchanged++
                 return@forEachIndexed
@@ -185,7 +237,7 @@ class ChunkRollback(
                     tally.returned += refill to refill.qty
                     continue
                 }
-                val container = level.getBlockEntity(BlockPos(refill.at.x, refill.at.y, refill.at.z)) as? NmsContainer
+                val container = slotsOf(level.getBlockEntity(BlockPos(refill.at.x, refill.at.y, refill.at.z)))
                 // What arrived in a container this rollback took away went with it, and the reading
                 // below writes it off: that is this posting given back, not one that found nothing.
                 if (container == null && refill.qty < 0 && touched[i]) {
