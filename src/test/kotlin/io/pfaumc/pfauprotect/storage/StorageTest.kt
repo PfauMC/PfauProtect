@@ -324,16 +324,16 @@ class StorageTest {
         val refused = assertThrows(IllegalArgumentException::class.java) { RocksItemLog(dir) }
         assertTrue(refused.message.orEmpty().contains("schema"), "the refusal has to name the reason: $refused")
 
-        stampSchemaVersion(5L)
+        stampSchemaVersion(6L)
         log = RocksItemLog(dir)
         assertEquals(4, log.holderEntries(chest, 0, Long.MAX_VALUE).size)
     }
 
-    // Version 5 only adds the family of compensations, so a version 4 ledger is opened, given the
-    // family and stamped anew, with every row it had still there.
+    // Versions 5 and 6 only add families, so a version 4 ledger is opened, given them and stamped
+    // anew, with every row it had still there.
     @Test
     fun `a version 4 ledger is widened in place`(@TempDir older: Path) {
-        val earlier = everyColumnFamily - "compensated"
+        val earlier = everyColumnFamily - "compensated" - "confiscations"
         openWith(older, earlier) { raw, handles ->
             raw.put(handles[earlier.indexOf("meta")], "schema".toByteArray(), ByteWriter(8).longBE(4L).toByteArray())
         }
@@ -343,7 +343,7 @@ class StorageTest {
             widened.drain()
         }
         val families = Options().use { RocksDB.listColumnFamilies(it, older.toAbsolutePath().toString()).map { String(it) } }
-        assertTrue("compensated" in families, "$families")
+        assertTrue("compensated" in families && "confiscations" in families, "$families")
         RocksItemLog(older).use { assertEquals(1, it.holderEntries(chest, 0, Long.MAX_VALUE).size) }
     }
 
@@ -368,6 +368,21 @@ class StorageTest {
         log.submit(Transfer(Cause.ROLLBACK, Void, chestUpperSlot, cobblestone, null, 5, T0 + 300, reverts = listOf(undone.ref)))
         log.drain()
         assertEquals(setOf(theft.ref), log.compensated(listOf(theft.ref)).keys)
+    }
+
+    // Owed by a player who was offline, kept until it is taken, and only that player's.
+    @Test
+    fun `items owed to a rollback are kept per player until forgiven`() {
+        log.owe(alice, 7, 5, bob)
+        log.owe(alice, 8, 1, null)
+        log.owe(bob, 7, 2, null)
+
+        val owed = log.owedBy(alice)
+        assertEquals(listOf(7L to 5, 8L to 1), owed.map { it.formId to it.qty })
+        assertEquals(listOf(bob, null), owed.map { it.actor })
+        log.forgive(owed.take(1))
+        assertEquals(listOf(8L), log.owedBy(alice).map { it.formId })
+        assertEquals(listOf(2), log.owedBy(bob).map { it.qty })
     }
 
     // A rollback goes ahead on what a region read hands it, so a row the read could not decode has to
@@ -405,7 +420,7 @@ class StorageTest {
     // Opening has to name every column family the log created, or RocksDB refuses the database.
     private val everyColumnFamily = listOf(
         "default", "entries", "item_forms", "registry", "meta", "nested_owners", "tx", "placed_forms",
-        "block_payloads", "compensated",
+        "block_payloads", "compensated", "confiscations",
     )
 
     private fun stampSchemaVersion(version: Long) {

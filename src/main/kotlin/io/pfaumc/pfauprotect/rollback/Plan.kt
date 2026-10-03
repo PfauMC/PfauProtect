@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.rollback
 
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.LedgerEntry
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.WorldBlock
@@ -62,12 +63,25 @@ fun settle(standing: String, steps: List<Step>): Settled {
 
 /**
  * One slot posting given back: `qty` above zero is what left the slot and goes back in, below zero is
- * what arrived and is taken out again.
+ * what arrived and is taken out again. `lead` is where it went or came from, which is where a rollback
+ * that put it back goes looking for it.
  */
-class Refill(val at: Container, val form: ByteArray, val damage: Int?, val qty: Int, val posting: PostingRef)
+class Refill(
+    val at: Container,
+    val form: ByteArray,
+    val formId: Long,
+    val damage: Int?,
+    val qty: Int,
+    val posting: PostingRef,
+    val lead: Holder,
+)
 
-/** Everything a rollback does at one position: its block rows newest first, and its slot postings. */
-class PositionPlan(val at: WorldBlock, val steps: List<Step>, val refills: List<Refill>)
+/**
+ * Everything a rollback does at one position: its block rows newest first, its slot postings, and the
+ * item plane's side of the breaks among them — what the position gave up, whose transaction also says
+ * what fell out of it.
+ */
+class PositionPlan(val at: WorldBlock, val steps: List<Step>, val refills: List<Refill>, val breaks: List<LedgerEntry> = emptyList())
 
 class ChunkPlan(val chunkX: Int, val chunkZ: Int, val positions: List<PositionPlan>)
 
@@ -118,13 +132,26 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         val page = ledger.regionPage(
             world, x - radius, z - radius, x + radius, z + radius, fromTs, toTs,
             limit = MAX_ROLLBACK_ROWS,
-            within = { it is Container && inBox(it.x, it.y, it.z) },
+            within = { holder ->
+                when (holder) {
+                    is Container -> inBox(holder.x, holder.y, holder.z)
+                    is WorldBlock -> inBox(holder.x, holder.y, holder.z)
+                    else -> false
+                }
+            },
         )
         if (!page.complete) return tooMuch()
-        return plan(world, rows, page.entries.filter(keepsEntry), unreadable + page.unreadable)
+        val (slots, positions) = page.entries.filter(keepsEntry).partition { it.holder is Container }
+        return plan(world, rows, slots, positions.filter { it.qty < 0 }, unreadable + page.unreadable)
     }
 
-    private fun plan(world: UUID, rows: List<BlockRow>, kept: List<LedgerEntry>, unreadable: Int): Reading {
+    private fun plan(
+        world: UUID,
+        rows: List<BlockRow>,
+        kept: List<LedgerEntry>,
+        losses: List<LedgerEntry>,
+        unreadable: Int,
+    ): Reading {
         if (unreadable > 0) return unreadable(unreadable)
         // Given back once already, a posting is skipped — unless what gave it back is being rolled back
         // in this same run. Undoing a rollback together with its own undo has to leave both halves in,
@@ -155,7 +182,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                 continue
             }
             refills.getOrPut(WorldBlock(world, slot.x, slot.y, slot.z)) { ArrayList() } +=
-                Refill(slot, form, entry.damage, -entry.qty, entry.ref)
+                Refill(slot, form, entry.itemFormId, entry.damage, -entry.qty, entry.ref, entry.counterparty)
         }
         if (unnamed > 0) return unreadable(unnamed)
         val positions = steps.keys + refills.keys
@@ -165,8 +192,9 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                     "one rollback may write; narrow the radius or the time"
             )
         }
+        val breaks = losses.groupBy { it.holder as WorldBlock }
         val chunks = positions
-            .map { PositionPlan(it, steps[it].orEmpty(), refills[it].orEmpty()) }
+            .map { PositionPlan(it, steps[it].orEmpty(), refills[it].orEmpty(), breaks[it].orEmpty()) }
             .groupBy { (it.at.x shr 4) to (it.at.z shr 4) }
             .map { (chunk, plans) -> ChunkPlan(chunk.first, chunk.second, plans) }
         return Planned(world, chunks, rows.size, entries.size)

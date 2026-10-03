@@ -147,6 +147,11 @@ class WorldItemListener(
 
     private val ghosts = java.util.concurrent.ConcurrentHashMap.newKeySet<UUID>()
 
+    /** An item whose end its remover writes itself, as a rollback taking a pile back does. */
+    fun forgetEnd(item: UUID) {
+        ghosts += item
+    }
+
     // Every path that adds an entity to a world comes through here, so this is the only place a birth
     // can be written and the only place one can be missed. Whatever no note explained is still
     // written, as a guess, rather than passed over.

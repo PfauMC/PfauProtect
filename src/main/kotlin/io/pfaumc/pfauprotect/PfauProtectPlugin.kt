@@ -55,6 +55,7 @@ import io.pfaumc.pfauprotect.check.heldForms
 import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.command.lookupTargetAt
 import io.pfaumc.pfauprotect.rollback.ChunkRollback
+import io.pfaumc.pfauprotect.rollback.Confiscations
 import io.pfaumc.pfauprotect.rollback.Rollbacks
 import io.pfaumc.pfauprotect.capture.item.unspentDrop
 import net.minecraft.server.MinecraftServer
@@ -202,7 +203,11 @@ class PfauProtectPlugin : JavaPlugin() {
         val inspector = Inspector(lookups)
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
         // the way back down.
-        val rollbacks = Rollbacks(this, ledger, blocks, lookups, ChunkRollback(this, codec, blocks, ledger, uncovered::submit))
+        val worldItems = WorldItemListener(codec, mechanisms, origins, capture, attribution, entities)
+        val confiscations = Confiscations(this, ledger, codec, capture, worldItems, uncovered::submit)
+        val rollbacks = Rollbacks(
+            this, ledger, blocks, lookups, ChunkRollback(this, codec, blocks, ledger, uncovered::submit), confiscations,
+        )
         val running = Running(
             ledger, blocks, attribution, uncovered, codec, capture, destruction, mechanisms, origins,
             lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks), rollbacks,
@@ -262,10 +267,10 @@ class PfauProtectPlugin : JavaPlugin() {
             },
             this,
         )
-        server.pluginManager.registerEvents(
-            WorldItemListener(codec, mechanisms, origins, capture, attribution, entities),
-            this,
-        )
+        server.pluginManager.registerEvents(worldItems, this)
+        // After the capture's own join handler, whose starting point for the player's first pass the
+        // items taken back on the join have to come after.
+        server.pluginManager.registerEvents(confiscations, this)
         server.pluginManager.registerEvents(inspector, this)
         server.globalRegionScheduler.runAtFixedRate(this, {
             origins.sweep()

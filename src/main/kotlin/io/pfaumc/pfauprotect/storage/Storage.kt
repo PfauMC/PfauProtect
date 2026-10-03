@@ -85,6 +85,10 @@ data class BlockPostings(val at: WorldBlock?, val entries: List<LedgerEntry>, va
 
 data class BlockPostingsPage(val positions: List<BlockPostings>, val reachedEnd: Boolean)
 
+// What a rollback took back from a player who was not there to give it: the form, how many, and who ran
+// the rollback. `key` is where it is kept, to be forgiven once taken.
+class OwedItem(val key: ByteArray, val formId: Long, val qty: Int, val actor: UUID?)
+
 // Raised by a change to the key layout — version 2 took a fixed-width world number and a trailing
 // posting ordinal — and by a change to the set of column families, which is what version 3 is: the
 // family of interned block-entity payloads. The record version in the value covers neither. Keys
@@ -96,11 +100,12 @@ data class BlockPostingsPage(val positions: List<BlockPostings>, val reachedEnd:
 // and names the wrong menu. The record version cannot say so — an ordinary entry is pinned to a
 // header byte of 0x00 — which leaves this the only number that can refuse such a database.
 //
-// Version 5 adds the family of compensations and nothing else, so a version 4 ledger is a version 5
-// ledger whose table is still empty: it is opened, given the family and stamped anew, and a build of
-// version 4 refuses it afterwards by the stamp instead of failing on a family it was never told about.
-private const val SCHEMA_VERSION = 5L
-private const val WIDENS_FROM = 4L
+// Versions 5 and 6 each add a family and nothing else — the compensations, then the items owed by
+// players who were offline when a rollback took them back — so an older ledger is a newer one whose
+// tables are still empty: it is opened, given the families and stamped anew, and an older build refuses
+// it afterwards by the stamp instead of failing on a family it was never told about.
+private const val SCHEMA_VERSION = 6L
+private val WIDENS_FROM = setOf(4L, 5L)
 
 // How many times a giving back is followed to the giving back of itself: a rollback, its undo, the
 // undo of that. Past this a posting is taken as given back, which is the side that cannot mint items.
@@ -147,6 +152,7 @@ private val TX_CF = "tx".toByteArray()
 private val PLACED_FORMS_CF = "placed_forms".toByteArray()
 private val BLOCK_PAYLOADS_CF = "block_payloads".toByteArray()
 private val COMPENSATED_CF = "compensated".toByteArray()
+private val CONFISCATIONS_CF = "confiscations".toByteArray()
 
 private val META_SCHEMA = "schema".toByteArray()
 private val META_TX_ID = "tx_id".toByteArray()
@@ -256,6 +262,11 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     // ordinal as the key, the compensating tx_id as the value.
     private val compensatedCf: ColumnFamilyHandle
 
+    // What a rollback took back from a player who was offline, kept until they join: the player and an
+    // ever-growing number as the key, the form, the quantity and who ran the rollback as the value.
+    private val confiscationsCf: ColumnFamilyHandle
+    private val nextOwed = AtomicLong(System.currentTimeMillis() * 1000)
+
     private val queue = LinkedBlockingQueue<List<Transfer>>()
 
     // The notes a block position carries — the form it was placed from, the name its contents are
@@ -308,7 +319,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         // failed start of a newer build makes going back impossible.
         val stored = try {
             storedSchema(path)?.also {
-                require(it == SCHEMA_VERSION || it == WIDENS_FROM) {
+                require(it == SCHEMA_VERSION || it in WIDENS_FROM) {
                     "database schema $it cannot be read by this build (schema $SCHEMA_VERSION); " +
                         "the ledger and blocks directories have to be removed together, because a " +
                         "block journal cites state, payload and player numbers minted in the ledger"
@@ -329,6 +340,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             PLACED_FORMS_CF to pointReadOptions,
             BLOCK_PAYLOADS_CF to pointReadOptions,
             COMPENSATED_CF to pointReadOptions,
+            CONFISCATIONS_CF to unfilteredOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
         db = RocksDB.open(dbOptions, path, descriptors, cfHandles)
         entriesCf = cfHandles[1]
@@ -340,6 +352,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         placedFormsCf = cfHandles[7]
         blockPayloadsCf = cfHandles[8]
         compensatedCf = cfHandles[9]
+        confiscationsCf = cfHandles[10]
 
         failClosed {
             if (stored != SCHEMA_VERSION) db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
@@ -668,6 +681,42 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         val where = "${entry.cause} of ${entry.qty} at ${entry.holder}, transaction ${entry.txId}"
         if (half == null) return "$where: nothing at $other gives back the ${entry.qty}"
         return if (half.itemFormId == entry.itemFormId) null else "$where: the halves name different items"
+    }
+
+    /**
+     * Owes a player's items to a rollback that could not reach them: they were offline. Written at once
+     * and fsynced, because the rollback has already put the items back where they came from and the
+     * only other record of the debt is in memory.
+     */
+    fun owe(player: UUID, formId: Long, qty: Int, actor: UUID?) = dbLock.read {
+        check(!closed) { "the ledger is closed" }
+        val key = ByteWriter(24).uuid(player).longBE(nextOwed.getAndIncrement()).toByteArray()
+        val value = ByteWriter(34).varLong(formId).varInt(qty).byte(if (actor == null) 0 else 1)
+        if (actor != null) value.uuid(actor)
+        db.put(confiscationsCf, syncWriteOptions, key, value.toByteArray())
+    }
+
+    fun owedBy(player: UUID): List<OwedItem> = dbLock.read {
+        if (closed) return emptyList()
+        val prefix = ByteWriter(16).uuid(player).toByteArray()
+        val found = ArrayList<OwedItem>()
+        db.newIterator(confiscationsCf).use { iter ->
+            iter.seek(prefix)
+            while (iter.isValid && iter.key().copyOf(prefix.size).contentEquals(prefix)) {
+                val value = ByteReader(iter.value())
+                found += OwedItem(iter.key(), value.varLong(), value.varInt(), if (value.byte() == 1) value.uuid() else null)
+                iter.next()
+            }
+        }
+        found
+    }
+
+    fun forgive(owed: List<OwedItem>) = dbLock.read {
+        if (closed || owed.isEmpty()) return
+        WriteBatch().use { batch ->
+            for (item in owed) batch.delete(confiscationsCf, item.key)
+            db.write(syncWriteOptions, batch)
+        }
     }
 
     override fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID? =

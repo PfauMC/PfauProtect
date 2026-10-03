@@ -3,6 +3,9 @@ package io.pfaumc.pfauprotect.rollback
 import ca.spottedleaf.concurrentutil.util.Priority
 import io.pfaumc.pfauprotect.capture.block.Difference
 import io.pfaumc.pfauprotect.capture.block.standingAt
+import io.pfaumc.pfauprotect.check.emptied
+import io.pfaumc.pfauprotect.model.LedgerEntry
+import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.LookupTarget
 import io.pfaumc.pfauprotect.command.Lookups
@@ -61,6 +64,13 @@ class Tally {
     var missed = 0
     var failed = 0
 
+    // What a rollback gave back, for taking it back from whoever carried it off: positions whose block
+    // came back, slot postings with how much of each moved (put back above zero, taken out below), and
+    // the breaks the plan read there.
+    val restored = ArrayList<WorldBlock>()
+    val returned = ArrayList<Pair<Refill, Int>>()
+    val breaks = ArrayList<LedgerEntry>()
+
     @Synchronized
     fun add(other: Tally) {
         changed += other.changed
@@ -69,6 +79,9 @@ class Tally {
         slots += other.slots
         missed += other.missed
         failed += other.failed
+        restored += other.restored
+        returned += other.returned
+        breaks += other.breaks
     }
 }
 
@@ -143,10 +156,16 @@ class ChunkRollback(
                 return@forEachIndexed
             }
             tally.changed++
-            if (!apply) return@forEachIndexed
+            // A block back where one stands again is what lets the drops of its break be taken back.
+            val returnsBlock = reshaped && !emptied(target!!)
+            if (!apply) {
+                if (returnsBlock) restored(tally, plan)
+                return@forEachIndexed
+            }
             try {
                 put(level, spots[i], if (reshaped) target else null, back?.payloadBefore)
                 touched[i] = true
+                if (returnsBlock) restored(tally, plan)
             } catch (failure: Exception) {
                 tally.failed++
                 plugin.logger.log(Level.WARNING, "a rollback could not put back the block at ${spots[i]}", failure)
@@ -157,12 +176,16 @@ class ChunkRollback(
         positions.forEachIndexed { i, plan ->
             for (refill in plan.refills) {
                 tally.slots++
-                if (!apply) continue
+                if (!apply) {
+                    tally.returned += refill to refill.qty
+                    continue
+                }
                 val container = level.getBlockEntity(BlockPos(refill.at.x, refill.at.y, refill.at.z)) as? NmsContainer
                 // What arrived in a container this rollback took away went with it, and the reading
                 // below writes it off: that is this posting given back, not one that found nothing.
                 if (container == null && refill.qty < 0 && touched[i]) {
                     givenBack += refill.posting
+                    tally.returned += refill to refill.qty
                     continue
                 }
                 val moved = if (container == null) 0 else putBack(
@@ -170,6 +193,7 @@ class ChunkRollback(
                 ) { codec.encode(it).form.contentEquals(refill.form) }
                 if (moved < abs(refill.qty)) tally.missed++
                 if (moved > 0) givenBack += refill.posting
+                if (moved > 0) tally.returned += refill to if (refill.qty > 0) moved else -moved
             }
         }
         if (!apply) return tally
@@ -183,6 +207,11 @@ class ChunkRollback(
         // Last, and after the rows: what the neighbours do now is theirs, and the capture files it.
         for (i in positions.indices) if (touched[i]) level.updateNeighboursOnBlockSet(spots[i], before[i].state)
         return tally
+    }
+
+    private fun restored(tally: Tally, plan: PositionPlan) {
+        tally.restored += plan.at
+        tally.breaks += plan.breaks
     }
 
     private fun put(level: ServerLevel, pos: BlockPos, state: String?, payload: ByteArray?) {
@@ -209,6 +238,7 @@ class Rollbacks(
     private val blocks: BlockLogs,
     private val lookups: Lookups,
     private val chunks: ChunkRollback,
+    private val confiscations: Confiscations,
 ) {
     private class Pending(val target: LookupTarget, val query: LookupQuery, val at: Long)
 
@@ -311,13 +341,34 @@ class Rollbacks(
                     plugin.logger.log(Level.SEVERE, "a rollback chunk at ${chunk.chunkX} ${chunk.chunkZ} failed", failure)
                     total.add(Tally().apply { failed = chunk.positions.size })
                 } finally {
-                    if (left.decrementAndGet() == 0) {
-                        report(sender, total, plan, where, apply)
-                        release()
+                    // Following what was given back to whoever holds it reads the ledger, which the
+                    // region thread may not.
+                    if (left.decrementAndGet() == 0) Bukkit.getAsyncScheduler().runNow(plugin) {
+                        try {
+                            finish(sender, total, plan, where, apply, actor)
+                        } catch (failure: Throwable) {
+                            plugin.logger.log(Level.SEVERE, "taking back what the rollback at $where gave back failed", failure)
+                            sender.sendMessage("Taking back what the rollback gave back failed; the server log has the details.")
+                        } finally {
+                            release()
+                        }
                     }
                 }
             }
         }
+    }
+
+    private fun finish(sender: CommandSender, total: Tally, plan: Planned, where: String, apply: Boolean, actor: UUID?) {
+        val owed = confiscations.owedFor(total)
+        report(sender, total, plan, where, apply)
+        if (owed.isEmpty()) return
+        val whom = confiscations.describe(owed)
+        if (!apply) {
+            sender.sendMessage("  would take back from $whom.")
+            return
+        }
+        sender.sendMessage("  taking back from $whom:")
+        confiscations.take(owed, actor, sender)
     }
 
     private fun report(sender: CommandSender, total: Tally, plan: Planned, where: String, apply: Boolean) {
