@@ -41,6 +41,8 @@ enum class Cause(val id: Int) {
     // lead, a saddle or a boat.
     ENTITY_CHANGED(0x9A),
     ENTITY_LED(0x9B),
+    // A player killed by another, directly or by what the other set going.
+    PLAYER_KILLED(0x9C),
 
     CONTAINER_ADD(0x10),
     CONTAINER_REMOVE(0x11),

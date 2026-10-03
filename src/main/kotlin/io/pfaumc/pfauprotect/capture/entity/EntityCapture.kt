@@ -52,6 +52,7 @@ import java.io.ByteArrayInputStream
 import java.io.DataInputStream
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityDeathEvent
+import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.hanging.HangingBreakByEntityEvent
 import org.bukkit.event.hanging.HangingBreakEvent
 import org.bukkit.event.vehicle.VehicleDestroyEvent
@@ -251,6 +252,32 @@ class EntityCapture(
         if (entity !is Hanging && entity !is Minecart && entity !is Boat && entity !is EnderCrystal) return
         if ((entity as CraftEntity).handle.removalReason !in GONE) return
         removed(entity, culpritOf(entity, Cause.ENTITY_BROKEN))
+    }
+
+    /**
+     * A player killed by another (SPEC-v6 §2.6): where, by whom, and what fell out of them. The drops are
+     * the item plane's, slot by slot; this row is how a rollback of the killer finds the victim. A death
+     * nobody stands behind — a fall, a zombie — is no grief between players and is left to the item plane.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPlayerDeath(event: PlayerDeathEvent) {
+        val victim = event.entity
+        val culprit = culpritOf(victim, Cause.PLAYER_KILLED)
+        val killer = culprit.by.culprit() ?: return
+        if (killer == victim.uniqueId) return
+        val log = logs.get(victim.world.uid) ?: return
+        val block = victim.location.block
+        val now = System.currentTimeMillis()
+        later(victim.location) {
+            log.submit(
+                listOf(
+                    EntityChange(
+                        block.x, block.y, block.z, EntityKind.PLAYER_DIED, culprit.cause, "minecraft:player", victim.uniqueId,
+                        now, culprit.by?.confidence ?: Confidence.FACT, killer, drops = origins.droppedFor(victim.uniqueId),
+                    )
+                )
+            )
+        }
     }
 
     // A lead's knot goes by itself the moment its last lead does, and the lead is on the mob's own NBT.
