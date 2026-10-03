@@ -262,10 +262,11 @@ class EntityCapture(
         val remover = (event as? HangingBreakByEntityEvent)?.remover
         val culprit = when {
             remover != null -> byEntity(remover, Cause.ENTITY_BROKEN)
-            // The wall behind it went, and whoever took the wall away took the frame with it.
+            // The wall behind it went, and whoever took the wall away took the frame with it. The frame
+            // notices on its next look, seconds on, by when only the journal remembers the wall.
             event.cause == HangingBreakEvent.RemoveCause.PHYSICS -> {
-                val wall = hanging.location.block.getRelative(hanging.attachedFace)
-                Culprit(Cause.ENTITY_BROKEN, attribution.supportRemoverAt(positionOf(wall)))
+                val wall = positionOf(hanging.location.block.getRelative(hanging.attachedFace))
+                Culprit(Cause.ENTITY_BROKEN, attribution.removerAt(wall) ?: attribution.journalRemoverAt(wall))
             }
             else -> Culprit(Cause.ENTITY_BROKEN, null)
         }

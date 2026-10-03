@@ -23,6 +23,10 @@ internal const val SUPPORT_MILLIS = 100L
 // held them is gone. The note is written when the log goes, so this only has to outlast the decay.
 internal const val FELLED_MILLIS = 10 * 60 * 1000L
 
+// A frame or a painting looks at its wall every hundred ticks, so it can come down five seconds after the
+// wall went; the rest is slack for a server running behind.
+internal const val HANGING_MILLIS = 10_000L
+
 // Long enough for a block to fall from the build limit. An entity that never lands — one that fell
 // out of the world, or that a plugin took away — leaves its note behind, and nothing else drops it.
 internal const val FLIGHT_MILLIS = 60_000L
@@ -191,6 +195,18 @@ class Attribution(
      */
     fun removerAt(at: WorldBlock): Attributed? =
         noted(removals, at, SUPPORT_MILLIS)?.let { Attributed(it.actor) }
+
+    /**
+     * Who emptied this position, by the journal: the newest row there, if it is recent enough to be what
+     * a frame or a painting has only now noticed. Its tracker note is long gone by then. A seek, asked once
+     * per hanging entity that falls, so it may be asked on a region thread.
+     */
+    fun journalRemoverAt(at: WorldBlock, within: Long = HANGING_MILLIS): Attributed? {
+        val row = blocks.get(at.world)?.standingAt(at.x, at.y, at.z)?.row ?: return null
+        if (now() - row.timestamp > within) return null
+        val confidence = if (row.confidence == Confidence.NEARBY) Confidence.NEARBY else Confidence.INFERRED
+        return row.actor?.let { Attributed(it, confidence) }
+    }
 
     /**
      * Who put down a block anywhere within reach of this position, whatever block it was. A wither and
