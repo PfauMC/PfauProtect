@@ -50,7 +50,7 @@ data class BlockStanding(val row: BlockRow?, val torn: Boolean)
 // What a rollback reads: every row of the window, how many rows the walk could not read, and whether
 // it ran out of budget first. A rollback that went ahead over less than all of it would put back part
 // of a place and report it done.
-data class BlockWindow(val rows: List<BlockRow>, val unreadable: Int, val complete: Boolean)
+data class BlockWindow(val rows: List<BlockRow>, val unreadable: Int, val complete: Boolean, val walked: Int)
 
 // Raised by a change to the key layout or to the set of column families. The record version in the
 // value covers neither: keys carry a version this build reads, so without the bump an older database
@@ -276,16 +276,17 @@ class BlockLog(
         budget: Int,
         within: (Int, Int, Int) -> Boolean,
     ): BlockWindow = dbLock.read {
-        if (closed) return BlockWindow(emptyList(), 0, false)
+        if (closed) return BlockWindow(emptyList(), 0, false, 0)
         val rows = ArrayList<BlockRow>()
         var unreadable = 0
         var walked = 0
         var complete = true
         forEachUnder(prefix, reverse = false) { key, value ->
-            if (walked++ >= budget) {
+            if (walked >= budget) {
                 complete = false
                 return@forEachUnder false
             }
+            walked++
             val row = BlockCodec.decodeOrNull(key, value, shared.registries)
             when {
                 row == null -> unreadable++
@@ -293,7 +294,7 @@ class BlockLog(
             }
             true
         }
-        BlockWindow(rows, unreadable, complete)
+        BlockWindow(rows, unreadable, complete, walked)
     }
 
     /**
