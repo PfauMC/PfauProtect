@@ -59,6 +59,7 @@ import org.bukkit.event.inventory.BrewEvent
 import org.bukkit.event.inventory.BrewingStandFuelEvent
 import org.bukkit.event.inventory.FurnaceBurnEvent
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.abs
 import net.minecraft.core.component.DataComponents
@@ -117,6 +118,9 @@ internal fun gaveBack(remembered: ByteArray?, shell: ByteArray?): ByteArray? {
 // A block that puts an item into the world explains itself before that item exists: the event
 // carrying the reason fires first and the entity carrying the uuid appears inside the same call. A
 // note bridges the two, and a note nobody claims is dropped rather than guessed at.
+// How long the items that came out of an event are kept for the event's row to name them.
+private const val WITNESS_MILLIS = 10_000L
+
 class SpawnOrigins(private val pending: TickCoalescer) {
     private class Note(
         // Null when the movement is written by whoever filed the note. Breaking a block already
@@ -141,11 +145,23 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         // the like come out in another count each roll, so the note takes whatever of its form lands
         // near it until it is swept, and is asked only after every exact note has had its turn.
         val rolled: Boolean = false,
+        // The event the drop comes out of — a dead mob, a broken frame, a block position — under which
+        // the items that take this note are remembered, so the event's own row can name them.
+        val tag: Any? = null,
     ) {
         var swept = false
     }
 
     private val notes = ConcurrentLinkedQueue<Note>()
+
+    private class Witnessed(val items: MutableSet<UUID>, val at: Long)
+
+    // Which item entities came out of which event. A rollback that puts the event back takes these back
+    // from whoever has them, and only these: what else lies around does not belong to it.
+    private val witnessed = ConcurrentHashMap<Any, Witnessed>()
+
+    /** The items that came out of an event so far, taken once. */
+    fun droppedFor(tag: Any): List<UUID> = witnessed.remove(tag)?.items?.toList() ?: emptyList()
 
     // A shulker box that falls out of a block something other than a hand broke has to carry the name
     // its contents were filed under, and the only moment to give it one is before its spawn reads its
@@ -192,9 +208,10 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         actor: UUID? = null,
         reach: Double = SPAWN_REACH,
         rolled: Boolean = false,
+        tag: Any? = null,
     ): () -> Int {
         if (qty <= 0) return { 0 }
-        val note = Note(from, cause, key, at, null, qty, actor, reach, rolled = rolled)
+        val note = Note(from, cause, key, at, null, qty, actor, reach, rolled = rolled, tag = tag)
         notes += note
         return { qty - note.qty }
     }
@@ -207,9 +224,10 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         qty: Int,
         actor: UUID? = null,
         confidence: Confidence = Confidence.FACT,
+        tag: Any? = null,
     ) {
         if (qty <= 0) return
-        notes += Note(from, cause, key, null, entity, qty, actor, confidence = confidence)
+        notes += Note(from, cause, key, null, entity, qty, actor, confidence = confidence, tag = tag)
     }
 
     /**
@@ -218,8 +236,8 @@ class SpawnOrigins(private val pending: TickCoalescer) {
      * a vine one time in three, a sapling out of leaves, flint out of gravel. Asked after every other
      * note, so it takes only what nothing else explains.
      */
-    fun expectAny(from: Holder, cause: Cause, at: Spot, actor: UUID?, reach: Double = SPAWN_REACH) {
-        notes += Note(from, cause, null, at, null, 0, actor, reach, rolled = true)
+    fun expectAny(from: Holder, cause: Cause, at: Spot, actor: UUID?, reach: Double = SPAWN_REACH, tag: Any? = null) {
+        notes += Note(from, cause, null, at, null, 0, actor, reach, rolled = true, tag = tag)
     }
 
     fun expectThrown(thrower: UUID, from: Holder, cause: Cause, key: ItemKey, qty: Int, until: Long) {
@@ -277,6 +295,10 @@ class SpawnOrigins(private val pending: TickCoalescer) {
             if (note.from != null) {
                 pending.add(note.from, into, note.cause, key, qty, note.actor, note.confidence)
             }
+            if (note.tag != null && into is ItemEntityRef) {
+                witnessed.computeIfAbsent(note.tag) { Witnessed(ConcurrentHashMap.newKeySet(), System.currentTimeMillis()) }
+                    .items += into.uuid
+            }
             left -= qty
             if (note.rolled) continue
             note.qty -= qty
@@ -305,6 +327,8 @@ class SpawnOrigins(private val pending: TickCoalescer) {
             val box = boxes.next()
             if (box.swept) boxes.remove() else box.swept = true
         }
+        // Asked for a tick after the event; one nobody asks about is gone well before it could matter.
+        witnessed.values.removeIf { now - it.at > WITNESS_MILLIS }
     }
 
     private fun sameBox(expected: NmsItemStack, spawned: NmsItemStack) =

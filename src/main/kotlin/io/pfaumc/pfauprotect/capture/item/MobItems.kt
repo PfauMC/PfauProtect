@@ -226,7 +226,7 @@ class MobItemListener(
             val from = EntitySlot(entity.uniqueId, slot)
             // The item in a frame may be worn, and a spawn is matched on its damage as well.
             val key = framed?.takeIf { slot == 0 && it.form.contentEquals(form) } ?: ItemKey(form, null)
-            Triple(from, key, origins.expect(from, cause, key, spot, 1, actor))
+            Triple(from, key, origins.expect(from, cause, key, spot, 1, actor, tag = entity.uniqueId))
         }
         later(entity.location) {
             for ((from, key, claimed) in claims) {
@@ -270,7 +270,7 @@ class MobItemListener(
         val guessed = entity is LivingEntity && from == Void && cause == Cause.MOB_THROW_ITEM
         val confidence = if (guessed) Confidence.INFERRED else Confidence.FACT
         val actor = handled.get()?.takeIf { it.entity == entity.uniqueId && it.tick == Bukkit.getCurrentTick() }?.actor
-        origins.expect(item.uniqueId, from, cause, encoded.key, encoded.count, actor, confidence)
+        origins.expect(item.uniqueId, from, cause, encoded.key, encoded.count, actor, confidence, tag = entity.uniqueId)
     }
 
     /**
@@ -379,7 +379,7 @@ class MobItemListener(
                     // A saddle put on with a click is booked on the mob as well; it has fallen out here.
                     held.remove(booked)
                     val from = EntitySlot(mob.uniqueId, booked)
-                    origins.expect(from, Cause.CONTAINER_BREAK_DROP, encoded.key, spot, qty, killer, DEATH_REACH)
+                    origins.expect(from, Cause.CONTAINER_BREAK_DROP, encoded.key, spot, qty, killer, DEATH_REACH, tag = mob.uniqueId)
                 }
             }
             if (need <= 0) continue
@@ -392,7 +392,7 @@ class MobItemListener(
                     pocketLeft[index] -= qty
                     need -= qty
                     val from = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + pocket.slot)
-                    origins.expect(from, Cause.CONTAINER_BREAK_DROP, encoded.key, spot, qty, killer, DEATH_REACH)
+                    origins.expect(from, Cause.CONTAINER_BREAK_DROP, encoded.key, spot, qty, killer, DEATH_REACH, tag = mob.uniqueId)
                 }
             }
             if (need <= 0) continue
@@ -402,9 +402,9 @@ class MobItemListener(
                 held.remove(slot)
                 // A stand broken gives back the stand it was placed from, out of the slot that booked it.
                 val cause = if (slot == ENTITY_ITEM_SLOT) Cause.ENTITY_BREAK_DROP else Cause.MOB_EQUIPMENT_DROP
-                origins.expect(EntitySlot(mob.uniqueId, slot), cause, encoded.key, spot, need, killer, DEATH_REACH)
+                origins.expect(EntitySlot(mob.uniqueId, slot), cause, encoded.key, spot, need, killer, DEATH_REACH, tag = mob.uniqueId)
             } else {
-                origins.expect(Void, Cause.MOB_DROP, encoded.key, spot, need, killer, DEATH_REACH)
+                origins.expect(Void, Cause.MOB_DROP, encoded.key, spot, need, killer, DEATH_REACH, tag = mob.uniqueId)
             }
         }
         // Equipment drops by chance; what the ledger booked and the death did not drop went with it.

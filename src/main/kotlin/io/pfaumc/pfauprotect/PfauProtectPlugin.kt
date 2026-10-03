@@ -13,6 +13,7 @@ import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.HandTouches
 import io.papermc.paper.command.brigadier.ApiMirrorRootNode
 import io.pfaumc.pfauprotect.capture.block.CommandBrackets
+import io.pfaumc.pfauprotect.capture.entity.EntityCapture
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.capture.block.BlockMechanismListener
 import io.pfaumc.pfauprotect.model.Cause
@@ -268,6 +269,10 @@ class PfauProtectPlugin : JavaPlugin() {
             this,
         )
         server.pluginManager.registerEvents(worldItems, this)
+        server.pluginManager.registerEvents(
+            EntityCapture(blocks, origins, attribution, entities) { at, task -> server.regionScheduler.run(this, at) { task() } },
+            this,
+        )
         // After the capture's own join handler, whose starting point for the player's first pass the
         // items taken back on the join have to come after.
         server.pluginManager.registerEvents(confiscations, this)
