@@ -30,6 +30,7 @@ import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.storage.EntityChange
+import io.pfaumc.pfauprotect.storage.EntityRow
 import net.minecraft.world.entity.EntityProcessor
 import net.minecraft.world.entity.EntitySpawnReason
 import net.minecraft.world.entity.EntitySpawnRequest
@@ -113,6 +114,9 @@ class Tally {
     val breaks = ArrayList<LedgerEntry>()
     val jobs = ArrayList<EntityJob>()
 
+    // Players killed by those the filter names, whose drops go back to them.
+    val deaths = ArrayList<EntityRow>()
+
     @Synchronized
     fun add(other: Tally) {
         changed += other.changed
@@ -131,6 +135,7 @@ class Tally {
         piles += other.piles
         breaks += other.breaks
         jobs += other.jobs
+        deaths += other.deaths
     }
 }
 
@@ -562,13 +567,16 @@ class Rollbacks(
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
         val read = "${plans.sumOf { it.rows }} block rows, ${plans.sumOf { it.postings }} slot rows read"
-        if (work.isEmpty()) {
+        if (work.isEmpty() && plans.all { it.deaths.isEmpty() }) {
             sender.sendMessage("Nothing to roll back: $where.")
             release()
             return
         }
         val actor = (sender as? Player)?.uniqueId
         val total = Tally()
+        total.deaths += plans.flatMap { it.deaths }
+        // Only deaths to give back for, and no place to touch: straight on to them.
+        if (work.isEmpty()) return finishing(sender, total, read, where, apply, actor, global, release)
         val left = AtomicInteger(work.size)
         for ((level, chunk) in work) {
             // A chunk's neighbours are loaded with it, so a block on its edge can tell them it changed.
@@ -624,6 +632,14 @@ class Rollbacks(
     private fun finish(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, global: Boolean) {
         val owed = confiscations.owedFor(total)
         report(sender, total, read, where, apply, global)
+        // A killed player gets back what fell out of them, wherever it went.
+        for (death in total.deaths.distinctBy { it.eventId to it.uuid }) {
+            val back = restitutionFor(ledger, death)
+            if (back.isEmpty()) continue
+            val victim = Bukkit.getOfflinePlayer(death.uuid).name ?: death.uuid.toString()
+            sender.sendMessage("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
+            if (apply) confiscations.restore(death.uuid, back, actor, sender)
+        }
         if (owed.isEmpty()) return
         val whom = confiscations.describe(owed)
         if (!apply) {

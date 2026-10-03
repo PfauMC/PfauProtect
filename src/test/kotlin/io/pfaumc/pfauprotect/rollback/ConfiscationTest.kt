@@ -93,6 +93,30 @@ class ConfiscationTest {
         assertEquals(mapOf(Carrier(bob) to 3), owed(Tally().apply { piles += pile.uuid }))
     }
 
+    // Bob killed Alice. Of what fell out of her, Bob picked one pile up, one burned in lava, and one she
+    // picked up again herself. She is owed back the first from Bob and the second out of nothing; the
+    // third she has.
+    @Test
+    fun `a killed player is owed back what others took and what is gone`() {
+        val picked = ItemEntityRef(UUID.randomUUID())
+        val burned = ItemEntityRef(UUID.randomUUID())
+        val regained = ItemEntityRef(UUID.randomUUID())
+        for (pile in listOf(picked, burned, regained)) {
+            ledger.submit(Transfer(Cause.DEATH_DROP, PlayerInv(alice, 0), pile, diamond, null, 2, T0))
+        }
+        ledger.submit(Transfer(Cause.PICKUP, picked, PlayerInv(bob, 1), diamond, null, 2, T0 + 1))
+        ledger.submit(Transfer(Cause.ITEM_DESTROY_FIRE, burned, Void, diamond, null, 2, T0 + 1))
+        ledger.submit(Transfer(Cause.PICKUP, regained, PlayerInv(alice, 3), diamond, null, 2, T0 + 1))
+        ledger.drain()
+        val death = io.pfaumc.pfauprotect.storage.EntityRow(
+            0, 64, 0, T0, 1, 0, io.pfaumc.pfauprotect.model.EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
+            "minecraft:player", alice, actor = bob, drops = listOf(picked.uuid, burned.uuid, regained.uuid),
+        )
+
+        val back = restitutionFor(ledger, death).associate { it.taker to it.qty }
+        assertEquals(mapOf(Carrier(bob) to 2, Vanished(burned.uuid) to 2), back)
+    }
+
     // A hopper took it into some other chest: past where a rollback follows, and owed by nobody.
     @Test
     fun `a pile a hopper took is beyond reach`() {
