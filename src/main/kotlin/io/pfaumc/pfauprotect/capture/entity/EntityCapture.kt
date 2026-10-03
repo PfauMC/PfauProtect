@@ -35,7 +35,12 @@ import org.bukkit.entity.Tameable
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
+import org.bukkit.event.entity.CreatureSpawnEvent
+import org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason
 import org.bukkit.event.entity.EntityDamageByEntityEvent
+import org.bukkit.event.entity.EntityPlaceEvent
+import org.bukkit.event.hanging.HangingPlaceEvent
+import org.bukkit.event.player.PlayerBucketEmptyEvent
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityDeathEvent
 import org.bukkit.event.hanging.HangingBreakByEntityEvent
@@ -136,6 +141,60 @@ class EntityCapture(
     }
 
     // A lead's knot goes by itself the moment its last lead does, and the lead is on the mob's own NBT.
+    // A mob let out of a bucket names no player on its spawn; the emptying that lets it out comes first, on
+    // the same thread, and leaves the player here for the spawn to take.
+    private val emptying = ThreadLocal<UUID?>()
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onBucketEmpty(event: PlayerBucketEmptyEvent) {
+        if (event.bucket.key.value() !in NOT_A_MOB) emptying.set(event.player.uniqueId)
+    }
+
+    /**
+     * A mob a player brought into the world (SPEC-v6 §2.2): out of an egg or a bucket, bred, built. Who did
+     * it is what the attribution already noted for the entity, or the bucket's player.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onSpawn(event: CreatureSpawnEvent) {
+        val entity = event.entity
+        val bucket = emptying.get().also { emptying.set(null) }
+        val (cause, by) = when (event.spawnReason) {
+            SpawnReason.SPAWNER_EGG -> Cause.SPAWN_EGG_USE to entities.summonerOf(entity.uniqueId)?.copy(confidence = Confidence.FACT)
+            SpawnReason.BREEDING -> Cause.MOB_BRED to entities.summonerOf(entity.uniqueId)?.copy(confidence = Confidence.FACT)
+            SpawnReason.BUCKET -> Cause.BUCKET_RELEASE_MOB to bucket?.let { Attributed(it, Confidence.FACT) }
+            in BUILT -> Cause.BLK_FORM to entities.summonerOf(entity.uniqueId)
+            else -> return
+        }
+        created(entity, cause, by ?: return)
+    }
+
+    // An armour stand, a boat, a cart or a crystal put down from the hand.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPlace(event: EntityPlaceEvent) {
+        val player = event.player ?: return
+        created(event.entity, Cause.PLACE_ENTITY_ITEM, Attributed(player.uniqueId, Confidence.FACT))
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onHang(event: HangingPlaceEvent) {
+        val player = event.player ?: return
+        created(event.entity, Cause.PLACE_ENTITY_ITEM, Attributed(player.uniqueId, Confidence.FACT))
+    }
+
+    // Nothing but its uuid and where it appeared: what a rollback does with it is take it away again.
+    private fun created(entity: Entity, cause: Cause, by: Attributed) {
+        val log = logs.get(entity.world.uid) ?: return
+        val block = entity.location.block
+        log.submit(
+            listOf(
+                EntityChange(
+                    block.x, block.y, block.z, EntityKind.CREATED, cause, entity.type.key.toString(), entity.uniqueId,
+                    confidence = by.confidence, actor = by.culprit(),
+                )
+            )
+        )
+    }
+
     private fun removed(entity: Entity, culprit: Culprit) {
         if (entity is LeashHitch) return
         val now = System.currentTimeMillis()
@@ -194,6 +253,9 @@ class EntityCapture(
 
     private companion object {
         const val SEEN_CAP = 1024
+        // Buckets that pour out something other than a mob.
+        val NOT_A_MOB = setOf("water_bucket", "lava_bucket", "powder_snow_bucket", "milk_bucket", "bucket")
+        val BUILT = setOf(SpawnReason.BUILD_IRONGOLEM, SpawnReason.BUILD_SNOWMAN, SpawnReason.BUILD_WITHER, SpawnReason.BUILD_COPPERGOLEM)
         val EXPLODING = setOf(
             EntityType.TNT, EntityType.CREEPER, EntityType.END_CRYSTAL, EntityType.FIREBALL,
             EntityType.SMALL_FIREBALL, EntityType.WITHER_SKULL, EntityType.WITHER, EntityType.TNT_MINECART,

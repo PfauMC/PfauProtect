@@ -35,6 +35,8 @@ enum class Cause(val id: Int) {
     // painting, a boat or a cart broken, by a hit, an arrow, fire or a command.
     ENTITY_KILLED(0x97),
     ENTITY_BROKEN(0x98),
+    // A young animal two parents had because a player fed them.
+    MOB_BRED(0x99),
 
     CONTAINER_ADD(0x10),
     CONTAINER_REMOVE(0x11),
