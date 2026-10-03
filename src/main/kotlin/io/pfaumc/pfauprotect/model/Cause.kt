@@ -27,6 +27,10 @@ enum class Cause(val id: Int) {
     TOTEM_CONSUME(0x93),
     INVENTORY_LOAD(0x94),
     ITEM_VANISHED(0x95),
+    // What a rollback put back, in either plane: a block returned to the state a row says it had, a
+    // slot refilled or emptied, an item taken back from whoever carried it off. The actor is whoever
+    // ran the rollback.
+    ROLLBACK(0x96),
 
     CONTAINER_ADD(0x10),
     CONTAINER_REMOVE(0x11),

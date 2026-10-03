@@ -6,6 +6,7 @@ import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.PlayerInv
+import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.capture.item.transactions
@@ -71,8 +72,10 @@ data class SweepReport(val checked: Int, val unreadable: Int, val gaps: List<Str
 
 // Whether the walk ran out of rows or out of budget travels with the rows it brought back. A caller
 // that has to tell the difference cannot get it from the size of the list: a scan that stopped one
-// row short of the end and one that stopped in the middle of a year both come back full.
-data class EntryPage(val entries: List<LedgerEntry>, val complete: Boolean)
+// row short of the end and one that stopped in the middle of a year both come back full. The rows it
+// walked past without being able to read are counted too: a rollback acts on what the page holds, and
+// one that went ahead over a row nobody could read would restore part of a place and call it done.
+data class EntryPage(val entries: List<LedgerEntry>, val complete: Boolean, val unreadable: Int = 0)
 
 // Everything the item plane holds against one block position, and the rows of that position nobody
 // could decode. A row that did not decode never balanced to anything, so it is counted apart from the
@@ -92,7 +95,16 @@ data class BlockPostingsPage(val positions: List<BlockPostings>, val reachedEnd:
 // counts through a registry instead of through InventoryType.ordinal, so an old row parses cleanly
 // and names the wrong menu. The record version cannot say so — an ordinary entry is pinned to a
 // header byte of 0x00 — which leaves this the only number that can refuse such a database.
-private const val SCHEMA_VERSION = 4L
+//
+// Version 5 adds the family of compensations and nothing else, so a version 4 ledger is a version 5
+// ledger whose table is still empty: it is opened, given the family and stamped anew, and a build of
+// version 4 refuses it afterwards by the stamp instead of failing on a family it was never told about.
+private const val SCHEMA_VERSION = 5L
+private const val WIDENS_FROM = 4L
+
+// How many times a giving back is followed to the giving back of itself: a rollback, its undo, the
+// undo of that. Past this a posting is taken as given back, which is the side that cannot mint items.
+private const val MAX_UNDO_DEPTH = 16
 
 // Which of the two note families a pending note belongs to.
 private const val FORMS = 0
@@ -134,6 +146,7 @@ private val NESTED_OWNERS_CF = "nested_owners".toByteArray()
 private val TX_CF = "tx".toByteArray()
 private val PLACED_FORMS_CF = "placed_forms".toByteArray()
 private val BLOCK_PAYLOADS_CF = "block_payloads".toByteArray()
+private val COMPENSATED_CF = "compensated".toByteArray()
 
 private val META_SCHEMA = "schema".toByteArray()
 private val META_TX_ID = "tx_id".toByteArray()
@@ -239,6 +252,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private val placedFormsCf: ColumnFamilyHandle
     private val blockPayloadsCf: ColumnFamilyHandle
 
+    // Which postings a rollback has given back, and by which transaction: the original's tx_id and
+    // ordinal as the key, the compensating tx_id as the value.
+    private val compensatedCf: ColumnFamilyHandle
+
     private val queue = LinkedBlockingQueue<List<Transfer>>()
 
     // The notes a block position carries — the form it was placed from, the name its contents are
@@ -291,7 +308,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         // failed start of a newer build makes going back impossible.
         val stored = try {
             storedSchema(path)?.also {
-                require(it == SCHEMA_VERSION) {
+                require(it == SCHEMA_VERSION || it == WIDENS_FROM) {
                     "database schema $it cannot be read by this build (schema $SCHEMA_VERSION); " +
                         "the ledger and blocks directories have to be removed together, because a " +
                         "block journal cites state, payload and player numbers minted in the ledger"
@@ -311,6 +328,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             TX_CF to pointReadOptions,
             PLACED_FORMS_CF to pointReadOptions,
             BLOCK_PAYLOADS_CF to pointReadOptions,
+            COMPENSATED_CF to pointReadOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
         db = RocksDB.open(dbOptions, path, descriptors, cfHandles)
         entriesCf = cfHandles[1]
@@ -321,9 +339,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         txCf = cfHandles[6]
         placedFormsCf = cfHandles[7]
         blockPayloadsCf = cfHandles[8]
+        compensatedCf = cfHandles[9]
 
         failClosed {
-            if (stored == null) db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
+            if (stored != SCHEMA_VERSION) db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
             nextTxId = readCounter(META_TX_ID)
             for (ns in RegistryNamespace.entries) registryCounters[ns] = readCounter(registryCounterKey(ns))
         }
@@ -449,6 +468,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             if (closed) return EntryPage(emptyList(), false)
             val found = ArrayList<LedgerEntry>()
             var complete = true
+            var unreadable = 0
             // Keys inside a chunk are ordered by position and only then by time, so a chunk cut off
             // at the limit contributes its rows by position: a crater packed into one chunk answers
             // with one corner of itself and reads as silence over every position that is not in that
@@ -465,12 +485,13 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                         val page = scan(prefix, fromTs, toTs, reverse, room)
                         found += if (within == null) page.entries else page.entries.filter { within(it.holder) }
                         complete = complete && page.complete
+                        unreadable += page.unreadable
                     }
                 }
             }
             val byTime = compareBy<LedgerEntry>({ it.timestamp }, { it.txId })
             val ordered = found.sortedWith(if (reverse) byTime.reversed() else byTime)
-            EntryPage(ordered.take(limit), complete && ordered.size <= limit)
+            EntryPage(ordered.take(limit), complete && ordered.size <= limit, unreadable)
         }
     }
 
@@ -886,6 +907,46 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         // larger — a break that drops several stacks at once, both sides of a mutation facing the
         // Void — has no such handle on its remaining postings and could not be reassembled at all.
         if (transaction.size > 1) batch.put(txCf, longBytes(txId), packKeys(keys))
+        // In the batch that gives them back, so a crash cannot leave the items returned and the
+        // postings still waiting to be returned a second time.
+        for (transfer in transaction) {
+            for (ref in transfer.reverts) batch.put(compensatedCf, refKey(ref), longBytes(txId))
+        }
+    }
+
+    private fun refKey(ref: PostingRef): ByteArray = ByteWriter(9).longBE(ref.txId).byte(ref.ordinal).toByteArray()
+
+    /**
+     * Which of these postings a rollback has already given back. A giving back can be given back in
+     * turn — a rollback undone by rolling back its own rows — and then the posting is owed again, so
+     * the chain is followed to its end: an odd number of links is given back, an even one is not. A
+     * compensating transaction counts as undone when any of its postings was given back.
+     */
+    fun compensated(refs: Collection<PostingRef>): Set<PostingRef> = dbLock.read {
+        if (closed || refs.isEmpty()) return emptySet()
+        val asked = refs.toList()
+        val by = db.multiGetAsList(List(asked.size) { compensatedCf }, asked.map(::refKey))
+        val given = HashSet<PostingRef>()
+        db.newIterator(compensatedCf).use { iter ->
+            asked.forEachIndexed { index, ref ->
+                var giver = by[index]?.let { ByteReader(it).longBE() } ?: return@forEachIndexed
+                var givenBack = true
+                var ended = false
+                for (step in 0 until MAX_UNDO_DEPTH) {
+                    val prefix = longBytes(giver)
+                    iter.seek(prefix)
+                    val key = if (iter.isValid) iter.key() else null
+                    if (key == null || key.size < prefix.size || !key.copyOf(prefix.size).contentEquals(prefix)) {
+                        ended = true
+                        break
+                    }
+                    giver = ByteReader(iter.value()).longBE()
+                    givenBack = !givenBack
+                }
+                if (givenBack || !ended) given += ref
+            }
+        }
+        given
     }
 
     private fun packKeys(keys: List<ByteArray>): ByteArray {
@@ -981,6 +1042,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     ): EntryPage {
         val found = ArrayList<LedgerEntry>()
         if (limit <= 0) return EntryPage(found, false)
+        var unreadable = 0
         // One row past the limit is what separates a scan that ended from one that was cut off, and
         // it costs a single decode. Guessing from the size instead is wrong both ways: a range that
         // ends exactly on the limit reads as cut off, and rows dropped by the time window read as
@@ -988,11 +1050,16 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         forEachUnder(prefix, reverse) { key, value ->
             // A chunk prefix stops three position bytes short of the timestamp, so no byte range
             // under it can express a time window; the window is applied to the decoded entry instead.
+            // A row that does not decode cannot say when it was written, so it counts whatever the window.
             val entry = EntryCodec.decodeOrNull(key, value, registries)
-            if (entry != null && entry.timestamp in fromTs..toTs) found += entry
+            if (entry == null) unreadable++ else if (entry.timestamp in fromTs..toTs) found += entry
             found.size <= limit
         }
-        return if (found.size <= limit) EntryPage(found, true) else EntryPage(found.take(limit), false)
+        return if (found.size <= limit) {
+            EntryPage(found, true, unreadable)
+        } else {
+            EntryPage(found.take(limit), false, unreadable)
+        }
     }
 
     // A fill that mints thousands of numbers in a row would otherwise pay a write apiece. The batch is

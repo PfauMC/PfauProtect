@@ -224,6 +224,24 @@ class BlockStoreTest {
         assertEquals(stateOf(DIRT), log.standingAt(2, 64, 2).row?.stateAfter)
     }
 
+    // A rollback acts on everything it read, so a row it could not read and a walk that stopped on its
+    // budget are both said rather than left out of the answer.
+    @Test
+    fun `a rollback window counts what it could not read and says when it ran out`() {
+        log.submit(listOf(placed(2, 64, 2, before = AIR, after = STONE, ts = T0)))
+        log.submit(listOf(placed(2, 64, 2, before = STONE, after = DIRT, ts = T0 + 10)))
+        log.submit(listOf(placed(9, 64, 9, ts = T0 + 20)))
+        log.drain()
+        writeRawRow(BlockCodec.key(2, 64, 2, T0 + 5, 999, 0), ByteArray(0))
+
+        val whole = log.windowInChunk(0, 0, 0, Long.MAX_VALUE, budget = 100) { x, _, _ -> x == 2 }
+        assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), whole.rows.map { it.stateAfter })
+        assertEquals(1, whole.unreadable)
+        assertTrue(whole.complete)
+        assertFalse(log.windowInChunk(0, 0, 0, Long.MAX_VALUE, budget = 3) { _, _, _ -> true }.complete)
+        assertEquals(listOf(T0 + 10), log.windowAt(2, 64, 2, T0 + 6, Long.MAX_VALUE, 100).rows.map { it.timestamp })
+    }
+
     @Test
     fun `a change missing either side is refused without taking the rest of the submit with it`() {
         log.submit(

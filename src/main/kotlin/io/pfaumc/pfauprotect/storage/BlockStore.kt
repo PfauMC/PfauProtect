@@ -47,6 +47,11 @@ data class BlockChange(
 // than as a position nothing ever happened to.
 data class BlockStanding(val row: BlockRow?, val torn: Boolean)
 
+// What a rollback reads: every row of the window, how many rows the walk could not read, and whether
+// it ran out of budget first. A rollback that went ahead over less than all of it would put back part
+// of a place and report it done.
+data class BlockWindow(val rows: List<BlockRow>, val unreadable: Int, val complete: Boolean)
+
 // Raised by a change to the key layout or to the set of column families. The record version in the
 // value covers neither: keys carry a version this build reads, so without the bump an older database
 // opens and every key is parsed as something it never was.
@@ -245,6 +250,50 @@ class BlockLog(
         }
         val byTime = compareBy<BlockRow>({ it.timestamp }, { it.eventId }, { it.ordinal })
         found.sortedWith(if (reverse) byTime.reversed() else byTime).take(limit)
+    }
+
+    /**
+     * Every row of a chunk inside the window and the box, in key order, with `budget` the most rows
+     * the walk may step over in all. A row that cannot be read counts wherever it lies, since its own
+     * bytes are what would have said whether it was in the window.
+     */
+    fun windowInChunk(
+        chunkX: Int,
+        chunkZ: Int,
+        fromTs: Long,
+        toTs: Long,
+        budget: Int,
+        within: (Int, Int, Int) -> Boolean,
+    ): BlockWindow = window(Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within)
+
+    fun windowAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): BlockWindow =
+        window(BlockCodec.positionPrefix(x, y, z), fromTs, toTs, budget) { _, _, _ -> true }
+
+    private fun window(
+        prefix: ByteArray,
+        fromTs: Long,
+        toTs: Long,
+        budget: Int,
+        within: (Int, Int, Int) -> Boolean,
+    ): BlockWindow = dbLock.read {
+        if (closed) return BlockWindow(emptyList(), 0, false)
+        val rows = ArrayList<BlockRow>()
+        var unreadable = 0
+        var walked = 0
+        var complete = true
+        forEachUnder(prefix, reverse = false) { key, value ->
+            if (walked++ >= budget) {
+                complete = false
+                return@forEachUnder false
+            }
+            val row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            when {
+                row == null -> unreadable++
+                row.timestamp in fromTs..toTs && within(row.x, row.y, row.z) -> rows += row
+            }
+            true
+        }
+        BlockWindow(rows, unreadable, complete)
     }
 
     /**
