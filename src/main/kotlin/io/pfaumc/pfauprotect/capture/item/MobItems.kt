@@ -9,6 +9,9 @@ import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.capture.block.spotOf
+import io.pfaumc.pfauprotect.capture.block.firedBy
+import io.papermc.paper.event.entity.EntityDamageItemEvent
+import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.Material
@@ -105,6 +108,16 @@ internal fun unbookHeld(entity: Entity, slot: Int) {
 internal fun giftFrom(entity: Entity) =
     entity is Chicken || entity is Cat || entity is Sniffer || entity is Armadillo || entity is Turtle || entity is Goat
 
+/**
+ * Whether wear of this much breaks the item. A mob's own gear wears down only where the game makes it,
+ * as wolf armour does under the hits the wolf would have taken, and breaks away with no drop and no
+ * event of its own.
+ */
+internal fun wornThrough(stack: net.minecraft.world.item.ItemStack, damage: Int): Boolean =
+    stack.isDamageableItem && stack.damageValue + damage >= stack.maxDamage
+
+internal fun wornThrough(item: BukkitItemStack, damage: Int): Boolean = wornThrough(CraftItemStack.unwrap(item), damage)
+
 /** Which booked slot a dropped form came out of, and whether it is the whole of what was booked there. */
 internal fun heldSlotOf(held: Map<Int, ByteArray>, form: ByteArray): Int? =
     held.entries.firstOrNull { it.value.contentEquals(form) }?.key
@@ -195,6 +208,20 @@ class MobItemListener(
         val slot = heldSlotOf(heldBy(piglin), key.form) ?: return
         unbookHeld(piglin, slot)
         pending.add(EntitySlot(piglin.uniqueId, slot), Void, Cause.PIGLIN_BARTER, key, 1)
+    }
+
+    // The item is gone from the slot it was booked into, the way a player's broken tool is.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onWornThrough(event: EntityDamageItemEvent) {
+        val mob = event.entity as? LivingEntity ?: return
+        if (mob is Player || !wornThrough(event.item, event.damage)) return
+        val gear = mob.equipment ?: return
+        val slot = org.bukkit.inventory.EquipmentSlot.entries.firstOrNull { mob.canUseEquipmentSlot(it) && gear.getItem(it) == event.item } ?: return
+        val index = CraftEquipmentSlot.getNMS(slot).ordinal
+        val form = heldBy(mob)[index] ?: codec.encodeOrNull(event.item)?.form ?: return
+        unbookHeld(mob, index)
+        val damager = (mob.lastDamageCause as? EntityDamageByEntityEvent)?.damager?.let(::firedBy)
+        pending.add(EntitySlot(mob.uniqueId, index), Void, Cause.DURABILITY_BREAK, ItemKey(form, null), 1, (damager as? Player)?.uniqueId)
     }
 
     // A frame or a painting drops what it holds without the drop event every other entity raises, so

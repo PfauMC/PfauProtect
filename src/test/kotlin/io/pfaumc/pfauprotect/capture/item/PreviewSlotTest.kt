@@ -139,6 +139,17 @@ class PreviewSlotTest {
         assertEquals(true, heldDrop(need = 1, holding = null, later = listOf(3)))
     }
 
+    // Wolf armour one point from breaking breaks under a hit of one; a fresh piece does not under one
+    // of three, and what has no durability never wears through.
+    @Test
+    fun `gear breaks on the wear that takes its last point`() {
+        val armor = net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.WOLF_ARMOR)
+        assertEquals(false, wornThrough(armor, 3))
+        armor.damageValue = armor.maxDamage - 1
+        assertEquals(true, wornThrough(armor, 1))
+        assertEquals(false, wornThrough(net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.SADDLE), 100))
+    }
+
     // A boat is removed before it drops: its drop still finds the slot, once, and the rest is left to
     // be written off.
     @Test

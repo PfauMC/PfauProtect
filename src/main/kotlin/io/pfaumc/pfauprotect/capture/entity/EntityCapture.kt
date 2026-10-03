@@ -11,6 +11,8 @@ import io.pfaumc.pfauprotect.capture.block.explosionCause
 import io.pfaumc.pfauprotect.capture.block.firedBy
 import io.pfaumc.pfauprotect.capture.block.litBy
 import io.pfaumc.pfauprotect.capture.item.positionOf
+import io.pfaumc.pfauprotect.capture.item.wornThrough
+import io.papermc.paper.event.entity.EntityDamageItemEvent
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntityKind
@@ -176,6 +178,32 @@ class EntityCapture(
                     EntityChange(
                         x, y, z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, entity.type.key.toString(), entity.uniqueId,
                         actor = player.uniqueId, before = before, after = after,
+                    )
+                )
+            )
+        }
+    }
+
+    /**
+     * Wolf armour broken by hits on the wolf: the wolf as it was with it, against whoever dealt the hit that
+     * broke it, so a rollback of them puts the armour back. The rest of its wear is left as it is.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onWornThrough(event: EntityDamageItemEvent) {
+        val entity = event.entity
+        if (entity is Player || !wornThrough(event.item, event.damage)) return
+        val damager = (entity.lastDamageCause as? EntityDamageByEntityEvent)?.damager
+        val by = (if (damager != null) byEntity(damager, Cause.ENTITY_CHANGED) else culpritOf(entity, Cause.ENTITY_CHANGED)).by ?: return
+        val log = logs.get(entity.world.uid) ?: return
+        val before = snapshotOf((entity as CraftEntity).handle) ?: return
+        val block = entity.location.block
+        laterOn(entity) {
+            val after = snapshotOf((entity as CraftEntity).handle) ?: return@laterOn
+            log.submit(
+                listOf(
+                    EntityChange(
+                        block.x, block.y, block.z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, entity.type.key.toString(), entity.uniqueId,
+                        confidence = by.confidence, actor = by.culprit(), before = before, after = after,
                     )
                 )
             )
