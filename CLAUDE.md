@@ -42,6 +42,7 @@ Packages under `io.pfaumc.pfauprotect`; tests sit in the package of the code the
 | `storage` | both RocksDB stores, codecs, registries, item forms |
 | `capture.item` | item movements: windows and the recompute pass, intents, entities, commands |
 | `capture.block` | block changes, mechanisms, `TickCoalescer` |
+| `capture.entity` | the entity plane's capture: entities removed (full NBT), created, changed or led away by a player, players killed |
 | `attribution` | the culprit ladder, entity origins, redstone energy (phase 5.7) |
 | `check` | plane sync and reconciliation |
 | `command` | `/pp lookup` and inspect |
@@ -87,7 +88,10 @@ again and runs it, a chunk per region task. It writes compensating rows (`Cause.
 edits old ones. A rollback's own rows are only rolled back when `action:rollback` names them, which is also how a
 rollback is undone. What it put back is then taken back from whoever carried it off (`Confiscation.kt`): from an
 online player through an `Intent`, from an offline one at their next join, from a pile still lying where it lies.
-`radius:global` with `user:` finds a player's positions through `by_actor` and their own item rows.
+`radius:global` with `user:` finds a player's positions through `by_actor` and their own item rows. Entities go
+back to what their oldest row in the window says they were (brought back from NBT with the same UUID, taken away,
+changed back, returned to where they stood), and a player killed by the one rolled back gets back what fell out of
+them.
 
 ## Invariants
 
