@@ -139,8 +139,12 @@ class Tally {
     }
 }
 
-// What a dead entity carries that a living one must not: it would die again on its first tick.
-private val DYING = listOf("DeathTime", "HurtTime", "HurtByTimestamp", "Fire", "fire", "FallDistance", "fall_distance")
+// What a dead entity carries that a living one must not: it would die again on its first tick. And how
+// it first came into the world: a stand summoned by a command would read as summoned again, and have what
+// it holds booked to it a second time on top of what the rollback gives back.
+private val DYING = listOf(
+    "DeathTime", "HurtTime", "HurtByTimestamp", "Fire", "fire", "FallDistance", "fall_distance", "Paper.SpawnReason",
+)
 
 // How long a campfire cooks what is put back on it: what every vanilla campfire recipe takes.
 private const val CAMPFIRE_COOK_TICKS = 600

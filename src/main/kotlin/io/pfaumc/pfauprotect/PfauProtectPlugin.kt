@@ -235,6 +235,9 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(destruction, this)
         server.pluginManager.registerEvents(EntityOriginListener(attribution, entities), this)
         server.pluginManager.registerEvents(RedstoneListener(energy, blocks, entities, nudges), this)
+        // After the attribution of entities, whose notes it reads for who brought a mob in, and before the
+        // item capture, which takes the marks off a dying mob's slots that its snapshot has to keep.
+        server.pluginManager.registerEvents(entityCapture, this)
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
         server.pluginManager.registerEvents(ProjectileListener(capture, codec, mechanisms, origins), this)
@@ -275,7 +278,6 @@ class PfauProtectPlugin : JavaPlugin() {
             this,
         )
         server.pluginManager.registerEvents(worldItems, this)
-        server.pluginManager.registerEvents(entityCapture, this)
         // After the capture's own join handler, whose starting point for the player's first pass the
         // items taken back on the join have to come after.
         server.pluginManager.registerEvents(confiscations, this)
