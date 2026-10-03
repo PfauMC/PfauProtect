@@ -116,9 +116,13 @@ online player through an `Intent`, from an offline one at their next join, from 
 - SPEC-v4 §15 records how phase 4 was actually built and overrides §3–§13. Window slots are booked to
   their real owner: the crafting grid to the player (`EntitySlot`), a station to its block (`Container`).
   `MenuSlot` is left only for ownerless GUIs.
-- SPEC-v6 is rollback: 6.1 an area by the lookup's filters, 6.2 taking back what was carried off, 6.3 the
-  actor index and a player's rollback without a radius. §13 records how each phase was built.
-- TESTING-v6 is the live plan for SPEC-v6, with a player; the console-only checks are already in SPEC-v6 §13.
+- SPEC-v6 records what a rollback needs beyond blocks and items: an entity plane (`entities` in each world
+  base: entities removed with their full NBT, created by a player, changed or led away by one, and the
+  item entities that fell out of a break or a death), and the slots of a lectern and a campfire.
+- SPEC-v7 is rollback: 7.1 an area by the lookup's filters, 7.2 taking back what was carried off, 7.3 the
+  actor index and a player's rollback without a radius, 7.4–7.7 rolling back everything SPEC-v6 records.
+  §14 records how each phase was built.
+- TESTING-v7 is the live plan for SPEC-v7, with a player; the console-only checks are already in SPEC-v7 §14.
 - PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
 - TESTING-v5 is the live run for SPEC-v5, closed on 2026-10-03. TESTING-v5-RESULTS holds it: the D17–D50

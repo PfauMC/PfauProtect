@@ -127,7 +127,7 @@ internal fun merged(owed: List<Owed>): List<Owed> =
     owed.groupBy { it.taker to it.formId }.map { (key, all) -> Owed(key.first, key.second, all.sumOf { it.qty }) }
 
 /**
- * Takes back what a rollback put back from whoever carried it off (SPEC-v6 §9). A player's slots are
+ * Takes back what a rollback put back from whoever carried it off (SPEC-v7 §9). A player's slots are
  * written only by their pass, so what is taken from them leaves a reason for it, the way a `/clear`
  * does; an ender chest nobody has open is not something the pass reads, and is written directly. A
  * player who is offline owes it until they join. A pile still lying is taken where it lies.
