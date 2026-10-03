@@ -219,8 +219,8 @@ class EntityCapture(
 
     /**
      * A mob led away (SPEC-v6 §2.4): put on a lead, ridden off, carried in a boat or a cart with a player
-     * in it. What is kept is the mob as it was, which says where it stood. A player's own pet is theirs
-     * to walk.
+     * in it; and the boat or the cart itself, ridden off. What is kept is the entity as it was, which says
+     * where it stood. A player's own pet is theirs to walk.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onLeash(event: PlayerLeashEntityEvent) {
@@ -233,8 +233,13 @@ class EntityCapture(
         val rider = event.entity
         val mount = event.mount
         when {
-            rider is Player && mount is LivingEntity -> led(mount, rider)
-            rider is LivingEntity && rider !is Player -> mount.passengers.filterIsInstance<Player>().firstOrNull()?.let { led(rider, it) }
+            // A player getting into somebody's boat or cart rides off with it and with whatever already
+            // sits in it: a cow that climbed into an empty boat goes where the player steers.
+            rider is Player -> {
+                led(mount, rider)
+                for (aboard in mount.passengers) led(aboard, rider)
+            }
+            rider is LivingEntity -> mount.passengers.filterIsInstance<Player>().firstOrNull()?.let { led(rider, it) }
         }
     }
 
