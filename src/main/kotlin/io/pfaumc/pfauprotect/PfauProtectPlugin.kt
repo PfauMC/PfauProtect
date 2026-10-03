@@ -270,7 +270,11 @@ class PfauProtectPlugin : JavaPlugin() {
         )
         server.pluginManager.registerEvents(worldItems, this)
         server.pluginManager.registerEvents(
-            EntityCapture(blocks, origins, attribution, entities) { at, task -> server.regionScheduler.run(this, at) { task() } },
+            EntityCapture(
+                blocks, origins, attribution, entities,
+                later = { at, task -> server.regionScheduler.run(this, at) { task() } },
+                laterOn = { entity, task -> entity.scheduler.run(this, { task() }, null) },
+            ),
             this,
         )
         // After the capture's own join handler, whose starting point for the player's first pass the

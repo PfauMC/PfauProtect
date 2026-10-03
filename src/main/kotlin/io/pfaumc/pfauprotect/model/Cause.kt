@@ -37,6 +37,10 @@ enum class Cause(val id: Int) {
     ENTITY_BROKEN(0x98),
     // A young animal two parents had because a player fed them.
     MOB_BRED(0x99),
+    // A player changed an entity by hand — named, sheared, dyed, turned a frame — or led it away on a
+    // lead, a saddle or a boat.
+    ENTITY_CHANGED(0x9A),
+    ENTITY_LED(0x9B),
 
     CONTAINER_ADD(0x10),
     CONTAINER_REMOVE(0x11),

@@ -41,6 +41,15 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.event.entity.EntityPlaceEvent
 import org.bukkit.event.hanging.HangingPlaceEvent
 import org.bukkit.event.player.PlayerBucketEmptyEvent
+import org.bukkit.event.player.PlayerInteractAtEntityEvent
+import org.bukkit.event.player.PlayerInteractEntityEvent
+import org.bukkit.event.entity.PlayerLeashEntityEvent
+import org.bukkit.event.entity.EntityMountEvent
+import io.papermc.paper.event.player.PlayerItemFrameChangeEvent
+import org.bukkit.event.player.PlayerArmorStandManipulateEvent
+import net.minecraft.nbt.CompoundTag
+import java.io.ByteArrayInputStream
+import java.io.DataInputStream
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityDeathEvent
 import org.bukkit.event.hanging.HangingBreakByEntityEvent
@@ -80,6 +89,28 @@ internal fun snapshotOf(entity: NmsEntity): ByteArray? {
 internal fun keepsItsPlace(entity: NmsEntity): Boolean =
     entity !is Mob || entity.isPersistenceRequired || entity.requiresCustomPersistence() || !entity.removeWhenFarAway(Double.MAX_VALUE)
 
+/**
+ * What of an entity's NBT changes by itself from one tick to the next: where it is and how it moves, how
+ * hurt or hungry or old it is, what it remembers, the server's own bookkeeping. A player's hand is not
+ * behind any of it, so two snapshots differing only here are the same entity, and a rollback putting an
+ * entity back keeps these as they are now. What it carries is the item plane's and stays significant.
+ */
+internal val VOLATILE = setOf(
+    "Pos", "Motion", "Rotation", "FallDistance", "fall_distance", "Fire", "fire", "Air", "OnGround",
+    "PortalCooldown", "Health", "HurtTime", "HurtByTimestamp", "DeathTime", "AbsorptionAmount", "Brain",
+    "InLove", "LoveCause", "Age", "ForcedAge", "TicksFrozen", "active_effects", "attributes", "Leash", "leash",
+    "Offers", "Xp", "LastRestock", "RestocksToday", "LastGossipDecay", "Gossips", "FoodLevel",
+    "Paper.Origin", "Paper.OriginWorld", "Paper.SpawnReason", "Spigot.ticksLived", "Bukkit.updateLevel",
+    "Bukkit.Aware", "WorldUUIDLeast", "WorldUUIDMost",
+)
+
+internal fun nbtOf(bytes: ByteArray): CompoundTag = NbtIo.read(DataInputStream(ByteArrayInputStream(bytes)))
+
+internal fun significant(tag: CompoundTag): CompoundTag = tag.copy().also { copy -> for (key in VOLATILE) copy.remove(key) }
+
+/** Whether a player's hand changed anything about the entity between two snapshots of it. */
+internal fun changedBetween(before: ByteArray, after: ByteArray): Boolean = significant(nbtOf(before)) != significant(nbtOf(after))
+
 /** Why an entity went and who stands behind it. */
 internal class Culprit(val cause: Cause, val by: Attributed?)
 
@@ -95,8 +126,90 @@ class EntityCapture(
     private val entities: EntityOrigins,
     // Runs a task on the region of the location a tick later.
     private val later: (Location, () -> Unit) -> Unit,
+    // Runs a task on the entity's own scheduler a tick later.
+    private val laterOn: (Entity, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
     private val seen = ConcurrentHashMap<UUID, Long>()
+
+    // One reading of an entity a player is handling at a time: a click raises two events on an armour stand.
+    private val handling = ConcurrentHashMap.newKeySet<UUID>()
+
+    /**
+     * A player's hand on an entity (SPEC-v6 §2.3). The events come before the hand acts, so this is the
+     * entity as it was; a tick later, on its own thread, it is read again, and a row is written only if
+     * anything besides what changes by itself has changed.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onInteract(event: PlayerInteractEntityEvent) = handled(event.rightClicked, event.player)
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onInteractAt(event: PlayerInteractAtEntityEvent) = handled(event.rightClicked, event.player)
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onFrame(event: PlayerItemFrameChangeEvent) = handled(event.itemFrame, event.player)
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onStand(event: PlayerArmorStandManipulateEvent) = handled(event.rightClicked, event.player)
+
+    private fun handled(entity: Entity, player: Player) {
+        if (entity is Player || !handling.add(entity.uniqueId)) return
+        val log = logs.get(entity.world.uid)
+        val before = log?.let { snapshotOf((entity as CraftEntity).handle) }
+        if (before == null) {
+            handling.remove(entity.uniqueId)
+            return
+        }
+        val block = entity.location.block
+        val (x, y, z) = Triple(block.x, block.y, block.z)
+        laterOn(entity) {
+            handling.remove(entity.uniqueId)
+            // Killed by the hand, it is a removal and the death writes it.
+            if (!entity.isValid) return@laterOn
+            val after = snapshotOf((entity as CraftEntity).handle) ?: return@laterOn
+            if (!changedBetween(before, after)) return@laterOn
+            log.submit(
+                listOf(
+                    EntityChange(
+                        x, y, z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, entity.type.key.toString(), entity.uniqueId,
+                        actor = player.uniqueId, before = before, after = after,
+                    )
+                )
+            )
+        }
+    }
+
+    /**
+     * A mob led away (SPEC-v6 §2.4): put on a lead, ridden off, carried in a boat or a cart with a player
+     * in it. What is kept is the mob as it was, which says where it stood. A player's own pet is theirs
+     * to walk.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onLeash(event: PlayerLeashEntityEvent) = led(event.entity, event.player)
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onMount(event: EntityMountEvent) {
+        val rider = event.entity
+        val mount = event.mount
+        when {
+            rider is Player && mount is LivingEntity -> led(mount, rider)
+            rider is LivingEntity && rider !is Player -> mount.passengers.filterIsInstance<Player>().firstOrNull()?.let { led(rider, it) }
+        }
+    }
+
+    private fun led(entity: Entity, player: Player) {
+        if (entity is Player || ((entity as? Tameable)?.owner?.uniqueId == player.uniqueId)) return
+        val log = logs.get(entity.world.uid) ?: return
+        val before = snapshotOf((entity as CraftEntity).handle) ?: return
+        val block = entity.location.block
+        log.submit(
+            listOf(
+                EntityChange(
+                    block.x, block.y, block.z, EntityKind.MOVED, Cause.ENTITY_LED, entity.type.key.toString(), entity.uniqueId,
+                    actor = player.uniqueId, before = before,
+                )
+            )
+        )
+    }
 
     // A player's own death is the item plane's, slot by slot; it has nothing to put back.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
