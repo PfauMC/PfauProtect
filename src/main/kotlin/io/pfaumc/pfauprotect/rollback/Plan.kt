@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.rollback
 
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.LedgerEntry
@@ -12,6 +13,7 @@ import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.BlockRow
+import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import java.util.UUID
@@ -26,6 +28,9 @@ internal const val BLOCK_WALK_BUDGET = 2_000_000
 
 // The vanilla `/fill` limit: as many positions as the server lets one command write.
 internal const val MAX_ROLLBACK_POSITIONS = 32_768
+
+// The entity rows that say what an entity was before: the rest only mark an event at a place.
+private val STORIES = setOf(EntityKind.REMOVED, EntityKind.CREATED, EntityKind.CHANGED, EntityKind.MOVED)
 
 // The three airs are one block to a rollback: a cave keeps its own kind of air, and a break inside it
 // leaves the plain one behind.
@@ -82,11 +87,36 @@ class Refill(
 )
 
 /**
+ * What a rollback does to one entity. `oldest` is the first row in the window the filter keeps, and what
+ * it says the entity was before — `before`, its whole NBT then — is what the entity goes back to: an
+ * entity a player brought in is taken away again, one that went is brought back as it was, one changed
+ * or led away is changed back or brought back to where it stood. `slots` are what its own slots gave up
+ * or took since, given back along with it; `drops` what fell out of it when it went.
+ */
+class EntityPlan(
+    val at: WorldBlock,
+    val uuid: UUID,
+    val type: String,
+    val oldest: EntityRow,
+    val before: ByteArray?,
+    val slots: List<LedgerEntry>,
+    val drops: List<UUID>,
+)
+
+/**
  * Everything a rollback does at one position: its block rows newest first, its slot postings, and the
  * item plane's side of the breaks among them — what the position gave up, whose transaction also says
- * what fell out of it.
+ * what fell out of it. `entities` are the entities whose story starts here; `dropped`, the items the
+ * position dropped when something other than a hand broke it (SPEC-v6 §2.5).
  */
-class PositionPlan(val at: WorldBlock, val steps: List<Step>, val refills: List<Refill>, val breaks: List<LedgerEntry> = emptyList())
+class PositionPlan(
+    val at: WorldBlock,
+    val steps: List<Step>,
+    val refills: List<Refill>,
+    val breaks: List<LedgerEntry> = emptyList(),
+    val entities: List<EntityPlan> = emptyList(),
+    val dropped: List<UUID> = emptyList(),
+)
 
 class ChunkPlan(val chunkX: Int, val chunkZ: Int, val positions: List<PositionPlan>)
 
@@ -94,7 +124,14 @@ sealed interface Reading
 
 class Refused(val reason: String) : Reading
 
-class Planned(val world: UUID, val chunks: List<ChunkPlan>, val rows: Int, val postings: Int) : Reading {
+// `deaths` are players killed by those the filter names: what fell out of them goes back to them (SPEC-v7 §11).
+class Planned(
+    val world: UUID,
+    val chunks: List<ChunkPlan>,
+    val rows: Int,
+    val postings: Int,
+    val deaths: List<EntityRow> = emptyList(),
+) : Reading {
     val positions: Int get() = chunks.sumOf { it.positions.size }
 }
 
@@ -116,12 +153,14 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         toTs: Long,
         keepsRow: (BlockRow) -> Boolean,
         keepsEntry: (LedgerEntry) -> Boolean,
+        keepsEntity: (EntityRow) -> Boolean = { true },
     ): Reading {
         val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
         val inBox = { bx: Int, by: Int, bz: Int ->
             bx in (x - radius)..(x + radius) && by in (y - radius)..(y + radius) && bz in (z - radius)..(z + radius)
         }
         val rows = ArrayList<BlockRow>()
+        val entityRows = ArrayList<EntityRow>()
         var unreadable = 0
         var budget = BLOCK_WALK_BUDGET
         for (cx in ((x - radius) shr 4)..((x + radius) shr 4)) {
@@ -131,7 +170,12 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                 budget -= window.walked
                 unreadable += window.unreadable
                 window.rows.filterTo(rows, keepsRow)
-                if (rows.size > MAX_ROLLBACK_ROWS) return tooMuch()
+                val entities = log.entitiesInChunk(cx, cz, fromTs, toTs, budget, inBox)
+                if (!entities.complete) return tooMuch()
+                budget -= entities.walked
+                unreadable += entities.unreadable
+                entities.rows.filterTo(entityRows, keepsEntity)
+                if (rows.size + entityRows.size > MAX_ROLLBACK_ROWS) return tooMuch()
             }
         }
         val page = ledger.regionPage(
@@ -147,7 +191,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         )
         if (!page.complete) return tooMuch()
         val (slots, positions) = page.entries.filter(keepsEntry).partition { it.holder is Container }
-        return plan(world, rows, slots, positions.filter { it.qty < 0 }, unreadable + page.unreadable)
+        return plan(world, rows, slots, positions.filter { it.qty < 0 }, entityRows, toTs, unreadable + page.unreadable)
     }
 
     /**
@@ -191,10 +235,12 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         toTs: Long,
         keepsRow: (BlockRow) -> Boolean,
         keepsEntry: (LedgerEntry) -> Boolean,
+        keepsEntity: (EntityRow) -> Boolean = { true },
     ): Reading {
         val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
         if (positions.size > MAX_ROLLBACK_POSITIONS) return tooMany(positions.size)
         val rows = ArrayList<BlockRow>()
+        val entityRows = ArrayList<EntityRow>()
         val slots = ArrayList<LedgerEntry>()
         val losses = ArrayList<LedgerEntry>()
         var unreadable = 0
@@ -205,6 +251,11 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             budget -= window.walked
             unreadable += window.unreadable
             window.rows.filterTo(rows, keepsRow)
+            val entities = log.entitiesAt(at.x, at.y, at.z, fromTs, toTs, budget)
+            if (!entities.complete) return tooMuch()
+            budget -= entities.walked
+            unreadable += entities.unreadable
+            entities.rows.filterTo(entityRows, keepsEntity)
             for (holder in listOf(Container(world, at.x, at.y, at.z, 0), at)) {
                 val page = ledger.holderPage(holder, fromTs, toTs, limit = MAX_ROLLBACK_ROWS)
                 if (!page.complete) return tooMuch()
@@ -215,7 +266,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             }
             if (rows.size + slots.size > MAX_ROLLBACK_ROWS) return tooMuch()
         }
-        return plan(world, rows, slots, losses, unreadable)
+        return plan(world, rows, slots, losses, entityRows, toTs, unreadable)
     }
 
     private fun plan(
@@ -223,6 +274,8 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         rows: List<BlockRow>,
         kept: List<LedgerEntry>,
         losses: List<LedgerEntry>,
+        entityRows: List<EntityRow>,
+        toTs: Long,
         unreadable: Int,
     ): Reading {
         if (unreadable > 0) return unreadable(unreadable)
@@ -257,15 +310,49 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             refills.getOrPut(WorldBlock(world, slot.x, slot.y, slot.z)) { ArrayList() } +=
                 Refill(slot, form, entry.itemFormId, entry.damage, -entry.qty, entry.ref, entry.counterparty)
         }
+        val entities = HashMap<WorldBlock, MutableList<EntityPlan>>()
+        val dropped = HashMap<WorldBlock, MutableList<UUID>>()
+        val deaths = ArrayList<EntityRow>()
+        val (stories, marks) = entityRows.partition { it.kind in STORIES }
+        for (row in marks) {
+            when (row.kind) {
+                EntityKind.DROPPED -> dropped.getOrPut(WorldBlock(world, row.x, row.y, row.z)) { ArrayList() } += row.drops
+                EntityKind.PLAYER_DIED -> deaths += row
+                else -> Unit
+            }
+        }
+        for ((uuid, story) in stories.groupBy { it.uuid }) {
+            val oldest = story.minWith(compareBy<EntityRow> { it.eventId }.thenBy { it.ordinal })
+            val before = oldest.payloadBefore?.let { ledger.payload(it) }
+            if (oldest.payloadBefore != null && before == null || oldest.kind != EntityKind.CREATED && before == null) {
+                unnamed++
+                continue
+            }
+            // Whatever its own slots did after the moment it goes back to has to be undone with it, whoever
+            // did it: the NBT it goes back to already holds them as they were then.
+            val page = ledger.holderPage(EntitySlot(uuid, 0), oldest.timestamp, toTs, limit = MAX_ROLLBACK_ROWS)
+            if (!page.complete) return tooMuch()
+            if (page.unreadable > 0) return unreadable(page.unreadable)
+            val owed = ledger.compensated(page.entries.map { it.ref })
+            val slots = page.entries.filter { it.ref !in owed }
+            val at = WorldBlock(world, oldest.x, oldest.y, oldest.z)
+            val drops = story.filter { it.kind == EntityKind.REMOVED }.flatMap { it.drops }
+            entities.getOrPut(at) { ArrayList() } += EntityPlan(at, uuid, oldest.type, oldest, before, slots, drops)
+        }
         if (unnamed > 0) return unreadable(unnamed)
-        val positions = steps.keys + refills.keys
+        val positions = steps.keys + refills.keys + entities.keys
         if (positions.size > MAX_ROLLBACK_POSITIONS) return tooMany(positions.size)
         val breaks = losses.groupBy { it.holder as WorldBlock }
         val chunks = positions
-            .map { PositionPlan(it, steps[it].orEmpty(), refills[it].orEmpty(), breaks[it].orEmpty()) }
+            .map {
+                PositionPlan(
+                    it, steps[it].orEmpty(), refills[it].orEmpty(), breaks[it].orEmpty(),
+                    entities[it].orEmpty(), dropped[it].orEmpty(),
+                )
+            }
             .groupBy { (it.at.x shr 4) to (it.at.z shr 4) }
             .map { (chunk, plans) -> ChunkPlan(chunk.first, chunk.second, plans) }
-        return Planned(world, chunks, rows.size, entries.size)
+        return Planned(world, chunks, rows.size + entityRows.size, entries.size, deaths)
     }
 
     private fun state(id: Int): String? = ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, id)

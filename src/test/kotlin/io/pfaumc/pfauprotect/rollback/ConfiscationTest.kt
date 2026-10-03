@@ -41,9 +41,7 @@ class ConfiscationTest {
 
     private fun returned(lead: io.pfaumc.pfauprotect.model.Holder, qty: Int): Tally {
         val id = ledger.formId(diamond)!!
-        return Tally().apply {
-            returned += Refill(chest, diamond, id, null, qty, io.pfaumc.pfauprotect.model.PostingRef(0, 0), lead) to qty
-        }
+        return Tally().apply { traces += Trace(lead, id, qty) }
     }
 
     private fun owed(tally: Tally) = owedFor(ledger, tally).associate { it.taker to it.qty }
@@ -64,10 +62,7 @@ class ConfiscationTest {
         ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
         ledger.drain()
         val id = ledger.formId(diamond)!!
-        val tally = returned(PlayerInv(bob, 4), 7).apply {
-            val stash = Container(world, 5, 64, 5, 0)
-            returned += Refill(stash, diamond, id, null, -5, io.pfaumc.pfauprotect.model.PostingRef(1, 0), PlayerInv(bob, 4)) to -5
-        }
+        val tally = returned(PlayerInv(bob, 4), 7).apply { traces += Trace(PlayerInv(bob, 4), id, -5) }
 
         assertEquals(mapOf(Carrier(bob) to 2), owed(tally))
     }
@@ -84,6 +79,18 @@ class ConfiscationTest {
         ledger.drain()
 
         assertEquals(mapOf(Lying(fell.uuid) to 6, Carrier(alice) to 4), owed(returned(fell, 10)))
+    }
+
+    // A cow the rollback brought back dropped beef when it died, and Bob ate none of it yet: the whole
+    // pile it was born as is owed by whoever picked it up.
+    @Test
+    fun `a pile that fell out of what came back is owed whole`() {
+        val pile = ItemEntityRef(UUID.randomUUID())
+        ledger.submit(Transfer(Cause.MOB_DROP, Void, pile, diamond, null, 3, T0))
+        ledger.submit(Transfer(Cause.PICKUP, pile, PlayerInv(bob, 2), diamond, null, 3, T0 + 1))
+        ledger.drain()
+
+        assertEquals(mapOf(Carrier(bob) to 3), owed(Tally().apply { piles += pile.uuid }))
     }
 
     // A hopper took it into some other chest: past where a rollback follows, and owed by nobody.

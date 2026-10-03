@@ -207,6 +207,30 @@ class RollbackTest {
         assertEquals(3, positions.getValue(WorldBlock(world, 5000, 64, -5000)).refills.single().qty)
     }
 
+    // Alice renamed Bob's horse and then killed it, and its saddle fell out. Rolled back, the horse goes
+    // back to what it was before she touched it at all, its saddle's way out is undone with it whoever's
+    // row that was, and what fell out of it is followed.
+    @Test
+    fun `an entity goes back to what its oldest row says it was`() {
+        val horse = UUID.randomUUID()
+        val pile = UUID.randomUUID()
+        val untouched = byteArrayOf(10, 0, 0, 1)
+        val renamed = byteArrayOf(10, 0, 0, 2)
+        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(3, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:horse", horse, T0, actor = alice, before = untouched, after = renamed)))
+        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(4, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:horse", horse, T0 + 10, actor = alice, before = renamed, drops = listOf(pile))))
+        log.drain()
+        shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, io.pfaumc.pfauprotect.model.EntitySlot(horse, 400), io.pfaumc.pfauprotect.model.ItemEntityRef(UUID.randomUUID()), diamond, null, 1, T0 + 10))
+        shared.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val plan = planned.chunks.flatMap { it.positions }.flatMap { it.entities }.single()
+        assertEquals(io.pfaumc.pfauprotect.model.EntityKind.CHANGED, plan.oldest.kind)
+        assertEquals(untouched.toList(), plan.before!!.toList())
+        assertEquals(listOf(-1), plan.slots.map { it.qty })
+        assertEquals(listOf(pile), plan.drops)
+        assertEquals(WorldBlock(world, 3, 64, 3), plan.at)
+    }
+
     // The widest radius reads a square of chunks larger than any lookup does, and has to stay inside
     // what the region read allows; a world with no open base has no history to roll back over.
     @Test

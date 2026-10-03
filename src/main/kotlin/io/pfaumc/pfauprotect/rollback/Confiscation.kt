@@ -98,15 +98,23 @@ internal fun trace(
 internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
     val rowsOf = { pile: ItemEntityRef -> ledger.holderEntries(pile, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
     val owed = ArrayList<Owed>()
-    for ((refill, moved) in tally.returned) {
-        if (moved > 0) {
-            owed += trace(refill.lead, refill.formId, moved, rowsOf)
+    for (given in tally.traces) {
+        if (given.qty > 0) {
+            owed += trace(given.lead, given.formId, given.qty, rowsOf)
             continue
         }
         // Taken back out of a container a player had put it into: that much of what the player owes is
         // already back, and taking it from their hands as well would take their own.
-        val lead = refill.lead as? PlayerHolder ?: continue
-        owed += Owed(Carrier(lead.uuid), refill.formId, moved)
+        val lead = given.lead as? PlayerHolder ?: continue
+        owed += Owed(Carrier(lead.uuid), given.formId, given.qty)
+    }
+    // What fell out of what came back, as a whole pile each: what it was born with is what it owes. A pile
+    // a slot posting already leads to is followed there and not twice.
+    val led = tally.traces.mapNotNullTo(HashSet()) { (it.lead as? ItemEntityRef)?.uuid }
+    for (pile in tally.piles.toSet() - led) {
+        val births = rowsOf(ItemEntityRef(pile)).filter { it.qty > 0 && it.cause != Cause.ITEM_MERGE }
+        val formId = births.firstOrNull()?.itemFormId ?: continue
+        owed += trace(ItemEntityRef(pile), formId, births.sumOf { it.qty }, rowsOf)
     }
     val restored = tally.restored.toHashSet()
     val seen = HashSet<Long>()
@@ -176,13 +184,15 @@ class Confiscations(
                         }
                     }
                 }
-                is Lying -> {
+                // Looking an entity up by its uuid is a tick thread's business, and the pile may lie in any
+                // region; the global one may ask, and the pile's own scheduler does the rest.
+                is Lying -> Bukkit.getGlobalRegionScheduler().execute(plugin) {
                     val pile = Bukkit.getEntity(taker.entity) as? Item
                     if (pile == null) {
                         sender.sendMessage("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
-                        continue
+                    } else {
+                        pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender) } }, null)
                     }
-                    pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender) } }, null)
                 }
             }
         }

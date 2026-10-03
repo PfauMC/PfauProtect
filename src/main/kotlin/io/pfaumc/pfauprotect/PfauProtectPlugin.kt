@@ -205,10 +205,16 @@ class PfauProtectPlugin : JavaPlugin() {
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
         // the way back down.
         val worldItems = WorldItemListener(codec, mechanisms, origins, capture, attribution, entities)
-        val confiscations = Confiscations(this, ledger, codec, capture, worldItems, uncovered::submit)
-        val rollbacks = Rollbacks(
-            this, ledger, blocks, lookups, ChunkRollback(this, codec, blocks, ledger, uncovered::submit), confiscations,
+        val entityCapture = EntityCapture(
+            blocks, origins, attribution, entities,
+            later = { at, task -> server.regionScheduler.run(this, at) { task() } },
+            laterOn = { entity, task -> entity.scheduler.run(this, { task() }, null) },
         )
+        val confiscations = Confiscations(this, ledger, codec, capture, worldItems, uncovered::submit)
+        val chunkRollback = ChunkRollback(
+            this, codec, blocks, ledger, uncovered::submit, formOf = ledger::form, forget = entityCapture::forget,
+        )
+        val rollbacks = Rollbacks(this, ledger, blocks, lookups, chunkRollback, confiscations)
         val running = Running(
             ledger, blocks, attribution, uncovered, codec, capture, destruction, mechanisms, origins,
             lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks), rollbacks,
@@ -269,14 +275,7 @@ class PfauProtectPlugin : JavaPlugin() {
             this,
         )
         server.pluginManager.registerEvents(worldItems, this)
-        server.pluginManager.registerEvents(
-            EntityCapture(
-                blocks, origins, attribution, entities,
-                later = { at, task -> server.regionScheduler.run(this, at) { task() } },
-                laterOn = { entity, task -> entity.scheduler.run(this, { task() }, null) },
-            ),
-            this,
-        )
+        server.pluginManager.registerEvents(entityCapture, this)
         // After the capture's own join handler, whose starting point for the player's first pass the
         // items taken back on the join have to come after.
         server.pluginManager.registerEvents(confiscations, this)

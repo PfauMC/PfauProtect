@@ -280,6 +280,11 @@ class EntityCapture(
         }
     }
 
+    /** A removal some other part of the plugin writes itself — a rollback taking an entity away. */
+    fun forget(entity: UUID) {
+        seen[entity] = System.currentTimeMillis()
+    }
+
     // A lead's knot goes by itself the moment its last lead does, and the lead is on the mob's own NBT.
     // A mob let out of a bucket names no player on its spawn; the emptying that lets it out comes first, on
     // the same thread, and leaves the player here for the spawn to take.
