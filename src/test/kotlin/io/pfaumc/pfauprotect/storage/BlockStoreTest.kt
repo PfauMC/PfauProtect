@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.storage
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
+import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.attribution.behind
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
@@ -259,6 +260,65 @@ class BlockStoreTest {
         assertFalse(log.touchedBy(alice, 0, Long.MAX_VALUE, budget = 2).complete)
         assertEquals(setOf(listOf(3, 64, 1)), log.touchedBy(bob, 0, Long.MAX_VALUE, 100).positions)
         assertTrue(log.touchedBy(UUID.randomUUID(), 0, Long.MAX_VALUE, 100).positions.isEmpty())
+    }
+
+    // A killed mob is kept whole: what it was, who did it, its NBT byte for byte and what fell out of it.
+    // It is found where it stood, by position and by chunk, and through the index by whoever did it.
+    @Test
+    fun `an entity row keeps everything and is found like a block row`() {
+        val cow = UUID.randomUUID()
+        val drop = UUID.randomUUID()
+        val nbt = byteArrayOf(10, 0, 0, 0)
+        log.submit(
+            listOf(
+                EntityChange(
+                    5, 64, 6, EntityKind.REMOVED, Cause.BLK_TNT, "minecraft:cow", cow, T0,
+                    Confidence.INFERRED, alice, before = nbt, drops = listOf(drop),
+                ),
+                placed(5, 64, 6, ts = T0),
+            )
+        )
+        log.drain()
+
+        val row = log.entitiesAt(5, 64, 6, 0, Long.MAX_VALUE, 100).rows.single()
+        assertEquals(EntityKind.REMOVED, row.kind)
+        assertEquals("minecraft:cow", row.type)
+        assertEquals(cow, row.uuid)
+        assertEquals(alice, row.actor)
+        assertEquals(Confidence.INFERRED, row.confidence)
+        assertArrayEquals(nbt, shared.payload(row.payloadBefore!!))
+        assertNull(row.payloadAfter)
+        assertEquals(listOf(drop), row.drops)
+        assertEquals(listOf(row), log.entitiesInChunk(0, 0, 0, Long.MAX_VALUE, 100) { _, _, _ -> true }.rows)
+        assertEquals(1, log.at(5, 64, 6).size, "the block plane keeps its own row beside it")
+        assertEquals(setOf(listOf(5, 64, 6)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
+    }
+
+    // A base from before the entity plane has every block row and no entity family; it opens and gets one.
+    @Test
+    fun `a base from before the entity plane opens and gains it`() {
+        log.submit(listOf(placed(8, 64, 8, ts = T0)))
+        log.drain()
+        logs.close(world)
+        val path = root.resolve(world.toString()).toAbsolutePath().toString()
+        val names = Options().use { RocksDB.listColumnFamilies(it, path) }
+        val handles = ArrayList<ColumnFamilyHandle>()
+        ColumnFamilyOptions().use { cfOptions ->
+            DBOptions().use { options ->
+                RocksDB.open(options, path, names.map { ColumnFamilyDescriptor(it, cfOptions) }, handles).use { raw ->
+                    try {
+                        raw.dropColumnFamily(handles[names.indexOfFirst { it.contentEquals("entities".toByteArray()) }])
+                        raw.put(handles[names.indexOfFirst { it.contentEquals("meta".toByteArray()) }], "schema".toByteArray(), longBytes(2L))
+                    } finally {
+                        handles.forEach { it.close() }
+                    }
+                }
+            }
+        }
+        log = logs.open(world)
+
+        assertEquals(1, log.at(8, 64, 8).size)
+        assertTrue(log.entitiesAt(8, 64, 8, 0, Long.MAX_VALUE, 100).rows.isEmpty())
     }
 
     // A base from before the index has every row it ever wrote and no index of them; the first open

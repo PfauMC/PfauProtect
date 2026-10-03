@@ -8,7 +8,10 @@ import com.mojang.brigadier.exceptions.DynamicCommandExceptionType
 import com.mojang.brigadier.suggestion.Suggestions
 import com.mojang.brigadier.suggestion.SuggestionsBuilder
 import io.papermc.paper.command.brigadier.argument.CustomArgumentType
+import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.EntityRow
+import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
@@ -59,6 +62,9 @@ const val MAX_LIMIT = 200
 // after. A break of a double block with its drops sits well under this.
 private const val NEIGHBOURLY_TRANSACTION = 8
 const val MAX_RADIUS = 200
+
+// How many entity rows of one chunk a lookup steps over. Entities die far less often than blocks change.
+private const val MAX_ENTITY_WALK = 100_000
 
 private const val GLOBAL_RADIUS = -1
 private const val VANILLA_NAMESPACE = "minecraft"
@@ -399,6 +405,15 @@ internal class RowFilter(
         return (included.isEmpty() || item in included) && item !in excluded && !namesUser(entry, excludedUsers)
     }
 
+    // An entity row answers to its entity type for `include:` and `exclude:`, the way a block row answers
+    // to its blocks.
+    fun keeps(row: EntityRow): Boolean {
+        if (!caused(row.cause)) return false
+        if (users.isNotEmpty() && (row.actor !in users || rollback && row.confidence == Confidence.NEARBY)) return false
+        if (row.actor != null && row.actor in excludedUsers) return false
+        return (included.isEmpty() || row.type in included) && row.type !in excluded
+    }
+
     // A row names a block rather than an item, so what the filter is about is either state it ran
     // between; naming an item that no block is made of therefore hides the whole plane, which is what
     // a reader asking for one item wants.
@@ -608,8 +623,30 @@ class Lookups(
                 .sortedByDescending { it.timestamp }
         }
         val keeps = rowFilter(query, users)
+        val blockLines = rows.asSequence()
+            .filter(keeps::keeps)
+            .take(query.limit + 1)
+            .map { Line(it.timestamp, describe(it)) }
+            .toList()
+        return blockLines + entityLines(log, target, query, keeps, fromTs)
+    }
+
+    // What became of the entities at the same place: killed, put down, changed, led away.
+    private fun entityLines(log: BlockLog, target: LookupTarget, query: LookupQuery, keeps: RowFilter, fromTs: Long): List<Line> {
+        val radius = query.radius
+        val rows = if (radius == null) {
+            log.entitiesAt(target.x, target.y, target.z, fromTs, Long.MAX_VALUE, MAX_ENTITY_WALK).rows
+        } else {
+            val inBox = boxAround(target, radius)
+            (((target.x - radius) shr 4)..((target.x + radius) shr 4)).flatMap { cx ->
+                (((target.z - radius) shr 4)..((target.z + radius) shr 4)).flatMap { cz ->
+                    log.entitiesInChunk(cx, cz, fromTs, Long.MAX_VALUE, MAX_ENTITY_WALK, inBox).rows
+                }
+            }
+        }
         return rows.asSequence()
             .filter(keeps::keeps)
+            .sortedByDescending { it.timestamp }
             .take(query.limit + 1)
             .map { Line(it.timestamp, describe(it)) }
             .toList()
@@ -710,6 +747,28 @@ class Lookups(
             "${row.cause.name.lowercase()}  " +
             "${stateOf(row.stateBefore)} -> ${stateOf(row.stateAfter)}  " +
             "block ${row.x} ${row.y} ${row.z}$by$payload$half"
+    }
+
+    private fun describe(row: EntityRow): String {
+        val what = when (row.kind) {
+            EntityKind.REMOVED -> "gone"
+            EntityKind.CREATED -> "brought in"
+            EntityKind.CHANGED -> "changed"
+            EntityKind.MOVED -> "led away"
+            EntityKind.DROPPED -> "dropped ${row.drops.size} items"
+            EntityKind.PLAYER_DIED -> "died: ${playerName(row.uuid)}"
+        }
+        val subject = if (row.kind == EntityKind.DROPPED || row.kind == EntityKind.PLAYER_DIED) "" else
+            "  ${row.type} ${row.uuid.toString().take(8)}"
+        val by = when {
+            row.actor == null -> "  by nobody named"
+            row.confidence == Confidence.INFERRED -> "  by ${playerName(row.actor)} (worked out)"
+            row.confidence == Confidence.NEARBY -> "  ${playerName(row.actor)} was nearby"
+            else -> "  by ${playerName(row.actor)}"
+        }
+        val drops = if (row.kind != EntityKind.DROPPED && row.drops.isNotEmpty()) "  (${row.drops.size} items fell out)" else ""
+        return "${TIME_FORMAT.format(Instant.ofEpochMilli(row.timestamp))}  " +
+            "${row.cause.name.lowercase()}  $what$subject  at ${row.x} ${row.y} ${row.z}$by$drops"
     }
 
     // A sign is what a payload is most often asked about, and its text is the whole of what was

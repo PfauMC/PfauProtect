@@ -158,6 +158,25 @@ class LookupReadTest {
         )
     }
 
+    // A cow killed where somebody is standing is part of what happened there, and so is who did it.
+    @Test
+    fun `an entity row reads beside the block rows and answers to its type`() {
+        val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
+        log.submit(
+            listOf(
+                io.pfaumc.pfauprotect.storage.EntityChange(
+                    10, 64, -3, io.pfaumc.pfauprotect.model.EntityKind.REMOVED, Cause.BLK_TNT, "minecraft:cow",
+                    UUID.randomUUID(), T0, actor = alice, before = byteArrayOf(10, 0, 0, 0),
+                )
+            )
+        )
+        log.drain()
+
+        val lines = said(players = mapOf("Alice" to alice))
+        assertTrue(lines.any { it.contains("gone  minecraft:cow") && it.contains("by Alice") }, "$lines")
+        assertTrue(said(LookupQuery(excluded = listOf("cow"))).none { it.contains("minecraft:cow") })
+    }
+
     @Test
     fun `a block row says when nobody could be named`() {
         log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_LIQUID_DESTROY, T0)))

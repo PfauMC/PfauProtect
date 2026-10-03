@@ -24,6 +24,29 @@ enum class Confidence(val id: Int) {
     }
 }
 
+// What an entity row says became of the entity it names. Written into every such row, so a number is
+// never changed or reused.
+enum class EntityKind(val id: Int) {
+    // Gone — killed, broken, destroyed — with its whole NBT as it was.
+    REMOVED(0),
+    // Brought into the world by a player.
+    CREATED(1),
+    // Changed by a player's hand: named, sheared, dyed, its frame turned.
+    CHANGED(2),
+    // Led away by a player: on a lead, ridden, put in a boat.
+    MOVED(3),
+    // Not an entity at all: the items a block position dropped when something other than a hand broke it.
+    DROPPED(4),
+    // A player died there, and the row names who did it and what fell out.
+    PLAYER_DIED(5),
+    ;
+
+    companion object {
+        private val BY_ID = entries.associateBy { it.id }
+        fun byId(id: Int): EntityKind? = BY_ID[id]
+    }
+}
+
 // These numbers are written into every stored key and must never change. They are named here rather
 // than spelled out at each holder because the decoder and the region scan both have to switch on
 // them by value, where the compiler cannot check that the set is complete.

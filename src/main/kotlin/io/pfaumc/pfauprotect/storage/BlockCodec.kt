@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.storage
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
+import io.pfaumc.pfauprotect.model.EntityKind
 import java.util.UUID
 
 // Both states are mandatory and both are registry numbers of the full `blockData.asString`. A row
@@ -25,6 +26,104 @@ data class BlockRow(
     val payloadBefore: Long? = null,
     val payloadAfter: Long? = null,
 )
+
+/**
+ * A row of the entity plane: what became of one entity, at the block position it stood in. The NBT
+ * before and after are ids into the shared payload table; `drops` are the item entities that fell out of
+ * it, or out of the position for a `DROPPED` row.
+ */
+data class EntityRow(
+    val x: Int,
+    val y: Int,
+    val z: Int,
+    val timestamp: Long,
+    val eventId: Long,
+    val ordinal: Int,
+    val kind: EntityKind,
+    val cause: Cause,
+    val type: String,
+    val uuid: UUID,
+    val confidence: Confidence = Confidence.FACT,
+    val actor: UUID? = null,
+    val payloadBefore: Long? = null,
+    val payloadAfter: Long? = null,
+    val drops: List<UUID> = emptyList(),
+)
+
+// The key is a block row's key — position, time, event, ordinal — so a walk of a chunk or a position
+// reads both planes the same way.
+object EntityCodec {
+    const val VERSION = 0
+
+    private const val VERSION_MASK = 0x03
+    private const val NEARBY_FLAG = 0x04
+    private const val CONFIDENCE_FLAG = 0x08
+    private const val ACTOR_FLAG = 0x10
+    private const val BEFORE_FLAG = 0x20
+    private const val AFTER_FLAG = 0x40
+    private const val DROPS_FLAG = 0x80
+
+    fun value(row: EntityRow, ids: IdResolver, typeId: Int): ByteArray {
+        val w = ByteWriter(48)
+        w.byte(
+            VERSION or
+                (if (row.confidence == Confidence.INFERRED) CONFIDENCE_FLAG else 0) or
+                (if (row.confidence == Confidence.NEARBY) NEARBY_FLAG else 0) or
+                (if (row.actor != null) ACTOR_FLAG else 0) or
+                (if (row.payloadBefore != null) BEFORE_FLAG else 0) or
+                (if (row.payloadAfter != null) AFTER_FLAG else 0) or
+                (if (row.drops.isNotEmpty()) DROPS_FLAG else 0)
+        )
+        w.byte(row.kind.id)
+        w.byte(row.cause.id)
+        w.varInt(typeId)
+        w.uuid(row.uuid)
+        if (row.actor != null) w.varInt(ids.id(RegistryNamespace.PLAYER, row.actor))
+        if (row.payloadBefore != null) w.varLong(row.payloadBefore)
+        if (row.payloadAfter != null) w.varLong(row.payloadAfter)
+        if (row.drops.isNotEmpty()) {
+            w.varInt(row.drops.size)
+            for (drop in row.drops) w.uuid(drop)
+        }
+        return w.toByteArray()
+    }
+
+    /** Null for a row this build cannot read, as a block row is. */
+    fun decodeOrNull(key: ByteArray, value: ByteArray, names: IdLookup, typeOf: (Int) -> String?): EntityRow? =
+        try {
+            decode(key, value, names, typeOf)
+        } catch (failure: IllegalArgumentException) {
+            null
+        }
+
+    fun decode(key: ByteArray, value: ByteArray, names: IdLookup, typeOf: (Int) -> String?): EntityRow {
+        val v = ByteReader(value)
+        val header = v.byte()
+        require(header and VERSION_MASK == VERSION) { "entity record version ${header and VERSION_MASK} is not supported" }
+        val kind = EntityKind.byId(v.byte()) ?: throw IllegalArgumentException("unknown entity row kind")
+        val cause = Cause.byId(v.byte()) ?: Cause.UNKNOWN
+        val typeId = v.varInt()
+        val type = typeOf(typeId) ?: throw IllegalArgumentException("unknown entity type number $typeId")
+        val uuid = v.uuid()
+        val actor = if (header and ACTOR_FLAG != 0) names.uuid(RegistryNamespace.PLAYER, v.varInt()) else null
+        val before = if (header and BEFORE_FLAG != 0) v.varLong() else null
+        val after = if (header and AFTER_FLAG != 0) v.varLong() else null
+        val drops = if (header and DROPS_FLAG != 0) List(v.varInt()) { v.uuid() } else emptyList()
+        val k = ByteReader(key)
+        val pos = Zcode.decode(k.bytes(Zcode.SIZE))
+        return EntityRow(
+            x = pos[0], y = pos[1], z = pos[2],
+            timestamp = k.longBE(), eventId = k.longBE(), ordinal = k.byte(),
+            kind = kind, cause = cause, type = type, uuid = uuid,
+            confidence = when {
+                header and NEARBY_FLAG != 0 -> Confidence.NEARBY
+                header and CONFIDENCE_FLAG != 0 -> Confidence.INFERRED
+                else -> Confidence.FACT
+            },
+            actor = actor, payloadBefore = before, payloadAfter = after, drops = drops,
+        )
+    }
+}
 
 object BlockCodec {
     const val VERSION = 0
