@@ -38,7 +38,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.logging.Level
 import kotlin.math.abs
@@ -52,6 +52,10 @@ private const val PLACE_FLAGS = Block.UPDATE_CLIENTS or Block.UPDATE_SKIP_BLOCK_
 // How long a preview waits for `apply`. The world goes on changing under it, so apply reads it all
 // again; this only bounds how stale the question can be.
 private const val PENDING_MILLIS = 5 * 60_000L
+
+// A chunk task that never runs — its world unloaded under it — would hold the one rollback slot for
+// good. Past this a running rollback is taken as lost and the slot handed on.
+private const val STALE_MILLIS = 10 * 60_000L
 
 private val TIME_FORMAT: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
@@ -244,7 +248,8 @@ class Rollbacks(
     private class Pending(val target: LookupTarget, val query: LookupQuery, val at: Long)
 
     private val pending = ConcurrentHashMap<String, Pending>()
-    private val running = AtomicBoolean()
+    // When the rollback running now started, or zero.
+    private val running = AtomicLong()
     private val reader = RollbackReader(ledger, blocks)
 
     fun preview(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
@@ -264,12 +269,14 @@ class Rollbacks(
             return
         }
         // Two rollbacks over one place would each read the other's work as not done yet.
-        if (!running.compareAndSet(false, true)) {
+        val started = running.get()
+        val now = System.currentTimeMillis()
+        if (started != 0L && now - started < STALE_MILLIS || !running.compareAndSet(started, now)) {
             pending[key] = asked
             sender.sendMessage("Another rollback is still running; apply again once it has reported.")
             return
         }
-        run(sender, asked.target, asked.query, apply = true)
+        run(sender, asked.target, asked.query, apply = true, startedAt = now)
     }
 
     fun cancelPreview(sender: CommandSender) {
@@ -286,8 +293,9 @@ class Rollbacks(
 
     private fun keyOf(sender: CommandSender) = (sender as? Player)?.uniqueId?.toString() ?: sender.name
 
-    private fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, apply: Boolean) {
-        val release = { if (apply) running.set(false) }
+    private fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, apply: Boolean, startedAt: Long = 0) {
+        // Only its own slot: a run taken as lost that finishes after all must not free the next one's.
+        val release = { if (apply) running.compareAndSet(startedAt, 0) }
         Bukkit.getAsyncScheduler().runNow(plugin) {
             try {
                 val users = lookups.resolveAll(sender, query.users)
