@@ -71,14 +71,17 @@ private const val SEEN_MILLIS = 10_000L
 private val GONE = setOf(NmsEntity.RemovalReason.KILLED, NmsEntity.RemovalReason.DISCARDED)
 
 /**
- * The whole NBT of an entity as it is now, the way the server saves it, passengers and all. Forced, so a
- * mob that is dying and an entity already marked removed are saved as they were and not refused.
+ * The whole NBT of an entity as it is now, the way the server saves it. Forced, so a mob that is dying and
+ * an entity already marked removed are saved as they were and not refused. Without its passengers: each
+ * is an entity of its own with rows of its own, a rider's whole player would be saved with it (every mount
+ * a change), and a boat brought back with a cow that still lives would clash with the cow's UUID.
  */
 internal fun snapshotOf(entity: NmsEntity): ByteArray? {
     val output = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, entity.registryAccess())
     if (!entity.saveAsPassenger(output, true, true, true)) return null
+    val tag = output.buildResult().also { it.remove(NmsEntity.TAG_PASSENGERS) }
     val bytes = ByteArrayOutputStream()
-    DataOutputStream(bytes).use { NbtIo.write(output.buildResult(), it) }
+    DataOutputStream(bytes).use { NbtIo.write(tag, it) }
     return bytes.toByteArray()
 }
 
@@ -100,7 +103,7 @@ internal val VOLATILE = setOf(
     "Pos", "Motion", "Rotation", "FallDistance", "fall_distance", "Fire", "fire", "Air", "OnGround",
     "PortalCooldown", "Health", "HurtTime", "HurtByTimestamp", "DeathTime", "AbsorptionAmount", "Brain",
     "InLove", "LoveCause", "Age", "ForcedAge", "TicksFrozen", "active_effects", "attributes", "Leash", "leash",
-    "Offers", "Xp", "LastRestock", "RestocksToday", "LastGossipDecay", "Gossips", "FoodLevel",
+    "Offers", "Xp", "LastRestock", "RestocksToday", "LastGossipDecay", "Gossips", "FoodLevel", "EatingHaystack",
     "Paper.Origin", "Paper.OriginWorld", "Paper.SpawnReason", "Spigot.ticksLived", "Bukkit.updateLevel",
     "Bukkit.Aware", "WorldUUIDLeast", "WorldUUIDMost",
 )

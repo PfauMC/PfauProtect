@@ -11,8 +11,9 @@ import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 
 class EntityCaptureTest {
-    private fun cow(x: Double, health: Float, name: String?, ticks: Int): ByteArray {
+    private fun cow(x: Double, health: Float, name: String?, ticks: Int, eating: Boolean = false): ByteArray {
         val tag = CompoundTag()
+        tag.putBoolean("EatingHaystack", eating)
         tag.put("Pos", ListTag().apply { add(DoubleTag.valueOf(x)); add(DoubleTag.valueOf(64.0)); add(DoubleTag.valueOf(0.0)) })
         tag.putFloat("Health", health)
         tag.putInt("Spigot.ticksLived", ticks)
@@ -27,6 +28,8 @@ class EntityCaptureTest {
     fun `only what a hand can change counts as a change`() {
         val before = cow(1.0, 5f, null, 100)
         assertFalse(changedBetween(before, cow(1.7, 10f, null, 101)))
+        // A horse stops grazing when it is mounted; that is the horse, not the hand.
+        assertFalse(changedBetween(before, cow(1.0, 5f, null, 100, eating = true)))
         assertTrue(changedBetween(before, cow(1.0, 5f, "Burenka", 100)))
     }
 }

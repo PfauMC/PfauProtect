@@ -144,6 +144,8 @@ class Tally {
 // it holds booked to it a second time on top of what the rollback gives back.
 private val DYING = listOf(
     "DeathTime", "HurtTime", "HurtByTimestamp", "Fire", "fire", "FallDistance", "fall_distance", "Paper.SpawnReason",
+    // Snapshots from before passengers were left out of them.
+    "Passengers",
 )
 
 // How long a campfire cooks what is put back on it: what every vanilla campfire recipe takes.
