@@ -116,6 +116,9 @@ class RollbackTest {
         val settled = settle(AIR, listOf(burnt))
         assertSame(burnt, settled.back)
         assertFalse(settled.conflict)
+        // Nor is a fire ever put back: lit again it would burn down what the rollback put back.
+        assertTrue(passing("minecraft:soul_fire[age=13]"))
+        assertFalse(passing(LAVA))
     }
 
     @Test

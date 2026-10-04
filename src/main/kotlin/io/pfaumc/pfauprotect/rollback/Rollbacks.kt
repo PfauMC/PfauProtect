@@ -261,7 +261,7 @@ class ChunkRollback(
             val settled = settle(standing, plan.steps)
             if (settled.conflict) tally.conflicts++
             val back = settled.back
-            val target = back?.before
+            val target = back?.before?.let { if (passing(it)) "minecraft:air" else it }
             val reshaped = target != null && target != standing
             // A container standing where it stood keeps what it holds: its contents are the slot
             // postings' business, and its tag would hand back what they already give back.

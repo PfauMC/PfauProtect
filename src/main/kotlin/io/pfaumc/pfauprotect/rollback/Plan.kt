@@ -46,7 +46,13 @@ private val FIRES = setOf("minecraft:fire", "minecraft:soul_fire")
  * So is fire: a plank that burnt to fire and then to nothing goes back all the same.
  */
 internal fun blockOf(state: String): String =
-    state.substringBefore('[').let { if (it in AIRS || it in FIRES || flowing(state)) "minecraft:air" else it }
+    state.substringBefore('[').let { if (it in AIRS || passing(state)) "minecraft:air" else it }
+
+/**
+ * Fire and running liquid: what a rollback reads as air and puts back as air. A fire lit again would burn
+ * down what the rollback has just put back.
+ */
+internal fun passing(state: String): Boolean = state.substringBefore('[') in FIRES || flowing(state)
 
 /** One row of a position read backwards: the position went from `before` to `after`. */
 class Step(val before: String, val after: String, val payloadBefore: ByteArray?)
