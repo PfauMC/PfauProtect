@@ -289,7 +289,9 @@ internal fun formCause(before: String): Cause =
 
 private val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
 
-private val FIRES = setOf("minecraft:fire", "minecraft:soul_fire")
+private const val FIRE = "minecraft:fire"
+
+private val FIRES = setOf(FIRE, "minecraft:soul_fire")
 
 private val SCULK = setOf("minecraft:sculk", "minecraft:sculk_vein")
 
@@ -975,14 +977,16 @@ class BlockDestructionListener(
      * Who set the fire burning at this position. A fire burns a minute and more, longer than its note,
      * and the journal has the row that set it there. A find is noted again, so what this fire sets
      * alight next carries on from it. A seek, only where the note has run out.
+     *
+     * The fire on the event may be out already: one that lost its footing goes out at the top of its tick
+     * and still leaps and burns in the rest of it. It was plain fire either way, since soul fire does
+     * neither, so that is what is asked about rather than what stands there now.
      */
     private fun fireStartedBy(fire: Block): Attributed? {
         val at = positionOf(fire)
-        val standing = fire.blockData.asString
-        attribution.placerAt(at, standing)?.let { return it }
-        if (blockNameOf(standing) !in FIRES) return null
-        val found = attribution.journalPlacerAt(at, standing, FIRING_CAUSES) ?: return null
-        if (found.confidence != Confidence.NEARBY) attribution.placed(at, standing, found.actor)
+        attribution.placerAt(at, FIRE)?.let { return it }
+        val found = attribution.journalPlacerAt(at, FIRE, FIRING_CAUSES) ?: return null
+        if (found.confidence != Confidence.NEARBY) attribution.placed(at, FIRE, found.actor)
         return found
     }
 
