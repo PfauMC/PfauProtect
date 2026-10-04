@@ -88,6 +88,10 @@ class Settled(val back: Step?, val conflict: Boolean)
  * other means something this rollback does not touch changed the position since, and the walk stops
  * there with whatever it had undone.
  *
+ * A chain an earlier rollback undid stands on the `before` of its oldest row, which no newer row of it
+ * starts from: a plank that burnt into fire that lava ran into is a plank again. Standing on that
+ * `before`, the rest of the walk is done already, and that is not a conflict either.
+ *
  * Blocks are compared, not whole states: a fence, a wire and a leaf change their properties with
  * their neighbours and never get a row for it, and comparing strings would make every one of them a
  * conflict. What is put back is the whole state the row recorded.
@@ -102,6 +106,7 @@ fun settle(standing: String, steps: List<Step>): Settled {
                 back = step
             }
             blockOf(step.before) -> continue
+            blockOf(steps.last().before) -> break
             else -> return Settled(back, conflict = true)
         }
     }

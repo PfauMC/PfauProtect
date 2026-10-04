@@ -144,6 +144,17 @@ class RollbackTest {
         assertTrue(settle(STONE, stair.getValue(5).steps).conflict)
     }
 
+    // Rolled back once, the plank that burnt and then took the griefer's lava is a plank again: the second
+    // rollback finds it done. Dirt somebody else put in its place is still somebody else's.
+    @Test
+    fun `a chain undone before is done and no conflict`() {
+        val chain = listOf(step("minecraft:fire[age=13]", "minecraft:lava[level=8]"), step("minecraft:oak_planks", "minecraft:fire[age=13]"))
+        val again = settle("minecraft:oak_planks", chain)
+        assertNull(again.back)
+        assertFalse(again.conflict)
+        assertTrue(settle(DIRT, chain).conflict)
+    }
+
     @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)
