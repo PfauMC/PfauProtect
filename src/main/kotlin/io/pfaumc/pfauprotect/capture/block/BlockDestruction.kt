@@ -651,6 +651,9 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
         queued.remove(at)
     }
 
+    /** Whether a read-back is on its way here: what changes at the position meanwhile is what it will find. */
+    fun pending(at: WorldBlock): Boolean = queued[at]?.let { now() - it <= READ_BACK_MILLIS } == true
+
     fun filed(at: WorldBlock, before: String, after: String) {
         recent[at] = "$before>$after" to now()
     }
@@ -1010,6 +1013,10 @@ class BlockDestructionListener(
     fun onFade(event: BlockFadeEvent) {
         val block = event.block
         if (capturing(block)) return
+        // Fire a burning block left where it cannot stand goes out the moment it is set, before the burn's
+        // read-back comes round. That read-back files the burn, plank to air, on whoever lit it; a row of
+        // the fade's own here would make it take the change as filed and leave the plank unaccounted for.
+        if (blockNameOf(block.blockData.asString) in FIRES && readBacks.pending(positionOf(block))) return
         changed(block, block.blockData, event.newState.blockData.asString, Cause.BLK_FADE, by = null)
     }
 

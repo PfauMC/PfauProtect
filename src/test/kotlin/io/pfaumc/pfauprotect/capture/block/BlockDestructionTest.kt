@@ -436,6 +436,22 @@ class BlockDestructionTest {
         assertTrue(readBacks.isEmpty)
     }
 
+    // A plank burnt into fire that went out on the spot: the fade comes while the burn's read-back is on
+    // its way and leaves the filing to it. Once the read-back has run, a fade there is a change of its own.
+    @Test
+    fun `a read-back on its way is known as pending until it runs`() {
+        var clock = now
+        val readBacks = ReadBacks { clock }
+        val plank = WorldBlock(world, 5, 64, 5)
+        assertFalse(readBacks.pending(plank))
+        readBacks.claim(plank)
+        assertTrue(readBacks.pending(plank))
+        clock += READ_BACK_MILLIS + 1
+        assertFalse(readBacks.pending(plank))
+        readBacks.done(plank)
+        assertFalse(readBacks.pending(plank))
+    }
+
     /**
      * A ravager and a wither each raise their own event for a block and then destroy it, so one
      * capture files the change and the read-back behind it asks whether it is already there. Asking
