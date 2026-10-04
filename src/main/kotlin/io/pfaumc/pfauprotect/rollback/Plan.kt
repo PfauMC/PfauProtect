@@ -272,6 +272,20 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         return touched
     }
 
+    /**
+     * How many of the positions a rollback of these players would undo already stood as one of them had
+     * left it when the window opened. Each goes back to that, which may be their own lava or their own
+     * dirt: the window starts in the middle of what they did there, and only the admin can say whether a
+     * longer one is what was meant.
+     */
+    fun leftByThemBefore(plans: List<Planned>, users: Set<UUID>, fromTs: Long): Int = plans.sumOf { plan ->
+        val log = blocks.get(plan.world) ?: return@sumOf 0
+        plan.chunks.flatMap { it.positions }.filter { it.steps.isNotEmpty() }.count { position ->
+            val row = log.standingBefore(position.at.x, position.at.y, position.at.z, fromTs)
+            row != null && row.cause != Cause.ROLLBACK && row.actor?.let { it in users } == true
+        }
+    }
+
     /** What a rollback would undo at these positions of one world, read position by position. */
     fun at(
         world: UUID,

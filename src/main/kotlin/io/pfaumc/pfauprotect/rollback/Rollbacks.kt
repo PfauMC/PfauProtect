@@ -49,6 +49,9 @@ import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.entity.CampfireBlockEntity
 import net.minecraft.world.level.block.entity.LecternBlockEntity
 import net.minecraft.world.level.storage.TagValueInput
+import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.event.ClickEvent
+import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.CraftWorld
@@ -97,6 +100,8 @@ class EntityJob(val entity: Entity, val run: (Tally) -> Unit)
 
 /** What a rollback did, or in a preview would do, counted over every chunk it touched. */
 class Tally {
+    // Positions that stood as the rolled-back players left them when the window opened; set on the total.
+    var leftBefore = 0
     var changed = 0
     var unchanged = 0
     var conflicts = 0
@@ -563,7 +568,10 @@ class Rollbacks(
                         sender.sendMessage("Rollback refused: ${reader.tooMany(positions).reason}.")
                         release()
                     }
-                    else -> dispatch(sender, plans, where, apply, release, global = query.global)
+                    else -> {
+                        val leftBefore = if (apply || users.isEmpty()) 0 else reader.leftByThemBefore(plans, users, from)
+                        dispatch(sender, plans, where, apply, release, global = query.global, leftBefore = leftBefore)
+                    }
                 }
             } catch (failure: Throwable) {
                 plugin.logger.log(Level.SEVERE, "the rollback at ${target.label} failed", failure)
@@ -587,6 +595,7 @@ class Rollbacks(
         apply: Boolean,
         release: () -> Unit,
         global: Boolean,
+        leftBefore: Int = 0,
     ) {
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
@@ -598,6 +607,7 @@ class Rollbacks(
         }
         val actor = (sender as? Player)?.uniqueId
         val total = Tally()
+        total.leftBefore = leftBefore
         total.deaths += plans.flatMap { it.deaths }
         // Only deaths to give back for, and no place to touch: straight on to them.
         if (work.isEmpty()) return finishing(sender, total, read, where, apply, actor, global, release)
@@ -686,7 +696,17 @@ class Rollbacks(
             sender.sendMessage("Rollback preview for $where: $blocks; $slots; $entities ($read).")
             // A world-wide lookup has no index to read by, so it cannot show the rows of a global one.
             val rows = if (global) "" else "; /pp lookup with the same words shows the rows"
+            if (total.leftBefore > 0) sender.sendMessage(
+                "  the window may be shorter than a full rollback needs: ${total.leftBefore} of these positions stood " +
+                    "as the same player had left them when it opened, and go back to that; a longer time: reaches further.",
+            )
             sender.sendMessage("  /pp apply within 5 minutes runs it, /pp cancel drops it$rows.")
+            if (sender is Player) sender.sendMessage(
+                Component.text("  ")
+                    .append(Component.text("[apply]", NamedTextColor.GREEN).clickEvent(ClickEvent.runCommand("/pp apply")))
+                    .append(Component.text(" "))
+                    .append(Component.text("[cancel]", NamedTextColor.RED).clickEvent(ClickEvent.runCommand("/pp cancel"))),
+            )
             return
         }
         sender.sendMessage("Rolled back $where: $blocks; $slots; $entities.")

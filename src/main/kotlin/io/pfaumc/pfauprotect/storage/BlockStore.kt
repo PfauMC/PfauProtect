@@ -476,6 +476,22 @@ class BlockLog(
         BlockStanding(row, torn = found && row == null)
     }
 
+    /**
+     * The last row of a position older than `ts`: what stood there at that moment, and who left it so. The
+     * walk steps back over the newer rows, which a caller asking this has just read anyway.
+     */
+    fun standingBefore(x: Int, y: Int, z: Int, ts: Long): BlockRow? = dbLock.read {
+        if (closed) return null
+        var found: BlockRow? = null
+        forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = true) { key, value ->
+            val row = BlockCodec.decodeOrNull(key, value, shared.registries) ?: return@forEachUnder true
+            if (row.timestamp >= ts) return@forEachUnder true
+            found = row
+            false
+        }
+        found
+    }
+
     // Reads run on any thread, so the native handles may only be freed once every reader has left,
     // and a write arriving from a region thread during shutdown would dereference a freed handle and
     // take the JVM down. Hence: writers first, handles after.

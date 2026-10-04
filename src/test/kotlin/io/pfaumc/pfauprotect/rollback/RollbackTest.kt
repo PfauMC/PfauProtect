@@ -174,6 +174,26 @@ class RollbackTest {
         assertFalse(settled.conflict)
     }
 
+    // Alice put the stone down before the window and broke it inside: rolled back from the window's start, the
+    // position goes back to her own stone, and the preview has to say so. Bob's stone before the window, and
+    // an earlier rollback's, are nobody's grief to warn about.
+    @Test
+    fun `a window opening on what the player left is counted for the warning`() {
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
+        log.submit(listOf(BlockChange(2, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.submit(listOf(BlockChange(2, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
+        log.submit(listOf(BlockChange(3, 64, 1, AIR, STONE, Cause.ROLLBACK, T0, actor = alice)))
+        log.submit(listOf(BlockChange(3, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
+        log.drain()
+
+        val reader = RollbackReader(shared, logs)
+        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
+        val planned = reader.around(world, 0, 64, 0, 15, T0 + 50, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
+        assertEquals(3, planned.positions)
+        assertEquals(1, reader.leftByThemBefore(listOf(planned), setOf(alice), T0 + 50))
+    }
+
     @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)
