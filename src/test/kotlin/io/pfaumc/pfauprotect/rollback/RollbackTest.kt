@@ -155,6 +155,25 @@ class RollbackTest {
         assertTrue(settle(DIRT, chain).conflict)
     }
 
+    // Alice broke the door and put dirt in its place, grass grew on it, and a rollback cut short took the
+    // grass away. Rolled back again, the door's lower half comes back: the earlier rollback's row is walked
+    // past like nature, not taken for somebody's later change.
+    @Test
+    fun `an earlier rollback on a position being undone is walked past`() {
+        val door = "minecraft:oak_door[half=lower]"
+        val grass = "minecraft:grass_block[snowy=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, door, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 1, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, DIRT, grass, Cause.BLK_GROW, T0 + 2)))
+        log.submit(listOf(BlockChange(1, 64, 1, grass, AIR, Cause.ROLLBACK, T0 + 3)))
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val settled = settle(AIR, steps(planned))
+        assertEquals(door, settled.back?.before)
+        assertFalse(settled.conflict)
+    }
+
     @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)
@@ -184,7 +203,9 @@ class RollbackTest {
         log.drain()
 
         val plain = around(RowFilter(shared, LookupQuery(), emptySet(), emptySet(), rollback = true))
-        assertEquals(listOf(AIR), steps(plain).map { it.after }, "only the break")
+        // Walked past on the way back to before the break, the rollback's stone is where the walk ends anyway.
+        assertEquals(listOf(STONE, AIR), steps(plain).map { it.after })
+        assertEquals(STONE, settle(STONE, steps(plain)).back?.before)
         val undo = around(RowFilter(shared, LookupQuery(causes = Action.ROLLBACK.causes), emptySet(), emptySet(), rollback = true))
         assertEquals(listOf(STONE), steps(undo).map { it.after }, "only the rollback")
         // A lookup is not a rollback and shows them like any other row.

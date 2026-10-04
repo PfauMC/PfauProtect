@@ -35,20 +35,21 @@ internal const val MAX_ROLLBACK_POSITIONS = 32_768
 private val STORIES = setOf(EntityKind.REMOVED, EntityKind.CREATED, EntityKind.CHANGED, EntityKind.MOVED)
 
 // What the world does by itself, under rows nobody answers for: grass taking the dirt a griefer put down,
-// his fire going out, his lava running on. A rollback walks past them on a position it undoes; a player's
-// row and a command's still stop it.
+// his fire going out, his lava running on. A rollback walks past them on a position it undoes, and past
+// what an earlier rollback did there, which is no later change either; a player's row and a command's
+// still stop it.
 private val NATURE = setOf(
     Cause.BLK_GROW, Cause.BLK_FADE, Cause.BLK_FORM, Cause.BLK_LEAF_DECAY, Cause.BLK_SCULK,
     Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD, Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM,
 )
 
-private fun natural(row: BlockRow) = row.actor == null && row.cause in NATURE
+private fun passable(row: BlockRow) = row.cause == Cause.ROLLBACK || row.actor == null && row.cause in NATURE
 
 private val ROW_ORDER = compareBy<BlockRow> { it.eventId }.thenBy { it.ordinal }
 
 /**
- * The rows of nature a rollback walks past: at a position it undoes, and after the first of its rows
- * there. What grew before that is part of what the position goes back to.
+ * The rows of nature and of earlier rollbacks a rollback walks past: at a position it undoes, and after
+ * the first of its rows there. What grew before that is part of what the position goes back to.
  */
 internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>): List<BlockRow> {
     val first = kept.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, rows) -> rows.minWith(ROW_ORDER) }
@@ -213,7 +214,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                 budget -= window.walked
                 unreadable += window.unreadable
                 window.rows.filterTo(rows, keepsRow)
-                window.rows.filterTo(nature) { natural(it) && !keepsRow(it) }
+                window.rows.filterTo(nature) { passable(it) && !keepsRow(it) }
                 val entities = log.entitiesInChunk(cx, cz, fromTs, toTs, budget, inBox)
                 if (!entities.complete) return tooMuch()
                 budget -= entities.walked
@@ -296,7 +297,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             budget -= window.walked
             unreadable += window.unreadable
             window.rows.filterTo(rows, keepsRow)
-            window.rows.filterTo(nature) { natural(it) && !keepsRow(it) }
+            window.rows.filterTo(nature) { passable(it) && !keepsRow(it) }
             val entities = log.entitiesAt(at.x, at.y, at.z, fromTs, toTs, budget)
             if (!entities.complete) return tooMuch()
             budget -= entities.walked
