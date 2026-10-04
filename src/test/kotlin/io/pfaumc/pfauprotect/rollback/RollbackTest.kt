@@ -121,6 +121,29 @@ class RollbackTest {
         assertFalse(passing(LAVA))
     }
 
+    // Alice's dirt stair grew grass, which nobody answers for: the walk passes it and the dirt goes. Grass
+    // that grew there before her, or where she never was, is no part of her rollback; Bob's stone on her
+    // dirt still stops it.
+    @Test
+    fun `nature on a position being undone is walked past and a player still stops the walk`() {
+        val grass = "minecraft:grass_block[snowy=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, DIRT, grass, Cause.BLK_GROW, T0)))
+        log.submit(listOf(BlockChange(1, 64, 1, grass, AIR, Cause.BLK_PLAYER_BREAK, T0 + 1, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 2, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, DIRT, grass, Cause.BLK_GROW, T0 + 3)))
+        log.submit(listOf(BlockChange(3, 64, 1, DIRT, grass, Cause.BLK_GROW, T0 + 3)))
+        log.submit(listOf(BlockChange(5, 64, 1, AIR, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 2, actor = alice)))
+        log.submit(listOf(BlockChange(5, 64, 1, DIRT, STONE, Cause.BLK_PLAYER_PLACE, T0 + 3, actor = bob)))
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val stair = planned.chunks.flatMap { it.positions }.associateBy { it.at.x }
+        assertEquals(setOf(1, 5), stair.keys)
+        assertEquals(listOf(DIRT to grass, AIR to DIRT, grass to AIR), stair.getValue(1).steps.map { it.before to it.after })
+        assertEquals(grass, settle(grass, stair.getValue(1).steps).back?.before)
+        assertTrue(settle(STONE, stair.getValue(5).steps).conflict)
+    }
+
     @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)
