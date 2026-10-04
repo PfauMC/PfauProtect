@@ -26,6 +26,10 @@ import org.junit.jupiter.api.io.TempDir
 import io.pfaumc.pfauprotect.ServerRegistries
 import net.minecraft.world.SimpleContainer
 import net.minecraft.world.item.Items
+import net.minecraft.core.BlockPos
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.state.BlockState
+import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import java.nio.file.Path
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
@@ -153,6 +157,28 @@ class RollbackTest {
         assertNull(again.back)
         assertFalse(again.conflict)
         assertTrue(settle(DIRT, chain).conflict)
+    }
+
+    // A bucket on a roof at x 0, its lava run east over the edge and along the ground into a pool of lava
+    // somebody else poured, with water beside. Taking the bucket away drains its run; the pool, what the
+    // pool feeds and the water stay, and nothing over the region border is touched.
+    @Test
+    fun `a source taken away drains what it ran into and no other source`() {
+        ServerRegistries.access
+        val lava = { level: Int -> Blocks.LAVA.defaultBlockState().setValue(BlockStateProperties.LEVEL, level) }
+        val world = HashMap<BlockPos, BlockState>()
+        world[BlockPos(0, 65, 0)] = lava(0)
+        world[BlockPos(1, 65, 0)] = lava(2)
+        world[BlockPos(1, 64, 0)] = lava(10)
+        world[BlockPos(2, 64, 0)] = lava(2)
+        world[BlockPos(3, 64, 0)] = lava(0)
+        world[BlockPos(4, 64, 0)] = lava(2)
+        world[BlockPos(1, 64, 1)] = Blocks.WATER.defaultBlockState().setValue(BlockStateProperties.LEVEL, 2)
+        val stateAt = { at: BlockPos -> world[at] ?: Blocks.AIR.defaultBlockState() }
+
+        val run = ranFrom(BlockPos(0, 65, 0), stateAt) { true }.map { (at, _) -> at.x to at.y }
+        assertEquals(listOf(1 to 65, 1 to 64, 2 to 64), run)
+        assertEquals(listOf(1 to 65, 1 to 64), ranFrom(BlockPos(0, 65, 0), stateAt) { it.x < 2 }.map { (at, _) -> at.x to at.y })
     }
 
     @Test

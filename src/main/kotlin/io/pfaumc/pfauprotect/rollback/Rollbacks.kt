@@ -19,6 +19,7 @@ import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.nbt.NbtIo
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.util.ProblemReporter
@@ -36,6 +37,9 @@ import net.minecraft.world.entity.EntitySpawnReason
 import net.minecraft.world.entity.EntitySpawnRequest
 import net.minecraft.world.entity.EntityType
 import net.minecraft.world.level.block.Block
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.LiquidBlock
+import net.minecraft.world.level.block.state.BlockState
 import org.bukkit.Location
 import org.bukkit.craftbukkit.entity.CraftEntity
 import org.bukkit.entity.Entity
@@ -69,6 +73,40 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 // The flags vanilla `/fill` places with: the client is told, and a container taken away takes what it
 // held with it instead of spilling it on the ground. The neighbours are told once everything is in.
 private const val PLACE_FLAGS = Block.UPDATE_CLIENTS or Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS
+
+// A column poured from the build limit and a wide spread of water at its foot, and no further: what is
+// left beyond runs dry by itself, its source being gone.
+private const val DRAIN_LIMIT = 4096
+
+private val DRAIN_DIRECTIONS = listOf(Direction.DOWN, Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST)
+
+/**
+ * The running liquid a source fed: everything of the same liquid reachable from it down and sideways
+ * through liquid that is not a source itself. Sources stop the walk, so an ocean beside a griefer's bucket
+ * loses no more than the edge his water ran into, and that runs back in from the ocean.
+ */
+internal fun ranFrom(
+    source: BlockPos,
+    stateAt: (BlockPos) -> BlockState,
+    owned: (BlockPos) -> Boolean,
+): List<Pair<BlockPos, BlockState>> {
+    val fluid = stateAt(source).fluidState.type
+    val seen = hashSetOf(source)
+    val queue = ArrayDeque(listOf(source))
+    val found = ArrayList<Pair<BlockPos, BlockState>>()
+    while (queue.isNotEmpty()) {
+        val at = queue.removeFirst()
+        for (direction in DRAIN_DIRECTIONS) {
+            val near = at.relative(direction)
+            if (found.size >= DRAIN_LIMIT || !seen.add(near) || !owned(near)) continue
+            val state = stateAt(near)
+            if (state.block !is LiquidBlock || state.fluidState.isSource || !state.fluidState.type.isSame(fluid)) continue
+            found += near to state
+            queue += near
+        }
+    }
+    return found
+}
 
 // How long a preview waits for `apply`. The world goes on changing under it, so apply reads it all
 // again; this only bounds how stale the question can be.
@@ -255,13 +293,26 @@ class ChunkRollback(
         val spots = positions.map { BlockPos(it.at.x, it.at.y, it.at.z) }
         val before = spots.map { standingAt(level, it, codec) }
         val touched = BooleanArray(positions.size)
+        val settles = positions.mapIndexed { i, plan -> settle(before[i].state.asBlockData().asString, plan.steps) }
+        val targets = settles.map { settled -> settled.back?.before?.let { if (passing(it)) "minecraft:air" else it } }
+        // What a source being taken away had run into goes with it, before anything is put back: a plank
+        // put back in the middle of the flow would cut the walk off, and lava left running sets fire to
+        // the house the rollback is putting back.
+        val drained = if (!apply) emptyList() else positions.indices.flatMap { i ->
+            val was = before[i].state
+            val removed = was.block is LiquidBlock && was.fluidState.isSource &&
+                targets[i].let { it != null && it != was.asBlockData().asString }
+            if (!removed) emptyList()
+            else ranFrom(spots[i], level::getBlockState) { Bukkit.isOwnedByCurrentRegion(level.world, it.x shr 4, it.z shr 4) }
+        }
+        for ((pos, _) in drained) level.setBlock(pos, Blocks.AIR.defaultBlockState(), PLACE_FLAGS)
         positions.forEachIndexed { i, plan ->
             val was = before[i]
             val standing = was.state.asBlockData().asString
-            val settled = settle(standing, plan.steps)
+            val settled = settles[i]
             if (settled.conflict) tally.conflicts++
             val back = settled.back
-            val target = back?.before?.let { if (passing(it)) "minecraft:air" else it }
+            val target = targets[i]
             val reshaped = target != null && target != standing
             // A container standing where it stood keeps what it holds: its contents are the slot
             // postings' business, and its tag would hand back what they already give back.
@@ -326,6 +377,7 @@ class ChunkRollback(
         difference.writeOff(plugin, placed, sink)
         // Last, and after the rows: what the neighbours do now is theirs, and the capture files it.
         for (i in positions.indices) if (touched[i]) level.updateNeighboursOnBlockSet(spots[i], before[i].state)
+        for ((pos, was) in drained) level.updateNeighboursOnBlockSet(pos, was)
         return tally
     }
 
