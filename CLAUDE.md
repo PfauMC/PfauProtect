@@ -15,7 +15,12 @@ went, spot items with no explained origin, and eventually roll back a culprit. K
 ./gradlew test --tests 'io.pfaumc.pfauprotect.storage.StorageTest.*name*'# one method (glob)
 ./gradlew runServer                                              # Canvas server with the plugin (not on Windows, see below)
 scripts/test-server.sh start|stop|logs                           # the same server in a Linux container, for manual runs
+testbot/bots.sh start|run R4 ...|stop                            # two Fabric bot clients play TESTING-v7 against that server
 ```
+
+- `testbot/` is a separate Gradle build (Fabric client mod, Java, own wrapper), not part of the plugin's build or
+  CI. Test1 (owner, op) runs the scenarios in `Scenarios.java`, Test2 (griefer) does what Test1 sends over a
+  local socket; stands go into the zone x 40..90, z -90..-40. The report lands in `testbot/run/owner/ppt-report.txt`.
 
 - Nothing is shaded into the jar. Runtime dependencies go through `library(...)` (plugin-yml writes them into
   `plugin.yml` `libraries`). `kotlin.stdlib.default.dependency=false`, so a new dependency usually has to be
