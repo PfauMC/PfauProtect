@@ -248,6 +248,27 @@ class BlockCaptureTest {
         assertEquals(emptyList<Block>(), sourcesOf(blockIn(blocks, BlockPos(5, 64, 0))) { true })
     }
 
+    // A bucket on a roof at x 0, its lava run east over the edge and along the ground into a pool of lava
+    // somebody else poured, with water beside. Taking the bucket away drains its run; the pool, what the
+    // pool feeds and the water stay, and nothing over the region border is touched.
+    @Test
+    fun `a source taken away drains what it ran into and no other source`() {
+        val lava = { level: Int -> Blocks.LAVA.defaultBlockState().setValue(BlockStateProperties.LEVEL, level) }
+        val world = HashMap<BlockPos, NmsBlockState>()
+        world[BlockPos(0, 65, 0)] = lava(0)
+        world[BlockPos(1, 65, 0)] = lava(2)
+        world[BlockPos(1, 64, 0)] = lava(10)
+        world[BlockPos(2, 64, 0)] = lava(2)
+        world[BlockPos(3, 64, 0)] = lava(0)
+        world[BlockPos(4, 64, 0)] = lava(2)
+        world[BlockPos(1, 64, 1)] = Blocks.WATER.defaultBlockState().setValue(BlockStateProperties.LEVEL, 2)
+        val stateAt = { at: BlockPos -> world[at] ?: Blocks.AIR.defaultBlockState() }
+
+        val run = ranFrom(BlockPos(0, 65, 0), stateAt) { true }.map { (at, _) -> at.x to at.y }
+        assertEquals(listOf(1 to 65, 1 to 64, 2 to 64), run)
+        assertEquals(listOf(1 to 65, 1 to 64), ranFrom(BlockPos(0, 65, 0), stateAt) { it.x < 2 }.map { (at, _) -> at.x to at.y })
+    }
+
     // A log with a branch of leaves running east from it, one leaf a player placed on top of it, and
     // a stretch past the game's reach. The leaves that would die without this log are the branch as far
     // as six steps, and the placed leaf stays because the game never decays it.

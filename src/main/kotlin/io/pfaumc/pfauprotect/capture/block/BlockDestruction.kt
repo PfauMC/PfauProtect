@@ -45,6 +45,7 @@ import net.minecraft.world.level.block.AbstractCauldronBlock
 import net.minecraft.world.level.block.BaseFireBlock
 import net.minecraft.world.level.block.GrowingPlantBodyBlock
 import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.LiquidBlock
 import net.minecraft.world.level.block.LiquidBlockContainer
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import net.minecraft.world.level.block.state.properties.PistonType
@@ -906,8 +907,24 @@ class BlockDestructionListener(
 
     // A source taken up, a waterlogged block drained, powder snow scooped.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    fun onBucketFill(event: PlayerBucketFillEvent) =
+    fun onBucketFill(event: PlayerBucketFillEvent) {
+        takenUp(event.block as CraftBlock)
         readBack(listOf(event.block), Attributed(event.player.uniqueId, Confidence.FACT), Cause.BLK_BUCKET)
+    }
+
+    /**
+     * A source taken up leaves what it fed running down for seconds, and lava running down sets fire. Who
+     * poured it answers for that, not who took it up: an owner scooping up a griefer's lava does not take
+     * the fire on. The run is noted as it stands, while the source is still there to name the pourer.
+     */
+    private fun takenUp(source: CraftBlock) {
+        val state = source.blockState
+        if (state.block !is LiquidBlock || !state.fluidState.isSource) return
+        val by = pouredBy(source)?.takeIf { it.confidence != Confidence.NEARBY } ?: return
+        val world = source.world
+        val run = ranFrom(source.position, source.level::getBlockState) { Bukkit.isOwnedByCurrentRegion(world, it.x shr 4, it.z shr 4) }
+        for ((at, ran) in run) attribution.placed(WorldBlock(world.uid, at.x, at.y, at.z), ran.asBlockData().asString, by.actor)
+    }
 
     /**
      * Whatever a dispenser does to the block in front of it: a liquid put down or taken up, a shulker
@@ -929,8 +946,15 @@ class BlockDestructionListener(
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBurn(event: BlockBurnEvent) {
-        val block = event.block
-        defer(block, block.blockData, Cause.BLK_FIRE_BURN, event.ignitingBlock?.let(::fireStartedBy))
+        val block = event.block as CraftBlock
+        val by = event.ignitingBlock?.let(::fireStartedBy)
+        // What the block leaves may be fire, and that fire may leap on before its row reaches the journal:
+        // it is noted at once, as a fire that spread is. Left as air, the position never matches the note.
+        if (by != null && by.confidence != Confidence.NEARBY) {
+            val fire = BaseFireBlock.getState(block.level, block.position).asBlockData().asString
+            attribution.placed(positionOf(block), fire, by.actor)
+        }
+        defer(block, block.blockData, Cause.BLK_FIRE_BURN, by)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

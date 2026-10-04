@@ -2,6 +2,7 @@ package io.pfaumc.pfauprotect.rollback
 
 import ca.spottedleaf.concurrentutil.util.Priority
 import io.pfaumc.pfauprotect.capture.block.Difference
+import io.pfaumc.pfauprotect.capture.block.ranFrom
 import io.pfaumc.pfauprotect.capture.block.standingAt
 import io.pfaumc.pfauprotect.check.emptied
 import io.pfaumc.pfauprotect.model.LedgerEntry
@@ -19,7 +20,6 @@ import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import net.minecraft.core.BlockPos
-import net.minecraft.core.Direction
 import net.minecraft.nbt.NbtIo
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.util.ProblemReporter
@@ -39,7 +39,6 @@ import net.minecraft.world.entity.EntityType
 import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.LiquidBlock
-import net.minecraft.world.level.block.state.BlockState
 import org.bukkit.Location
 import org.bukkit.craftbukkit.entity.CraftEntity
 import org.bukkit.entity.Entity
@@ -74,39 +73,6 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 // held with it instead of spilling it on the ground. The neighbours are told once everything is in.
 private const val PLACE_FLAGS = Block.UPDATE_CLIENTS or Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS
 
-// A column poured from the build limit and a wide spread of water at its foot, and no further: what is
-// left beyond runs dry by itself, its source being gone.
-private const val DRAIN_LIMIT = 4096
-
-private val DRAIN_DIRECTIONS = listOf(Direction.DOWN, Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST)
-
-/**
- * The running liquid a source fed: everything of the same liquid reachable from it down and sideways
- * through liquid that is not a source itself. Sources stop the walk, so an ocean beside a griefer's bucket
- * loses no more than the edge his water ran into, and that runs back in from the ocean.
- */
-internal fun ranFrom(
-    source: BlockPos,
-    stateAt: (BlockPos) -> BlockState,
-    owned: (BlockPos) -> Boolean,
-): List<Pair<BlockPos, BlockState>> {
-    val fluid = stateAt(source).fluidState.type
-    val seen = hashSetOf(source)
-    val queue = ArrayDeque(listOf(source))
-    val found = ArrayList<Pair<BlockPos, BlockState>>()
-    while (queue.isNotEmpty()) {
-        val at = queue.removeFirst()
-        for (direction in DRAIN_DIRECTIONS) {
-            val near = at.relative(direction)
-            if (found.size >= DRAIN_LIMIT || !seen.add(near) || !owned(near)) continue
-            val state = stateAt(near)
-            if (state.block !is LiquidBlock || state.fluidState.isSource || !state.fluidState.type.isSame(fluid)) continue
-            found += near to state
-            queue += near
-        }
-    }
-    return found
-}
 
 // How long a preview waits for `apply`. The world goes on changing under it, so apply reads it all
 // again; this only bounds how stale the question can be.
