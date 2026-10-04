@@ -98,6 +98,17 @@ class RollbackTest {
         assertSame(opened, settle("minecraft:oak_door[open=true]", listOf(opened)).back)
     }
 
+    // A plank burnt out and lava ran into the hole: the lava wrote no row and goes when its source does,
+    // so the plank goes back. A source standing there is somebody's bucket, and that is a later change.
+    @Test
+    fun `liquid that ran in is the air it ran into`() {
+        val burnt = step("minecraft:oak_planks", AIR)
+        val settled = settle("minecraft:lava[level=3]", listOf(burnt))
+        assertSame(burnt, settled.back)
+        assertFalse(settled.conflict)
+        assertTrue(settle(LAVA, listOf(burnt)).conflict)
+    }
+
     @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)

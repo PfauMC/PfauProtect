@@ -229,6 +229,25 @@ class BlockCaptureTest {
             }
         } as Block
 
+    // Lava poured on a roof at x 0, run east over the edge, down the wall and on along the ground. From
+    // the ground the walk climbs back to the bucket; a source below where it starts is never one it
+    // ran from, and a source over the region border is not read.
+    @Test
+    fun `a liquid is walked back up to the source it runs from`() {
+        val lava = { level: Int -> Blocks.LAVA.defaultBlockState().setValue(BlockStateProperties.LEVEL, level) }
+        val blocks = HashMap<BlockPos, NmsBlockState>()
+        blocks[BlockPos(0, 65, 0)] = lava(0)
+        blocks[BlockPos(1, 65, 0)] = lava(2)
+        blocks[BlockPos(1, 64, 0)] = lava(10)
+        blocks[BlockPos(2, 64, 0)] = lava(2)
+        blocks[BlockPos(2, 63, 0)] = lava(0)
+        val start = blockIn(blocks, BlockPos(2, 64, 0))
+
+        assertEquals(listOf(0 to 65), sourcesOf(start) { true }.map { it.x to it.y })
+        assertEquals(emptyList<Block>(), sourcesOf(start) { it.x > 0 })
+        assertEquals(emptyList<Block>(), sourcesOf(blockIn(blocks, BlockPos(5, 64, 0))) { true })
+    }
+
     // A log with a branch of leaves running east from it, one leaf a player placed on top of it, and
     // a stretch past the game's reach. The leaves that would die without this log are the branch as far
     // as six steps, and the placed leaf stays because the game never decays it.

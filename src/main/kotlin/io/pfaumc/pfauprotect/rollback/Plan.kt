@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.attribution.flowing
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.EntitySlot
@@ -36,8 +37,12 @@ private val STORIES = setOf(EntityKind.REMOVED, EntityKind.CREATED, EntityKind.C
 // leaves the plain one behind.
 private val AIRS = setOf("minecraft:air", "minecraft:cave_air", "minecraft:void_air")
 
-/** The block a state string is of, with the properties dropped and every air read as one. */
-internal fun blockOf(state: String): String = state.substringBefore('[').let { if (it in AIRS) "minecraft:air" else it }
+/**
+ * The block a state string is of, with the properties dropped and every air read as one. Liquid that
+ * ran in is air too: its arrival has no row, and lava that filled a burnt-out house is no later change.
+ */
+internal fun blockOf(state: String): String =
+    state.substringBefore('[').let { if (it in AIRS || flowing(state)) "minecraft:air" else it }
 
 /** One row of a position read backwards: the position went from `before` to `after`. */
 class Step(val before: String, val after: String, val payloadBefore: ByteArray?)

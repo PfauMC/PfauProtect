@@ -13,6 +13,7 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.attribution.Energy
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.attribution.Falling
+import io.pfaumc.pfauprotect.attribution.POURING_CAUSES
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
@@ -874,12 +875,20 @@ class BlockDestructionListener(
     // like any other touch; a dispenser's flint is the dispenser's read.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onIgnite(event: BlockIgniteEvent) {
-        val player = event.player ?: return
         val block = event.block as CraftBlock
         // Over soul sand and soul soil the fire that goes down is soul fire, and a note has to name
         // what is standing there: every reader of one compares by block, so a note calling it plain
         // fire answers nothing and the whole chain off it burns unattributed.
         val lit = BaseFireBlock.getState(block.level, block.position).asBlockData().asString
+        val player = event.player
+        if (player == null) {
+            // Lava sets fire on a random tick, and nothing else announces the fire it puts down.
+            if (event.cause != BlockIgniteEvent.IgniteCause.LAVA) return
+            val by = event.ignitingBlock?.let(::pouredBy)
+            if (by != null && by.confidence != Confidence.NEARBY) attribution.placed(positionOf(block), lit, by.actor)
+            changed(block, block.blockData, lit, Cause.BLK_FIRE_SPREAD, by)
+            return
+        }
         attribution.placed(positionOf(block), lit, player.uniqueId)
         readBack(listOf(block), Attributed(player.uniqueId, Confidence.FACT))
     }
@@ -992,7 +1001,24 @@ class BlockDestructionListener(
         if (from.type == Material.DRAGON_EGG) return eggJumped(from, to)
         val by = attribution.carriedTo(positionOf(to), from.blockData.asString)
         if (!liquidDestroys((to as CraftBlock).blockState)) return
-        defer(to, to.blockData, Cause.BLK_LIQUID_DESTROY, by)
+        defer(to, to.blockData, Cause.BLK_LIQUID_DESTROY, by ?: pouredBy(from))
+    }
+
+    /**
+     * Who poured the liquid acting now. Lava sets fire minutes after its bucket and runs on into what
+     * the fire left, long after the note of the pour ran out; the source it runs from still has the
+     * bucket's row. A find is noted here again, so the chain off it carries on as from a fresh pour.
+     * A seek per source asked, and only where a row is about to be written anyway.
+     */
+    private fun pouredBy(liquid: Block): Attributed? {
+        val at = positionOf(liquid)
+        val standing = liquid.blockData.asString
+        attribution.placerAt(at, standing)?.let { return it }
+        val found = sourcesOf(liquid).firstNotNullOfOrNull {
+            attribution.journalPlacerAt(positionOf(it), it.blockData.asString, POURING_CAUSES)
+        } ?: return null
+        if (found.confidence != Confidence.NEARBY) attribution.placed(at, standing, found.actor)
+        return found
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
