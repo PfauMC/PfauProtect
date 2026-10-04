@@ -22,6 +22,8 @@ import io.pfaumc.pfauprotect.storage.RocksItemLog
 import net.minecraft.core.BlockPos
 import net.minecraft.nbt.NbtIo
 import net.minecraft.server.level.ServerLevel
+import net.minecraft.server.level.TicketType
+import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManager
 import net.minecraft.util.ProblemReporter
 import net.minecraft.world.Clearable
 import io.pfaumc.pfauprotect.capture.entity.VOLATILE
@@ -84,6 +86,53 @@ private const val PENDING_MILLIS = 5 * 60_000L
 // A chunk task that never runs — its world unloaded under it — would hold the one rollback slot for
 // good. Past this a running rollback is taken as lost and the slot handed on.
 private const val STALE_MILLIS = 10 * 60_000L
+
+// How long the chunks a rollback holds get to load before it gives up on them.
+private const val LOAD_MILLIS = 60_000L
+
+// Canvas loads an unloaded chunk for `canvas$loadOrRunAtChunksAsync` and then never calls back when no
+// player keeps it loaded: the rollback waited for good and answered nothing. So a rollback holds its
+// chunks itself, with a ticket of its own, each run under its own identifier so that two runs over the
+// same chunk never take each other's hold away. Neither saved with the world nor timed out.
+private val ROLLBACK_HOLD = TicketType<Long>(0L, TicketType.FLAG_LOADING or TicketType.FLAG_SIMULATION).apply {
+    `moonrise$setIdentifierComparator`(Comparator.naturalOrder())
+}
+private val HOLDS = AtomicLong()
+
+/**
+ * The chunks one rollback works in, held loaded until it is done: each worked chunk and its neighbours,
+ * which a block on its edge tells it changed.
+ */
+private class ChunkHold(private val work: List<Pair<ServerLevel, ChunkPlan>>) {
+    private val id = HOLDS.incrementAndGet()
+    // One step under full at the worked chunk is full one chunk around it.
+    private val level = ChunkHolderManager.FULL_LOADED_TICKET_LEVEL - 1
+
+    /** False when the chunks did not load in time; the hold is released then. */
+    fun take(): Boolean {
+        for ((world, chunk) in work) {
+            val holders = world.`moonrise$getChunkTaskScheduler`().chunkHolderManager
+            holders.addTicketAtLevel(ROLLBACK_HOLD, chunk.chunkX, chunk.chunkZ, level, id)
+            holders.processTicketUpdates(chunk.chunkX, chunk.chunkZ)
+        }
+        val until = System.currentTimeMillis() + LOAD_MILLIS
+        while (!work.all { (world, c) -> world.`moonrise$areChunksLoaded`(c.chunkX - 1, c.chunkZ - 1, c.chunkX + 1, c.chunkZ + 1) }) {
+            if (System.currentTimeMillis() > until) {
+                release()
+                return false
+            }
+            Thread.sleep(50)
+        }
+        return true
+    }
+
+    fun release() {
+        for ((world, chunk) in work) {
+            world.`moonrise$getChunkTaskScheduler`().chunkHolderManager
+                .removeTicketAtLevel(ROLLBACK_HOLD, chunk.chunkX, chunk.chunkZ, level, id)
+        }
+    }
+}
 
 private val TIME_FORMAT: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
@@ -611,9 +660,20 @@ class Rollbacks(
         total.deaths += plans.flatMap { it.deaths }
         // Only deaths to give back for, and no place to touch: straight on to them.
         if (work.isEmpty()) return finishing(sender, total, read, where, apply, actor, global, release)
+        val hold = ChunkHold(work)
+        if (!hold.take()) {
+            sender.sendMessage("Rollback refused: the chunks it works in did not load within ${LOAD_MILLIS / 1000} s.")
+            release()
+            return
+        }
+        // Held through the taking back too: the piles it takes back lie in these chunks.
+        val freed = {
+            hold.release()
+            release()
+        }
         val left = AtomicInteger(work.size)
         for ((level, chunk) in work) {
-            // A chunk's neighbours are loaded with it, so a block on its edge can tell them it changed.
+            // Loaded by the hold, so this runs on the chunk's region rather than waiting for a load.
             level.`canvas$loadOrRunAtChunksAsync`(
                 chunk.chunkX - 1, chunk.chunkX + 1, chunk.chunkZ - 1, chunk.chunkZ + 1, Priority.NORMAL,
             ) {
@@ -623,7 +683,7 @@ class Rollbacks(
                     plugin.logger.log(Level.SEVERE, "a rollback chunk at ${chunk.chunkX} ${chunk.chunkZ} failed", failure)
                     total.add(Tally().apply { failed = chunk.positions.size })
                 } finally {
-                    if (left.decrementAndGet() == 0) entityJobs(total) { finishing(sender, total, read, where, apply, actor, global, release) }
+                    if (left.decrementAndGet() == 0) entityJobs(total) { finishing(sender, total, read, where, apply, actor, global, freed) }
                 }
             }
         }
