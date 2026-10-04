@@ -53,6 +53,9 @@ private val PLACING_CAUSES = setOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_BONEMEAL)
 // The same for a liquid source: a bucket emptied by hand or by a dispenser.
 internal val POURING_CAUSES = setOf(Cause.BLK_BUCKET, Cause.BLK_DISPENSER)
 
+// And for a fire: lit by hand or by lava, leapt from another fire, or left by a block that burnt.
+internal val FIRING_CAUSES = setOf(Cause.BLK_PLAYER_USE, Cause.BLK_FIRE_SPREAD, Cause.BLK_FIRE_BURN)
+
 private val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
 
 /**

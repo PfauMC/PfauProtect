@@ -109,6 +109,15 @@ class RollbackTest {
         assertTrue(settle(LAVA, listOf(burnt)).conflict)
     }
 
+    // The griefer's fire took the plank and went out by itself, which is nobody's row; the plank goes back.
+    @Test
+    fun `a fire that went out is no later change`() {
+        val burnt = step("minecraft:oak_planks", "minecraft:fire[age=3]")
+        val settled = settle(AIR, listOf(burnt))
+        assertSame(burnt, settled.back)
+        assertFalse(settled.conflict)
+    }
+
     @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)

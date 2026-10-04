@@ -126,6 +126,22 @@ class AttributionTest {
         assertEquals(Confidence.NEARBY, attribution.journalPlacerAt(there, "minecraft:lava[level=0]", POURING_CAUSES)?.confidence)
     }
 
+    // A fire outlives its note; the row that set it there, by spreading or by a plank burning into it,
+    // still names whose fire it is. A break of the fire puts nothing down.
+    @Test
+    fun `the journal names whose fire is burning`() {
+        val fire = "minecraft:fire[age=7]"
+        val leapt = at(10, 64, 10)
+        journalled(leapt, AIR, fire, bob, cause = Cause.BLK_FIRE_SPREAD)
+        assertEquals(bob, attribution.journalPlacerAt(leapt, fire, FIRING_CAUSES)?.actor)
+
+        val burnt = at(11, 64, 10)
+        journalled(burnt, "minecraft:oak_planks", fire, bob, cause = Cause.BLK_FIRE_BURN)
+        assertEquals(bob, attribution.journalPlacerAt(burnt, fire, FIRING_CAUSES)?.actor)
+        journalled(burnt, fire, AIR, alice, START + 1, Cause.BLK_PLAYER_BREAK)
+        assertNull(attribution.journalPlacerAt(burnt, fire, FIRING_CAUSES))
+    }
+
     @Test
     fun `nothing this answers with is a fact`() {
         val here = at(10, 64, 10)

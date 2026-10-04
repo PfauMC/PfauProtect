@@ -37,12 +37,16 @@ private val STORIES = setOf(EntityKind.REMOVED, EntityKind.CREATED, EntityKind.C
 // leaves the plain one behind.
 private val AIRS = setOf("minecraft:air", "minecraft:cave_air", "minecraft:void_air")
 
+// Fire goes out by itself, under a row nobody answers for, or under the hand of whoever puts it out.
+private val FIRES = setOf("minecraft:fire", "minecraft:soul_fire")
+
 /**
  * The block a state string is of, with the properties dropped and every air read as one. Liquid that
  * ran in is air too: its arrival has no row, and lava that filled a burnt-out house is no later change.
+ * So is fire: a plank that burnt to fire and then to nothing goes back all the same.
  */
 internal fun blockOf(state: String): String =
-    state.substringBefore('[').let { if (it in AIRS || flowing(state)) "minecraft:air" else it }
+    state.substringBefore('[').let { if (it in AIRS || it in FIRES || flowing(state)) "minecraft:air" else it }
 
 /** One row of a position read backwards: the position went from `before` to `after`. */
 class Step(val before: String, val after: String, val payloadBefore: ByteArray?)

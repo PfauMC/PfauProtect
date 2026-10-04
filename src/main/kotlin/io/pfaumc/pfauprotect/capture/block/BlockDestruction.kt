@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.attribution.Energy
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
+import io.pfaumc.pfauprotect.attribution.FIRING_CAUSES
 import io.pfaumc.pfauprotect.attribution.Falling
 import io.pfaumc.pfauprotect.attribution.POURING_CAUSES
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
@@ -929,19 +930,36 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBurn(event: BlockBurnEvent) {
         val block = event.block
-        val igniting = event.ignitingBlock
-        val by = igniting?.let { attribution.placerAt(positionOf(it), it.blockData.asString) }
-        defer(block, block.blockData, Cause.BLK_FIRE_BURN, by)
+        defer(block, block.blockData, Cause.BLK_FIRE_BURN, event.ignitingBlock?.let(::fireStartedBy))
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onSpread(event: BlockSpreadEvent) {
         val block = event.block
         if (capturing(block)) return
+        val at = positionOf(block)
         val after = event.newState.blockData.asString
-        // The find is written forward onto this position by the carry itself, so an arbitrarily long
-        // chain of fire stays attributed while no note ever has to cover more than one step of it.
-        changed(block, block.blockData, after, spreadCause(after), attribution.carriedTo(positionOf(block), after))
+        // Fire leaps up to four blocks up and across the diagonal, past every neighbour's note, and the
+        // fire it leapt from is on the event. The find is written forward onto this position, as the
+        // carry does, so an arbitrarily long chain stays attributed while no note covers more than a step.
+        val leapt = if (blockNameOf(after) in FIRES) fireStartedBy(event.source) else null
+        if (leapt != null && leapt.confidence != Confidence.NEARBY) attribution.placed(at, after, leapt.actor)
+        changed(block, block.blockData, after, spreadCause(after), leapt ?: attribution.carriedTo(at, after))
+    }
+
+    /**
+     * Who set the fire burning at this position. A fire burns a minute and more, longer than its note,
+     * and the journal has the row that set it there. A find is noted again, so what this fire sets
+     * alight next carries on from it. A seek, only where the note has run out.
+     */
+    private fun fireStartedBy(fire: Block): Attributed? {
+        val at = positionOf(fire)
+        val standing = fire.blockData.asString
+        attribution.placerAt(at, standing)?.let { return it }
+        if (blockNameOf(standing) !in FIRES) return null
+        val found = attribution.journalPlacerAt(at, standing, FIRING_CAUSES) ?: return null
+        if (found.confidence != Confidence.NEARBY) attribution.placed(at, standing, found.actor)
+        return found
     }
 
     /**
