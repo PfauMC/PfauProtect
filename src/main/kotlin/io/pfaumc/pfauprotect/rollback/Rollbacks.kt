@@ -94,6 +94,9 @@ private const val STALE_MILLIS = 10 * 60_000L
 // How long the chunks a rollback holds get to load before it gives up on them.
 private const val LOAD_MILLIS = 60_000L
 
+// How long a rollback keeps its chunks after it is done, for the taking back queued behind it.
+private const val HOLD_LINGER_TICKS = 200L
+
 // How far from a block it put back a rollback puts fire out.
 private const val DOUSE_REACH = 2
 
@@ -734,10 +737,13 @@ class Rollbacks(
             release()
             return
         }
-        // Held through the taking back too: the piles it takes back lie in these chunks.
+        // Held through the taking back too: the piles it takes back lie in these chunks, and taking them is
+        // queued on the global region and then on the pile's own, after this returns. Let go at once, the
+        // chunks unloaded under it and the piles read as gone while they still lay there.
         val freed = {
-            hold.release()
             release()
+            Bukkit.getGlobalRegionScheduler().runDelayed(plugin, { hold.release() }, HOLD_LINGER_TICKS)
+            Unit
         }
         val left = AtomicInteger(work.size)
         for ((level, chunk) in work) {
