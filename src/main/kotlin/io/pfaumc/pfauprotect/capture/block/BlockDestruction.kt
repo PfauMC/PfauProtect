@@ -72,6 +72,7 @@ import org.bukkit.entity.Creeper
 import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.FallingBlock
+import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
 import org.bukkit.entity.Projectile
 import org.bukkit.entity.TNTPrimed
@@ -288,6 +289,9 @@ internal fun formCause(before: String): Cause =
     if (blockNameOf(before) in LIQUIDS) Cause.BLK_LIQUID_FORM else Cause.BLK_FORM
 
 private val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
+
+// A catalyst blooms within eight blocks of a death, and its sculk spreads a few blocks further on.
+private const val SCULK_REACH = 12
 
 private val LIQUID_FACES = listOf(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.DOWN)
 
@@ -979,7 +983,10 @@ class BlockDestructionListener(
         // carry does, so an arbitrarily long chain stays attributed while no note covers more than a step.
         val leapt = if (blockNameOf(after) in FIRES) fireStartedBy(event.source) else null
         if (leapt != null && leapt.confidence != Confidence.NEARBY) attribution.placed(at, after, leapt.actor)
-        changed(block, block.blockData, after, spreadCause(after), leapt ?: attribution.carriedTo(at, after))
+        val cause = spreadCause(after)
+        // Sculk spreads off a catalyst's bloom, and the bloom off a death somebody stands behind.
+        val bloomed = if (cause == Cause.BLK_SCULK) attribution.killerNear(at, SCULK_REACH) else null
+        changed(block, block.blockData, after, cause, leapt ?: bloomed ?: attribution.carriedTo(at, after))
         // A bamboo shoot turns into bamboo by its shape once the stalk above it is there, with no event of
         // its own; read back, so its row says what stands there and a rollback can take the planting away.
         val source = event.source
@@ -1150,7 +1157,9 @@ class BlockDestructionListener(
         // A burning arrow into dynamite primes it next, and the priming files the block on the shooter.
         if (block.type == Material.TNT) return
         val cause = entityBlockCause(entity.type) ?: return
-        changed(block, block.blockData, event.blockData.asString, cause, behindChange(entity))
+        // A mob dying under weaving leaves cobwebs: whoever killed it put them there, as far as anything can say.
+        val killer = (entity as? LivingEntity)?.takeIf { it.isDead }?.killer?.let { Attributed(it.uniqueId, Confidence.INFERRED) }
+        changed(block, block.blockData, event.blockData.asString, cause, behindChange(entity) ?: killer)
     }
 
     /**

@@ -89,6 +89,24 @@ class ConfiscationTest {
         assertEquals(9, conversion.inputsEach)
     }
 
+    // A helmet that fell off the head goes back onto it, a shield out of the off hand back into it.
+    @Test
+    fun `what fell out of a killed player is known by the slot it fell from`() {
+        val helmet = byteArrayOf(41)
+        val shield = byteArrayOf(42)
+        val head = ItemEntityRef(UUID.randomUUID())
+        val hand = ItemEntityRef(UUID.randomUUID())
+        ledger.submit(Transfer(Cause.DEATH_DROP, io.pfaumc.pfauprotect.model.PlayerEquip(alice, 39), head, helmet, null, 1, T0))
+        ledger.submit(Transfer(Cause.DEATH_DROP, io.pfaumc.pfauprotect.model.PlayerEquip(alice, 40), hand, shield, null, 1, T0))
+        ledger.drain()
+        val death = io.pfaumc.pfauprotect.storage.EntityRow(
+            0, 64, 0, T0, 1, 0, io.pfaumc.pfauprotect.model.EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
+            "minecraft:player", alice, actor = bob, drops = listOf(head.uuid, hand.uuid),
+        )
+
+        assertEquals(mapOf(ledger.formId(helmet) to listOf(39), ledger.formId(shield) to listOf(40)), fellFrom(ledger, death))
+    }
+
     // Bob carried the diamonds to a chest of his own in the same area, and the rollback took them back
     // out of it. Taking them from his hands as well would take his own diamonds.
     @Test

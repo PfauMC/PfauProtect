@@ -369,7 +369,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         keepsEntity: (EntityRow) -> Boolean = { true },
     ): Reading {
         val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
-        if (positions.size > MAX_ROLLBACK_POSITIONS) return tooMany(positions.size)
+        if (positions.size > io.pfaumc.pfauprotect.Settings.maxRollbackPositions) return tooMany(positions.size)
         val rows = ArrayList<BlockRow>()
         val nature = ArrayList<BlockRow>()
         val entityRows = ArrayList<EntityRow>()
@@ -476,7 +476,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         }
         if (unnamed > 0) return unreadable(unnamed)
         val positions = steps.keys + refills.keys + entities.keys
-        if (positions.size > MAX_ROLLBACK_POSITIONS) return tooMany(positions.size)
+        if (positions.size > io.pfaumc.pfauprotect.Settings.maxRollbackPositions) return tooMany(positions.size)
         val breaks = losses.groupBy { it.holder as WorldBlock }
         val chunks = positions
             .map {
@@ -493,7 +493,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     private fun state(id: Int): String? = ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, id)
 
     internal fun tooMany(positions: Int) = Refused(
-        "$positions positions changed in that window, more than the $MAX_ROLLBACK_POSITIONS one rollback " +
+        "$positions positions changed in that window, more than the ${io.pfaumc.pfauprotect.Settings.maxRollbackPositions} one rollback " +
             "may write; narrow the radius or the time"
     )
 

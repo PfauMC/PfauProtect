@@ -91,7 +91,7 @@ class RedstoneTest {
     fun `the block log shows every accepted row to its watcher`(@TempDir dir: Path) {
         val seen = ArrayList<Pair<UUID, BlockChange>>()
         RocksItemLog(dir.resolve("items")).use { shared ->
-            BlockLogs(dir.resolve("blocks"), shared) { world, changes -> changes.forEach { seen += world to it } }.use { logs ->
+            BlockLogs(dir.resolve("blocks"), shared, watch = { world, changes -> changes.forEach { seen += world to it } }).use { logs ->
                 val change = BlockChange(1, 2, 3, "minecraft:air", "minecraft:stone", Cause.BLK_PLAYER_PLACE, actor = alice)
                 logs.open(world).submit(listOf(change))
                 assertEquals(listOf(world to change), seen)

@@ -1,11 +1,14 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.say
 import io.pfaumc.pfauprotect.capture.item.ContainerCaptureListener
 import io.pfaumc.pfauprotect.capture.item.Intent
 import io.pfaumc.pfauprotect.capture.item.WorldItemListener
 import io.pfaumc.pfauprotect.capture.item.namedContents
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.PlayerInv
+import kotlin.jvm.optionals.getOrNull
+import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.Cause
@@ -230,6 +233,16 @@ internal fun pileBirths(ledger: RocksItemLog, death: EntityRow): Map<UUID, List<
     pileRows(ledger)(ItemEntityRef(pile)).filter { it.qty > 0 && it.cause != Cause.ITEM_MERGE }.map { it.ref }
 }
 
+/**
+ * Where on the victim each item fell out of, by form: the slots its piles were born from. Armour goes back
+ * onto the body and a shield into the off hand, not into the first free pocket.
+ */
+internal fun fellFrom(ledger: RocksItemLog, death: EntityRow): Map<Long, List<Int>> =
+    death.drops.flatMap { pile -> pileRows(ledger)(ItemEntityRef(pile)) }
+        .filter { it.qty > 0 && it.cause == Cause.DEATH_DROP }
+        .mapNotNull { row -> (row.counterparty as? PlayerHolder)?.takeIf { it.uuid == death.uuid }?.let { row.itemFormId to it.slot } }
+        .groupBy({ it.first }, { it.second })
+
 // Piles an earlier rollback already gave the victim back.
 private fun restituted(ledger: RocksItemLog, death: EntityRow): Set<UUID> {
     val births = pileBirths(ledger, death)
@@ -285,9 +298,16 @@ class Confiscations(
      * Gives a killed player back what fell out of them: taken from whoever has it, as it is taken, and
      * what is gone for good out of nothing.
      */
-    fun restore(victim: UUID, owed: List<Owed>, actor: UUID?, sender: CommandSender, births: List<PostingRef> = emptyList()) {
-        take(owed.filter { it.taker !is Vanished }, actor, sender) { formId, n -> give(victim, formId, n, actor, sender) }
-        for (gone in owed.filter { it.taker is Vanished }) give(victim, gone.formId, gone.qty, actor, sender)
+    fun restore(
+        victim: UUID,
+        owed: List<Owed>,
+        actor: UUID?,
+        sender: CommandSender,
+        births: List<PostingRef> = emptyList(),
+        slots: Map<Long, List<Int>> = emptyMap(),
+    ) {
+        take(owed.filter { it.taker !is Vanished }, actor, sender) { formId, n -> give(victim, formId, n, actor, sender, slots[formId].orEmpty()) }
+        for (gone in owed.filter { it.taker is Vanished }) give(victim, gone.formId, gone.qty, actor, sender, slots[gone.formId].orEmpty())
         // The piles' births marked as given back. Nothing moves, so no posting is written: only the mark.
         val form = owed.firstNotNullOfOrNull { ledger.form(it.formId) } ?: return
         if (births.isNotEmpty()) sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, form, null, 1, System.currentTimeMillis(), actor = actor, reverts = births)))
@@ -327,7 +347,7 @@ class Confiscations(
                 is Lying -> Bukkit.getGlobalRegionScheduler().execute(plugin) {
                     val pile = Bukkit.getEntity(taker.entity) as? Item
                     if (pile == null) {
-                        sender.sendMessage("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
+                        sender.say("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
                     } else {
                         pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender, taken) } }, null)
                     }
@@ -339,26 +359,37 @@ class Confiscations(
 
     // Out of nothing into a player's hands: what fits goes in now, through the pass as a reason for the
     // gain; what does not, at their next join.
-    private fun give(player: UUID, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?) {
+    private fun give(player: UUID, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList()) {
         val online = Bukkit.getPlayer(player)
         if (online == null) {
             Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) }
             return
         }
-        online.scheduler.run(plugin, { toPlayer(online, formId, qty, actor, sender) }) {
+        online.scheduler.run(plugin, { toPlayer(online, formId, qty, actor, sender, slots) }) {
             Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) }
         }
     }
 
     // On the player's own thread.
-    private fun toPlayer(player: Player, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?) {
+    private fun toPlayer(player: Player, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList()) {
         val form = ledger.form(formId) ?: return
-        val left = player.inventory.addItem(CraftItemStack.asBukkitCopy(codec.decode(form, qty, null))).values.sumOf { it.amount }
+        val inventory = player.inventory
+        var rest = qty
+        // Back where it was first, while that slot is empty.
+        for (slot in slots.distinct()) {
+            if (rest == 0) break
+            if (slot !in 0 until inventory.size || inventory.getItem(slot)?.type?.isAir == false) continue
+            val stack = CraftItemStack.asBukkitCopy(codec.decode(form, 1, null))
+            val n = minOf(rest, stack.maxStackSize)
+            inventory.setItem(slot, stack.apply { amount = n })
+            rest -= n
+        }
+        val left = if (rest == 0) 0 else inventory.addItem(CraftItemStack.asBukkitCopy(codec.decode(form, rest, null))).values.sumOf { it.amount }
         val added = qty - left
         if (added > 0) capture.intend(player, Intent(Cause.ROLLBACK, from = Void, form = form, qty = added, actor = actor))
         if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor) }
         val message = "  gave back $added ${name(formId)} to ${player.name}" + if (left > 0) "; $left more at their next join." else "."
-        if (sender != null) sender.sendMessage(message) else plugin.logger.info("rollback at join:$message")
+        if (sender != null) sender.say(message) else plugin.logger.info("rollback at join:$message")
     }
 
     /**
@@ -399,7 +430,7 @@ class Confiscations(
                 }
                 if (got > 0) {
                     taken(item.formId, got)
-                    sender?.sendMessage("  took back $got ${name(item.formId)} from the container at ${stash.x} ${stash.y} ${stash.z} it was put into.")
+                    sender?.say("  took back $got ${name(item.formId)} from the container at ${stash.x} ${stash.y} ${stash.z} it was put into.")
                 }
                 next(left - got)
             }
@@ -416,7 +447,7 @@ class Confiscations(
         val player = carrier?.let(Bukkit::getPlayer)
         val conversion = item.conversions.firstOrNull()
         if (player == null || conversion == null) {
-            sender?.sendMessage("  $need ${name(item.formId)} are beyond reach.")
+            sender?.say("  $need ${name(item.formId)} are beyond reach.")
             return
         }
         val results = (need + conversion.inputsEach - 1) / conversion.inputsEach
@@ -470,6 +501,35 @@ class Confiscations(
                 if (enderOpen) seen += n
                 else direct += Transfer(Cause.ROLLBACK, PlayerEnder(player.uniqueId, slot), Void, form, damage, n, now, actor = actor)
             }
+            // Put into a shulker box the thief carries: taken out of the box. Its contents are filed under the
+            // box's own name, not the slot, and its form leaves them out, so the pass sees no change here
+            // and the rows are written directly.
+            fun drainBox(stack: ItemStack?, put: (ItemStack) -> Unit) {
+                if (left == 0 || stack == null) return
+                val box = CraftItemStack.asNMSCopy(stack)
+                val owner = io.pfaumc.pfauprotect.capture.item.NestedItems.ownerOf(box) ?: return
+                val contents = box.get(net.minecraft.core.component.DataComponents.CONTAINER) ?: return
+                val items = net.minecraft.core.NonNullList.withSize(contents.items.size, net.minecraft.world.item.ItemStack.EMPTY)
+                for ((index, slot) in contents.items.withIndex()) slot.getOrNull()?.let { items[index] = it.create() }
+                var took = false
+                for (index in items.indices) {
+                    if (left == 0) break
+                    val child = items[index]
+                    if (child.isEmpty) continue
+                    val encoded = codec.encodeOrNull(CraftItemStack.asBukkitCopy(child)) ?: continue
+                    if (!encoded.form.contentEquals(form)) continue
+                    val n = minOf(left, child.count)
+                    child.shrink(n)
+                    left -= n
+                    took = true
+                    direct += Transfer(Cause.ROLLBACK, Nested(owner, index), Void, form, encoded.damage, n, now, actor = actor)
+                }
+                if (!took) return
+                box.set(net.minecraft.core.component.DataComponents.CONTAINER, net.minecraft.world.item.component.ItemContainerContents.fromItems(items))
+                put(CraftItemStack.asBukkitCopy(box))
+            }
+            for (slot in 0 until inventory.size) drainBox(inventory.getItem(slot)) { inventory.setItem(slot, it) }
+            for (slot in 0 until ender.size) drainBox(ender.getItem(slot)) { ender.setItem(slot, it) }
             if (seen > 0) capture.intend(player, Intent(Cause.ROLLBACK, to = Void, form = form, qty = seen, actor = actor))
             val got = item.qty - left
             if (got > 0) taken(item.formId, got)
@@ -477,7 +537,7 @@ class Confiscations(
             val rest = if (followed) "the rest is looked for where they put it and what they made of it" else "the rest is beyond reach"
             val message = if (left == 0) "  took back $got ${name(item.formId)} from ${player.name}."
             else "  ${player.name} held only $got of ${item.qty} ${name(item.formId)}; $rest."
-            if (sender != null) sender.sendMessage(message) else plugin.logger.info("rollback at join:$message")
+            if (sender != null) sender.say(message) else plugin.logger.info("rollback at join:$message")
             if (left > 0 && followed) short(item, left)
         }
         if (direct.isNotEmpty()) sink(direct)
@@ -486,7 +546,7 @@ class Confiscations(
     // On the thread of the region the pile lies in.
     private fun fromPile(pile: Item, owed: Owed, actor: UUID?, sender: CommandSender, taken: (Long, Int) -> Unit = { _, _ -> }) {
         if (!pile.isValid) {
-            sender.sendMessage("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
+            sender.say("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
             return
         }
         val stack = pile.itemStack
@@ -506,7 +566,7 @@ class Confiscations(
         }
         sink(rows)
         taken(owed.formId, n)
-        sender.sendMessage("  took back $n ${name(owed.formId)} lying in the world.")
+        sender.say("  took back $n ${name(owed.formId)} lying in the world.")
     }
 
     /** What was owed by a player while they were offline, taken on their join. */

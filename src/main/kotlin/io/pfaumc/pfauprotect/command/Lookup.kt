@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.command
+import io.pfaumc.pfauprotect.say
 import com.mojang.brigadier.LiteralMessage
 import com.mojang.brigadier.StringReader
 import com.mojang.brigadier.arguments.ArgumentType
@@ -51,6 +52,10 @@ import java.io.DataInputStream
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.event.ClickEvent
+import net.kyori.adventure.text.event.HoverEvent
+import org.bukkit.entity.Player
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.logging.Level
@@ -92,6 +97,10 @@ internal enum class Param(vararg val keys: String) {
     EXCLUDE("exclude", "e"),
     LIMIT("limit", "l", "rows"),
     PAGE("page", "pg"),
+    ROLLEDBACK("rolledback", "undone"),
+    AMOUNT("amount", "qty"),
+    EVENT("event", "ev"),
+    FILTER("filter", "f"),
     ;
 
     val canonical: String get() = keys.first()
@@ -158,7 +167,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     SIGN(setOf(Cause.BLK_SIGN_EDIT), "sign", "signs", "edit"),
     SWITCH(setOf(Cause.BLK_PLAYER_SWITCH, Cause.BLK_ENTITY_SWITCH), "switch", "switches", "pressed"),
     INTERACT(setOf(Cause.BLK_PLAYER_USE), "interact", "clicked", "toggled"),
-    COMMAND(setOf(Cause.BLK_COMMAND), "command", "commands", "worldedit"),
+    COMMAND(setOf(Cause.BLK_COMMAND, Cause.BLK_PLUGIN), "command", "commands", "worldedit", "plugin"),
 
     // The entity plane: what died, what a player brought into the world, and everything done to an entity.
     KILL(
@@ -178,6 +187,8 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
         "drop", "drops", "dropped", "thrown",
     ),
     PICKUP(setOf(Cause.PICKUP, Cause.PROJ_PICKUP, Cause.ITEM_PICKUP_BY_MOB, Cause.ITEM_PICKUP_BY_MOB_INV), "pickup", "picked", "pickups"),
+    // What a player took out of a container somebody else put down.
+    STEAL(setOf(Cause.CONTAINER_REMOVE), "steal", "stolen", "theft"),
     HOPPER(
         setOf(
             Cause.HOPPER_PULL_CONTAINER, Cause.HOPPER_PULL_GROUND, Cause.HOPPER_PUSH, Cause.HOPPER_MINECART_PULL,
@@ -228,7 +239,7 @@ private val USE_CAUSES = setOf(
 private val BLOCK_CAUSES: Set<Cause> =
     Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT + Cause.BLK_PLAYER_SWITCH +
         Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE + Cause.BLK_BUCKET +
-        Cause.BLK_SPONGE + Cause.BLK_COMMAND + Cause.BLK_LIQUID_FLOW
+        Cause.BLK_SPONGE + Cause.BLK_COMMAND + Cause.BLK_LIQUID_FLOW + Cause.BLK_PLUGIN
 
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
 private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")
@@ -264,6 +275,16 @@ data class LookupQuery(
     val radius: Int? = null,
     val limit: Int = DEFAULT_LIMIT,
     val page: Int = 1,
+    // Only rows a rollback has since undone, or only rows it has not; null for both.
+    val rolledBack: Boolean? = null,
+    val amount: IntRange? = null,
+    val steal: Boolean = false,
+    // How many rows of each cause and player, rather than the rows.
+    val count: Boolean = false,
+    // One event and nothing else: a click on a lookup line fills it in.
+    val event: EventRef? = null,
+    // Text a chat line or a command has to hold, for /pp chat.
+    val filter: String? = null,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
@@ -273,6 +294,21 @@ data class LookupQuery(
 
     // Rows a page needs read: every page before it as well, since a read is newest first.
     val wanted: Int get() = limit * page
+}
+
+/** An event of a world's block plane, with where and when it happened, which is all a rollback of it reads. */
+data class EventRef(val id: Long, val x: Int, val y: Int, val z: Int, val at: Long) {
+    override fun toString() = "event:$id@$x,$y,$z@$at"
+
+    companion object {
+        fun parse(value: String): EventRef? {
+            val parts = value.split('@')
+            if (parts.size != 3) return null
+            val xyz = parts[1].split(',').mapNotNull { it.toIntOrNull() }
+            if (xyz.size != 3) return null
+            return EventRef(parts[0].toLongOrNull() ?: return null, xyz[0], xyz[1], xyz[2], parts[2].toLongOrNull() ?: return null)
+        }
+    }
 }
 
 data class LookupTarget(val world: UUID, val x: Int, val y: Int, val z: Int, val label: String)
@@ -302,12 +338,16 @@ private val BAD_TIME = DynamicCommandExceptionType {
     LiteralMessage("'$it' is not a time span, expected something like 30m, 2h or 1d6h")
 }
 private val BAD_RADIUS = DynamicCommandExceptionType {
-    LiteralMessage("'$it' is not a radius, expected 0 to $MAX_RADIUS blocks or 'global'")
+    LiteralMessage("'$it' is not a radius, expected 0 to ${io.pfaumc.pfauprotect.Settings.maxRadius} blocks or 'global'")
 }
 private val BAD_ACTION = DynamicCommandExceptionType {
     LiteralMessage("'$it' is not an action, expected one of ${Action.names.joinToString(" ")}")
 }
 private val BAD_PAGE = DynamicCommandExceptionType { LiteralMessage("'$it' is not a page number") }
+private val BAD_YES_NO = DynamicCommandExceptionType { LiteralMessage("'$it' is neither yes nor no") }
+private val BAD_AMOUNT = DynamicCommandExceptionType { LiteralMessage("'$it' is not an amount, expected 5, >=5, <10 or 5-10") }
+private val BAD_EVENT = DynamicCommandExceptionType { LiteralMessage("'$it' is not an event, click a lookup line to fill one in") }
+private val UNKNOWN_FLAG = DynamicCommandExceptionType { LiteralMessage("unknown flag '$it', expected #count") }
 private val BAD_LIMIT = DynamicCommandExceptionType {
     LiteralMessage("'$it' is not a row count between 1 and $MAX_LIMIT")
 }
@@ -324,6 +364,16 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
         val tokenStart = reader.cursor
         while (reader.canRead() && reader.peek() != ' ') reader.skip()
         val token = reader.string.substring(tokenStart, reader.cursor)
+        if (token.startsWith("#")) {
+            query = when (token.lowercase()) {
+                "#count", "#sum", "#summary" -> query.copy(count = true)
+                else -> {
+                    reader.cursor = tokenStart
+                    throw UNKNOWN_FLAG.createWithContext(reader, token)
+                }
+            }
+            continue
+        }
         val colon = token.indexOf(':')
         if (colon <= 0) {
             reader.cursor = tokenStart
@@ -347,11 +397,18 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
             Param.PLAYER -> query.copy(players = query.players + values(value))
             Param.TIME -> spanOrNull(value)?.let { (back, until) -> query.copy(secondsBack = back, secondsUntil = until) } ?: fail(reader, BAD_TIME, value)
             Param.RADIUS -> query.copy(radius = radiusOrNull(value) ?: fail(reader, BAD_RADIUS, value))
-            Param.ACTION -> query.copy(causes = (query.causes ?: emptySet()) + causes(reader, valueStart, value))
+            Param.ACTION -> query.copy(
+                causes = (query.causes ?: emptySet()) + causes(reader, valueStart, value),
+                steal = query.steal || values(value).any { Action.of(it.lowercase()) == Action.STEAL },
+            )
             Param.INCLUDE -> query.copy(included = query.included + values(value))
             Param.EXCLUDE -> query.copy(excluded = query.excluded + values(value))
             Param.LIMIT -> query.copy(limit = limitOrNull(value) ?: fail(reader, BAD_LIMIT, value))
             Param.PAGE -> query.copy(page = value.toIntOrNull()?.takeIf { it >= 1 } ?: fail(reader, BAD_PAGE, value))
+            Param.ROLLEDBACK -> query.copy(rolledBack = yesNoOrNull(value) ?: fail(reader, BAD_YES_NO, value))
+            Param.AMOUNT -> query.copy(amount = amountOrNull(value) ?: fail(reader, BAD_AMOUNT, value))
+            Param.EVENT -> query.copy(event = EventRef.parse(value) ?: fail(reader, BAD_EVENT, value))
+            Param.FILTER -> query.copy(filter = value)
         }
         reader.cursor = tokenStart + token.length
     }
@@ -377,6 +434,25 @@ private fun causes(reader: StringReader, valueStart: Int, value: String): Set<Ca
         offset += name.length + 1
     }
     return found
+}
+
+private fun yesNoOrNull(value: String): Boolean? = when (value.lowercase()) {
+    "yes", "true", "y", "1" -> true
+    "no", "false", "n", "0" -> false
+    else -> null
+}
+
+/** `5`, `>=5`, `>5`, `<=10`, `<10` or `5-10`, as the range of amounts it allows. */
+internal fun amountOrNull(value: String): IntRange? {
+    fun n(text: String) = text.toIntOrNull()?.takeIf { it >= 0 }
+    return when {
+        value.startsWith(">=") -> n(value.drop(2))?.let { it..Int.MAX_VALUE }
+        value.startsWith(">") -> n(value.drop(1))?.let { it + 1..Int.MAX_VALUE }
+        value.startsWith("<=") -> n(value.drop(2))?.let { 0..it }
+        value.startsWith("<") -> n(value.drop(1))?.let { 0 until it }
+        '-' in value -> value.split('-').takeIf { it.size == 2 }?.let { (a, b) -> n(a)?.let { x -> n(b)?.let { y -> x..y } } }
+        else -> n(value)?.let { it..it }
+    }
 }
 
 /** A time span: `2h` back to now, or `2h-1h` (either way round) from two hours ago to one. */
@@ -411,7 +487,7 @@ fun durationOrNull(value: String): Long? {
 private fun radiusOrNull(value: String): Int? {
     val text = value.lowercase().removePrefix("#")
     if (text in GLOBAL_WORDS) return GLOBAL_RADIUS
-    return text.toIntOrNull()?.takeIf { it in 0..MAX_RADIUS }
+    return text.toIntOrNull()?.takeIf { it in 0..io.pfaumc.pfauprotect.Settings.maxRadius }
 }
 
 private fun limitOrNull(value: String): Int? = value.toIntOrNull()?.takeIf { it in 1..MAX_LIMIT }
@@ -456,11 +532,14 @@ internal class RowFilter(
     private val rollback: Boolean = false,
 ) {
     private val causes = query.causes
+    private val amount = query.amount
+    private val event = query.event?.id
     private val included = query.included.map(::normalizeItem).toSet()
     private val excluded = query.excluded.map(::normalizeItem).toSet()
 
     fun keeps(entry: LedgerEntry): Boolean {
         if (!caused(entry.cause)) return false
+        if (amount != null && kotlin.math.abs(entry.qty) !in amount) return false
         if (users.isNotEmpty() && !namesUser(entry, users)) return false
         val item = itemKey(ledger, entry.itemFormId)
         return (included.isEmpty() || item in included) && item !in excluded && !namesUser(entry, excludedUsers)
@@ -469,7 +548,7 @@ internal class RowFilter(
     // An entity row answers to its entity type for `include:` and `exclude:`, the way a block row answers
     // to its blocks.
     fun keeps(row: EntityRow): Boolean {
-        if (!caused(row.cause)) return false
+        if (!caused(row.cause) || amount != null || event != null && row.eventId != event) return false
         if (users.isNotEmpty() && (row.actor !in users || rollback && row.confidence == Confidence.NEARBY)) return false
         if (row.actor != null && row.actor in excludedUsers) return false
         return (included.isEmpty() || row.type in included) && row.type !in excluded
@@ -479,7 +558,7 @@ internal class RowFilter(
     // between; naming an item that no block is made of therefore hides the whole plane, which is what
     // a reader asking for one item wants.
     fun keeps(row: BlockRow): Boolean {
-        if (!caused(row.cause)) return false
+        if (!caused(row.cause) || amount != null || event != null && row.eventId != event) return false
         if (users.isNotEmpty() && (row.actor !in users || rollback && row.confidence == Confidence.NEARBY)) return false
         if (row.actor != null && row.actor in excludedUsers) return false
         val named = setOf(stateName(ledger, row.stateBefore), stateName(ledger, row.stateAfter))
@@ -527,13 +606,17 @@ class LookupArgument : CustomArgumentType<LookupQuery, String> {
         Param.INCLUDE -> ITEM_NAMES + BLOCK_NAMES
         Param.LIMIT -> LIMIT_EXAMPLES
         Param.PAGE -> listOf("2", "3")
+        Param.ROLLEDBACK -> listOf("no", "yes")
+        Param.AMOUNT -> listOf(">=8", ">=64", "<4")
+        Param.EVENT, Param.FILTER -> emptyList()
         null -> emptyList()
     }
 }
 
 // One line of an answer, from either plane, so the two can be shown in the order things happened
 // rather than as two lists a reader has to interleave in their head.
-private class Line(val timestamp: Long, val text: String)
+// `key` is what a #count groups by, the cause and who; `undone`, whether a rollback has since undone it.
+private class Line(val timestamp: Long, val text: String, val key: String = "", val undone: Boolean = false, val event: EventRef? = null)
 
 // A break says two things at once: the position gave up what it was made of, and an item came out of
 // it. Only the position end carries coordinates, so a reader standing there sees the debit and
@@ -579,7 +662,7 @@ class Lookups(
                 report(sender, target, query)
             } catch (failure: Throwable) {
                 plugin.logger.log(Level.SEVERE, "lookup at ${target.label} failed", failure)
-                sender.sendMessage("The lookup failed; the server log has the details.")
+                sender.say("The lookup failed; the server log has the details.")
             }
         }
     }
@@ -593,7 +676,7 @@ class Lookups(
             try {
                 val query = LookupQuery()
                 val slots = ledger.holderPage(EntitySlot(entity, 0), 0, Long.MAX_VALUE, reverse = true, limit = MAX_FETCH)
-                val items = wholeTransactions(ledger, slots.entries).map { Line(it.timestamp, describe(it)) }
+                val items = entryLines(wholeTransactions(ledger, slots.entries))
                 val log = blocks.get(at.world)
                 val rows = if (log == null) emptyList() else {
                     ((at.x shr 4) - 1..(at.x shr 4) + 1).flatMap { cx ->
@@ -602,11 +685,11 @@ class Lookups(
                         }
                     }
                 }
-                val lines = items + markedEntities(rows).map { (row, back) -> Line(row.timestamp, describe(row) + back) }
+                val lines = items + markedEntities(rows).map { (row, back) -> lineOf(row, back) }
                 answer(sender, lines, slots.complete, label, query)
             } catch (failure: Throwable) {
                 plugin.logger.log(Level.SEVERE, "lookup of $label failed", failure)
-                sender.sendMessage("The lookup failed; the server log has the details.")
+                sender.say("The lookup failed; the server log has the details.")
             }
         }
     }
@@ -616,14 +699,13 @@ class Lookups(
         val users = resolveAll(sender, query.users) ?: return
         if (query.global) {
             if (users.isEmpty()) {
-                sender.sendMessage("A world-wide lookup needs a player, user:<name>, or a radius.")
+                sender.say("A world-wide lookup needs a player, user:<name>, or a radius.")
                 return
             }
             return reportEverywhere(sender, target, query, users)
         }
         val page = read(target, query)
-        val items = wholeTransactions(ledger, filter(page.entries, query, users))
-            .map { Line(it.timestamp, describe(it)) }
+        val items = entryLines(wholeTransactions(ledger, filter(page.entries, query, users)))
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
         val changes = blockLines(target, query, users)
@@ -636,7 +718,7 @@ class Lookups(
      * they touched, and at each the block, entity and container rows, the way a rollback of them finds it.
      */
     private fun reportEverywhere(sender: CommandSender, target: LookupTarget, query: LookupQuery, users: Set<UUID>) {
-        val log = blocks.get(target.world) ?: return sender.sendMessage("This world's block log is not open.")
+        val log = blocks.get(target.world) ?: return sender.say("This world's block log is not open.")
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val touches = users.map { log.touchedBy(it, fromTs, toTs, GLOBAL_POSITIONS) }
@@ -650,9 +732,9 @@ class Lookups(
                 ledger.holderPage(it, fromTs, toTs, reverse = true, limit = fetch).entries
             }
         }.sortedByDescending { it.timestamp }
-        val lines = wholeTransactions(ledger, filter(entries, query, users)).map { Line(it.timestamp, describe(it)) } +
-            marked(rows).map { (row, back) -> Line(row.timestamp, describe(row) + back) } +
-            markedEntities(entities).map { (row, back) -> Line(row.timestamp, describe(row) + back) }
+        val lines = entryLines(wholeTransactions(ledger, filter(entries, query, users))) +
+            marked(rows).map { (row, back) -> lineOf(row, back) } +
+            markedEntities(entities).map { (row, back) -> lineOf(row, back) }
         answer(sender, lines, touches.all { it.complete }, "everything ${query.users.joinToString(", ")} did in this world", query)
     }
 
@@ -674,8 +756,7 @@ class Lookups(
             )
         }.map { ledger.holderPage(it, fromTs, query.toTs(), reverse = true, limit = fetch) }
         val entries = pages.flatMap { it.entries }.sortedByDescending { it.timestamp }
-        val items = wholeTransactions(ledger, filter(entries, query, users))
-            .map { Line(it.timestamp, describe(it)) }
+        val items = entryLines(wholeTransactions(ledger, filter(entries, query, users)))
         answer(sender, items, pages.all { it.complete }, "player ${query.players.joinToString(", ")}", query)
     }
 
@@ -685,21 +766,42 @@ class Lookups(
         val named = names.associateWith { idOf(it) }
         val unknown = named.filterValues { it == null }.keys
         if (unknown.isNotEmpty()) {
-            sender.sendMessage("Unknown player: ${unknown.joinToString(", ")}")
+            sender.say("Unknown player: ${unknown.joinToString(", ")}")
             return null
         }
         return named.values.filterNotNull().toSet()
     }
 
+    // Item rows marked when a rollback has since given them back.
+    private fun entryLines(entries: List<LedgerEntry>): List<Line> {
+        val given = ledger.compensated(entries.map { it.ref }).keys
+        return entries.map { entry ->
+            val undone = entry.ref in given
+            // A slot posting names its player as a holder rather than as its actor.
+            val who = entry.actor ?: (entry.holder as? PlayerHolder)?.uuid ?: (entry.counterparty as? PlayerHolder)?.uuid
+            Line(entry.timestamp, describe(entry) + if (undone) "  (rolled back)" else "", keyOf(entry.cause, who), undone)
+        }
+    }
+
+    private fun lineOf(row: BlockRow, back: String) =
+        Line(row.timestamp, describe(row) + back, keyOf(row.cause, row.actor), back.isNotEmpty(), EventRef(row.eventId, row.x, row.y, row.z, row.timestamp))
+
+    private fun lineOf(row: EntityRow, back: String) =
+        Line(row.timestamp, describe(row) + back, keyOf(row.cause, row.actor), back.isNotEmpty(), EventRef(row.eventId, row.x, row.y, row.z, row.timestamp))
+
+    private fun keyOf(cause: Cause, actor: UUID?) = "${cause.name.lowercase()}  ${actor?.let { "by ${playerName(it)}" } ?: "by nobody named"}"
+
     private fun answer(sender: CommandSender, found: List<Line>, complete: Boolean, where: String, query: LookupQuery) {
-        val matched = found.sortedByDescending { it.timestamp }
+        val shown = query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found
+        if (query.count) return summary(sender, shown, complete, where)
+        val matched = shown.sortedByDescending { it.timestamp }
         val lines = matched.drop(query.limit * (query.page - 1)).take(query.limit)
         // Nothing matched can mean two very different things, and telling them apart is the whole
         // difference between "nothing happened here" and "I did not get far enough to see". A read
         // that stopped early inside a busy chunk hands back rows from one corner of it, and answering
         // that with silence would clear a position the reader is standing in the crater of.
         if (lines.isEmpty()) {
-            sender.sendMessage(
+            sender.say(
                 if (complete) "No ledger entries for $where."
                 else "Nothing matched for $where, but the read stopped before the whole area was " +
                     "seen. Narrow the radius or ask for more with limit:${query.limit * 4}."
@@ -707,14 +809,32 @@ class Lookups(
             return
         }
         val page = if (query.page > 1) " (page ${query.page})" else ""
-        sender.sendMessage("Last ${lines.size} ledger entries for $where$page:")
-        for (line in lines) sender.sendMessage("  " + line.text)
+        sender.say("Last ${lines.size} ledger entries for $where$page:")
+        for (line in lines) {
+            val event = line.event
+            // A player can click a row of either plane's event to have its rollback typed out for them.
+            // The console cannot click: it is given the event to type.
+            if (sender !is Player || event == null) sender.say("  " + line.text + if (event != null) "  $event" else "")
+            else sender.sendMessage(
+                Component.text(io.pfaumc.pfauprotect.Texts.translate("  " + line.text))
+                    .hoverEvent(HoverEvent.showText(Component.text(if (io.pfaumc.pfauprotect.Settings.language == "ru") "Клик — откатить это событие" else "Click to roll back this one event")))
+                    .clickEvent(ClickEvent.suggestCommand("/pp rollback $event")),
+            )
+        }
         // A truncated view that says nothing about being truncated reads as the whole history, and an
         // investigator would conclude the item came from nowhere. The read itself stops early too, and
         // it stops before the filter runs, so a page cut short says so even when few rows matched.
         if (matched.size > query.wanted || !complete) {
-            sender.sendMessage("  ... older entries are cut off; page:${query.page + 1} shows the next ones")
+            sender.say("  ... older entries are cut off; page:${query.page + 1} shows the next ones")
         }
+    }
+
+    // How many rows of each cause and player, the most first: where a griefer was busiest, before the rows.
+    private fun summary(sender: CommandSender, found: List<Line>, complete: Boolean, where: String) {
+        if (found.isEmpty()) return sender.say(if (complete) "No ledger entries for $where." else "Nothing matched for $where in what was read.")
+        sender.say("Count of ${found.size} ledger entries for $where:")
+        for ((key, n) in found.groupingBy { it.key }.eachCount().entries.sortedByDescending { it.value }) sender.say("  $n  $key")
+        if (!complete) sender.say("  ... the read stopped early; these are counts of what it saw")
     }
 
     /**
@@ -743,7 +863,7 @@ class Lookups(
         }
         val keeps = rowFilter(query, users)
         val kept = rows.asSequence().filter(keeps::keeps).take(query.wanted + 1).toList()
-        val blockLines = marked(kept).map { (row, back) -> Line(row.timestamp, describe(row) + back) }
+        val blockLines = marked(kept).map { (row, back) -> lineOf(row, back) }
         return blockLines + entityLines(log, target, query, keeps, fromTs, toTs)
     }
 
@@ -785,7 +905,7 @@ class Lookups(
             }
         }
         val kept = rows.filter(keeps::keeps).sortedByDescending { it.timestamp }.take(query.wanted + 1)
-        return markedEntities(kept).map { (row, back) -> Line(row.timestamp, describe(row) + back) }
+        return markedEntities(kept).map { (row, back) -> lineOf(row, back) }
     }
 
     private fun read(target: LookupTarget, query: LookupQuery): EntryPage {
@@ -838,10 +958,25 @@ class Lookups(
     // know whether saying so would be a lie.
     private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
         val keeps = rowFilter(query, users)
+        val placers = HashMap<Container, UUID?>()
         return entries.asSequence()
             .filter(keeps::keeps)
+            .filter { !query.steal || stolen(it, placers) }
             .take(query.wanted + 1)
             .toList()
+    }
+
+    // Taken out of a container somebody else put down, or one nobody did: a chest of the world's own.
+    private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, UUID?>): Boolean {
+        if (entry.cause != Cause.CONTAINER_REMOVE || entry.qty >= 0) return false
+        val chest = (entry.holder as? Container)?.copy(slot = 0) ?: return false
+        val placer = placers.getOrPut(chest) {
+            blocks.get(chest.world)?.at(chest.x, chest.y, chest.z, 0, Long.MAX_VALUE, limit = 200, reverse = true)
+                ?.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE }?.actor
+        }
+        // A withdrawal names whoever took it as where it went rather than as its actor.
+        val taker = entry.actor ?: (entry.counterparty as? PlayerHolder)?.uuid ?: return false
+        return taker != placer
     }
 
     // `exclude:` takes items and players in one list, so a name that is a player is a player excluded.

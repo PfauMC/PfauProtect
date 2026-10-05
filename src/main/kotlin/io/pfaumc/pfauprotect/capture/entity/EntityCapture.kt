@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.capture.entity
 
 import com.destroystokyo.paper.event.entity.EntityRemoveFromWorldEvent
+import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
@@ -115,8 +116,8 @@ internal const val FRESH_MILLIS = 10 * 60 * 1000L
  * part of its place and not one of a crowd. A farm's cows dying in its lava or the zombies a night spawned
  * are nobody's grief, and a row for each would bury what is.
  */
-internal fun worthRecording(touched: Boolean, keepsItsPlace: Boolean, sameKindInChunk: Int): Boolean =
-    touched || keepsItsPlace && sameKindInChunk < CROWD
+internal fun worthRecording(touched: Boolean, keepsItsPlace: Boolean, sameKindInChunk: Int, crowd: Int = CROWD): Boolean =
+    touched || keepsItsPlace && sameKindInChunk < crowd
 
 /**
  * The whole NBT of an entity as it is now, the way the server saves it. Forced, so a mob that is dying and
@@ -370,16 +371,18 @@ class EntityCapture(
         if (entity is Player) return
         val lit = alight.remove(entity.uniqueId)
         val culprit = culpritOf(entity, Cause.ENTITY_KILLED, lit)
+        // A sculk catalyst nearby blooms off this death, and the sculk is whoever stands behind it.
+        culprit.by.culprit()?.let { attribution.killed(positionOf(entity.location.block), it) }
         if (culprit.by.culprit() != null) return removed(entity, culprit, deathOf(event.damageSource))
         val touched = entity.persistentDataContainer.has(TOUCHED)
         // The crowd is only counted for a mob that might be one of it. Crammed to death is a crowd by
         // definition, however few of them the cramming has left by the time this one goes.
         val crowd = when {
             touched -> 0
-            entity.lastDamageCause?.cause == DamageCause.CRAMMING -> CROWD
+            entity.lastDamageCause?.cause == DamageCause.CRAMMING -> Settings.crowd
             else -> entity.location.chunk.entities.count { it.type == entity.type }
         }
-        val worth = worthRecording(touched, keepsItsPlace((entity as CraftEntity).handle), crowd)
+        val worth = worthRecording(touched, keepsItsPlace((entity as CraftEntity).handle), crowd, Settings.crowd)
         val around = aroundOf(entity, entity.lastDamageCause)
         if (!worth && around.isEmpty()) return
         removed(entity, culprit, deathOf(event.damageSource), around, worth)
@@ -425,7 +428,7 @@ class EntityCapture(
         val touched = old.persistentDataContainer.has(TOUCHED)
         if (by.culprit() == null) {
             val crowd = if (touched) 0 else old.location.chunk.entities.count { it.type == old.type }
-            if (!worthRecording(touched, keepsItsPlace((old as CraftEntity).handle), crowd)) return
+            if (!worthRecording(touched, keepsItsPlace((old as CraftEntity).handle), crowd, Settings.crowd)) return
         }
         removed(old, Culprit(Cause.MOB_TRANSFORM, by), "$TRANSFORMED${reason.name.lowercase()}" to null)
         for (heir in heirs) {
@@ -610,7 +613,7 @@ class EntityCapture(
             }
             if (around.isEmpty()) return@later write(culprit.by)
             offThread {
-                val changed = around.firstNotNullOfOrNull { attribution.journalRemoverAt(it, FRESH_MILLIS) }
+                val changed = around.firstNotNullOfOrNull { attribution.journalRemoverAt(it, Settings.freshMillis) }
                 if (changed != null) write(changed.copy(confidence = Confidence.INFERRED)) else if (worth) write(culprit.by)
             }
         }

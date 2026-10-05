@@ -31,6 +31,9 @@ internal const val HANGING_MILLIS = 10_000L
 // out of the world, or that a plugin took away — leaves its note behind, and nothing else drops it.
 internal const val FLIGHT_MILLIS = 60_000L
 
+// How long a catalyst's bloom off one death goes on spreading sculk.
+internal const val KILL_MILLIS = 60_000L
+
 private val FACES = listOf(
     Triple(1, 0, 0),
     Triple(-1, 0, 0),
@@ -115,8 +118,9 @@ class Attribution(
     private val removals = ConcurrentHashMap<WorldBlock, Note>()
     private val flights = ConcurrentHashMap<UUID, Flight>()
     private val felled = ConcurrentHashMap<WorldBlock, Note>()
+    private val kills = ConcurrentHashMap<WorldBlock, Note>()
 
-    val isEmpty: Boolean get() = placements.isEmpty() && removals.isEmpty() && flights.isEmpty() && felled.isEmpty()
+    val isEmpty: Boolean get() = placements.isEmpty() && removals.isEmpty() && flights.isEmpty() && felled.isEmpty() && kills.isEmpty()
 
     /**
      * `state` is what was put down, and a note answers for that block and no other. A break notes the
@@ -203,6 +207,25 @@ class Attribution(
         for (leaf in leaves) felled[leaf] = note
     }
 
+    /**
+     * A death somebody stands behind, where it happened: a sculk catalyst nearby blooms from it, and the
+     * sculk it spreads over the next seconds is that player's doing.
+     */
+    fun killed(at: WorldBlock, actor: UUID) {
+        kills[at] = Note(actor, now())
+    }
+
+    /** The newest death a player stood behind within reach of this position, not older than [KILL_MILLIS]. */
+    fun killerNear(at: WorldBlock, reach: Int): Attributed? {
+        val now = now()
+        return kills.entries.asSequence()
+            .filter { (where, note) ->
+                where.world == at.world && now - note.at <= KILL_MILLIS &&
+                    abs(where.x - at.x) <= reach && abs(where.y - at.y) <= reach && abs(where.z - at.z) <= reach
+            }
+            .maxByOrNull { it.value.at }?.let { Attributed(it.value.actor) }
+    }
+
     /** Who cut down what held this leaf up, taken once: a leaf decays only once. */
     fun fellerOf(at: WorldBlock): Attributed? =
         noted(felled, at, FELLED_MILLIS)?.let { felled.remove(at); Attributed(it.actor) }
@@ -279,6 +302,7 @@ class Attribution(
         removals.values.removeIf { now - it.at > SUPPORT_MILLIS }
         flights.values.removeIf { now - it.at > FLIGHT_MILLIS }
         felled.values.removeIf { now - it.at > FELLED_MILLIS }
+        kills.values.removeIf { now - it.at > KILL_MILLIS }
     }
 
     private fun noted(notes: Map<WorldBlock, Note>, at: WorldBlock, window: Long, block: String? = null): Note? {

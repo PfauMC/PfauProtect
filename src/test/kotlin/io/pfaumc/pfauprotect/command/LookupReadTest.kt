@@ -309,7 +309,7 @@ class LookupReadTest {
 
         val lines = said(LookupQuery(radius = 1))
 
-        assertTrue(lines.any { it.endsWith("text \"здесь был Боб\"") }, "$lines")
+        assertTrue(lines.any { it.contains("text \"здесь был Боб\"  event:") }, "$lines")
         assertTrue(lines.any { it.contains("text \"здесь был Боб\" -> \"здесь была Алиса\"") }, "$lines")
         assertTrue(lines.any { it.contains("block 10 64 -2") && it.contains("+contents") }, "$lines")
     }

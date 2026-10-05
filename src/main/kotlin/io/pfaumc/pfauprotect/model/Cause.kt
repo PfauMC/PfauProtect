@@ -46,6 +46,11 @@ enum class Cause(val id: Int) {
     // A liquid a player let out running on into air: where his water or lava went. A rollback walks past
     // it — the liquid goes by itself once its source is taken back — and a lookup shows the spread.
     BLK_LIQUID_FLOW(0x9D),
+    // What a purge left of the rows it deleted: each holder's balance of an item at the cutoff, from or
+    // into the void, so every balance after it still adds up.
+    PURGE_OPENING(0x9E),
+    // A block another plugin changed and reported through the API, on whoever it named.
+    BLK_PLUGIN(0x9F),
 
     CONTAINER_ADD(0x10),
     CONTAINER_REMOVE(0x11),

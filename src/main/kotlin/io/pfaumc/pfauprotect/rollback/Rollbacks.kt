@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.say
 import ca.spottedleaf.concurrentutil.util.Priority
 import io.pfaumc.pfauprotect.capture.block.Difference
 import io.pfaumc.pfauprotect.capture.block.ranFrom
@@ -58,6 +59,8 @@ import net.minecraft.world.level.block.entity.CampfireBlockEntity
 import net.minecraft.world.level.block.entity.LecternBlockEntity
 import net.minecraft.world.level.storage.TagValueInput
 import net.kyori.adventure.text.Component
+import io.papermc.paper.math.Position
+import org.bukkit.block.data.BlockData
 import net.kyori.adventure.text.event.ClickEvent
 import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.Bukkit
@@ -88,6 +91,9 @@ private const val PLACE_FLAGS = Block.UPDATE_CLIENTS or Block.UPDATE_SKIP_BLOCK_
 // How long a preview waits for `apply`. The world goes on changing under it, so apply reads it all
 // again; this only bounds how stale the question can be.
 private const val PENDING_MILLIS = 5 * 60_000L
+
+// How many blocks of a preview its player is shown at most.
+private const val GHOST_LIMIT = 50_000
 
 // A chunk task that never runs — its world unloaded under it — would hold the one rollback slot for
 // good. Past this a running rollback is taken as lost and the slot handed on.
@@ -156,6 +162,9 @@ private val TIME_FORMAT: DateTimeFormatter =
  */
 class Trace(val lead: Holder, val formId: Long, val qty: Int)
 
+/** A block as a preview would put it, shown to the player who previews until it is applied or dropped. */
+class Ghost(val world: UUID, val x: Int, val y: Int, val z: Int, val data: BlockData)
+
 /** Work on a live entity, done on its own thread once every chunk has had its turn. */
 class EntityJob(val entity: Entity, val run: (Tally) -> Unit)
 
@@ -171,6 +180,8 @@ class Tally {
     var slots = 0
     var missed = 0
     var failed = 0
+    // Positions of chunks a /pp cancel reached before they were put back.
+    var skipped = 0
     var entitiesBack = 0
     var entitiesTaken = 0
     var entitiesReverted = 0
@@ -192,6 +203,9 @@ class Tally {
     // Mobs brought back out of a bucket, whose bucket goes back to what it was.
     val buckets = ArrayList<Bucketed>()
 
+    // What a preview would put back, for the previewing player to see.
+    val ghosts = ArrayList<Ghost>()
+
     @Synchronized
     fun add(other: Tally) {
         changed += other.changed
@@ -200,6 +214,7 @@ class Tally {
         slots += other.slots
         missed += other.missed
         failed += other.failed
+        skipped += other.skipped
         entitiesBack += other.entitiesBack
         entitiesTaken += other.entitiesTaken
         entitiesReverted += other.entitiesReverted
@@ -212,8 +227,16 @@ class Tally {
         jobs += other.jobs
         deaths += other.deaths
         buckets += other.buckets
+        ghosts += other.ghosts
     }
 }
+
+// How many chunks of a rollback are worked at once.
+private const val CONCURRENT_CHUNKS = 8
+
+// How far around an event's own position and either side of its time a rollback of it reads.
+private const val EVENT_RADIUS = 8
+private const val EVENT_MILLIS = 1_000L
 
 // What a dead entity carries that a living one must not: it would die again on its first tick. And how
 // it first came into the world: a stand summoned by a command would read as summoned again, and have what
@@ -365,6 +388,7 @@ class ChunkRollback(
             val returnsBlock = reshaped && !emptied(target!!)
             if (!apply) {
                 if (returnsBlock) restored(tally, plan)
+                if (reshaped) tally.ghosts += Ghost(world, spots[i].x, spots[i].y, spots[i].z, Bukkit.createBlockData(target!!))
                 return@forEachIndexed
             }
             try {
@@ -642,11 +666,15 @@ class Rollbacks(
     private val pending = ConcurrentHashMap<String, Pending>()
     // When the rollback running now started, or zero.
     private val running = AtomicLong()
+    // Asked by /pp cancel while one runs: the chunks not yet begun are left as they are.
+    private val stopping = java.util.concurrent.atomic.AtomicBoolean()
     private val reader = RollbackReader(ledger, blocks)
+    // The blocks each player sees as a preview of theirs would put them.
+    private val shown = ConcurrentHashMap<UUID, List<Ghost>>()
 
     fun preview(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
         refusalOf(query)?.let {
-            sender.sendMessage(it)
+            sender.say(it)
             return
         }
         pending[keyOf(sender)] = Pending(target, query, System.currentTimeMillis())
@@ -657,7 +685,7 @@ class Rollbacks(
         val key = keyOf(sender)
         val asked = pending.remove(key)?.takeIf { System.currentTimeMillis() - it.at <= PENDING_MILLIS }
         if (asked == null) {
-            sender.sendMessage("Nothing to apply: preview a rollback with /pp rollback first.")
+            sender.say("Nothing to apply: preview a rollback with /pp rollback first.")
             return
         }
         // Two rollbacks over one place would each read the other's work as not done yet.
@@ -665,17 +693,31 @@ class Rollbacks(
         val now = System.currentTimeMillis()
         if (started != 0L && now - started < STALE_MILLIS || !running.compareAndSet(started, now)) {
             pending[key] = asked
-            sender.sendMessage("Another rollback is still running; apply again once it has reported.")
+            sender.say("Another rollback is still running; apply again once it has reported.")
             return
         }
+        // Cleared here, not when the chunks start: a /pp cancel while it still reads must hold.
+        stopping.set(false)
+        hide(sender)
         run(sender, asked.target, asked.query, apply = true, startedAt = now)
     }
 
+    /** When the rollback running now began, or null. */
+    fun runningSince(): Long? = running.get().takeIf { it != 0L }
+
     fun cancelPreview(sender: CommandSender) {
-        sender.sendMessage(if (pending.remove(keyOf(sender)) != null) "Rollback preview dropped." else "No rollback preview to drop.")
+        if (pending.remove(keyOf(sender)) != null) {
+            hide(sender)
+            return sender.say("Rollback preview dropped.")
+        }
+        if (running.get() != 0L && stopping.compareAndSet(false, true)) {
+            return sender.say("Stopping the rollback that runs now: the chunks it has not reached yet stay as they are.")
+        }
+        sender.say("No rollback preview to drop.")
     }
 
     private fun refusalOf(query: LookupQuery): String? = when {
+        query.event != null -> null
         query.secondsBack == null -> "A rollback needs time: how far back to undo, for example time:1h."
         query.players.isNotEmpty() -> "player: reads what a player carries and has no place to roll back; use user:."
         query.radius == null -> "A rollback needs radius: the blocks around you it covers, or global with user:."
@@ -701,28 +743,36 @@ class Rollbacks(
                 ledger.drain()
                 for (world in blocks.worlds) blocks.get(world)?.drain()
                 val now = System.currentTimeMillis()
-                val from = now - query.secondsBack!! * 1000
+                val event = query.event
+                // One event: a second either side of it, around where it happened. What came after is a
+                // later change and stops it, as in any window that ends in the past.
+                val from = event?.let { it.at - EVENT_MILLIS } ?: (now - query.secondsBack!! * 1000)
                 // A span that stops in the past: what came after is somebody's later change and stops it.
-                val to = query.secondsUntil?.let { now - it * 1000 } ?: now
+                val to = event?.let { it.at + EVENT_MILLIS } ?: query.secondsUntil?.let { now - it * 1000 } ?: now
+                val radius = if (event != null) query.radius ?: EVENT_RADIUS else query.radius
+                val at = if (event != null) LookupTarget(target.world, event.x, event.y, event.z, "event ${event.id} at ${event.x} ${event.y} ${event.z}") else target
                 val since = TIME_FORMAT.format(Instant.ofEpochMilli(from)) +
                     if (query.secondsUntil != null) " until ${TIME_FORMAT.format(Instant.ofEpochMilli(to))}" else ""
                 val readings = if (query.global) {
                     everywhere(users, from, to, keeps)
                 } else {
-                    listOf(reader.around(target.world, target.x, target.y, target.z, query.radius!!, from, to, keeps::keeps, keeps::keeps, keeps::keeps, column = users.isNotEmpty()))
+                    listOf(reader.around(at.world, at.x, at.y, at.z, radius!!, from, to, keeps::keeps, keeps::keeps, keeps::keeps, column = users.isNotEmpty()))
                 }
-                val where = if (query.global) "everything ${query.users.joinToString(", ")} did since $since"
-                else "${query.radius} blocks around ${target.label} since $since"
+                val where = when {
+                    event != null -> at.label
+                    query.global -> "everything ${query.users.joinToString(", ")} did since $since"
+                    else -> "${query.radius} blocks around ${target.label} since $since"
+                }
                 val refused = readings.filterIsInstance<Refused>().firstOrNull()
                 val plans = readings.filterIsInstance<Planned>()
                 val positions = plans.sumOf { it.positions }
                 when {
                     refused != null -> {
-                        sender.sendMessage("Rollback refused: ${refused.reason}.")
+                        sender.say("Rollback refused: ${refused.reason}.")
                         release()
                     }
-                    positions > MAX_ROLLBACK_POSITIONS -> {
-                        sender.sendMessage("Rollback refused: ${reader.tooMany(positions).reason}.")
+                    positions > io.pfaumc.pfauprotect.Settings.maxRollbackPositions -> {
+                        sender.say("Rollback refused: ${reader.tooMany(positions).reason}.")
                         release()
                     }
                     else -> {
@@ -732,7 +782,7 @@ class Rollbacks(
                 }
             } catch (failure: Throwable) {
                 plugin.logger.log(Level.SEVERE, "the rollback at ${target.label} failed", failure)
-                sender.sendMessage("The rollback failed; the server log has the details.")
+                sender.say("The rollback failed; the server log has the details.")
                 release()
             }
         }
@@ -759,7 +809,7 @@ class Rollbacks(
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
         val read = "${plans.sumOf { it.rows }} block rows, ${plans.sumOf { it.postings }} slot rows read"
         if (work.isEmpty() && plans.all { it.deaths.isEmpty() }) {
-            sender.sendMessage("Nothing to roll back: $where.")
+            sender.say("Nothing to roll back: $where.")
             release()
             return
         }
@@ -772,7 +822,7 @@ class Rollbacks(
         if (work.isEmpty()) return finishing(sender, total, read, where, apply, actor, global, release)
         val hold = ChunkHold(work)
         if (!hold.take()) {
-            sender.sendMessage("Rollback refused: the chunks it works in did not load within ${LOAD_MILLIS / 1000} s.")
+            sender.say("Rollback refused: the chunks it works in did not load within ${LOAD_MILLIS / 1000} s.")
             release()
             return
         }
@@ -785,21 +835,36 @@ class Rollbacks(
             Unit
         }
         val left = AtomicInteger(work.size)
-        for ((level, chunk) in work) {
-            // Loaded by the hold, so this runs on the chunk's region rather than waiting for a load.
-            level.`canvas$loadOrRunAtChunksAsync`(
-                chunk.chunkX - 1, chunk.chunkX + 1, chunk.chunkZ - 1, chunk.chunkZ + 1, Priority.NORMAL,
-            ) {
-                try {
-                    total.add(chunks.run(level, chunk, actor, apply))
-                } catch (failure: Throwable) {
-                    plugin.logger.log(Level.SEVERE, "a rollback chunk at ${chunk.chunkX} ${chunk.chunkZ} failed", failure)
-                    total.add(Tally().apply { failed = chunk.positions.size })
-                } finally {
-                    if (left.decrementAndGet() == 0) entityJobs(total) { finishing(sender, total, read, where, apply, actor, global, freed) }
+        val done = { if (left.decrementAndGet() == 0) entityJobs(total) { finishing(sender, total, read, where, apply, actor, global, freed) } }
+        // A few chunks at a time, each starting the next as it ends: a /pp cancel then reaches the chunks not
+        // begun yet, and a big rollback does not land on every region in the same tick.
+        val queue = java.util.concurrent.ConcurrentLinkedQueue(work)
+        fun next() {
+            while (true) {
+                val (level, chunk) = queue.poll() ?: return
+                if (apply && stopping.get()) {
+                    total.add(Tally().apply { skipped = chunk.positions.size })
+                    done()
+                    continue
                 }
+                // Loaded by the hold, so this runs on the chunk's region rather than waiting for a load.
+                level.`canvas$loadOrRunAtChunksAsync`(
+                    chunk.chunkX - 1, chunk.chunkX + 1, chunk.chunkZ - 1, chunk.chunkZ + 1, Priority.NORMAL,
+                ) {
+                    try {
+                        total.add(chunks.run(level, chunk, actor, apply))
+                    } catch (failure: Throwable) {
+                        plugin.logger.log(Level.SEVERE, "a rollback chunk at ${chunk.chunkX} ${chunk.chunkZ} failed", failure)
+                        total.add(Tally().apply { failed = chunk.positions.size })
+                    } finally {
+                        done()
+                        next()
+                    }
+                }
+                return
             }
         }
+        repeat(minOf(CONCURRENT_CHUNKS, work.size)) { next() }
     }
 
     // Live entities are worked on their own threads once every chunk is done; the rest waits for them.
@@ -829,7 +894,7 @@ class Rollbacks(
                 finish(sender, total, read, where, apply, actor, global)
             } catch (failure: Throwable) {
                 plugin.logger.log(Level.SEVERE, "taking back what the rollback at $where gave back failed", failure)
-                sender.sendMessage("Taking back what the rollback gave back failed; the server log has the details.")
+                sender.say("Taking back what the rollback gave back failed; the server log has the details.")
             } finally {
                 release()
             }
@@ -839,33 +904,69 @@ class Rollbacks(
     private fun finish(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, global: Boolean) {
         val owed = confiscations.owedFor(total)
         report(sender, total, read, where, apply, global)
+        if (!apply) show(sender, total.ghosts)
         // A killed player gets back what fell out of them, wherever it went.
         for (death in total.deaths.distinctBy { it.eventId to it.uuid }) {
             val back = restitutionFor(ledger, death)
             if (back.isEmpty()) continue
             val victim = Bukkit.getOfflinePlayer(death.uuid).name ?: death.uuid.toString()
-            sender.sendMessage("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
-            if (apply) confiscations.restore(death.uuid, back, actor, sender, pileBirths(ledger, death).values.flatten())
+            sender.say("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
+            if (apply) confiscations.restore(death.uuid, back, actor, sender, pileBirths(ledger, death).values.flatten(), fellFrom(ledger, death))
         }
         // A mob let out of a bucket is no longer in it: the bucket with the mob for the one it was before.
         for (bucket in total.buckets) {
             val who = Bukkit.getOfflinePlayer(bucket.player).name ?: bucket.player.toString()
             val swap = "${confiscations.name(bucket.withMob)} from $who for ${confiscations.name(bucket.empty)}"
             if (!apply) {
-                sender.sendMessage("  would swap back $swap.")
+                sender.say("  would swap back $swap.")
                 continue
             }
-            sender.sendMessage("  swapping back $swap:")
+            sender.say("  swapping back $swap:")
             confiscations.exchange(bucket.player, bucket.withMob, bucket.empty, actor, sender)
         }
         if (owed.isEmpty()) return
         val whom = confiscations.describe(owed)
         if (!apply) {
-            sender.sendMessage("  would take back from $whom.")
+            sender.say("  would take back from $whom.")
             return
         }
-        sender.sendMessage("  taking back from $whom:")
+        sender.say("  taking back from $whom:")
         confiscations.take(owed, actor, sender)
+    }
+
+    /**
+     * The previewing player sees the blocks as the rollback would put them, for them alone, until they apply,
+     * cancel, preview again or the preview runs out. Nothing in the world changes.
+     */
+    private fun show(sender: CommandSender, ghosts: List<Ghost>) {
+        val player = sender as? Player ?: return
+        hide(player)
+        val world = player.world.uid
+        // The first ones in plan order, not the nearest: a rollback bigger than the limit shows only part.
+        val mine = ghosts.filter { it.world == world }.take(GHOST_LIMIT)
+        if (mine.isEmpty()) return
+        shown[player.uniqueId] = mine
+        player.sendMultiBlockChange(mine.associate { Position.block(it.x, it.y, it.z) to it.data })
+        sender.say("  you see the blocks as they would stand; nothing changes before /pp apply.")
+        Bukkit.getAsyncScheduler().runDelayed(plugin, {
+            if (shown.remove(player.uniqueId, mine)) restore(player, mine)
+        }, PENDING_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    private fun hide(sender: CommandSender) {
+        val player = sender as? Player ?: return
+        shown.remove(player.uniqueId)?.let { restore(player, it) }
+    }
+
+    // The client is told again what really stands there, read on each chunk's own region.
+    private fun restore(player: Player, ghosts: List<Ghost>) {
+        val world = Bukkit.getWorld(ghosts.first().world) ?: return
+        for ((chunk, group) in ghosts.groupBy { (it.x shr 4) to (it.z shr 4) }) {
+            Bukkit.getRegionScheduler().execute(plugin, world, chunk.first, chunk.second) {
+                if (!player.isOnline || !world.isChunkLoaded(chunk.first, chunk.second)) return@execute
+                player.sendMultiBlockChange(group.associate { Position.block(it.x, it.y, it.z) to world.getBlockData(it.x, it.y, it.z) })
+            }
+        }
     }
 
     private fun report(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, global: Boolean) {
@@ -877,14 +978,14 @@ class Rollbacks(
             "${total.entitiesReverted} ${if (apply) "changed back" else "to change back"}, " +
             "${total.entitiesAlready} already as they were"
         if (!apply) {
-            sender.sendMessage("Rollback preview for $where: $blocks; $slots; $entities ($read).")
+            sender.say("Rollback preview for $where: $blocks; $slots; $entities ($read).")
             // A world-wide lookup has no index to read by, so it cannot show the rows of a global one.
             val rows = if (global) "" else "; /pp lookup with the same words shows the rows"
-            if (total.leftBefore > 0) sender.sendMessage(
+            if (total.leftBefore > 0) sender.say(
                 "  the window may be shorter than a full rollback needs: ${total.leftBefore} of these positions stood " +
                     "as the same player had left them when it opened, and go back to that; a longer time: reaches further.",
             )
-            sender.sendMessage("  /pp apply within 5 minutes runs it, /pp cancel drops it$rows.")
+            sender.say("  /pp apply within 5 minutes runs it, /pp cancel drops it$rows.")
             if (sender is Player) sender.sendMessage(
                 Component.text("  ")
                     .append(Component.text("[apply]", NamedTextColor.GREEN).clickEvent(ClickEvent.runCommand("/pp apply")))
@@ -893,9 +994,10 @@ class Rollbacks(
             )
             return
         }
-        sender.sendMessage("Rolled back $where: $blocks; $slots; $entities.")
-        if (total.entitiesGoneSince > 0) sender.sendMessage("  ${total.entitiesGoneSince} entities to change back are gone since.")
-        if (total.missed > 0) sender.sendMessage("  ${total.missed} slot postings found no room or nothing left to take out.")
-        if (total.failed > 0) sender.sendMessage("  ${total.failed} positions failed; the server log has the details.")
+        sender.say("Rolled back $where: $blocks; $slots; $entities.")
+        if (total.entitiesGoneSince > 0) sender.say("  ${total.entitiesGoneSince} entities to change back are gone since.")
+        if (total.missed > 0) sender.say("  ${total.missed} slot postings found no room or nothing left to take out.")
+        if (total.failed > 0) sender.say("  ${total.failed} positions failed; the server log has the details.")
+        if (total.skipped > 0) sender.say("  stopped by /pp cancel: ${total.skipped} positions in chunks it had not reached are left as they were.")
     }
 }

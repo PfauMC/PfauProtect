@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect
 import com.mojang.brigadier.Command
 import com.mojang.brigadier.arguments.IntegerArgumentType
+import com.mojang.brigadier.arguments.StringArgumentType
 import io.papermc.paper.command.brigadier.CommandSourceStack
 import io.papermc.paper.command.brigadier.Commands
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes
@@ -30,7 +31,6 @@ import io.pfaumc.pfauprotect.capture.item.ItemUseListener
 import io.pfaumc.pfauprotect.command.LookupArgument
 import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.Lookups
-import io.pfaumc.pfauprotect.command.MAX_RADIUS
 import io.pfaumc.pfauprotect.capture.block.MechanismCaptureListener
 import io.pfaumc.pfauprotect.check.Mismatch
 import io.pfaumc.pfauprotect.capture.item.CopperGolemListener
@@ -70,6 +70,7 @@ import org.bukkit.event.Listener
 import org.bukkit.event.world.WorldLoadEvent
 import org.bukkit.event.world.WorldUnloadEvent
 import org.bukkit.plugin.java.JavaPlugin
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.LongAdder
@@ -92,6 +93,14 @@ private const val INSPECT_PERMISSION = "pfauprotect.inspect"
 private const val RECONCILE_PERMISSION = "pfauprotect.reconcile"
 private const val VERIFY_PERMISSION = "pfauprotect.verify"
 private const val ROLLBACK_PERMISSION = "pfauprotect.rollback"
+private const val STATUS_PERMISSION = "pfauprotect.status"
+private const val PURGE_PERMISSION = "pfauprotect.purge"
+
+private val CHAT_TIME: java.time.format.DateTimeFormatter =
+    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(java.time.ZoneId.systemDefault())
+
+// The youngest history a purge may delete: a day, so a rollback of today always has its rows.
+private const val PURGE_MIN_SECONDS = 86_400L
 
 // A pass of each self-check is bounded so it cannot walk a years-old journal in one go, and a run
 // that stops on that bound says so: a check that quietly covered a fraction of the store reads as a
@@ -113,6 +122,10 @@ private class Uncovered(private val ledger: RocksItemLog) {
         for (transfer in transaction) tally(transfer)
         ledger.submit(transaction)
     }
+
+    /** The tally as it stands, left for the next report. */
+    fun peek(): String? = counts.entries.map { (cause, count) -> cause to count.sum() }.filter { it.second > 0 }
+        .sortedByDescending { it.second }.joinToString(" ") { "${it.first.name.lowercase()}=${it.second}" }.takeIf { it.isNotEmpty() }
 
     /** Takes the tally rather than reading it: what has been reported once must not be reported again. */
     fun takeTally(): String? {
@@ -138,6 +151,7 @@ private fun signed(difference: Int) = if (difference > 0) "+$difference" else di
 private class WorldBaseListener(private val blocks: BlockLogs) : Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     fun onLoad(event: WorldLoadEvent) {
+        if (event.world.name in Settings.disabledWorlds) return
         blocks.open(event.world.uid)
     }
 
@@ -166,25 +180,28 @@ private class Running(
     val reconciliation: Reconciliation,
     val planes: PlaneSync,
     val rollbacks: Rollbacks,
+    val chat: io.pfaumc.pfauprotect.storage.ChatLog,
 )
 
 class PfauProtectPlugin : JavaPlugin() {
     private var running: Running? = null
 
     override fun onEnable() {
+        saveDefaultConfig()
+        Settings.load(config, logger)
         val ledger = RocksItemLog(dataFolder.toPath().resolve("ledger"))
         val energy = Energy()
         val nudges = Nudges()
         val touches = HandTouches()
         // A row that names somebody is what an observer or a comparator next to it answers to, and any
         // row at all is what a touch waiting to be read back leaves to the capture that filed it.
-        val blocks = BlockLogs(dataFolder.toPath().resolve("blocks"), ledger) { world, changes ->
+        val blocks = BlockLogs(dataFolder.toPath().resolve("blocks"), ledger, { world, changes ->
             touches.filed(world, changes)
             for (change in changes) {
                 val actor = change.actor ?: continue
                 energy.note(WorldBlock(world, change.x, change.y, change.z), Attributed(actor, change.confidence))
             }
-        }
+        }) { world, change -> preLog(world, change) }
         val attribution = Attribution(ledger.registries, blocks)
         val uncovered = Uncovered(ledger)
         val codec = ItemFormCodec(ledger.registries, MinecraftServer.getServer().registryAccess())
@@ -216,16 +233,17 @@ class PfauProtectPlugin : JavaPlugin() {
             this, codec, blocks, ledger, uncovered::submit, formOf = ledger::form, forget = entityCapture::forget,
         )
         val rollbacks = Rollbacks(this, ledger, blocks, lookups, chunkRollback, confiscations)
+        val chat = io.pfaumc.pfauprotect.storage.ChatLog(dataFolder.toPath().resolve("chat"))
         val running = Running(
             ledger, blocks, attribution, uncovered, codec, capture, destruction, mechanisms, origins,
-            lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks), rollbacks,
+            lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks), rollbacks, chat,
         )
         this.running = running
         ledger.staged { fillTypeRegistries(ledger.registries) }
         server.pluginManager.registerEvents(WorldBaseListener(blocks), this)
         // Enabling after startup, every world is already loaded and none of them will ever raise the
         // load event again.
-        for (world in server.worlds) blocks.open(world.uid)
+        for (world in server.worlds) if (world.name !in Settings.disabledWorlds) blocks.open(world.uid)
         // A change to a world with no base open is dropped rather than journalled, so this goes after
         // the load handler and after the bases opened by hand. Against the other handlers of equal
         // priority the order is free: nothing it reads is written by any of them.
@@ -283,6 +301,8 @@ class PfauProtectPlugin : JavaPlugin() {
         // items taken back on the join have to come after.
         server.pluginManager.registerEvents(confiscations, this)
         server.pluginManager.registerEvents(inspector, this)
+        server.pluginManager.registerEvents(io.pfaumc.pfauprotect.capture.ChatCapture(chat), this)
+        server.servicesManager.register(io.pfaumc.pfauprotect.api.PfauProtectApi::class.java, Api(running), this, org.bukkit.plugin.ServicePriority.Normal)
         server.globalRegionScheduler.runAtFixedRate(this, {
             origins.sweep()
             attribution.sweepRemovals()
@@ -355,6 +375,7 @@ class PfauProtectPlugin : JavaPlugin() {
             // without restarting the server, which is a worse outcome than whatever the base hit.
             closeReporting("the world block bases") { running.blocks.close() }
             closeReporting("the ledger") { running.ledger.close() }
+            closeReporting("the chat log") { running.chat.close() }
             this.running = null
         }
     }
@@ -453,6 +474,26 @@ class PfauProtectPlugin : JavaPlugin() {
             for (alias in listOf("verify", "v")) root.then(verifyNode(alias))
             for (alias in listOf("rollback", "rb")) root.then(rollbackNode(alias))
             root.then(
+                Commands.literal("purge")
+                    .requires { it.sender.hasPermission(PURGE_PERMISSION) }
+                    .then(
+                        Commands.argument("age", StringArgumentType.word())
+                            .executes { purge(it.source, StringArgumentType.getString(it, "age"), confirm = false) }
+                            .then(Commands.literal("confirm").executes { purge(it.source, StringArgumentType.getString(it, "age"), confirm = true) })
+                    )
+            )
+            root.then(
+                Commands.literal("chat")
+                    .requires { it.sender.hasPermission(LOOKUP_PERMISSION) }
+                    .executes { chat(it.source, "") }
+                    .then(Commands.argument("words", StringArgumentType.greedyString()).executes { chat(it.source, StringArgumentType.getString(it, "words")) })
+            )
+            root.then(
+                Commands.literal("status")
+                    .requires { it.sender.hasPermission(STATUS_PERMISSION) }
+                    .executes { status(it.source) }
+            )
+            root.then(
                 Commands.literal("apply")
                     .requires { it.sender.hasPermission(ROLLBACK_PERMISSION) }
                     .executes { rollbacks(it.source) { rollbacks, sender -> rollbacks.applyPreview(sender) } }
@@ -483,7 +524,7 @@ class PfauProtectPlugin : JavaPlugin() {
         .requires { it.sender.hasPermission(LOOKUP_PERMISSION) }
         .executes { near(it.source, NEAR_RADIUS) }
         .then(
-            Commands.argument("radius", IntegerArgumentType.integer(0, MAX_RADIUS))
+            Commands.argument("radius", IntegerArgumentType.integer(0, Settings.maxRadius))
                 .executes { near(it.source, it.getArgument("radius", Integer::class.java).toInt()) }
         )
 
@@ -560,11 +601,11 @@ class PfauProtectPlugin : JavaPlugin() {
         val inspector = running?.inspector ?: return notReady(source)
         val player = source.executor as? Player
         if (player == null) {
-            source.sender.sendMessage("Only a player can use the inspector.")
+            source.sender.say("Only a player can use the inspector.")
             return 0
         }
         val now = inspector.toggle(player, desired)
-        player.sendMessage(
+        player.say(
             if (now) "Inspector enabled. Left-click a block to read it, right-click a face to read the place in front of it, click an entity to read the entity."
             else "Inspector disabled."
         )
@@ -582,10 +623,125 @@ class PfauProtectPlugin : JavaPlugin() {
      * for a moment; giving it up is what makes a check worth running straight after an action, at the
      * price of the odd race reported as a finding.
      */
+    /**
+     * Deletes history older than the age given, in both planes, after a preview that counts it. What each
+     * holder held at the cutoff is written as an opening balance, so the self-checks still add up; the
+     * newest row of each position stays, so the attribution can still ask who put a block there.
+     */
+    private fun purge(source: CommandSourceStack, age: String, confirm: Boolean): Int {
+        val running = this.running ?: return notReady(source)
+        val sender = source.sender
+        val seconds = io.pfaumc.pfauprotect.command.durationOrNull(age)
+        if (seconds == null || seconds < PURGE_MIN_SECONDS) {
+            sender.say("Purge refused: give an age of at least a day, for example 90d.")
+            return 0
+        }
+        if (running.rollbacks.runningSince() != null) {
+            sender.say("Purge refused: a rollback is running.")
+            return 0
+        }
+        sender.say(if (confirm) "Purging everything older than $age; this walks the whole journal." else "Counting what a purge of everything older than $age would delete.")
+        server.asyncScheduler.runNow(this) {
+            try {
+                val cutoff = System.currentTimeMillis() - seconds * 1000
+                running.ledger.drain()
+                for (world in running.blocks.worlds) running.blocks.get(world)?.drain()
+                val (entries, openings) = running.ledger.purgeBefore(cutoff, dryRun = !confirm)
+                var rows = 0
+                var entities = 0
+                for (world in running.blocks.worlds) {
+                    val (r, e) = running.blocks.get(world)?.purgeBefore(cutoff, dryRun = !confirm) ?: continue
+                    rows += r
+                    entities += e
+                }
+                if (confirm) {
+                    for (opening in openings) running.ledger.submit(opening)
+                    running.ledger.drain()
+                }
+                val counts = "$entries item rows, $rows block rows, $entities entity rows; ${openings.size} opening balances"
+                sender.say(if (confirm) "Purged $counts written." else "A purge would delete $counts to write. /pp purge $age confirm runs it.")
+            } catch (failure: Throwable) {
+                logger.log(Level.SEVERE, "the purge failed", failure)
+                sender.say("The purge failed; the server log has the details.")
+            }
+        }
+        return Command.SINGLE_SUCCESS
+    }
+
+    // Another plugin may veto a row before it is written; nobody listening, nothing is asked.
+    private fun preLog(world: UUID, change: io.pfaumc.pfauprotect.storage.WorldChange): Boolean {
+        if (io.pfaumc.pfauprotect.api.PfauProtectPreLogEvent.getHandlerList().registeredListeners.isEmpty()) return true
+        val cause = when (change) {
+            is io.pfaumc.pfauprotect.storage.BlockChange -> change.cause
+            is io.pfaumc.pfauprotect.storage.EntityChange -> change.cause
+            else -> return true
+        }
+        val event = io.pfaumc.pfauprotect.api.PfauProtectPreLogEvent(world, change.x, change.y, change.z, cause.name, change.actor, !server.isPrimaryThread)
+        server.pluginManager.callEvent(event)
+        return !event.isCancelled
+    }
+
+    /** What players said, ran, and when they came and went: `user:`, `time:` and `f:` narrow it. */
+    private fun chat(source: CommandSourceStack, words: String): Int {
+        val running = this.running ?: return notReady(source)
+        val sender = source.sender
+        val query = try {
+            io.pfaumc.pfauprotect.command.parseLookupQuery(words)
+        } catch (failure: com.mojang.brigadier.exceptions.CommandSyntaxException) {
+            sender.say(failure.message ?: "That is not a lookup.")
+            return 0
+        }
+        server.asyncScheduler.runNow(this) {
+            val users = running.lookups.resolveAll(sender, query.users) ?: return@runNow
+            val text = query.filter?.lowercase()
+            val lines = running.chat.read(query.fromTs(), query.toTs(), query.wanted) { line ->
+                (users.isEmpty() || line.player in users) && (text == null || text in line.text.lowercase())
+            }.drop(query.limit * (query.page - 1))
+            if (lines.isEmpty()) return@runNow sender.say("Nothing said or run matches.")
+            sender.say("Last ${lines.size} lines said and run:")
+            for (line in lines) {
+                val who = server.getOfflinePlayer(line.player).name ?: line.player.toString()
+                val where = if (line.world.isEmpty()) "" else "  (${line.world} ${line.x} ${line.y} ${line.z})"
+                val time = CHAT_TIME.format(java.time.Instant.ofEpochMilli(line.timestamp))
+                sender.say("  $time  ${line.kind.name.lowercase()}  $who${if (line.text.isEmpty()) "" else ": ${line.text}"}$where")
+            }
+        }
+        return Command.SINGLE_SUCCESS
+    }
+
+    /** How the plugin is doing: how big its bases are, what waits to be written, what it could not explain. */
+    private fun status(source: CommandSourceStack): Int {
+        val running = this.running ?: return notReady(source)
+        val sender = source.sender
+        server.asyncScheduler.runNow(this) {
+            val folder = dataFolder.toPath()
+            sender.say("PfauProtect:")
+            sender.say("  ledger ${megabytes(folder.resolve("ledger"))}, ${running.ledger.backlog} transactions waiting to be written")
+            for (world in server.worlds) {
+                val log = running.blocks.get(world.uid)
+                sender.say(
+                    "  ${world.name}: " + if (log == null) "not recorded (config.yml)"
+                    else "${megabytes(folder.resolve("blocks").resolve(world.uid.toString()))}, ${log.backlog} changes waiting to be written"
+                )
+            }
+            sender.say("  unexplained since the last report: ${running.uncovered.peek() ?: "nothing"}")
+            for (warning in running.ledger.registries.fillWarnings()) sender.say("  $warning")
+            val since = running.rollbacks.runningSince()
+            sender.say("  rollback: " + if (since == null) "none running" else "one running for ${(System.currentTimeMillis() - since) / 1000} s")
+        }
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun megabytes(dir: java.nio.file.Path): String {
+        if (!java.nio.file.Files.exists(dir)) return "0 MB"
+        val bytes = java.nio.file.Files.walk(dir).use { paths -> paths.filter { java.nio.file.Files.isRegularFile(it) }.mapToLong { runCatching { java.nio.file.Files.size(it) }.getOrDefault(0) }.sum() }
+        return "%.1f MB".format(java.util.Locale.ROOT, bytes / 1_048_576.0)
+    }
+
     private fun verify(source: CommandSourceStack, judgeRecent: Boolean): Int {
         val running = this.running ?: return notReady(source)
         val sender = source.sender
-        sender.sendMessage("Running both self-checks to the end; this reads the whole journal.")
+        sender.say("Running both self-checks to the end; this reads the whole journal.")
         server.asyncScheduler.runNow(this) {
             try {
                 running.ledger.drain()
@@ -593,7 +749,7 @@ class PfauProtectPlugin : JavaPlugin() {
                 reportPlanes(sender, running.planes, judgeRecent)
             } catch (failure: Throwable) {
                 logger.log(Level.SEVERE, "the self-checks failed", failure)
-                sender.sendMessage("The self-checks failed; the server log has the details.")
+                sender.say("The self-checks failed; the server log has the details.")
             }
         }
         return Command.SINGLE_SUCCESS
@@ -613,10 +769,10 @@ class PfauProtectPlugin : JavaPlugin() {
             reachedEnd = report.reachedEnd
             rounds++
         }
-        sender.sendMessage("Transaction invariant: $checked entries, ${gaps.size} gaps, $unreadable unreadable.")
-        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) sender.sendMessage("  gap: $gap")
-        if (gaps.size > SWEEP_GAPS_LOGGED) sender.sendMessage("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
-        if (!reachedEnd) sender.sendMessage("  stopped on the round limit; run it again to cover the rest.")
+        sender.say("Transaction invariant: $checked entries, ${gaps.size} gaps, $unreadable unreadable.")
+        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) sender.say("  gap: $gap")
+        if (gaps.size > SWEEP_GAPS_LOGGED) sender.say("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
+        if (!reachedEnd) sender.say("  stopped on the round limit; run it again to cover the rest.")
     }
 
     private fun reportPlanes(sender: CommandSender, planes: PlaneSync, judgeRecent: Boolean) {
@@ -642,29 +798,29 @@ class PfauProtectPlugin : JavaPlugin() {
             reachedEnd = report.reachedEnd
             rounds++
         }
-        sender.sendMessage(
+        sender.say(
             "Two planes: $checked positions compared, ${gaps.size} gaps, $overdrawn overdrawn, " +
                 "$unrecorded the block plane never recorded, $settling too recent to judge, " +
                 "$unreadable unreadable."
         )
         for (gap in gaps.take(SWEEP_GAPS_LOGGED)) {
             val world = server.getWorld(gap.at.world)?.name ?: gap.at.world.toString()
-            sender.sendMessage(
+            sender.say(
                 "  gap in $world at ${gap.at.x} ${gap.at.y} ${gap.at.z}: ${gap.standing} stands there, " +
                     "the item plane holds ${gap.fact} confirmed and ${gap.inferred} inferred"
             )
         }
-        if (gaps.size > SWEEP_GAPS_LOGGED) sender.sendMessage("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
+        if (gaps.size > SWEEP_GAPS_LOGGED) sender.say("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
         if (settling > 0 && !judgeRecent) {
-            sender.sendMessage("  $settling positions were touched too recently; 'verify recent' judges them too.")
+            sender.say("  $settling positions were touched too recently; 'verify recent' judges them too.")
         }
-        if (!reachedEnd) sender.sendMessage("  stopped on the round limit; run it again to cover the rest.")
+        if (!reachedEnd) sender.say("  stopped on the round limit; run it again to cover the rest.")
     }
 
     private fun reconcile(source: CommandSourceStack, target: Player?): Int {
         val running = this.running ?: return notReady(source)
         if (target == null) {
-            source.sender.sendMessage("Name the player to reconcile.")
+            source.sender.say("Name the player to reconcile.")
             return 0
         }
         val sender = source.sender
@@ -708,14 +864,14 @@ class PfauProtectPlugin : JavaPlugin() {
         reconciliation: Reconciliation,
     ) {
         if (mismatches.isEmpty()) {
-            sender.sendMessage("${player.name} matches the ledger; nothing differs.")
+            sender.say("${player.name} matches the ledger; nothing differs.")
             return
         }
-        sender.sendMessage("${player.name} differs from the ledger on ${mismatches.size} forms:")
+        sender.say("${player.name} differs from the ledger on ${mismatches.size} forms:")
         for (mismatch in mismatches) {
-            sender.sendMessage("  ${reconciliation.name(mismatch.form)} ${signed(mismatch.difference)}")
+            sender.say("  ${reconciliation.name(mismatch.form)} ${signed(mismatch.difference)}")
         }
-        sender.sendMessage(
+        sender.say(
             "Anything held before the ledger was opened differs by exactly that much for ever; " +
                 "a difference that stays put is that constant rather than a leak."
         )
@@ -739,7 +895,28 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     private fun notReady(source: CommandSourceStack): Int {
-        source.sender.sendMessage("The ledger is not open.")
+        source.sender.say("The ledger is not open.")
         return 0
+    }
+}
+
+/** The service other plugins load; see [io.pfaumc.pfauprotect.api.PfauProtectApi]. */
+private class Api(private val running: Running) : io.pfaumc.pfauprotect.api.PfauProtectApi {
+    override fun lookup(at: org.bukkit.Location, words: String): java.util.concurrent.CompletableFuture<List<String>> {
+        val lines = java.util.Collections.synchronizedList(ArrayList<String>())
+        val sender = org.bukkit.Bukkit.createCommandSender { lines += net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(it) }
+        val query = io.pfaumc.pfauprotect.command.parseLookupQuery(words)
+        return java.util.concurrent.CompletableFuture.supplyAsync {
+            running.lookups.report(sender, io.pfaumc.pfauprotect.command.lookupTargetAt(at), query)
+            lines.toList()
+        }
+    }
+
+    override fun previewRollback(sender: CommandSender, at: org.bukkit.Location, words: String) =
+        running.rollbacks.preview(sender, io.pfaumc.pfauprotect.command.lookupTargetAt(at), io.pfaumc.pfauprotect.command.parseLookupQuery(words))
+
+    override fun logChange(actor: UUID?, block: org.bukkit.block.Block, before: org.bukkit.block.data.BlockData, after: org.bukkit.block.data.BlockData) {
+        val log = running.blocks.get(block.world.uid) ?: return
+        log.submit(listOf(io.pfaumc.pfauprotect.storage.BlockChange(block.x, block.y, block.z, before.asString, after.asString, Cause.BLK_PLUGIN, actor = actor)))
     }
 }

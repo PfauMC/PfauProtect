@@ -28,6 +28,8 @@ import org.rocksdb.WriteBatch
 import org.rocksdb.WriteBufferManager
 import org.rocksdb.WriteOptions
 import java.nio.file.Files
+import io.pfaumc.pfauprotect.model.Void
+import io.pfaumc.pfauprotect.model.Cause
 import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -198,6 +200,10 @@ internal fun tableIn(cache: Cache, filter: Filter? = null): BlockBasedTableConfi
         .setPinL0FilterAndIndexBlocksInCache(true)
         .also { table -> filter?.let { table.setFilterPolicy(it) } }
 
+
+// How many deletes a purge writes at a time.
+private const val PURGE_BATCH = 10_000
+
 class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, PlacedForms {
     // Before any native object: a cache, unlike the option classes, does not load the library itself.
     init {
@@ -289,6 +295,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private val noteQueue = LinkedBlockingQueue<NoteWrite>()
     private val submitted = AtomicLong()
     private val written = AtomicLong()
+
+    /** Transactions handed to the writer and not written yet. */
+    val backlog: Long get() = submitted.get() - written.get()
 
     @Volatile
     private var running = true
@@ -506,6 +515,46 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             val ordered = found.sortedWith(if (reverse) byTime.reversed() else byTime)
             EntryPage(ordered.take(limit), complete && ordered.size <= limit, unreadable)
         }
+    }
+
+    /**
+     * Every posting older than the cutoff, deleted unless `dryRun`, with what each holder held of each item
+     * at the cutoff: the opening balances that keep every later balance whole, to be submitted by the
+     * caller. Unreadable rows are left where they are. One walk of the whole family, off any region thread.
+     */
+    fun purgeBefore(cutoff: Long, dryRun: Boolean): Pair<Int, List<Transfer>> = dbLock.read {
+        if (closed) return 0 to emptyList()
+        val held = HashMap<Triple<Holder, Long, Int?>, Int>()
+        var deleted = 0
+        var batch = WriteBatch()
+        db.newIterator(entriesCf, wholeCfRead).use { iter ->
+            iter.seekToFirst()
+            while (iter.isValid) {
+                val entry = EntryCodec.decodeOrNull(iter.key(), iter.value(), registries)
+                if (entry != null && entry.timestamp < cutoff) {
+                    held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
+                    deleted++
+                    if (!dryRun) {
+                        batch.delete(entriesCf, iter.key())
+                        batch.delete(txCf, longBytes(entry.txId))
+                        if (batch.count() >= PURGE_BATCH) {
+                            db.write(writeOptions, batch)
+                            batch.close()
+                            batch = WriteBatch()
+                        }
+                    }
+                }
+                iter.next()
+            }
+        }
+        if (!dryRun && batch.count() > 0) db.write(writeOptions, batch)
+        batch.close()
+        val openings = held.filterValues { it != 0 }.mapNotNull { (key, qty) ->
+            val form = form(key.second) ?: return@mapNotNull null
+            if (qty > 0) Transfer(Cause.PURGE_OPENING, Void, key.first, form, key.third, qty, cutoff)
+            else Transfer(Cause.PURGE_OPENING, key.first, Void, form, key.third, -qty, cutoff)
+        }
+        deleted to openings
     }
 
     fun transactionEntries(entry: LedgerEntry): List<LedgerEntry> = dbLock.read {
