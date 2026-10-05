@@ -1021,7 +1021,11 @@ class ContainerCaptureListener(
         // without a click of its own. A label and not a quantity: it renames what the pass pairs up.
         // A click the game applied in this same tick with no label of its own is renamed
         // too; telling them apart needs the pass to know which snapshot each edge came from.
-        intents.add(player.uniqueId, Intent(Cause.MENU_CLOSE_RETURN))
+        // A store keeps what it holds and hands back only the cursor: a shift-click out of a chest in the
+        // tick it closed is a removal, not a return (O18).
+        if (returnsOnClose(event.view.topInventory.type.name, player.itemOnCursor.isEmpty)) {
+            intents.add(player.uniqueId, Intent(Cause.MENU_CLOSE_RETURN))
+        }
         rememberClosing(player, event.view.topInventory)
         val top = event.view.topInventory
         player.scheduler.run(plugin, {
@@ -1260,3 +1264,13 @@ class ContainerCaptureListener(
         return { slot -> MenuSlot(menuType, slot) }
     }
 }
+
+// Windows whose slots stay where they are when the window closes: only the cursor comes back from them.
+// By name, because InventoryType cannot be loaded without a server.
+private val KEEPS_ON_CLOSE = setOf(
+    "CHEST", "ENDER_CHEST", "SHULKER_BOX", "BARREL", "HOPPER", "DISPENSER", "DROPPER", "FURNACE",
+    "BLAST_FURNACE", "SMOKER", "BREWING", "CRAFTER",
+)
+
+/** Whether closing a window of this type hands anything back to the player's inventory. */
+internal fun returnsOnClose(type: String, cursorEmpty: Boolean): Boolean = type !in KEEPS_ON_CLOSE || !cursorEmpty

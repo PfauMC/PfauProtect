@@ -89,6 +89,25 @@ class ConfiscationTest {
         assertEquals(9, conversion.inputsEach)
     }
 
+    // Bob built steps of the loot that the same rollback takes away: those are back already, and only what he
+    // set where the rollback does not reach is still owed (O13).
+    @Test
+    fun `what a carrier set as blocks the rollback takes away is not owed again`() {
+        val steps = WorldBlock(world, 3, 64, 3)
+        val elsewhere = WorldBlock(world, 300, 64, 300)
+        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
+        ledger.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(bob, 4), steps, diamond, null, 1, T0 + 1))
+        ledger.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(bob, 4), elsewhere, diamond, null, 1, T0 + 2))
+        ledger.drain()
+
+        val tally = returned(PlayerInv(bob, 4), 7).apply { since = T0; undone += steps }
+        assertEquals(mapOf(Carrier(bob) to 6), owed(tally))
+        tally.undone += elsewhere
+        tally.traces.clear()
+        tally.traces += Trace(PlayerInv(bob, 4), ledger.formId(diamond)!!, 2)
+        assertEquals(emptyMap<Taker, Int>(), owed(tally))
+    }
+
     // A helmet that fell off the head goes back onto it, a shield out of the off hand back into it.
     @Test
     fun `what fell out of a killed player is known by the slot it fell from`() {

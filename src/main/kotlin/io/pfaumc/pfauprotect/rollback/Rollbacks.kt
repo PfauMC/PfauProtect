@@ -192,6 +192,9 @@ class Tally {
     // came back, what moved in slots, the item entities that fell out of what came back, and the breaks
     // the plan read there.
     val restored = ArrayList<WorldBlock>()
+    // Every position whose block the rollback changes: a block a thief set there from what they owe goes
+    // with it, and is not owed again.
+    val undone = ArrayList<WorldBlock>()
     val traces = ArrayList<Trace>()
     val piles = ArrayList<UUID>()
     val breaks = ArrayList<LedgerEntry>()
@@ -221,6 +224,7 @@ class Tally {
         entitiesAlready += other.entitiesAlready
         entitiesGoneSince += other.entitiesGoneSince
         restored += other.restored
+        undone += other.undone
         traces += other.traces
         piles += other.piles
         breaks += other.breaks
@@ -380,10 +384,12 @@ class ChunkRollback(
             val retagged = !reshaped && back?.payloadBefore?.contentEquals(was.payload) == false &&
                 slotsOf(level.getBlockEntity(spots[i])) == null
             if (!reshaped && !retagged) {
-                if (plan.steps.isNotEmpty()) tally.unchanged++
+                // One stopped by a later change is counted there, not again as already as it was.
+                if (plan.steps.isNotEmpty() && !settled.conflict) tally.unchanged++
                 return@forEachIndexed
             }
             tally.changed++
+            if (reshaped) tally.undone += plan.at
             // A block back where one stands again is what lets the drops of its break be taken back.
             val returnsBlock = reshaped && !emptied(target!!)
             if (!apply) {
@@ -993,9 +999,9 @@ class Rollbacks(
             sender.say("  /pp apply within 5 minutes runs it, /pp cancel drops it$rows.")
             if (sender is Player) sender.sendMessage(
                 Component.text("  ")
-                    .append(Component.text("[apply]", NamedTextColor.GREEN).clickEvent(ClickEvent.runCommand("/pp apply")))
+                    .append(Component.text(io.pfaumc.pfauprotect.Texts.translate("[apply]"), NamedTextColor.GREEN).clickEvent(ClickEvent.runCommand("/pp apply")))
                     .append(Component.text(" "))
-                    .append(Component.text("[cancel]", NamedTextColor.RED).clickEvent(ClickEvent.runCommand("/pp cancel"))),
+                    .append(Component.text(io.pfaumc.pfauprotect.Texts.translate("[cancel]"), NamedTextColor.RED).clickEvent(ClickEvent.runCommand("/pp cancel"))),
             )
             return
         }

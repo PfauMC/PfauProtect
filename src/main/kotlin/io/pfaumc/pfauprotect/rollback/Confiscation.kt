@@ -150,14 +150,26 @@ internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
             owed += trace(drop.holder, drop.itemFormId, drop.qty, rowsOf)
         }
     }
-    // What nobody has any more cannot be taken back from anybody.
-    return merged(owed).filter { it.qty > 0 && it.taker !is Vanished }.map { item ->
-        val carrier = item.taker as? Carrier ?: return@map item
+    // What nobody has any more cannot be taken back from anybody. What a carrier set as blocks this same
+    // rollback takes away is back already (O13).
+    val undone = tally.undone.toHashSet()
+    return merged(owed).filter { it.qty > 0 && it.taker !is Vanished }.mapNotNull { item ->
+        val carrier = item.taker as? Carrier ?: return@mapNotNull item
+        val qty = item.qty - placedInto(ledger, carrier.player, item.formId, tally.since, undone)
+        if (qty <= 0) return@mapNotNull null
         Owed(
-            carrier, item.formId, item.qty, stashesOf(ledger, carrier.player, item.formId, tally.since),
+            carrier, item.formId, qty, stashesOf(ledger, carrier.player, item.formId, tally.since),
             conversionsOf(ledger, carrier.player, item.formId, tally.since),
         )
     }
+}
+
+/** How many of the item a player set as blocks since then, at positions among `undone`. */
+internal fun placedInto(ledger: RocksItemLog, player: UUID, formId: Long, since: Long, undone: Set<WorldBlock>): Int {
+    if (since <= 0 || undone.isEmpty()) return 0
+    return listOf(PlayerInv(player, 0), PlayerEquip(player, 0)).flatMap {
+        ledger.holderPage(it, since, Long.MAX_VALUE, limit = STASH_ROWS).entries
+    }.filter { it.itemFormId == formId && it.qty < 0 && it.counterparty in undone }.sumOf { -it.qty }
 }
 
 // The ways a player makes one item out of others at a bench, whose result lands in their hands.

@@ -450,4 +450,12 @@ class IntentTest {
         assertEquals(listOf(mine), queue.take(player))
         assertEquals(listOf(theirs), queue.take(other))
     }
+
+    @Test
+    fun `a closed chest hands back only the cursor, a grid hands back its slots`() {
+        assertFalse(returnsOnClose("CHEST", cursorEmpty = true))
+        assertTrue(returnsOnClose("CHEST", cursorEmpty = false))
+        assertTrue(returnsOnClose("WORKBENCH", cursorEmpty = true))
+        assertTrue(returnsOnClose("CRAFTING", cursorEmpty = true))
+    }
 }
