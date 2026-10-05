@@ -26,6 +26,9 @@ enum class RegistryNamespace(val id: Int, val maxId: Int) {
     // but the end renumbers every constant after it, and rows already on disk would then quietly name
     // a different menu than the one they were written for.
     MENU_TYPE(8, 0xFFFF),
+
+    // What killed a mob, by the damage type's registry key: drowned, dried out, fell, crammed.
+    DAMAGE_TYPE(9, 0xFFFF),
     ;
 
     internal val usesUuid: Boolean get() = this == WORLD || this == PLAYER

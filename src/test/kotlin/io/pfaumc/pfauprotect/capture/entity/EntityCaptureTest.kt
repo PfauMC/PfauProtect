@@ -11,8 +11,9 @@ import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 
 class EntityCaptureTest {
-    private fun cow(x: Double, health: Float, name: String?, ticks: Int, resting: Boolean = false): ByteArray {
+    private fun cow(x: Double, health: Float, name: String?, ticks: Int, resting: Boolean = false, touched: Boolean = false): ByteArray {
         val tag = CompoundTag()
+        if (touched) tag.put("BukkitValues", CompoundTag().apply { putByte("pfauprotect:touched", 1) })
         tag.putBoolean("EatingHaystack", resting)
         tag.putBoolean("Sitting", resting)
         tag.put("Pos", ListTag().apply { add(DoubleTag.valueOf(x)); add(DoubleTag.valueOf(64.0)); add(DoubleTag.valueOf(0.0)) })
@@ -33,5 +34,17 @@ class EntityCaptureTest {
         // only for its owner.
         assertFalse(changedBetween(before, cow(1.0, 5f, null, 100, resting = true)))
         assertTrue(changedBetween(before, cow(1.0, 5f, "Burenka", 100)))
+        // The plugin's own mark of a hand is not the hand's change.
+        assertFalse(changedBetween(before, cow(1.0, 5f, null, 100, touched = true)))
+    }
+
+    // A death nobody stands behind: a mob somebody had a hand in always, the place's own mob unless it is
+    // one of a farm's crowd, a zombie the night spawned never.
+    @Test
+    fun `a death with nobody behind it is kept for a mob somebody owns`() {
+        assertTrue(worthRecording(touched = true, keepsItsPlace = false, sameKindInChunk = 50))
+        assertTrue(worthRecording(touched = false, keepsItsPlace = true, sameKindInChunk = 1))
+        assertFalse(worthRecording(touched = false, keepsItsPlace = true, sameKindInChunk = CROWD))
+        assertFalse(worthRecording(touched = false, keepsItsPlace = false, sameKindInChunk = 1))
     }
 }

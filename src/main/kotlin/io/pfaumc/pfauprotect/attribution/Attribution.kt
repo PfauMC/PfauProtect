@@ -251,6 +251,9 @@ class Attribution(
         flights[entity] = Flight(falling, now())
     }
 
+    /** Who a block still in the air answers to, without landing it: it hurts what it falls on first. */
+    fun flying(entity: UUID): Attributed? = flights[entity]?.takeIf { now() - it.at <= FLIGHT_MILLIS }?.falling?.by
+
     // The window is enforced here rather than left to the sweep, because the sweep runs minutes apart
     // and an entity id handed out again in between would otherwise collect a stranger's flight.
     fun landed(entity: UUID): Falling? =

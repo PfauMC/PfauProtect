@@ -156,7 +156,35 @@ class EntityPlan(
     val slots: List<LedgerEntry>,
     val drops: List<UUID>,
     val removed: Boolean = false,
+    val bucket: Bucketed? = null,
 )
+
+/**
+ * A mob taken up in a bucket: the bucket it went into, and the one it was before, in the slot of the
+ * player who took it. Brought back, the mob would be in the world and in the bucket at once.
+ */
+class Bucketed(val player: UUID, val withMob: Long, val empty: Long)
+
+// How far apart the entity row and the slot's change of one bucketing can be: the pass that books the
+// slot runs a tick or so after the event that writes the row.
+private const val BUCKETING_MILLIS = 5_000L
+
+/** The change of bucket that took this mob up, from the slots of the player the row names. */
+internal fun bucketOf(ledger: RocksItemLog, row: EntityRow): Bucketed? {
+    if (row.kind != EntityKind.REMOVED || row.cause != Cause.BUCKET_CAPTURE_MOB) return null
+    val player = row.actor ?: return null
+    val slots = (0 until 36).map { PlayerInv(player, it) } + PlayerEquip(player, 40)
+    for (slot in slots) {
+        val rows = ledger.holderEntries(slot, row.timestamp - BUCKETING_MILLIS, row.timestamp + BUCKETING_MILLIS, limit = 100)
+            .filter { it.cause == Cause.BUCKET_CAPTURE_MOB }
+        for ((_, change) in rows.groupBy { it.txId }) {
+            val gained = change.firstOrNull { it.qty > 0 } ?: continue
+            val lost = change.firstOrNull { it.qty < 0 } ?: continue
+            return Bucketed(player, gained.itemFormId, lost.itemFormId)
+        }
+    }
+    return null
+}
 
 /**
  * Everything a rollback does at one position: its block rows newest first, its slot postings, and the
@@ -229,7 +257,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                 if (!window.complete) return tooMuch()
                 budget -= window.walked
                 unreadable += window.unreadable
-                window.rows.filterTo(rows, keepsRow)
+                window.rows.filterTo(rows) { keepsRow(it) && it.cause != Cause.BLK_LIQUID_FLOW }
                 window.rows.filterTo(nature) { passable(it) && !keepsRow(it) }
                 val entities = log.entitiesInChunk(cx, cz, fromTs, toTs, budget, inBox)
                 if (!entities.complete) return tooMuch()
@@ -416,7 +444,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             val removals = story.filter { it.kind == EntityKind.REMOVED }
             // What fell out of it when it went, and what a hand took off it in passing: shorn wool.
             entities.getOrPut(at) { ArrayList() } +=
-                EntityPlan(at, uuid, oldest.type, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty())
+                EntityPlan(at, uuid, oldest.type, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty(), bucketOf(ledger, oldest))
         }
         if (unnamed > 0) return unreadable(unnamed)
         val positions = steps.keys + refills.keys + entities.keys

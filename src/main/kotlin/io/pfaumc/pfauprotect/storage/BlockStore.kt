@@ -51,6 +51,10 @@ data class EntityChange(
     val before: ByteArray? = null,
     val after: ByteArray? = null,
     val drops: List<UUID> = emptyList(),
+    // What killed it, by damage type, and the entity that dealt the blow when that was not the actor:
+    // a dog, an arrow. Null for a removal that was no death.
+    val death: String? = null,
+    val via: String? = null,
 ) : WorldChange
 
 // Both sides are nullable so that a capture which only learned one of them says so and is refused,
@@ -425,7 +429,9 @@ class BlockLog(
     private fun blockRow(key: ByteArray, value: ByteArray): BlockRow? = BlockCodec.decodeOrNull(key, value, shared.registries)
 
     private fun entityRow(key: ByteArray, value: ByteArray): EntityRow? =
-        EntityCodec.decodeOrNull(key, value, shared.registries) { shared.registries.keyOf(RegistryNamespace.ENTITY_TYPE, it) }
+        EntityCodec.decodeOrNull(key, value, shared.registries, { shared.registries.keyOf(RegistryNamespace.DAMAGE_TYPE, it) }) {
+            shared.registries.keyOf(RegistryNamespace.ENTITY_TYPE, it)
+        }
 
     private fun <T> window(
         cf: ColumnFamilyHandle,
@@ -640,11 +646,14 @@ class BlockLog(
             confidence = change.confidence, actor = change.actor,
             payloadBefore = change.before?.let { shared.payloads.idOf(it) },
             payloadAfter = change.after?.let { shared.payloads.idOf(it) },
-            drops = change.drops,
+            drops = change.drops, death = change.death, via = change.via,
         )
         val key = BlockCodec.key(change.x, change.y, change.z, change.timestamp, eventId, ordinal)
-        val type = shared.registries.idForKey(RegistryNamespace.ENTITY_TYPE, change.type)
-        batch.put(entitiesCf, key, EntityCodec.value(row, shared.registries, type))
+        val ids = shared.registries
+        val type = ids.idForKey(RegistryNamespace.ENTITY_TYPE, change.type)
+        val death = change.death?.let { ids.idForKey(RegistryNamespace.DAMAGE_TYPE, it) } ?: -1
+        val via = change.via?.let { ids.idForKey(RegistryNamespace.ENTITY_TYPE, it) } ?: -1
+        batch.put(entitiesCf, key, EntityCodec.value(row, ids, type, death, via))
         change.actor?.let { actor ->
             batch.put(byActorCf, actorKey(shared.registries.id(RegistryNamespace.PLAYER, actor), key), NOTHING)
         }

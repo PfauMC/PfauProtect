@@ -289,6 +289,8 @@ internal fun formCause(before: String): Cause =
 
 private val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
 
+private val LIQUID_FACES = listOf(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.DOWN)
+
 private const val FIRE = "minecraft:fire"
 
 private val FIRES = setOf(FIRE, "minecraft:soul_fire")
@@ -1010,8 +1012,14 @@ class BlockDestructionListener(
         val entity = (event as? EntityBlockFormEvent)?.entity
         val cause = entity?.let { entityFormCause(it.type) } ?: formCause(before.asString)
         // Frost walker freezes the water under the player wearing it, and that player is who froze it; a
-        // snow golem's trail is whoever built the golem (D83).
-        val by = (entity as? Player)?.let { Attributed(it.uniqueId, Confidence.FACT) } ?: entity?.let { entities.summonerOf(it.uniqueId) }
+        // snow golem's trail is whoever built the golem (D83). Stone out of a liquid and concrete out of
+        // its powder are whoever let the liquid run.
+        val by = when {
+            entity is Player -> Attributed(entity.uniqueId, Confidence.FACT)
+            entity != null -> entities.summonerOf(entity.uniqueId)
+            cause == Cause.BLK_LIQUID_FORM || before.material.name.endsWith("_CONCRETE_POWDER") -> formedBy(block, before.asString)
+            else -> null
+        }
         changed(block, before, event.newState.blockData.asString, cause, by)
     }
 
@@ -1059,8 +1067,24 @@ class BlockDestructionListener(
         // the egg leaves one position and arrives in the other, and the item it stands for goes along.
         if (from.type == Material.DRAGON_EGG) return eggJumped(from, to)
         val by = attribution.carriedTo(positionOf(to), from.blockData.asString)
-        if (!liquidDestroys((to as CraftBlock).blockState)) return
+        if (!liquidDestroys((to as CraftBlock).blockState)) {
+            // Only a flow somebody let out: the world's own springs are no story to tell.
+            if (to.type.isAir && by != null && by.confidence != Confidence.NEARBY) defer(to, to.blockData, Cause.BLK_LIQUID_FLOW, by, expectsDrops = false)
+            return
+        }
         defer(to, to.blockData, Cause.BLK_LIQUID_DESTROY, by ?: pouredBy(from))
+    }
+
+    /**
+     * Who let the liquid run that turned into stone here, or hardened the concrete powder: the block put
+     * down a moment ago first, then the liquids that met, by the tracker and then by the bucket behind
+     * them. A lava cast is somebody's wall, and a rollback of them has to take it down with their lava.
+     */
+    private fun formedBy(block: Block, before: String): Attributed? {
+        attribution.placerAt(positionOf(block), before)?.let { return it }
+        val liquids = (listOf(block) + LIQUID_FACES.map(block::getRelative)).filter { it.type == Material.WATER || it.type == Material.LAVA }
+        return liquids.firstNotNullOfOrNull { attribution.placerAt(positionOf(it), it.blockData.asString) }
+            ?: liquids.firstNotNullOfOrNull { pouredBy(it) }
     }
 
     /**

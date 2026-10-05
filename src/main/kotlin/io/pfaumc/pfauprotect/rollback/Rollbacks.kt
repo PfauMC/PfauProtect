@@ -46,6 +46,8 @@ import net.minecraft.world.level.block.LiquidBlock
 import net.minecraft.world.level.block.BaseFireBlock
 import net.minecraft.tags.BlockTags
 import org.bukkit.Location
+import net.minecraft.world.phys.AABB
+import org.bukkit.World
 import org.bukkit.craftbukkit.entity.CraftEntity
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
@@ -161,6 +163,8 @@ class EntityJob(val entity: Entity, val run: (Tally) -> Unit)
 class Tally {
     // Positions that stood as the rolled-back players left them when the window opened; set on the total.
     var leftBefore = 0
+    // When the window opened; set on the total, for following what a thief put away since.
+    var since = 0L
     var changed = 0
     var unchanged = 0
     var conflicts = 0
@@ -185,6 +189,9 @@ class Tally {
     // Players killed by those the filter names, whose drops go back to them.
     val deaths = ArrayList<EntityRow>()
 
+    // Mobs brought back out of a bucket, whose bucket goes back to what it was.
+    val buckets = ArrayList<Bucketed>()
+
     @Synchronized
     fun add(other: Tally) {
         changed += other.changed
@@ -204,6 +211,7 @@ class Tally {
         breaks += other.breaks
         jobs += other.jobs
         deaths += other.deaths
+        buckets += other.buckets
     }
 }
 
@@ -368,6 +376,7 @@ class ChunkRollback(
                 plugin.logger.log(Level.WARNING, "a rollback could not put back the block at ${spots[i]}", failure)
             }
         }
+        if (apply) lift(level, spots.filterIndexed { i, _ -> touched[i] })
         // Around every position of the plan, not only the ones put back: fire on a plank the griefer's lava had
         // not yet burnt stood next to nothing that came back, and burnt the house again (D80).
         val doused = if (!apply) emptyList() else douse(level, spots, spots.toSet())
@@ -383,9 +392,11 @@ class ChunkRollback(
                 val container = slotsOf(level.getBlockEntity(BlockPos(refill.at.x, refill.at.y, refill.at.z)))
                 // What arrived in a container this rollback took away went with it, and the reading
                 // below writes it off: that is this posting given back, not one that found nothing.
-                if (container == null && refill.qty < 0 && touched[i]) {
+                // What left it went somewhere whose own posting is undone there: a hopper the
+                // griefer set under a chest is a stop on the way, and both ends of the stop are done.
+                if (container == null && touched[i]) {
                     givenBack += refill.posting
-                    tally.traces += Trace(refill.lead, refill.formId, refill.qty)
+                    if (refill.qty < 0) tally.traces += Trace(refill.lead, refill.formId, refill.qty)
                     continue
                 }
                 val moved = if (container == null) 0 else putBack(
@@ -455,6 +466,7 @@ class ChunkRollback(
             EntityKind.REMOVED -> {
                 if (alive != null) return run { tally.entitiesAlready++ }
                 tally.entitiesBack++
+                plan.bucket?.let { tally.buckets += it }
                 if (apply) bringBack(level, plan, actor, tally)
             }
             else -> {
@@ -470,14 +482,14 @@ class ChunkRollback(
                 // Whether it already is what it was can only be read on its own thread, so the preview asks
                 // there too: a second rollback counted every one as to change back and wrote a row for it.
                 tally.jobs += EntityJob(alive) { reverted ->
-                    if (asItWas(alive, plan)) {
+                    if (asItWas(alive, plan, level.world)) {
                         synchronized(reverted) {
                             reverted.entitiesReverted--
                             reverted.entitiesAlready++
                         }
                     } else {
                         synchronized(reverted) { reverted.piles += plan.drops }
-                        if (apply) revert(alive, plan, actor, reverted)
+                        if (apply) revert(alive, plan, actor, reverted, level.world)
                     }
                 }
             }
@@ -511,8 +523,9 @@ class ChunkRollback(
     }
 
     // On the entity's own thread: what a hand changed goes back, and a mob led away goes back to where it
-    // stood. What changes by itself stays as it is now.
-    private fun revert(entity: Entity, plan: EntityPlan, actor: UUID?, tally: Tally) {
+    // stood, in the world it stood in: one taken through a portal is in another by now. What changes by
+    // itself stays as it is now.
+    private fun revert(entity: Entity, plan: EntityPlan, actor: UUID?, tally: Tally, home: World) {
         if (!entity.isValid) return
         val handle = (entity as CraftEntity).handle
         val now = snapshotOf(handle) ?: return
@@ -524,7 +537,7 @@ class ChunkRollback(
             entity.eject()
             (entity as? LivingEntity)?.setLeashHolder(null)
             if (pos.size == 3) {
-                entity.teleportAsync(Location(entity.world, pos.getDoubleOr(0, 0.0), pos.getDoubleOr(1, 0.0), pos.getDoubleOr(2, 0.0)))
+                entity.teleportAsync(Location(home, pos.getDoubleOr(0, 0.0), pos.getDoubleOr(1, 0.0), pos.getDoubleOr(2, 0.0)))
             }
             filed(plan, EntityKind.MOVED, actor, before = now)
             return
@@ -539,12 +552,12 @@ class ChunkRollback(
 
     // On the entity's own thread: led back where it stood and let go, or every key a hand can change as it
     // was.
-    private fun asItWas(entity: Entity, plan: EntityPlan): Boolean {
+    private fun asItWas(entity: Entity, plan: EntityPlan, home: World): Boolean {
         if (!entity.isValid) return true
         val before = nbtOf(plan.before!!)
         if (plan.oldest.kind == EntityKind.MOVED) {
             val pos = before.getListOrEmpty("Pos")
-            if (pos.size != 3 || entity.isInsideVehicle || entity.passengers.isNotEmpty() || (entity as? LivingEntity)?.isLeashed == true) return false
+            if (pos.size != 3 || entity.world != home || entity.isInsideVehicle || entity.passengers.isNotEmpty() || (entity as? LivingEntity)?.isLeashed == true) return false
             val at = entity.location
             return abs(at.x - pos.getDoubleOr(0, 0.0)) < 1 && abs(at.y - pos.getDoubleOr(1, 0.0)) < 1 && abs(at.z - pos.getDoubleOr(2, 0.0)) < 1
         }
@@ -577,6 +590,23 @@ class ChunkRollback(
     private fun restored(tally: Tally, plan: PositionPlan) {
         tally.restored += plan.at
         tally.breaks += plan.breaks
+    }
+
+    /**
+     * A player standing where a wall came back is inside it and chokes: lifted to the first space above
+     * that holds them. Only players of this region; a mob in a restored wall is pushed out by the world.
+     */
+    private fun lift(level: ServerLevel, put: List<BlockPos>) {
+        if (put.isEmpty()) return
+        for (player in level.players()) {
+            if (!Bukkit.isOwnedByCurrentRegion(player.bukkitEntity)) continue
+            val box = player.boundingBox
+            if (put.none { box.intersects(AABB(it)) } || level.noCollision(player, box)) continue
+            var up = 1.0
+            while (box.minY + up < level.maxY && !level.noCollision(player, box.move(0.0, up, 0.0))) up++
+            val at = player.bukkitEntity.location
+            player.bukkitEntity.teleportAsync(at.clone().add(0.0, kotlin.math.floor(box.minY + up) - at.y, 0.0))
+        }
     }
 
     private fun put(level: ServerLevel, pos: BlockPos, state: String?, payload: ByteArray?) {
@@ -670,11 +700,14 @@ class Rollbacks(
                 for (world in blocks.worlds) blocks.get(world)?.drain()
                 val now = System.currentTimeMillis()
                 val from = now - query.secondsBack!! * 1000
-                val since = TIME_FORMAT.format(Instant.ofEpochMilli(from))
+                // A span that stops in the past: what came after is somebody's later change and stops it.
+                val to = query.secondsUntil?.let { now - it * 1000 } ?: now
+                val since = TIME_FORMAT.format(Instant.ofEpochMilli(from)) +
+                    if (query.secondsUntil != null) " until ${TIME_FORMAT.format(Instant.ofEpochMilli(to))}" else ""
                 val readings = if (query.global) {
-                    everywhere(users, from, now, keeps)
+                    everywhere(users, from, to, keeps)
                 } else {
-                    listOf(reader.around(target.world, target.x, target.y, target.z, query.radius!!, from, now, keeps::keeps, keeps::keeps, keeps::keeps, column = users.isNotEmpty()))
+                    listOf(reader.around(target.world, target.x, target.y, target.z, query.radius!!, from, to, keeps::keeps, keeps::keeps, keeps::keeps, column = users.isNotEmpty()))
                 }
                 val where = if (query.global) "everything ${query.users.joinToString(", ")} did since $since"
                 else "${query.radius} blocks around ${target.label} since $since"
@@ -692,7 +725,7 @@ class Rollbacks(
                     }
                     else -> {
                         val leftBefore = if (apply || users.isEmpty()) 0 else reader.leftByThemBefore(plans, users, from)
-                        dispatch(sender, plans, where, apply, release, global = query.global, leftBefore = leftBefore)
+                        dispatch(sender, plans, where, apply, release, global = query.global, leftBefore = leftBefore, since = from)
                     }
                 }
             } catch (failure: Throwable) {
@@ -718,6 +751,7 @@ class Rollbacks(
         release: () -> Unit,
         global: Boolean,
         leftBefore: Int = 0,
+        since: Long = 0,
     ) {
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
@@ -730,6 +764,7 @@ class Rollbacks(
         val actor = (sender as? Player)?.uniqueId
         val total = Tally()
         total.leftBefore = leftBefore
+        total.since = since
         total.deaths += plans.flatMap { it.deaths }
         // Only deaths to give back for, and no place to touch: straight on to them.
         if (work.isEmpty()) return finishing(sender, total, read, where, apply, actor, global, release)
@@ -809,6 +844,17 @@ class Rollbacks(
             val victim = Bukkit.getOfflinePlayer(death.uuid).name ?: death.uuid.toString()
             sender.sendMessage("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
             if (apply) confiscations.restore(death.uuid, back, actor, sender, pileBirths(ledger, death).values.flatten())
+        }
+        // A mob let out of a bucket is no longer in it: the bucket with the mob for the one it was before.
+        for (bucket in total.buckets) {
+            val who = Bukkit.getOfflinePlayer(bucket.player).name ?: bucket.player.toString()
+            val swap = "${confiscations.name(bucket.withMob)} from $who for ${confiscations.name(bucket.empty)}"
+            if (!apply) {
+                sender.sendMessage("  would swap back $swap.")
+                continue
+            }
+            sender.sendMessage("  swapping back $swap:")
+            confiscations.exchange(bucket.player, bucket.withMob, bucket.empty, actor, sender)
         }
         if (owed.isEmpty()) return
         val whom = confiscations.describe(owed)

@@ -16,6 +16,7 @@ import io.papermc.paper.event.entity.EntityDamageItemEvent
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntityKind
+import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.EntityChange
 import net.minecraft.nbt.NbtIo
@@ -23,6 +24,22 @@ import net.minecraft.util.ProblemReporter
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.level.storage.TagValueOutput
 import org.bukkit.Location
+import org.bukkit.NamespacedKey
+import org.bukkit.craftbukkit.damage.CraftDamageSource
+import org.bukkit.damage.DamageSource
+import org.bukkit.entity.FallingBlock
+import org.bukkit.entity.LightningStrike
+import org.bukkit.event.entity.EntityDamageEvent
+import org.bukkit.event.entity.EntityTransformEvent
+import org.bukkit.event.entity.EntityTransformEvent.TransformReason
+import org.bukkit.event.entity.PigZapEvent
+import org.bukkit.event.player.PlayerShearEntityEvent
+import org.bukkit.event.inventory.InventoryCloseEvent
+import org.bukkit.event.inventory.InventoryOpenEvent
+import org.bukkit.entity.AbstractVillager
+import org.bukkit.Bukkit
+import org.bukkit.entity.ZombieVillager
+import org.bukkit.persistence.PersistentDataType
 import org.bukkit.craftbukkit.entity.CraftEntity
 import org.bukkit.entity.Boat
 import org.bukkit.entity.EnderCrystal
@@ -45,6 +62,7 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.event.entity.EntityPlaceEvent
 import org.bukkit.event.hanging.HangingPlaceEvent
 import org.bukkit.event.player.PlayerBucketEmptyEvent
+import org.bukkit.event.player.PlayerBucketEntityEvent
 import org.bukkit.event.player.PlayerInteractAtEntityEvent
 import org.bukkit.event.player.PlayerInteractEntityEvent
 import org.bukkit.event.entity.PlayerLeashEntityEvent
@@ -73,6 +91,32 @@ private const val SEEN_MILLIS = 10_000L
 // The two ways of leaving the world that are an end: killed, and taken out. The rest are the entity
 // saved with its chunk, gone with its player or to another dimension.
 private val GONE = setOf(NmsEntity.RemovalReason.KILLED, NmsEntity.RemovalReason.DISCARDED)
+
+/**
+ * A mob a player has had a hand in: named, led, fed, ridden, sheared, brought in. Kept on the mob itself,
+ * so it outlives a restart and an unloaded chunk, and left out of every comparison of two snapshots.
+ */
+internal val TOUCHED = NamespacedKey("pfauprotect", "touched")
+private const val TOUCHED_TAG = "pfauprotect:touched"
+
+// What a row's death says of a mob that became another: the reason after it, lightning, infection, cured.
+internal const val TRANSFORMED = "transform/"
+
+// As many of one kind in one chunk as a farm keeps: a cow kitchen, an iron farm, a chicken cooker.
+internal const val CROWD = 8
+
+// How long a change around a mob still answers for its death: water let in, the floor taken away, a
+// magma block put down. Longer than any mob takes to drown or dry out; older than that, the place was
+// simply like that.
+internal const val FRESH_MILLIS = 10 * 60 * 1000L
+
+/**
+ * Whether a death nobody stands behind is still worth a row: a mob somebody had a hand in, or one that is
+ * part of its place and not one of a crowd. A farm's cows dying in its lava or the zombies a night spawned
+ * are nobody's grief, and a row for each would bury what is.
+ */
+internal fun worthRecording(touched: Boolean, keepsItsPlace: Boolean, sameKindInChunk: Int): Boolean =
+    touched || keepsItsPlace && sameKindInChunk < CROWD
 
 /**
  * The whole NBT of an entity as it is now, the way the server saves it. Forced, so a mob that is dying and
@@ -116,7 +160,14 @@ internal val VOLATILE = setOf(
 
 internal fun nbtOf(bytes: ByteArray): CompoundTag = NbtIo.read(DataInputStream(ByteArrayInputStream(bytes)))
 
-internal fun significant(tag: CompoundTag): CompoundTag = tag.copy().also { copy -> for (key in VOLATILE) copy.remove(key) }
+internal fun significant(tag: CompoundTag): CompoundTag = tag.copy().also { copy ->
+    for (key in VOLATILE) copy.remove(key)
+    // The plugin's own mark is no hand of a player's.
+    (copy.get("BukkitValues") as? CompoundTag)?.let { values ->
+        values.remove(TOUCHED_TAG)
+        if (values.isEmpty) copy.remove("BukkitValues")
+    }
+}
 
 /** Whether a player's hand changed anything about the entity between two snapshots of it. */
 internal fun changedBetween(before: ByteArray, after: ByteArray): Boolean = significant(nbtOf(before)) != significant(nbtOf(after))
@@ -138,6 +189,8 @@ class EntityCapture(
     private val later: (Location, () -> Unit) -> Unit,
     // Runs a task on the entity's own scheduler a tick later.
     private val laterOn: (Entity, () -> Unit) -> Unit = { _, _ -> },
+    // Runs a task off the region threads, where the journal may be read.
+    private val offThread: (() -> Unit) -> Unit = { it() },
 ) : Listener {
     private val seen = ConcurrentHashMap<UUID, Long>()
 
@@ -165,7 +218,9 @@ class EntityCapture(
     fun onStand(event: PlayerArmorStandManipulateEvent) = handled(event.rightClicked, event.player)
 
     private fun handled(entity: Entity, player: Player) {
-        if (entity is Player || !handling.add(entity.uniqueId)) return
+        if (entity is Player) return
+        touch(entity)
+        if (!handling.add(entity.uniqueId)) return
         val log = logs.get(entity.world.uid)
         val before = log?.let { snapshotOf((entity as CraftEntity).handle) }
         if (before == null) {
@@ -191,6 +246,48 @@ class EntityCapture(
                 )
             )
         }
+    }
+
+    // An entity's own inventory a player has open, as the entity was when it opened: a chest boat, a cart,
+    // a donkey's chest, a horse's saddle and armour.
+    private val opened = ConcurrentHashMap<UUID, Pair<ByteArray, Long>>()
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onOpen(event: InventoryOpenEvent) {
+        val entity = event.inventory.holder as? Entity ?: return
+        // A villager's window trades, and what trading changes is the item plane's and its own.
+        if (entity is Player || entity is AbstractVillager || logs.get(entity.world.uid) == null) return
+        touch(entity)
+        opened[event.player.uniqueId] = (snapshotOf((entity as CraftEntity).handle) ?: return) to System.currentTimeMillis()
+    }
+
+    /**
+     * What a player took out of an entity's inventory or put into it, read whole when the window shuts:
+     * a changed entity on that player, so a rollback of them puts the chest boat's or the donkey's things
+     * back and takes them from whoever has them, as it does for a sheep's wool.
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onClose(event: InventoryCloseEvent) {
+        val (before, since) = opened.remove(event.player.uniqueId) ?: return
+        val entity = event.inventory.holder as? Entity ?: return
+        val player = event.player.uniqueId
+        val log = logs.get(entity.world.uid) ?: return
+        val block = entity.location.block
+        val read = read@{
+            if (!entity.isValid) return@read
+            val after = snapshotOf((entity as CraftEntity).handle) ?: return@read
+            if (!changedBetween(before, after)) return@read
+            log.submit(
+                listOf(
+                    EntityChange(
+                        block.x, block.y, block.z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, entity.type.key.toString(), entity.uniqueId,
+                        // When the window opened: what the slots did since is what goes back with it.
+                        since, actor = player, before = before, after = after,
+                    )
+                )
+            )
+        }
+        if (Bukkit.isOwnedByCurrentRegion(entity)) read() else laterOn(entity, read)
     }
 
     /**
@@ -246,7 +343,9 @@ class EntityCapture(
     }
 
     private fun led(entity: Entity, player: Player) {
-        if (entity is Player || ((entity as? Tameable)?.owner?.uniqueId == player.uniqueId)) return
+        if (entity is Player) return
+        touch(entity)
+        if ((entity as? Tameable)?.owner?.uniqueId == player.uniqueId) return
         val log = logs.get(entity.world.uid) ?: return
         val before = snapshotOf((entity as CraftEntity).handle) ?: return
         val block = entity.location.block
@@ -260,15 +359,92 @@ class EntityCapture(
         )
     }
 
-    // A player's own death is the item plane's, slot by slot; it has nothing to put back.
+    /**
+     * A mob's death: always when somebody stands behind it — killed by a player's hand, a player's dog, or
+     * a change a player made around it a little before — and otherwise only when [worthRecording] says so.
+     * A player's own death is the item plane's, slot by slot; it has nothing to put back.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDeath(event: EntityDeathEvent) {
         val entity = event.entity
         if (entity is Player) return
         val lit = alight.remove(entity.uniqueId)
-        if (!keepsItsPlace((entity as CraftEntity).handle)) return
-        removed(entity, culpritOf(entity, Cause.ENTITY_KILLED, lit))
+        val culprit = culpritOf(entity, Cause.ENTITY_KILLED, lit)
+        if (culprit.by.culprit() != null) return removed(entity, culprit, deathOf(event.damageSource))
+        val touched = entity.persistentDataContainer.has(TOUCHED)
+        // The crowd is only counted for a mob that might be one of it. Crammed to death is a crowd by
+        // definition, however few of them the cramming has left by the time this one goes.
+        val crowd = when {
+            touched -> 0
+            entity.lastDamageCause?.cause == DamageCause.CRAMMING -> CROWD
+            else -> entity.location.chunk.entities.count { it.type == entity.type }
+        }
+        val worth = worthRecording(touched, keepsItsPlace((entity as CraftEntity).handle), crowd)
+        val around = aroundOf(entity, entity.lastDamageCause)
+        if (!worth && around.isEmpty()) return
+        removed(entity, culprit, deathOf(event.damageSource), around, worth)
     }
+
+    // Who sheared a mooshroom, for the cow it turns into a moment later.
+    private val shearers = ConcurrentHashMap<UUID, UUID>()
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onShear(event: PlayerShearEntityEvent) {
+        if (event.entity.type == EntityType.MOOSHROOM) shearers[event.entity.uniqueId] = event.player.uniqueId
+    }
+
+    /**
+     * One mob becoming another under a new id: a villager struck by lightning or killed by a zombie, a
+     * zombie drowned, a zombie villager cured, a pig struck, a mooshroom sheared. Written as the old one
+     * gone and the new one brought in, on whoever stands behind it, so a rollback of them brings the old
+     * one back and takes the new one away. With nobody behind it, the rule of a death nobody caused.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onTransform(event: EntityTransformEvent) {
+        val old = event.entity
+        val reason = event.transformReason
+        // A slime splits as it dies, and its death is written already.
+        if (old is Player || reason == TransformReason.SPLIT) return
+        val by = when (reason) {
+            TransformReason.CURED -> (old as? ZombieVillager)?.conversionPlayer?.let { Attributed(it.uniqueId, Confidence.FACT) }
+            TransformReason.SHEARED -> shearers.remove(old.uniqueId)?.let { Attributed(it, Confidence.FACT) }
+            else -> culpritOf(old, Cause.MOB_TRANSFORM).by
+        }
+        transformed(old, event.transformedEntities, reason, by)
+    }
+
+    // A pig struck by lightning turns on an event of its own, which the one above never hears.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPigZap(event: PigZapEvent) {
+        val by = culpritOf(event.entity, Cause.MOB_TRANSFORM).by
+            ?: (event.lightning.causingEntity as? Player)?.let { Attributed(it.uniqueId, Confidence.FACT) }
+        transformed(event.entity, listOf(event.pigZombie), TransformReason.LIGHTNING, by)
+    }
+
+    private fun transformed(old: Entity, heirs: List<Entity>, reason: TransformReason, by: Attributed?) {
+        val touched = old.persistentDataContainer.has(TOUCHED)
+        if (by.culprit() == null) {
+            val crowd = if (touched) 0 else old.location.chunk.entities.count { it.type == old.type }
+            if (!worthRecording(touched, keepsItsPlace((old as CraftEntity).handle), crowd)) return
+        }
+        removed(old, Culprit(Cause.MOB_TRANSFORM, by), "$TRANSFORMED${reason.name.lowercase()}" to null)
+        for (heir in heirs) {
+            if (touched) touch(heir)
+            created(heir, Cause.MOB_TRANSFORM, by, mark = false)
+        }
+    }
+
+    private fun touch(entity: Entity) {
+        if (entity !is Player) entity.persistentDataContainer.set(TOUCHED, PersistentDataType.BYTE, 1)
+    }
+
+    /**
+     * A mob taken up in a bucket leaves the world as surely as a killed one, into the bucket's item. A
+     * rollback of whoever took it lets it out where it swam; the bucket is the item plane's to take back.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onBucketed(event: PlayerBucketEntityEvent) =
+        removed(event.entity, Culprit(Cause.BUCKET_CAPTURE_MOB, Attributed(event.player.uniqueId, Confidence.FACT)))
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onHangingBreak(event: HangingBreakEvent) {
@@ -385,20 +561,31 @@ class EntityCapture(
     }
 
     // Nothing but its uuid and where it appeared: what a rollback does with it is take it away again.
-    private fun created(entity: Entity, cause: Cause, by: Attributed) {
+    private fun created(entity: Entity, cause: Cause, by: Attributed?, mark: Boolean = true) {
+        if (mark) touch(entity)
         val log = logs.get(entity.world.uid) ?: return
         val block = entity.location.block
         log.submit(
             listOf(
                 EntityChange(
                     block.x, block.y, block.z, EntityKind.CREATED, cause, entity.type.key.toString(), entity.uniqueId,
-                    confidence = by.confidence, actor = by.culprit(),
+                    confidence = by?.confidence ?: Confidence.FACT, actor = by.culprit(),
                 )
             )
         )
     }
 
-    private fun removed(entity: Entity, culprit: Culprit) {
+    /**
+     * `around` are positions whose recent change may answer for the death, asked of the journal off the
+     * region thread; `worth` says whether the row is written when none of them does.
+     */
+    private fun removed(
+        entity: Entity,
+        culprit: Culprit,
+        death: Pair<String?, String?> = null to null,
+        around: List<WorldBlock> = emptyList(),
+        worth: Boolean = true,
+    ) {
         if (entity is LeashHitch) return
         val now = System.currentTimeMillis()
         if (seen.size > SEEN_CAP) seen.values.removeIf { now - it > SEEN_MILLIS }
@@ -409,15 +596,23 @@ class EntityCapture(
         val uuid = entity.uniqueId
         val type = entity.type.key.toString()
         later(entity.location) {
-            log.submit(
-                listOf(
-                    EntityChange(
-                        block.x, block.y, block.z, EntityKind.REMOVED, culprit.cause, type, uuid, now,
-                        culprit.by?.confidence ?: Confidence.FACT, culprit.by.culprit(),
-                        before = nbt, drops = origins.droppedFor(uuid),
+            val drops = origins.droppedFor(uuid)
+            val write: (Attributed?) -> Unit = { by ->
+                log.submit(
+                    listOf(
+                        EntityChange(
+                            block.x, block.y, block.z, EntityKind.REMOVED, culprit.cause, type, uuid, now,
+                            by?.confidence ?: Confidence.FACT, by.culprit(),
+                            before = nbt, drops = drops, death = death.first, via = death.second,
+                        )
                     )
                 )
-            )
+            }
+            if (around.isEmpty()) return@later write(culprit.by)
+            offThread {
+                val changed = around.firstNotNullOfOrNull { attribution.journalRemoverAt(it, FRESH_MILLIS) }
+                if (changed != null) write(changed.copy(confidence = Confidence.INFERRED)) else if (worth) write(culprit.by)
+            }
         }
     }
 
@@ -455,6 +650,34 @@ class EntityCapture(
         return Culprit(own, by?.copy(confidence = Confidence.INFERRED))
     }
 
+    /**
+     * Where to look for whoever changed the place around it a little before it died of the place: let
+     * water in or took it away, took the floor from under it, dropped sand on it, put down magma, a cactus,
+     * a rose, powder snow. The block that hurt it first, then where it stood, its head and what was under
+     * it; a fall, the floor it fell from. Whoever made the newest change there within [FRESH_MILLIS] is a
+     * guess, and reads as one.
+     */
+    private fun aroundOf(entity: Entity, damage: EntityDamageEvent?): List<WorldBlock> {
+        val cause = damage?.cause ?: return emptyList()
+        if (cause !in BY_PLACE) return emptyList()
+        val block = entity.location.block
+        val world = entity.world.uid
+        return buildList {
+            (damage as? EntityDamageByBlockEvent)?.damager?.let { add(positionOf(it)) }
+            for (dy in listOf(0, 1, -1)) add(WorldBlock(world, block.x, block.y + dy, block.z))
+            if (cause == DamageCause.FALL) {
+                // Still the height it fell from: the game clears it only once the fall has hurt.
+                val floor = kotlin.math.floor(entity.location.y + entity.fallDistance).toInt() - 1
+                for (dx in -1..1) for (dz in -1..1) add(WorldBlock(world, block.x + dx, floor, block.z + dz))
+            }
+        }
+    }
+
+    // The damage type's key, and the entity that dealt the blow when that was not a player: the dog, the arrow.
+    private fun deathOf(source: DamageSource): Pair<String?, String?> =
+        (source as? CraftDamageSource)?.handle?.typeHolder()?.registeredName to
+            source.directEntity?.takeIf { it !is Player }?.type?.key?.toString()
+
     private fun byEntity(damager: Entity, own: Cause): Culprit {
         val shooter = firedBy(damager)
         val exploded = damager.type in EXPLODING
@@ -462,6 +685,9 @@ class EntityCapture(
         (damager as? Player)?.let { return Culprit(own, Attributed(it.uniqueId, Confidence.FACT)) }
         litBy(damager)?.let { return Culprit(cause, Attributed(it.uniqueId, Confidence.FACT)) }
         (shooter as? Player)?.let { return Culprit(cause, Attributed(it.uniqueId, Confidence.FACT)) }
+        // A trident's lightning is the thrower's; a block that fell on it, whoever made it fall.
+        ((damager as? LightningStrike)?.causingEntity as? Player)?.let { return Culprit(cause, Attributed(it.uniqueId, Confidence.FACT)) }
+        (damager as? FallingBlock)?.let { attribution.flying(it.uniqueId) }?.let { return Culprit(cause, it) }
         if (damager.type == EntityType.TNT) {
             attribution.placerAt(positionOf(damager.location.block), BlockDestructionListener.TNT)?.let { return Culprit(cause, it) }
         }
@@ -476,6 +702,12 @@ class EntityCapture(
         // Lava sets a mob burning for fifteen seconds after it climbs out.
         const val BURN_MILLIS = 20_000L
         // Buckets that pour out something other than a mob.
+        // The ways of dying that a place deals out, and that a player changing the place can therefore be behind.
+        val BY_PLACE = setOf(
+            DamageCause.FALL, DamageCause.DROWNING, DamageCause.DRYOUT, DamageCause.SUFFOCATION, DamageCause.FREEZE,
+            DamageCause.CONTACT, DamageCause.HOT_FLOOR, DamageCause.WITHER, DamageCause.CAMPFIRE,
+            DamageCause.FIRE, DamageCause.FIRE_TICK, DamageCause.LAVA,
+        )
         val NOT_A_MOB = setOf("water_bucket", "lava_bucket", "powder_snow_bucket", "milk_bucket", "bucket")
         val BUILT = setOf(SpawnReason.BUILD_IRONGOLEM, SpawnReason.BUILD_SNOWMAN, SpawnReason.BUILD_WITHER, SpawnReason.BUILD_COPPERGOLEM)
         val EXPLODING = setOf(

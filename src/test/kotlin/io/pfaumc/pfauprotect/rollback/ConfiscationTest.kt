@@ -55,6 +55,23 @@ class ConfiscationTest {
         assertEquals(mapOf(Carrier(bob) to 7), owed(returned(PlayerInv(bob, 4), 7)))
     }
 
+    // Bob put the loot into a chest of his own far away: what he no longer holds is looked for there,
+    // newest first, and a chest he only took from is no stash.
+    @Test
+    fun `the chests a carrier put the loot into are where the rest is looked for`() {
+        val his = Container(world, 500, 64, 500, 3)
+        val older = Container(world, 600, 64, 600, 0)
+        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
+        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), older, diamond, null, 2, T0 + 1))
+        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), his, diamond, null, 5, T0 + 2))
+        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 5), chest, stone, null, 1, T0 + 3))
+        ledger.drain()
+
+        val tally = returned(PlayerInv(bob, 4), 7).apply { since = T0 }
+        val owed = owedFor(ledger, tally).single()
+        assertEquals(listOf(his.copy(slot = 0), older), owed.stashes)
+    }
+
     // Bob carried the diamonds to a chest of his own in the same area, and the rollback took them back
     // out of it. Taking them from his hands as well would take his own diamonds.
     @Test

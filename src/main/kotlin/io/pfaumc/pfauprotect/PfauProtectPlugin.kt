@@ -209,6 +209,7 @@ class PfauProtectPlugin : JavaPlugin() {
             blocks, origins, attribution, entities,
             later = { at, task -> server.regionScheduler.run(this, at) { task() } },
             laterOn = { entity, task -> entity.scheduler.run(this, { task() }, null) },
+            offThread = { task -> server.asyncScheduler.runNow(this) { task() } },
         )
         val confiscations = Confiscations(this, ledger, codec, capture, worldItems, uncovered::submit)
         val chunkRollback = ChunkRollback(
@@ -564,7 +565,7 @@ class PfauProtectPlugin : JavaPlugin() {
         }
         val now = inspector.toggle(player, desired)
         player.sendMessage(
-            if (now) "Inspector enabled. Click a block to read its ledger."
+            if (now) "Inspector enabled. Left-click a block to read it, right-click a face to read the place in front of it, click an entity to read the entity."
             else "Inspector disabled."
         )
         return Command.SINGLE_SUCCESS

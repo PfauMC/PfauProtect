@@ -48,12 +48,18 @@ data class EntityRow(
     val payloadBefore: Long? = null,
     val payloadAfter: Long? = null,
     val drops: List<UUID> = emptyList(),
+    val death: String? = null,
+    val via: String? = null,
 )
 
 // The key is a block row's key — position, time, event, ordinal — so a walk of a chunk or a position
 // reads both planes the same way.
 object EntityCodec {
     const val VERSION = 0
+
+    // A death's damage type and the entity that dealt it, after everything version 0 has. Only a row
+    // that has either is written as this version, so every other row stays as short as it was.
+    const val WITH_DEATH = 1
 
     private const val VERSION_MASK = 0x03
     private const val NEARBY_FLAG = 0x04
@@ -63,10 +69,12 @@ object EntityCodec {
     private const val AFTER_FLAG = 0x40
     private const val DROPS_FLAG = 0x80
 
-    fun value(row: EntityRow, ids: IdResolver, typeId: Int): ByteArray {
+    /** `deathId` and `viaId` are the registry numbers of [EntityRow.death] and [EntityRow.via], -1 for none. */
+    fun value(row: EntityRow, ids: IdResolver, typeId: Int, deathId: Int = -1, viaId: Int = -1): ByteArray {
         val w = ByteWriter(48)
+        val death = deathId >= 0 || viaId >= 0
         w.byte(
-            VERSION or
+            (if (death) WITH_DEATH else VERSION) or
                 (if (row.confidence == Confidence.INFERRED) CONFIDENCE_FLAG else 0) or
                 (if (row.confidence == Confidence.NEARBY) NEARBY_FLAG else 0) or
                 (if (row.actor != null) ACTOR_FLAG else 0) or
@@ -85,21 +93,38 @@ object EntityCodec {
             w.varInt(row.drops.size)
             for (drop in row.drops) w.uuid(drop)
         }
+        if (death) {
+            w.varInt(deathId + 1)
+            w.varInt(viaId + 1)
+        }
         return w.toByteArray()
     }
 
     /** Null for a row this build cannot read, as a block row is. */
-    fun decodeOrNull(key: ByteArray, value: ByteArray, names: IdLookup, typeOf: (Int) -> String?): EntityRow? =
+    fun decodeOrNull(
+        key: ByteArray,
+        value: ByteArray,
+        names: IdLookup,
+        damageOf: (Int) -> String? = { null },
+        typeOf: (Int) -> String?,
+    ): EntityRow? =
         try {
-            decode(key, value, names, typeOf)
+            decode(key, value, names, damageOf, typeOf)
         } catch (failure: IllegalArgumentException) {
             null
         }
 
-    fun decode(key: ByteArray, value: ByteArray, names: IdLookup, typeOf: (Int) -> String?): EntityRow {
+    fun decode(
+        key: ByteArray,
+        value: ByteArray,
+        names: IdLookup,
+        damageOf: (Int) -> String? = { null },
+        typeOf: (Int) -> String?,
+    ): EntityRow {
         val v = ByteReader(value)
         val header = v.byte()
-        require(header and VERSION_MASK == VERSION) { "entity record version ${header and VERSION_MASK} is not supported" }
+        val version = header and VERSION_MASK
+        require(version == VERSION || version == WITH_DEATH) { "entity record version $version is not supported" }
         val kind = EntityKind.byId(v.byte()) ?: throw IllegalArgumentException("unknown entity row kind")
         val cause = Cause.byId(v.byte()) ?: Cause.UNKNOWN
         val typeId = v.varInt()
@@ -109,6 +134,8 @@ object EntityCodec {
         val before = if (header and BEFORE_FLAG != 0) v.varLong() else null
         val after = if (header and AFTER_FLAG != 0) v.varLong() else null
         val drops = if (header and DROPS_FLAG != 0) List(v.varInt()) { v.uuid() } else emptyList()
+        val death = if (version == WITH_DEATH) v.varInt().takeIf { it > 0 }?.let { damageOf(it - 1) } else null
+        val via = if (version == WITH_DEATH) v.varInt().takeIf { it > 0 }?.let { typeOf(it - 1) } else null
         val k = ByteReader(key)
         val pos = Zcode.decode(k.bytes(Zcode.SIZE))
         return EntityRow(
@@ -120,7 +147,7 @@ object EntityCodec {
                 header and CONFIDENCE_FLAG != 0 -> Confidence.INFERRED
                 else -> Confidence.FACT
             },
-            actor = actor, payloadBefore = before, payloadAfter = after, drops = drops,
+            actor = actor, payloadBefore = before, payloadAfter = after, drops = drops, death = death, via = via,
         )
     }
 }

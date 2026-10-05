@@ -43,6 +43,9 @@ enum class Cause(val id: Int) {
     ENTITY_LED(0x9B),
     // A player killed by another, directly or by what the other set going.
     PLAYER_KILLED(0x9C),
+    // A liquid a player let out running on into air: where his water or lava went. A rollback walks past
+    // it — the liquid goes by itself once its source is taken back — and a lookup shows the spread.
+    BLK_LIQUID_FLOW(0x9D),
 
     CONTAINER_ADD(0x10),
     CONTAINER_REMOVE(0x11),
