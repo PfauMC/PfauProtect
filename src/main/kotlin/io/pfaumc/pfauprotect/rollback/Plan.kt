@@ -200,10 +200,14 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         keepsRow: (BlockRow) -> Boolean,
         keepsEntry: (LedgerEntry) -> Boolean,
         keepsEntity: (EntityRow) -> Boolean = { true },
+        // The whole height of the square: a rollback of named players touches only their rows, and lava
+        // they poured thirty blocks over the house is part of what burnt it. Without names it stays a
+        // cube, so somebody else's build high above is not undone with it.
+        column: Boolean = false,
     ): Reading {
         val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
         val inBox = { bx: Int, by: Int, bz: Int ->
-            bx in (x - radius)..(x + radius) && by in (y - radius)..(y + radius) && bz in (z - radius)..(z + radius)
+            bx in (x - radius)..(x + radius) && (column || by in (y - radius)..(y + radius)) && bz in (z - radius)..(z + radius)
         }
         val rows = ArrayList<BlockRow>()
         val nature = ArrayList<BlockRow>()

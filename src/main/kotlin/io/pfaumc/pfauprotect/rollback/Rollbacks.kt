@@ -669,7 +669,7 @@ class Rollbacks(
                 val readings = if (query.global) {
                     everywhere(users, from, now, keeps)
                 } else {
-                    listOf(reader.around(target.world, target.x, target.y, target.z, query.radius!!, from, now, keeps::keeps, keeps::keeps, keeps::keeps))
+                    listOf(reader.around(target.world, target.x, target.y, target.z, query.radius!!, from, now, keeps::keeps, keeps::keeps, keeps::keeps, column = users.isNotEmpty()))
                 }
                 val where = if (query.global) "everything ${query.users.joinToString(", ")} did since $since"
                 else "${query.radius} blocks around ${target.label} since $since"

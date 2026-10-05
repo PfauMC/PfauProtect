@@ -390,6 +390,19 @@ class RollbackTest {
         assertTrue(chest.get(2).isEmpty)
     }
 
+    // Alice poured lava from forty blocks over the house. Her rollback reaches it; a rollback of nobody in
+    // particular keeps to the cube, so a build high above is not someone else's to lose.
+    @Test
+    fun `a rollback of named players reaches the whole height of its square`() {
+        log.submit(listOf(BlockChange(2, 104, 2, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.drain()
+        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
+        val named = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, 0, Long.MAX_VALUE, filter::keeps, filter::keeps, column = true) as Planned
+        assertEquals(listOf(WorldBlock(world, 2, 104, 2)), named.chunks.flatMap { it.positions }.map { it.at })
+        val cube = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, 0, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
+        assertTrue(cube.chunks.flatMap { it.positions }.isEmpty())
+    }
+
     private fun around(filter: RowFilter): Planned {
         val reading = RollbackReader(shared, logs).around(
             world, 0, 64, 0, 15, 0, Long.MAX_VALUE, filter::keeps, filter::keeps,
