@@ -106,6 +106,13 @@ tasks.test {
     useJUnitPlatform()
 }
 
+// Reads a copy of the ledger offline for the bot's scenarios; scripts/ledger-rows.sh takes the copy.
+tasks.register<JavaExec>("ledgerRows") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.pfaumc.pfauprotect.tools.LedgerRowsKt")
+    workingDir = rootDir
+}
+
 tasks.runServer {
     // Only picks the -add-plugin/--nogui code paths; the jar itself comes from serverJar below.
     version(canvasMinecraftVersion)
