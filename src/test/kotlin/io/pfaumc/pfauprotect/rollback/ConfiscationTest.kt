@@ -72,6 +72,23 @@ class ConfiscationTest {
         assertEquals(listOf(his.copy(slot = 0), older), owed.stashes)
     }
 
+    // Bob crafted the loot into a block: the block stands for nine diamonds, and is what is looked for once
+    // his hands and his chests have none of them.
+    @Test
+    fun `what a carrier crafted the loot into stands for it`() {
+        val block = byteArrayOf(57)
+        val table = Container(world, 9, 64, 9, 0)
+        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 9, T0))
+        ledger.submit((1..9).map { Transfer(Cause.CRAFT_CONSUME, table.copy(slot = it), Void, diamond, null, 1, T0 + 1) } +
+            Transfer(Cause.CRAFT_RESULT, Void, PlayerInv(bob, 5), block, null, 1, T0 + 1))
+        ledger.drain()
+
+        val tally = returned(PlayerInv(bob, 4), 9).apply { since = T0 }
+        val conversion = owedFor(ledger, tally).single().conversions.single()
+        assertEquals(ledger.formId(block), conversion.made)
+        assertEquals(9, conversion.inputsEach)
+    }
+
     // Bob carried the diamonds to a chest of his own in the same area, and the rollback took them back
     // out of it. Taking them from his hands as well would take his own diamonds.
     @Test
