@@ -11,7 +11,8 @@ import kotlin.io.path.readText
 /**
  * Every message the plugin writes is read out of its sources, as `say("...")` or an error's
  * `LiteralMessage("...")`, with whatever it fills in set to a stand-in, and has to come out in Russian. A
- * message built in a variable first is not seen here; scenario T1 of the bots reads those live.
+ * message built in a variable first is not seen here; a live run on a server started with PPT_LANG=ru
+ * reads those.
  */
 class TextsCoverageTest {
     @AfterEach

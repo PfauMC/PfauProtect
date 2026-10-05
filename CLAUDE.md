@@ -15,12 +15,7 @@ went, spot items with no explained origin, and eventually roll back a culprit. K
 ./gradlew test --tests 'io.pfaumc.pfauprotect.storage.StorageTest.*name*'# one method (glob)
 ./gradlew runServer                                              # Canvas server with the plugin (not on Windows, see below)
 scripts/test-server.sh start|stop|logs                           # the same server in a Linux container, for manual runs
-testbot/bots.sh start|run R4 ...|stop                            # two Fabric bot clients play TESTING-v7 against that server
 ```
-
-- `testbot/` is a separate Gradle build (Fabric client mod, Java, own wrapper), not part of the plugin's build or
-  CI. Test1 (owner, op) runs the scenarios in `Scenarios.java`, Test2 (griefer) does what Test1 sends over a
-  local socket; stands go into the zone x 40..90, z -90..-40. The report lands in `testbot/run/owner/ppt-report.txt`.
 
 - Nothing is shaded into the jar. Runtime dependencies go through `library(...)` (plugin-yml writes them into
   `plugin.yml` `libraries`). `kotlin.stdlib.default.dependency=false`, so a new dependency usually has to be
@@ -91,8 +86,8 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 **Settings, texts, chat, API.** `Settings.kt` reads `config.yml` (language, disabled worlds and causes, limits,
 the mob death thresholds). Messages are written in English and go out through `CommandSender.say()`
 (`Texts.kt`), which translates whole lines by regex when the language is `ru`; a new message needs a line
-there, and `TextsCoverageTest` fails until it has one. `PPT_LANG=ru scripts/test-server.sh start` and bot
-scenario T1 check it live. `ChatLog` is a base of its own (`chat/`): chat, commands, joins and quits, no IP addresses.
+there, and `TextsCoverageTest` fails until it has one. `PPT_LANG=ru scripts/test-server.sh start` starts the
+test server in Russian for a live check. `ChatLog` is a base of its own (`chat/`): chat, commands, joins and quits, no IP addresses.
 `api/PfauProtectApi` is registered in the ServicesManager; `PfauProtectPreLogEvent` can veto a row before it
 is written and is raised only while someone listens.
 
@@ -145,8 +140,7 @@ them.
 - TESTING-v6 is the live run for SPEC-v6, closed on 2026-10-03. TESTING-v6-RESULTS holds it, with the
   D51–D57 defects and their fixes.
 - TESTING-v7 is the live plan for SPEC-v7, with a player; the console-only checks are already in SPEC-v7 §14.
-  Since 2026-10-05 the live plans are played by the `testbot/` clients: TESTING-BOT says what each bot
-  scenario covers (v4–v7), the run's lessons for writing new ones, and the first full run.
+  Since 2026-10-05 the live plans are played by bot clients kept outside this repository.
 - PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
 - TESTING-v5 is the live run for SPEC-v5, closed on 2026-10-03. TESTING-v5-RESULTS holds it: the D17–D50
