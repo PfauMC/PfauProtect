@@ -135,6 +135,8 @@ them.
 - TESTING-v6 is the live run for SPEC-v6, closed on 2026-10-03. TESTING-v6-RESULTS holds it, with the
   D51–D57 defects and their fixes.
 - TESTING-v7 is the live plan for SPEC-v7, with a player; the console-only checks are already in SPEC-v7 §14.
+  Since 2026-10-05 the live plans are played by the `testbot/` clients: TESTING-BOT says what each bot
+  scenario covers (v4–v7), the run's lessons for writing new ones, and the first full run.
 - PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
 - TESTING-v5 is the live run for SPEC-v5, closed on 2026-10-03. TESTING-v5-RESULTS holds it: the D17–D50
