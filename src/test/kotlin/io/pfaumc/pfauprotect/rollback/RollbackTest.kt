@@ -174,6 +174,22 @@ class RollbackTest {
         assertFalse(settled.conflict)
     }
 
+    // Alice's blast took the grass; the rollback put it back; the wall restored over it turned it to dirt.
+    // That last is the world's own doing after the position was already put back, so a second rollback
+    // has nothing to do here and must not dig the dirt up for grass again.
+    @Test
+    fun `nature after an earlier rollback is not walked past`() {
+        val grass = "minecraft:grass_block[snowy=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, grass, AIR, Cause.BLK_TNT, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, grass, Cause.ROLLBACK, T0 + 1)))
+        log.submit(listOf(BlockChange(1, 64, 1, grass, DIRT, Cause.BLK_FADE, T0 + 2)))
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val settled = settle(DIRT, steps(planned))
+        assertNull(settled.back)
+    }
+
     // Alice put the stone down before the window and broke it inside: rolled back from the window's start, the
     // position goes back to her own stone, and the preview has to say so. Bob's stone before the window, and
     // an earlier rollback's, are nobody's grief to warn about.

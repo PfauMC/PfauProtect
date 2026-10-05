@@ -53,7 +53,16 @@ private val ROW_ORDER = compareBy<BlockRow> { it.eventId }.thenBy { it.ordinal }
  */
 internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>): List<BlockRow> {
     val first = kept.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, rows) -> rows.minWith(ROW_ORDER) }
-    return nature.filter { row -> first[Triple(row.x, row.y, row.z)]?.let { ROW_ORDER.compare(row, it) > 0 } == true }
+    // What the world did after an earlier rollback had put the position back is the world's, not part of
+    // the grief: grass a restored wall stands on going to dirt. Walked past, it took a second rollback
+    // back to the grass (D78).
+    val undone = (kept + nature).filter { it.cause == Cause.ROLLBACK }.groupBy { Triple(it.x, it.y, it.z) }
+        .mapValues { (_, rows) -> rows.maxWith(ROW_ORDER) }
+    return nature.filter { row ->
+        val at = Triple(row.x, row.y, row.z)
+        first[at]?.let { ROW_ORDER.compare(row, it) > 0 } == true &&
+            (row.cause == Cause.ROLLBACK || undone[at]?.let { ROW_ORDER.compare(row, it) < 0 } != false)
+    }
 }
 
 // The three airs are one block to a rollback: a cave keeps its own kind of air, and a break inside it
