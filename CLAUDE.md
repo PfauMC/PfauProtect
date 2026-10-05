@@ -91,7 +91,8 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 **Settings, texts, chat, API.** `Settings.kt` reads `config.yml` (language, disabled worlds and causes, limits,
 the mob death thresholds). Messages are written in English and go out through `CommandSender.say()`
 (`Texts.kt`), which translates whole lines by regex when the language is `ru`; a new message needs a line
-there. `ChatLog` is a base of its own (`chat/`): chat, commands, joins and quits, no IP addresses.
+there, and `TextsCoverageTest` fails until it has one. `PPT_LANG=ru scripts/test-server.sh start` and bot
+scenario T1 check it live. `ChatLog` is a base of its own (`chat/`): chat, commands, joins and quits, no IP addresses.
 `api/PfauProtectApi` is registered in the ServicesManager; `PfauProtectPreLogEvent` can veto a row before it
 is written and is raised only while someone listens.
 
