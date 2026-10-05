@@ -327,29 +327,32 @@ fun lookupTargetAt(block: Block) = LookupTarget(
 fun lookupTargetAt(at: Location) =
     LookupTarget(at.world.uid, at.blockX, at.blockY, at.blockZ, "${at.blockX} ${at.blockY} ${at.blockZ}")
 
+// Brigadier tells the player these itself, past say(): translated as they are made.
+private fun said(text: String) = LiteralMessage(io.pfaumc.pfauprotect.Texts.translate(text))
+
 private val NOT_A_PARAMETER = DynamicCommandExceptionType {
-    LiteralMessage("'$it' is not a parameter, expected one of ${Param.help}")
+    said("'$it' is not a parameter, expected one of ${Param.help}")
 }
 private val UNKNOWN_PARAMETER = DynamicCommandExceptionType {
-    LiteralMessage("unknown parameter '$it:', expected one of ${Param.help}")
+    said("unknown parameter '$it:', expected one of ${Param.help}")
 }
-private val EMPTY_VALUE = DynamicCommandExceptionType { LiteralMessage("'$it:' has no value") }
+private val EMPTY_VALUE = DynamicCommandExceptionType { said("'$it:' has no value") }
 private val BAD_TIME = DynamicCommandExceptionType {
-    LiteralMessage("'$it' is not a time span, expected something like 30m, 2h or 1d6h")
+    said("'$it' is not a time span, expected something like 30m, 2h or 1d6h")
 }
 private val BAD_RADIUS = DynamicCommandExceptionType {
-    LiteralMessage("'$it' is not a radius, expected 0 to ${io.pfaumc.pfauprotect.Settings.maxRadius} blocks or 'global'")
+    said("'$it' is not a radius, expected 0 to ${io.pfaumc.pfauprotect.Settings.maxRadius} blocks or 'global'")
 }
 private val BAD_ACTION = DynamicCommandExceptionType {
-    LiteralMessage("'$it' is not an action, expected one of ${Action.names.joinToString(" ")}")
+    said("'$it' is not an action, expected one of ${Action.names.joinToString(" ")}")
 }
-private val BAD_PAGE = DynamicCommandExceptionType { LiteralMessage("'$it' is not a page number") }
-private val BAD_YES_NO = DynamicCommandExceptionType { LiteralMessage("'$it' is neither yes nor no") }
-private val BAD_AMOUNT = DynamicCommandExceptionType { LiteralMessage("'$it' is not an amount, expected 5, >=5, <10 or 5-10") }
-private val BAD_EVENT = DynamicCommandExceptionType { LiteralMessage("'$it' is not an event, click a lookup line to fill one in") }
-private val UNKNOWN_FLAG = DynamicCommandExceptionType { LiteralMessage("unknown flag '$it', expected #count") }
+private val BAD_PAGE = DynamicCommandExceptionType { said("'$it' is not a page number") }
+private val BAD_YES_NO = DynamicCommandExceptionType { said("'$it' is neither yes nor no") }
+private val BAD_AMOUNT = DynamicCommandExceptionType { said("'$it' is not an amount, expected 5, >=5, <10 or 5-10") }
+private val BAD_EVENT = DynamicCommandExceptionType { said("'$it' is not an event, click a lookup line to fill one in") }
+private val UNKNOWN_FLAG = DynamicCommandExceptionType { said("unknown flag '$it', expected #count or #sum") }
 private val BAD_LIMIT = DynamicCommandExceptionType {
-    LiteralMessage("'$it' is not a row count between 1 and $MAX_LIMIT")
+    said("'$it' is not a row count between 1 and $MAX_LIMIT")
 }
 
 fun parseLookupQuery(input: String): LookupQuery = parseLookupQuery(StringReader(input))

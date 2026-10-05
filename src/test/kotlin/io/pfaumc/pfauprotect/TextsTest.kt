@@ -22,5 +22,7 @@ class TextsTest {
             Texts.translate("  2026-10-05 20:50:50  blk_player_break  minecraft:stone -> minecraft:air  block 1 2 3  by Test2 (worked out)"),
         )
         assertEquals("Нет записей для 5 блоков вокруг 1 2 3.", Texts.translate("No ledger entries for 5 blocks around 1 2 3."))
+        // " slot " is a word of its own only after the phrases that hold it.
+        assertEquals("(1 строк блоков, 1 строк слотов прочитано)", Texts.translate("(1 block rows, 1 slot rows read)"))
     }
 }
