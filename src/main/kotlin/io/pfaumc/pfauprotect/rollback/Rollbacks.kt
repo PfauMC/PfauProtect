@@ -943,7 +943,12 @@ class Rollbacks(
         hide(player)
         val world = player.world.uid
         // The first ones in plan order, not the nearest: a rollback bigger than the limit shows only part.
-        val mine = ghosts.filter { it.world == world }.take(GHOST_LIMIT)
+        // Not where the player stands: their client pushes them out of a ghost, and the apply then finds them
+        // beside the wall instead of in it, to lift them onto it.
+        val body = player.boundingBox
+        val mine = ghosts.filter {
+            it.world == world && !body.overlaps(org.bukkit.util.BoundingBox(it.x.toDouble(), it.y.toDouble(), it.z.toDouble(), it.x + 1.0, it.y + 1.0, it.z + 1.0))
+        }.take(GHOST_LIMIT)
         if (mine.isEmpty()) return
         shown[player.uniqueId] = mine
         player.sendMultiBlockChange(mine.associate { Position.block(it.x, it.y, it.z) to it.data })
