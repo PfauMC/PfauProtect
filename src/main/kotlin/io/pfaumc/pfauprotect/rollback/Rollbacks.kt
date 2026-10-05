@@ -30,6 +30,7 @@ import net.minecraft.world.Clearable
 import io.pfaumc.pfauprotect.capture.entity.VOLATILE
 import io.pfaumc.pfauprotect.capture.entity.nbtOf
 import io.pfaumc.pfauprotect.capture.entity.snapshotOf
+import io.pfaumc.pfauprotect.capture.entity.changedBetween
 import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Void
@@ -461,8 +462,19 @@ class ChunkRollback(
                 }
                 if (alive == null) return run { tally.entitiesGoneSince++ }
                 tally.entitiesReverted++
-                tally.piles += plan.drops
-                if (apply) tally.jobs += EntityJob(alive) { reverted -> revert(alive, plan, actor, reverted) }
+                // Whether it already is what it was can only be read on its own thread, so the preview asks
+                // there too: a second rollback counted every one as to change back and wrote a row for it.
+                tally.jobs += EntityJob(alive) { reverted ->
+                    if (asItWas(alive, plan)) {
+                        synchronized(reverted) {
+                            reverted.entitiesReverted--
+                            reverted.entitiesAlready++
+                        }
+                    } else {
+                        synchronized(reverted) { reverted.piles += plan.drops }
+                        if (apply) revert(alive, plan, actor, reverted)
+                    }
+                }
             }
         }
     }
@@ -516,6 +528,21 @@ class ChunkRollback(
         handle.load(TagValueInput.create(ProblemReporter.DISCARDING, handle.registryAccess(), merged))
         slotsBack(plan, actor, tally)
         filed(plan, EntityKind.CHANGED, actor, before = now, after = snapshotOf(handle))
+    }
+
+    // On the entity's own thread: led back where it stood and let go, or every key a hand can change as it
+    // was.
+    private fun asItWas(entity: Entity, plan: EntityPlan): Boolean {
+        if (!entity.isValid) return true
+        val before = nbtOf(plan.before!!)
+        if (plan.oldest.kind == EntityKind.MOVED) {
+            val pos = before.getListOrEmpty("Pos")
+            if (pos.size != 3 || entity.isInsideVehicle || (entity as? LivingEntity)?.isLeashed == true) return false
+            val at = entity.location
+            return abs(at.x - pos.getDoubleOr(0, 0.0)) < 1 && abs(at.y - pos.getDoubleOr(1, 0.0)) < 1 && abs(at.z - pos.getDoubleOr(2, 0.0)) < 1
+        }
+        val now = snapshotOf((entity as CraftEntity).handle) ?: return true
+        return !changedBetween(plan.before, now)
     }
 
     // What the entity's own slots did after the moment it went back to: the NBT already holds them as
