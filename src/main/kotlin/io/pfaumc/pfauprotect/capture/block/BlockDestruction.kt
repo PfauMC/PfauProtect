@@ -867,7 +867,11 @@ class BlockDestructionListener(
         // The other half of a bed is where the player clicked, so it is the half that carries both
         // the placement note and the form the position took over.
         val partner = otherBedHalf(data)?.let { half -> partnerFace(data)?.let { at.getRelative(it) to half } }
-        val by = placerOf(positionOf(at), standing)
+        // A bed in the Nether and a charged anchor outside it go off under a player's click, and that
+        // player set them off; who put the block down is asked only when nobody clicked (D82).
+        val by = touches.toucher(positionOf(at))
+            ?: partner?.let { (block, _) -> touches.toucher(positionOf(block)) }
+            ?: placerOf(positionOf(at), standing)
             ?: partner?.let { (block, half) -> placerOf(positionOf(block), half.asString) }
         val gone = ArrayList<Site>(2)
         for ((block, was) in listOfNotNull(at to data, partner)) {
@@ -1005,7 +1009,9 @@ class BlockDestructionListener(
         val before = block.blockData
         val entity = (event as? EntityBlockFormEvent)?.entity
         val cause = entity?.let { entityFormCause(it.type) } ?: formCause(before.asString)
-        val by = entity?.let { entities.summonerOf(it.uniqueId) }
+        // Frost walker freezes the water under the player wearing it, and that player is who froze it; a
+        // snow golem's trail is whoever built the golem (D83).
+        val by = (entity as? Player)?.let { Attributed(it.uniqueId, Confidence.FACT) } ?: entity?.let { entities.summonerOf(it.uniqueId) }
         changed(block, before, event.newState.blockData.asString, cause, by)
     }
 
