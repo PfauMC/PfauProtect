@@ -134,7 +134,9 @@ class Refill(
  * it says the entity was before — `before`, its whole NBT then — is what the entity goes back to: an
  * entity a player brought in is taken away again, one that went is brought back as it was, one changed
  * or led away is changed back or brought back to where it stood. `slots` are what its own slots gave up
- * or took since, given back along with it; `drops` what fell out of it when it went.
+ * or took since, given back along with it; `drops` what fell out of it when it went or was changed. `removed` says it
+ * went within the window even when its oldest row was a change: a wolf whose armour broke under the
+ * blows that then killed it is brought back, not looked for alive to be changed back.
  */
 class EntityPlan(
     val at: WorldBlock,
@@ -144,6 +146,7 @@ class EntityPlan(
     val before: ByteArray?,
     val slots: List<LedgerEntry>,
     val drops: List<UUID>,
+    val removed: Boolean = false,
 )
 
 /**
@@ -397,8 +400,10 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             val owed = ledger.compensated(page.entries.map { it.ref })
             val slots = page.entries.filter { it.ref !in owed }
             val at = WorldBlock(world, oldest.x, oldest.y, oldest.z)
-            val drops = story.filter { it.kind == EntityKind.REMOVED }.flatMap { it.drops }
-            entities.getOrPut(at) { ArrayList() } += EntityPlan(at, uuid, oldest.type, oldest, before, slots, drops)
+            val removals = story.filter { it.kind == EntityKind.REMOVED }
+            // What fell out of it when it went, and what a hand took off it in passing: shorn wool.
+            entities.getOrPut(at) { ArrayList() } +=
+                EntityPlan(at, uuid, oldest.type, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty())
         }
         if (unnamed > 0) return unreadable(unnamed)
         val positions = steps.keys + refills.keys + entities.keys

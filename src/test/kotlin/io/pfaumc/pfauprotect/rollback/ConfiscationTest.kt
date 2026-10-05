@@ -115,6 +115,11 @@ class ConfiscationTest {
 
         val back = restitutionFor(ledger, death).associate { it.taker to it.qty }
         assertEquals(mapOf(Carrier(bob) to 2, Vanished(burned.uuid) to 2), back)
+
+        // Given back once, the births are marked and a second rollback owes her nothing.
+        ledger.submit(Transfer(Cause.ROLLBACK, Void, Void, diamond, null, 1, T0 + 2, reverts = pileBirths(ledger, death).values.flatten()))
+        ledger.drain()
+        assertTrue(restitutionFor(ledger, death).isEmpty())
     }
 
     // A hopper took it into some other chest: past where a rollback follows, and owed by nobody.

@@ -5,6 +5,7 @@ import io.pfaumc.pfauprotect.capture.item.Intent
 import io.pfaumc.pfauprotect.capture.item.WorldItemListener
 import io.pfaumc.pfauprotect.capture.item.namedContents
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.LedgerEntry
@@ -143,10 +144,26 @@ private fun wholePile(pile: UUID, rowsOf: (ItemEntityRef) -> List<LedgerEntry>):
  * lies there, what is gone for good. The victim's own hands are left out: what they picked up again they
  * have.
  */
-internal fun restitutionFor(ledger: RocksItemLog, death: EntityRow): List<Owed> {
-    val rowsOf = { pile: ItemEntityRef -> ledger.holderEntries(pile, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
-    return merged(death.drops.flatMap { wholePile(it, rowsOf) }).filter { it.qty > 0 && it.taker != Carrier(death.uuid) }
+internal fun restitutionFor(ledger: RocksItemLog, death: EntityRow): List<Owed> =
+    merged(death.drops.filter { it !in restituted(ledger, death) }.flatMap { wholePile(it, pileRows(ledger)) })
+        .filter { it.qty > 0 && it.taker != Carrier(death.uuid) }
+
+/**
+ * The births of the piles that fell out of a killed player, by pile: what a rollback that gave the
+ * victim back their loss marks as given back, so a second rollback gives nothing twice.
+ */
+internal fun pileBirths(ledger: RocksItemLog, death: EntityRow): Map<UUID, List<PostingRef>> = death.drops.associateWith { pile ->
+    pileRows(ledger)(ItemEntityRef(pile)).filter { it.qty > 0 && it.cause != Cause.ITEM_MERGE }.map { it.ref }
 }
+
+// Piles an earlier rollback already gave the victim back.
+private fun restituted(ledger: RocksItemLog, death: EntityRow): Set<UUID> {
+    val births = pileBirths(ledger, death)
+    val given = ledger.compensated(births.values.flatten()).keys
+    return births.filterValues { refs -> refs.any { it in given } }.keys
+}
+
+private fun pileRows(ledger: RocksItemLog) = { pile: ItemEntityRef -> ledger.holderEntries(pile, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
 
 /** The same taker and form owed more than once, as one amount. */
 internal fun merged(owed: List<Owed>): List<Owed> =
@@ -192,9 +209,12 @@ class Confiscations(
      * Gives a killed player back what fell out of them: taken from whoever has it, as it is taken, and
      * what is gone for good out of nothing.
      */
-    fun restore(victim: UUID, owed: List<Owed>, actor: UUID?, sender: CommandSender) {
+    fun restore(victim: UUID, owed: List<Owed>, actor: UUID?, sender: CommandSender, births: List<PostingRef> = emptyList()) {
         take(owed.filter { it.taker !is Vanished }, actor, sender) { formId, n -> give(victim, formId, n, actor, sender) }
         for (gone in owed.filter { it.taker is Vanished }) give(victim, gone.formId, gone.qty, actor, sender)
+        // The piles' births marked as given back. Nothing moves, so no posting is written: only the mark.
+        val form = owed.firstNotNullOfOrNull { ledger.form(it.formId) } ?: return
+        if (births.isNotEmpty()) sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, form, null, 1, System.currentTimeMillis(), actor = actor, reverts = births)))
     }
 
     // `taken` hears of every amount actually taken, or owed by a player who will hand it over on joining.

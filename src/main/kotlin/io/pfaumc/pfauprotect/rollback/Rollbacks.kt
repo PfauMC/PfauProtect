@@ -452,8 +452,16 @@ class ChunkRollback(
                 if (apply) bringBack(level, plan, actor, tally)
             }
             else -> {
+                // Changed or led away and then killed or broken in the same window: brought back as it
+                // was before the first change.
+                if (alive == null && plan.removed) {
+                    tally.entitiesBack++
+                    if (apply) bringBack(level, plan, actor, tally)
+                    return
+                }
                 if (alive == null) return run { tally.entitiesGoneSince++ }
                 tally.entitiesReverted++
+                tally.piles += plan.drops
                 if (apply) tally.jobs += EntityJob(alive) { reverted -> revert(alive, plan, actor, reverted) }
             }
         }
@@ -763,7 +771,7 @@ class Rollbacks(
             if (back.isEmpty()) continue
             val victim = Bukkit.getOfflinePlayer(death.uuid).name ?: death.uuid.toString()
             sender.sendMessage("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
-            if (apply) confiscations.restore(death.uuid, back, actor, sender)
+            if (apply) confiscations.restore(death.uuid, back, actor, sender, pileBirths(ledger, death).values.flatten())
         }
         if (owed.isEmpty()) return
         val whom = confiscations.describe(owed)

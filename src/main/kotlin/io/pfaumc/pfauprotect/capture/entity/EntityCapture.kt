@@ -184,7 +184,9 @@ class EntityCapture(
                 listOf(
                     EntityChange(
                         x, y, z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, entity.type.key.toString(), entity.uniqueId,
-                        actor = player.uniqueId, before = before, after = after,
+                        // The wool a pair of shears cut off: changed back, the sheep has it again, and the
+                        // pile has to be taken back from whoever picked it up.
+                        actor = player.uniqueId, before = before, after = after, drops = origins.droppedFor(entity.uniqueId),
                     )
                 )
             )
