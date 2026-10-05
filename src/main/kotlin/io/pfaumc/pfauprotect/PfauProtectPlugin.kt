@@ -541,7 +541,10 @@ class PfauProtectPlugin : JavaPlugin() {
     // positioned`, and what stops a player who looked past the last block from being told off.
     private fun lookup(source: CommandSourceStack, query: LookupQuery): Int {
         val lookups = running?.lookups ?: return notReady(source)
-        val aimed = (source.executor as? Player)?.getTargetBlockExact(TARGET_RANGE)
+        // Only where the command runs from the player themselves: `/execute positioned` names a place of its
+        // own, and the block the player happens to look at took over from it (D79).
+        val player = (source.executor as? Player)?.takeIf { it.world == source.location.world && it.location.distanceSquared(source.location) < 1e-6 }
+        val aimed = player?.getTargetBlockExact(TARGET_RANGE)
         lookups.run(source.sender, aimed?.let(::lookupTargetAt) ?: lookupTargetAt(source.location), query)
         return Command.SINGLE_SUCCESS
     }
