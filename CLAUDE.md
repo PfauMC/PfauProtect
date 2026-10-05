@@ -86,10 +86,19 @@ never rewritten after the fact.
 
 **Commands.** `/pfauprotect` (alias `/pp`) is registered through Brigadier (`LifecycleEvents.COMMANDS`), with
 subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]`, `rollback|rb`, `apply`,
-`cancel`. Permissions are declared in `build.gradle.kts` `bukkit {}`.
+`cancel`, `chat`, `status`, `purge <age> [confirm]`. Permissions are declared in `build.gradle.kts` `bukkit {}`.
+
+**Settings, texts, chat, API.** `Settings.kt` reads `config.yml` (language, disabled worlds and causes, limits,
+the mob death thresholds). Messages are written in English and go out through `CommandSender.say()`
+(`Texts.kt`), which translates whole lines by regex when the language is `ru`; a new message needs a line
+there. `ChatLog` is a base of its own (`chat/`): chat, commands, joins and quits, no IP addresses.
+`api/PfauProtectApi` is registered in the ServicesManager; `PfauProtectPreLogEvent` can veto a row before it
+is written and is raised only while someone listens.
 
 **Rollback (`rollback/`).** `/pp rollback` takes the lookup's words and previews; `/pp apply` reads everything
-again and runs it, a chunk per region task. It writes compensating rows (`Cause.ROLLBACK`) in both planes and never
+again and runs it, a chunk per region task, eight at a time; `/pp cancel` stops the chunks not begun yet.
+The previewing player is shown the blocks as they would stand (client-side only) until apply, cancel or expiry.
+`event:<token>` from a lookup line rolls back that one event. It writes compensating rows (`Cause.ROLLBACK`) in both planes and never
 edits old ones. A rollback's own rows are only rolled back when `action:rollback` names them, which is also how a
 rollback is undone. What it put back is then taken back from whoever carried it off (`Confiscation.kt`): from an
 online player through an `Intent`, from an offline one at their next join, from a pile still lying where it lies.
@@ -148,7 +157,8 @@ them.
 - `/pp lookup` reads by position, or with `player:<name>` by a player's own holders (inventory, equipment,
   cursor, ender chest, crafting grid). `user:` is something else: a filter on the actor of positional rows;
   with `radius:global` it reads every position the player touched, through `by_actor`. `time:` takes a span
-  (`2h-1h`), `page:` pages through the answer.
+  (`2h-1h`), `page:` pages through the answer. `action:steal`, `amount:`, `rolledback:`, `#count`/`#sum`
+  narrow it. `/pp purge` keeps the newest old row per place and writes `purge_opening` rows so balances hold.
 
 ## Conventions
 
