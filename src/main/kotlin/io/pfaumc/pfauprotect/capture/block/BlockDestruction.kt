@@ -1224,7 +1224,12 @@ class BlockDestructionListener(
         val timestamp = System.currentTimeMillis()
         // A player named on the event witnessed it; nothing here was worked out.
         val by = event.player?.let { Attributed(it.uniqueId, Confidence.FACT) }
-        growing.claim(blocks) { grew(sites, Cause.BLK_GROW, by, timestamp) }
+        // Settled on the global region, a tick later; filing reads the world, so it goes to the tree's own.
+        // Run in place it failed Folia's thread check and the tree went unrecorded.
+        val at = blocks.firstOrNull()?.location
+        growing.claim(blocks) {
+            if (at != null && plugin.isEnabled) plugin.server.regionScheduler.execute(plugin, at) { grew(sites, Cause.BLK_GROW, by, timestamp) }
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
