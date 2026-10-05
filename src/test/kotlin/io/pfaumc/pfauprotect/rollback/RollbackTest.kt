@@ -144,6 +144,54 @@ class RollbackTest {
         assertTrue(settle(STONE, stair.getValue(5).steps).conflict)
     }
 
+    // The grass under the griefer's block went to dirt a while after he put it down: taking his block away
+    // brings the grass back. Grass that died under nothing of his stays as the world left it.
+    @Test
+    fun `grass gone to dirt under a block taken away comes back`() {
+        val grass = "minecraft:grass_block[snowy=false]"
+        log.submit(listOf(BlockChange(1, 65, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, grass, DIRT, Cause.BLK_FADE, T0 + 50)))
+        log.submit(listOf(BlockChange(3, 64, 1, grass, DIRT, Cause.BLK_FADE, T0 + 50)))
+        // Rolled back once: the planks are back, and the grass that died under them since is the world's.
+        log.submit(listOf(BlockChange(1, 65, 5, "minecraft:oak_planks", AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 65, 5, AIR, "minecraft:oak_planks", Cause.ROLLBACK, T0 + 10)))
+        log.submit(listOf(BlockChange(1, 64, 5, grass, DIRT, Cause.BLK_FADE, T0 + 60)))
+        // Fire under the stone went out: a fade too, and never to be lit again.
+        log.submit(listOf(BlockChange(1, 65, 3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 3, "minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]", AIR, Cause.BLK_FADE, T0 + 50)))
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val at = planned.chunks.flatMap { it.positions }.associateBy { Triple(it.at.x, it.at.y, it.at.z) }
+        assertEquals(setOf(Triple(1, 65, 1), Triple(1, 64, 1), Triple(1, 65, 3), Triple(1, 65, 5)), at.keys)
+        assertEquals(grass, settle(DIRT, at.getValue(Triple(1, 64, 1)).steps).back?.before)
+    }
+
+    // The griefer planted a sapling and a stalk of bamboo; both grew on their own after. Taking the planting
+    // away takes the tree with it, every block of the one event, and the stalk above the shoot.
+    @Test
+    fun `what grew out of a planting goes with it`() {
+        val sapling = "minecraft:oak_sapling[stage=0]"
+        val log0 = "minecraft:oak_log[axis=y]"
+        val leaves = "minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]"
+        val bamboo = "minecraft:bamboo[age=0,leaves=none,stage=0]"
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, sapling, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(5, 64, 1, AIR, bamboo, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(
+            BlockChange(1, 64, 1, sapling, log0, Cause.BLK_GROW, T0 + 50),
+            BlockChange(1, 65, 1, AIR, log0, Cause.BLK_GROW, T0 + 50),
+            BlockChange(2, 66, 1, AIR, leaves, Cause.BLK_GROW, T0 + 50),
+        ))
+        log.submit(listOf(BlockChange(5, 65, 1, AIR, bamboo, Cause.BLK_GROW, T0 + 60)))
+        log.submit(listOf(BlockChange(5, 66, 1, AIR, bamboo, Cause.BLK_GROW, T0 + 70)))
+        log.submit(listOf(BlockChange(9, 65, 1, AIR, bamboo, Cause.BLK_GROW, T0 + 70)))
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val at = planned.chunks.flatMap { it.positions }.map { Triple(it.at.x, it.at.y, it.at.z) }.toSet()
+        assertEquals(setOf(Triple(1, 64, 1), Triple(1, 65, 1), Triple(2, 66, 1), Triple(5, 64, 1), Triple(5, 65, 1), Triple(5, 66, 1)), at)
+    }
+
     // Rolled back once, the plank that burnt and then took the griefer's lava is a plank again: the second
     // rollback finds it done. Dirt somebody else put in its place is still somebody else's.
     @Test

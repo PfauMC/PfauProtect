@@ -598,8 +598,10 @@ class ChunkRollback(
      */
     private fun lift(level: ServerLevel, put: List<BlockPos>) {
         if (put.isEmpty()) return
-        for (player in level.players()) {
-            if (!Bukkit.isOwnedByCurrentRegion(player.bukkitEntity)) continue
+        // The players standing over this chunk's positions, found in its own sections: the world's list of
+        // players is every region's.
+        val around = AABB(put.first()).let { first -> put.fold(first) { box, pos -> box.minmax(AABB(pos)) } }.inflate(1.0)
+        for (player in level.getEntitiesOfClass(net.minecraft.server.level.ServerPlayer::class.java, around)) {
             val box = player.boundingBox
             if (put.none { box.intersects(AABB(it)) } || level.noCollision(player, box)) continue
             var up = 1.0

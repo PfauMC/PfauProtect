@@ -980,6 +980,10 @@ class BlockDestructionListener(
         val leapt = if (blockNameOf(after) in FIRES) fireStartedBy(event.source) else null
         if (leapt != null && leapt.confidence != Confidence.NEARBY) attribution.placed(at, after, leapt.actor)
         changed(block, block.blockData, after, spreadCause(after), leapt ?: attribution.carriedTo(at, after))
+        // A bamboo shoot turns into bamboo by its shape once the stalk above it is there, with no event of
+        // its own; read back, so its row says what stands there and a rollback can take the planting away.
+        val source = event.source
+        if (source.type == Material.BAMBOO_SAPLING) defer(source, source.blockData, Cause.BLK_GROW, null, expectsDrops = false)
     }
 
     /**
@@ -1069,10 +1073,26 @@ class BlockDestructionListener(
         val by = attribution.carriedTo(positionOf(to), from.blockData.asString)
         if (!liquidDestroys((to as CraftBlock).blockState)) {
             // Only a flow somebody let out: the world's own springs are no story to tell.
-            if (to.type.isAir && by != null && by.confidence != Confidence.NEARBY) defer(to, to.blockData, Cause.BLK_LIQUID_FLOW, by, expectsDrops = false)
+            if (to.type.isAir && by != null && by.confidence != Confidence.NEARBY) flowed(to, by)
             return
         }
         defer(to, to.blockData, Cause.BLK_LIQUID_DESTROY, by ?: pouredBy(from))
+    }
+
+    /**
+     * Where a liquid somebody let out ran into air: the level it came to, a tick on, and nothing else. No
+     * read-back of the full kind — no journal seek, no removal noted, no item plane — since a pour runs
+     * into dozens of places a second and none of it is a block anybody owned.
+     */
+    private fun flowed(to: Block, by: Attributed) {
+        if (!plugin.isEnabled) return
+        val log = logs.get(to.world.uid) ?: return
+        val timestamp = System.currentTimeMillis()
+        plugin.server.regionScheduler.execute(plugin, to.world, to.x shr 4, to.z shr 4) {
+            val now = to.blockData
+            if (now.material != Material.WATER && now.material != Material.LAVA) return@execute
+            log.submit(listOf(BlockChange(to.x, to.y, to.z, "minecraft:air", now.asString, Cause.BLK_LIQUID_FLOW, timestamp, by.confidence, actor = by.actor)))
+        }
     }
 
     /**
@@ -1872,9 +1892,12 @@ class BlockDestructionListener(
         if (source.type == EntityType.TNT) {
             placerOf(positionOf(source.location.block), TNT)?.let { return it }
         }
-        // The last rung: a wither nobody lit was still built by somebody, and the explosion it opens
-        // with is the first thing it does.
-        return entities.summonerOf(firedBy(source).uniqueId)
+        // A wither nobody lit was still built by somebody, and the explosion it opens with is the first
+        // thing it does.
+        entities.summonerOf(firedBy(source).uniqueId)?.let { return it }
+        // The last rung: a creeper goes off at whoever it was after. Led to a wall, that is the one who led
+        // it; met by chance, the one it met. Either way only a witness, never rolled back on its own.
+        return ((source as? Creeper)?.target as? Player)?.let { Attributed(it.uniqueId, Confidence.NEARBY) }
     }
 
     // A block that no longer stands there leaves whatever it was standing in, which for anything dry

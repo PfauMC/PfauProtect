@@ -51,18 +51,44 @@ private val ROW_ORDER = compareBy<BlockRow> { it.eventId }.thenBy { it.ordinal }
  * The rows of nature and of earlier rollbacks a rollback walks past: at a position it undoes, and after
  * the first of its rows there. What grew before that is part of what the position goes back to.
  */
-internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>): List<BlockRow> {
+// What dies to dirt under a block put on it.
+private val TURFS = setOf("minecraft:grass_block", "minecraft:dirt_path", "minecraft:mycelium", "minecraft:podzol", "minecraft:farmland")
+
+/** `turf` says whether a fade row is one of [TURFS] dying under what stands on it, not a fire going out. */
+internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>, turf: (BlockRow) -> Boolean = { false }): List<BlockRow> {
     val first = kept.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, rows) -> rows.minWith(ROW_ORDER) }
     // What the world did after an earlier rollback had put the position back is the world's, not part of
     // the grief: grass a restored wall stands on going to dirt. Walked past, it took a second rollback
     // back to the grass (D78).
     val undone = (kept + nature).filter { it.cause == Cause.ROLLBACK }.groupBy { Triple(it.x, it.y, it.z) }
         .mapValues { (_, rows) -> rows.maxWith(ROW_ORDER) }
-    return nature.filter { row ->
+    fun after(row: BlockRow, at: Triple<Int, Int, Int>) = first[at]?.let { ROW_ORDER.compare(row, it) > 0 } == true
+    // What came after an earlier rollback of the position — its own, or the one a fade died under — is
+    // the world's again.
+    fun beforeUndone(row: BlockRow, at: Triple<Int, Int, Int>) =
+        row.cause == Cause.ROLLBACK || undone[at]?.let { ROW_ORDER.compare(row, it) < 0 } != false
+    // Grass or a path gone to dirt under a block the rollback takes away went because of that block, and
+    // comes back with its going: it would otherwise stay dirt under the air the griefer left.
+    val passed = nature.filterTo(LinkedHashSet()) { row ->
         val at = Triple(row.x, row.y, row.z)
-        first[at]?.let { ROW_ORDER.compare(row, it) > 0 } == true &&
-            (row.cause == Cause.ROLLBACK || undone[at]?.let { ROW_ORDER.compare(row, it) < 0 } != false)
+        val above = Triple(row.x, row.y + 1, row.z)
+        beforeUndone(row, at) &&
+            (after(row, at) || row.cause == Cause.BLK_FADE && turf(row) && after(row, above) && beforeUndone(row, above))
     }
+    // What grew out of a planting the rollback takes away goes with it: the rest of a tree its sapling
+    // turned into, in the same event, and a stalk of bamboo, cactus or cane above it, block by block.
+    val grew = passed.filter { it.cause == Cause.BLK_GROW }.mapTo(HashSet()) { it.eventId }
+    nature.filterTo(passed) { it.cause == Cause.BLK_GROW && it.eventId in grew && beforeUndone(it, Triple(it.x, it.y, it.z)) }
+    val reached = (first.keys + passed.map { Triple(it.x, it.y, it.z) }).toHashSet()
+    for (row in nature.filter { it.cause == Cause.BLK_GROW }.sortedBy { it.y }) {
+        val at = Triple(row.x, row.y, row.z)
+        val below = Triple(row.x, row.y - 1, row.z)
+        if (below in reached && first[below]?.let { ROW_ORDER.compare(row, it) > 0 } != false && beforeUndone(row, at)) {
+            passed += row
+            reached += at
+        }
+    }
+    return passed.toList()
 }
 
 // The three airs are one block to a rollback: a cave keeps its own kind of air, and a break inside it
@@ -173,8 +199,8 @@ private const val BUCKETING_MILLIS = 5_000L
 internal fun bucketOf(ledger: RocksItemLog, row: EntityRow): Bucketed? {
     if (row.kind != EntityKind.REMOVED || row.cause != Cause.BUCKET_CAPTURE_MOB) return null
     val player = row.actor ?: return null
-    val slots = (0 until 36).map { PlayerInv(player, it) } + PlayerEquip(player, 40)
-    for (slot in slots) {
+    // The slot never enters the key: slot 0 reads every slot of its kind.
+    for (slot in listOf(PlayerInv(player, 0), PlayerEquip(player, 0))) {
         val rows = ledger.holderEntries(slot, row.timestamp - BUCKETING_MILLIS, row.timestamp + BUCKETING_MILLIS, limit = 100)
             .filter { it.cause == Cause.BUCKET_CAPTURE_MOB }
         for ((_, change) in rows.groupBy { it.txId }) {
@@ -225,6 +251,8 @@ class Planned(
  * rollback, because going ahead over part of the history puts back part of the place and calls it done.
  */
 class RollbackReader(private val ledger: RocksItemLog, private val blocks: BlockLogs) {
+    private fun turf(row: BlockRow): Boolean =
+        io.pfaumc.pfauprotect.command.stateName(ledger, row.stateBefore) in TURFS
 
     fun around(
         world: UUID,
@@ -280,7 +308,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         )
         if (!page.complete) return tooMuch()
         val (slots, positions) = page.entries.filter(keepsEntry).partition { it.holder is Container }
-        return plan(world, rows + passedBy(rows, nature), slots, positions.filter { it.qty < 0 }, entityRows, toTs, unreadable + page.unreadable)
+        return plan(world, rows + passedBy(rows, nature, ::turf), slots, positions.filter { it.qty < 0 }, entityRows, toTs, unreadable + page.unreadable)
     }
 
     /**
@@ -371,7 +399,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             }
             if (rows.size + slots.size > MAX_ROLLBACK_ROWS) return tooMuch()
         }
-        return plan(world, rows + passedBy(rows, nature), slots, losses, entityRows, toTs, unreadable)
+        return plan(world, rows + passedBy(rows, nature, ::turf), slots, losses, entityRows, toTs, unreadable)
     }
 
     private fun plan(
