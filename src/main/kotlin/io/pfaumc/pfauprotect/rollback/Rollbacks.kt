@@ -515,6 +515,8 @@ class ChunkRollback(
         if (plan.oldest.kind == EntityKind.MOVED) {
             val pos = before.getListOrEmpty("Pos")
             entity.leaveVehicle()
+            // The one who rode it off gets off here; a teleport would carry them back along with it.
+            entity.eject()
             (entity as? LivingEntity)?.setLeashHolder(null)
             if (pos.size == 3) {
                 entity.teleportAsync(Location(entity.world, pos.getDoubleOr(0, 0.0), pos.getDoubleOr(1, 0.0), pos.getDoubleOr(2, 0.0)))
@@ -537,7 +539,7 @@ class ChunkRollback(
         val before = nbtOf(plan.before!!)
         if (plan.oldest.kind == EntityKind.MOVED) {
             val pos = before.getListOrEmpty("Pos")
-            if (pos.size != 3 || entity.isInsideVehicle || (entity as? LivingEntity)?.isLeashed == true) return false
+            if (pos.size != 3 || entity.isInsideVehicle || entity.passengers.isNotEmpty() || (entity as? LivingEntity)?.isLeashed == true) return false
             val at = entity.location
             return abs(at.x - pos.getDoubleOr(0, 0.0)) < 1 && abs(at.y - pos.getDoubleOr(1, 0.0)) < 1 && abs(at.z - pos.getDoubleOr(2, 0.0)) < 1
         }
