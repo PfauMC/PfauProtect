@@ -4,6 +4,7 @@ import ca.spottedleaf.concurrentutil.util.Priority
 import io.pfaumc.pfauprotect.capture.block.Difference
 import io.pfaumc.pfauprotect.capture.block.ranFrom
 import io.pfaumc.pfauprotect.capture.block.standingAt
+import io.pfaumc.pfauprotect.capture.block.Standing
 import io.pfaumc.pfauprotect.check.emptied
 import io.pfaumc.pfauprotect.model.LedgerEntry
 import io.pfaumc.pfauprotect.model.WorldBlock
@@ -41,6 +42,8 @@ import net.minecraft.world.entity.EntityType
 import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.LiquidBlock
+import net.minecraft.world.level.block.BaseFireBlock
+import net.minecraft.tags.BlockTags
 import org.bukkit.Location
 import org.bukkit.craftbukkit.entity.CraftEntity
 import org.bukkit.entity.Entity
@@ -89,6 +92,9 @@ private const val STALE_MILLIS = 10 * 60_000L
 
 // How long the chunks a rollback holds get to load before it gives up on them.
 private const val LOAD_MILLIS = 60_000L
+
+// How far from a block it put back a rollback puts fire out.
+private const val DOUSE_REACH = 2
 
 // Canvas loads an unloaded chunk for `canvas$loadOrRunAtChunksAsync` and then never calls back when no
 // player keeps it loaded: the rollback waited for good and answered nothing. So a rollback holds its
@@ -358,6 +364,7 @@ class ChunkRollback(
                 plugin.logger.log(Level.WARNING, "a rollback could not put back the block at ${spots[i]}", failure)
             }
         }
+        val doused = if (!apply) emptyList() else douse(level, spots.filterIndexed { i, _ -> touched[i] }, spots.toSet())
         // After the blocks, so a chest that came back is there to take its contents.
         val givenBack = ArrayList<PostingRef>()
         positions.forEachIndexed { i, plan ->
@@ -392,13 +399,37 @@ class ChunkRollback(
         positions.forEachIndexed { i, plan ->
             difference.add(plan.at.x, plan.at.y, plan.at.z, before[i], standingAt(level, spots[i], codec), blockRow = touched[i])
         }
+        for ((pos, was) in doused) difference.add(pos.x, pos.y, pos.z, was, standingAt(level, pos, codec), blockRow = true)
         if (difference.rows.isNotEmpty()) logs.get(world)?.submit(difference.rows)
         if (difference.moved) sink(difference.transfers(givenBack))
         difference.writeOff(plugin, placed, sink)
         // Last, and after the rows: what the neighbours do now is theirs, and the capture files it.
         for (i in positions.indices) if (touched[i]) level.updateNeighboursOnBlockSet(spots[i], before[i].state)
         for ((pos, was) in drained) level.updateNeighboursOnBlockSet(pos, was)
+        for ((pos, was) in doused) level.updateNeighboursOnBlockSet(pos, was.state)
         return tally
+    }
+
+    /**
+     * Fire within two blocks of what the rollback put back, put out. A house rolled back while it still
+     * burns caught again from the fire that had spread between the reading and the putting back, or had
+     * jumped where no row of the window reached, and a second rollback found it burnt anew. Fire that
+     * stands on a block meant to burn for ever is somebody's hearth and stays.
+     */
+    private fun douse(level: ServerLevel, back: List<BlockPos>, planned: Set<BlockPos>): List<Pair<BlockPos, Standing>> {
+        val out = LinkedHashMap<BlockPos, Standing>()
+        for (spot in back) for (pos in BlockPos.betweenClosed(spot.offset(-DOUSE_REACH, -DOUSE_REACH, -DOUSE_REACH), spot.offset(DOUSE_REACH, DOUSE_REACH, DOUSE_REACH))) {
+            if (pos in planned || pos in out) continue
+            if (!Bukkit.isOwnedByCurrentRegion(level.world, pos.x shr 4, pos.z shr 4)) continue
+            val state = level.getBlockState(pos)
+            if (state.block !is BaseFireBlock) continue
+            val below = level.getBlockState(pos.below())
+            if (below.`is`(BlockTags.INFINIBURN_OVERWORLD) || below.`is`(BlockTags.INFINIBURN_NETHER) || below.`is`(BlockTags.INFINIBURN_END)) continue
+            val at = pos.immutable()
+            out[at] = standingAt(level, at, codec)
+            level.setBlock(at, Blocks.AIR.defaultBlockState(), PLACE_FLAGS)
+        }
+        return out.toList()
     }
 
     /**
