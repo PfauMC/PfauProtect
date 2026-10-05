@@ -368,7 +368,9 @@ class ChunkRollback(
                 plugin.logger.log(Level.WARNING, "a rollback could not put back the block at ${spots[i]}", failure)
             }
         }
-        val doused = if (!apply) emptyList() else douse(level, spots.filterIndexed { i, _ -> touched[i] }, spots.toSet())
+        // Around every position of the plan, not only the ones put back: fire on a plank the griefer's lava had
+        // not yet burnt stood next to nothing that came back, and burnt the house again (D80).
+        val doused = if (!apply) emptyList() else douse(level, spots, spots.toSet())
         // After the blocks, so a chest that came back is there to take its contents.
         val givenBack = ArrayList<PostingRef>()
         positions.forEachIndexed { i, plan ->
@@ -415,7 +417,7 @@ class ChunkRollback(
     }
 
     /**
-     * Fire within two blocks of what the rollback put back, put out. A house rolled back while it still
+     * Fire within two blocks of the positions the rollback reads, put out. A house rolled back while it still
      * burns caught again from the fire that had spread between the reading and the putting back, or had
      * jumped where no row of the window reached, and a second rollback found it burnt anew. Fire that
      * stands on a block meant to burn for ever is somebody's hearth and stays.
