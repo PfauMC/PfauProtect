@@ -146,7 +146,9 @@ them.
   survival. TESTING-v4 covers crafting and stations, plus section R with the unrun v3 items and re-checks
   of every fix made since v3.
 - `/pp lookup` reads by position, or with `player:<name>` by a player's own holders (inventory, equipment,
-  cursor, ender chest, crafting grid). `user:` is something else: a filter on the actor of positional rows.
+  cursor, ender chest, crafting grid). `user:` is something else: a filter on the actor of positional rows;
+  with `radius:global` it reads every position the player touched, through `by_actor`. `time:` takes a span
+  (`2h-1h`), `page:` pages through the answer.
 
 ## Conventions
 
