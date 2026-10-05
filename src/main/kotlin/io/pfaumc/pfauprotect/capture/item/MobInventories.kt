@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
 
+import org.bukkit.Material
 import com.destroystokyo.paper.event.entity.EntityAddToWorldEvent
 import io.papermc.paper.event.entity.EntityCompostItemEvent
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
@@ -438,7 +439,9 @@ class MobInventories(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onFarm(event: EntityChangeBlockEvent) {
         val mob = event.entity
-        if (!carriesInventory(mob) || event.blockData.material.isAir) return
+        val before = (event.block as org.bukkit.craftbukkit.block.CraftBlock).blockState
+        val after = (event.blockData as org.bukkit.craftbukkit.block.data.CraftBlockData).state
+        if (!carriesInventory(mob) || !planting(before, after)) return
         label(mob, PocketLabel(null, false, positionOf(event.block), Cause.BLOCK_PLACE, 1, placing = positionOf(event.block)))
     }
 
@@ -459,3 +462,11 @@ class MobInventories(
         label(mob, PocketLabel(form, false, containerAt(event.block, 0), Cause.COMPOSTER_CONSUME, 1))
     }
 }
+
+/**
+ * A seed set down into the empty cell over farmland. A composter filling up under a farmer's seeds raises
+ * the same event, and booked as a planting every seed it took landed on the composter's position as well
+ * as in its slot, never to leave it (D84).
+ */
+internal fun planting(before: net.minecraft.world.level.block.state.BlockState, after: net.minecraft.world.level.block.state.BlockState): Boolean =
+    before.isAir && !after.isAir
