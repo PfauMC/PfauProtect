@@ -762,7 +762,7 @@ class PfauProtectPlugin : JavaPlugin() {
             val text = query.filter?.lowercase()
             val lines = running.chat.read(query.fromTs(), query.toTs(), query.wanted) { line ->
                 (users.isEmpty() || line.player in users) && (text == null || text in line.text.lowercase())
-            }.drop(query.limit * (query.page - 1))
+            }.drop(query.limit * (query.page - 1)).take(query.limit)
             if (lines.isEmpty()) return@runNow sender.say("Nothing said or run matches.")
             sender.sendMessage(Ui.text(tr("PfauProtect · chat and commands", "PfauProtect · чат и команды"), Ui.FAINT))
             for (line in lines) {

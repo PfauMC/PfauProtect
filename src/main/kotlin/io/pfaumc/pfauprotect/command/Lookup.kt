@@ -300,7 +300,7 @@ data class LookupQuery(
 
     // Rows a page needs read: every page before it as well, since a read is newest first. Runs folded
     // into one line each eat rows, so a folded page reads further.
-    // ponytail: a fixed factor; a page of one huge run still comes out short, and says there is more.
+    // The factor is fixed: a page of one huge run still comes out short, and says there is more.
     val wanted: Int get() = limit * page * if (all || count) 1 else GROUPED_READ
 
     /** The same question about the same place, at another page. */
@@ -977,7 +977,12 @@ class Lookups(
         // investigator would conclude the item came from nowhere. The read itself stops early too, and
         // it stops before the filter runs, so a page cut short says so even when few rows matched.
         val more = runs.size > query.limit * query.page || matched.size > query.wanted || !complete
-        if (query.page > 1 || more) sender.sendMessage(footer(query, target, more, clickable && pages))
+        // An entity's own story has no command to ask for its next page by; it can only say there is more.
+        if (!pages) {
+            if (more) sender.sendMessage(Ui.text(tr("  … older rows are cut off", "  … старые строки обрезаны"), Ui.MUTED))
+        } else if (query.page > 1 || more) {
+            sender.sendMessage(footer(query, target, more, clickable))
+        }
     }
 
     private fun header(where: Component, target: LookupTarget): Component =

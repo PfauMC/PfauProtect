@@ -81,12 +81,16 @@ never rewritten after the fact.
 
 **Commands.** `/pfauprotect` (alias `/pp`) is registered through Brigadier (`LifecycleEvents.COMMANDS`), with
 subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]`, `rollback|rb`, `apply`,
-`cancel`, `chat`, `status`, `purge <age> [confirm]`. Permissions are declared in `build.gradle.kts` `bukkit {}`.
+`cancel`, `chat`, `status`, `purge <age> [confirm]`, `tp <x y z> [world]` (what a line's ⌖ runs) and `help` (also
+the bare `/pp`). Permissions are declared in `build.gradle.kts` `bukkit {}`.
 
 **Settings, texts, chat, API.** `Settings.kt` reads `config.yml` (language, disabled worlds and causes, limits,
 the mob death thresholds). Messages are written in English and go out through `CommandSender.say()`
 (`Texts.kt`), which translates whole lines by regex when the language is `ru`; a new message needs a line
-there, and `TextsCoverageTest` fails until it has one. `PPT_LANG=ru scripts/test-server.sh start` starts the
+there, and `TextsCoverageTest` fails until it has one. A line made of parts (a lookup row, a rollback's counts,
+help, chat) is drawn as Adventure components through `Ui.kt` and put together in the language already with `tr(en,
+ru)`; the game's own names go out as translatable components, in the client's language. `Verbs.kt` holds the
+words of every `Cause`, and the cause's code waits on the hover. `PPT_LANG=ru scripts/test-server.sh start` starts the
 test server in Russian for a live check. `ChatLog` is a base of its own (`chat/`): chat, commands, joins and quits, no IP addresses.
 `api/PfauProtectApi` is registered in the ServicesManager; `PfauProtectPreLogEvent` can veto a row before it
 is written and is raised only while someone listens.
@@ -152,8 +156,9 @@ them.
 - `/pp lookup` reads by position, or with `player:<name>` by a player's own holders (inventory, equipment,
   cursor, ender chest, crafting grid). `user:` is something else: a filter on the actor of positional rows;
   with `radius:global` it reads every position the player touched, through `by_actor`. `time:` takes a span
-  (`2h-1h`), `page:` pages through the answer. `action:steal`, `amount:`, `rolledback:`, `#count`/`#sum`
-  narrow it. `/pp purge` keeps the newest old row per place and writes `purge_opening` rows so balances hold.
+  (`2h-1h`), `page:` pages through the answer, `at:x,y,z` pins the place (the page buttons add it). Runs of
+  the same thing within a minute fold into one `×N` line; `#all` shows each. `action:steal`, `amount:`,
+  `rolledback:`, `#count`/`#sum` narrow it. `/pp purge` keeps the newest old row per place and writes `purge_opening` rows so balances hold.
 
 ## Conventions
 
