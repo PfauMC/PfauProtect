@@ -22,15 +22,15 @@ class LookupTest {
 
     @Test
     fun `short and long parameter names mean the same thing`() {
-        assertEquals(parseLookupQuery("u:Steve"), parseLookupQuery("user:Steve"))
-        assertEquals(parseLookupQuery("t:2h"), parseLookupQuery("time:2h"))
-        assertEquals(parseLookupQuery("r:10"), parseLookupQuery("radius:10"))
-        assertEquals(parseLookupQuery("a:container"), parseLookupQuery("action:container"))
-        assertEquals(parseLookupQuery("b:diamond"), parseLookupQuery("item:diamond"))
-        assertEquals(parseLookupQuery("i:diamond"), parseLookupQuery("include:diamond"))
-        assertEquals(parseLookupQuery("items:diamond"), parseLookupQuery("include:diamond"))
-        assertEquals(parseLookupQuery("e:dirt"), parseLookupQuery("exclude:dirt"))
-        assertEquals(parseLookupQuery("l:25"), parseLookupQuery("rows:25"))
+        assertEquals(parseLookupQuery("u:Steve").copy(words = ""), parseLookupQuery("user:Steve").copy(words = ""))
+        assertEquals(parseLookupQuery("t:2h").copy(words = ""), parseLookupQuery("time:2h").copy(words = ""))
+        assertEquals(parseLookupQuery("r:10").copy(words = ""), parseLookupQuery("radius:10").copy(words = ""))
+        assertEquals(parseLookupQuery("a:container").copy(words = ""), parseLookupQuery("action:container").copy(words = ""))
+        assertEquals(parseLookupQuery("b:diamond").copy(words = ""), parseLookupQuery("item:diamond").copy(words = ""))
+        assertEquals(parseLookupQuery("i:diamond").copy(words = ""), parseLookupQuery("include:diamond").copy(words = ""))
+        assertEquals(parseLookupQuery("items:diamond").copy(words = ""), parseLookupQuery("include:diamond").copy(words = ""))
+        assertEquals(parseLookupQuery("e:dirt").copy(words = ""), parseLookupQuery("exclude:dirt").copy(words = ""))
+        assertEquals(parseLookupQuery("l:25").copy(words = ""), parseLookupQuery("rows:25").copy(words = ""))
     }
 
     @Test
@@ -203,7 +203,9 @@ class LookupTest {
         val query = parseLookupQuery("time:3d-1d page:2 limit:20")
         assertEquals(259_200L, query.secondsBack)
         assertEquals(86_400L, query.secondsUntil)
-        assertEquals(40, query.wanted)
+        // A folded page reads further than the rows it shows; #all reads just those.
+        assertEquals(160, query.wanted)
+        assertEquals(40, parseLookupQuery("time:3d-1d page:2 limit:20 #all").wanted)
         assertEquals(Action.KILL.causes, parseLookupQuery("action:kill").causes)
     }
 
@@ -228,6 +230,17 @@ class LookupTest {
         val event = EventRef(4711, 10, -60, -42, 1_700_000_000_123L)
         assertEquals(event, parseLookupQuery(event.toString()).event)
         assertEquals(null, EventRef.parse("4711"))
+    }
+
+    // The page buttons ask the same words again about the same place, at the page they go to.
+    @Test
+    fun `a page button asks the same question about the same place`() {
+        val query = parseLookupQuery("u:Bob t:1h page:2 at:1,2,3")
+        assertEquals(Triple(1, 2, 3), query.at)
+        assertEquals(
+            "/pp l u:Bob t:1h at:7,64,-3 page:3",
+            query.pageCommand(LookupTarget(java.util.UUID(0, 0), 7, 64, -3, ""), 3),
+        )
     }
 
     @Test

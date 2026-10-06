@@ -103,6 +103,10 @@ bukkit {
             description = "See how big the bases are and what waits to be written"
             default = BukkitPluginDescription.Permission.Default.OP
         }
+        register("pfauprotect.teleport") {
+            description = "Teleport to where a lookup line happened by clicking its mark"
+            default = BukkitPluginDescription.Permission.Default.OP
+        }
         register("pfauprotect.rollback") {
             description = "Preview and apply rollbacks of what the ledger recorded"
             default = BukkitPluginDescription.Permission.Default.OP

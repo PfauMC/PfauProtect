@@ -18,6 +18,8 @@ import java.util.concurrent.ConcurrentHashMap
 
 class Inspector(private val lookups: Lookups) : Listener {
     private val enabled = ConcurrentHashMap.newKeySet<UUID>()
+    // What each player last asked about and when: a held click repeats, and each repeat was a whole answer.
+    private val last = ConcurrentHashMap<UUID, Pair<Any, Long>>()
 
     fun toggle(player: Player, desired: Boolean?): Boolean {
         val next = desired ?: (player.uniqueId !in enabled)
@@ -41,7 +43,14 @@ class Inspector(private val lookups: Lookups) : Listener {
         } else {
             block
         }
+        if (again(event.player, target.location)) return
         lookups.run(event.player, lookupTargetAt(target), LookupQuery())
+    }
+
+    private fun again(player: Player, what: Any): Boolean {
+        val now = System.currentTimeMillis()
+        val before = last.put(player.uniqueId, what to now)
+        return before != null && before.first == what && now - before.second < REPEAT_MILLIS
     }
 
     // A click on an entity asks about the entity: a frame, a stand, a donkey, a villager.
@@ -71,13 +80,17 @@ class Inspector(private val lookups: Lookups) : Listener {
     }
 
     private fun inspect(player: Player, entity: Entity) {
+        if (again(player, entity.uniqueId)) return
         val at = entity.location
-        lookups.entity(player, entity.uniqueId, "${entity.type.key.key} ${entity.uniqueId.toString().take(8)}", lookupTargetAt(at))
+        lookups.entity(player, entity.uniqueId, entity.type.key.toString(), lookupTargetAt(at))
     }
 
     @EventHandler
     fun onQuit(event: PlayerQuitEvent) {
         enabled -= event.player.uniqueId
+        last -= event.player.uniqueId
     }
 
 }
+
+private const val REPEAT_MILLIS = 1_000L

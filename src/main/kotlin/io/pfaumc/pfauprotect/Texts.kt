@@ -75,22 +75,12 @@ object Texts {
         r("  the window may be shorter than a full rollback needs: (\\d+) of these positions stood as the same player had left them when it opened, and go back to that; a longer time: reaches further\\.") to
             "  окно может быть короче, чем нужно: позиций, которые на начало окна стояли так, как их оставил тот же игрок, и вернутся к этому: $1; больший time: возьмёт дальше.",
         // Lookup
-        r("Last (\\d+) ledger entries for (.*?) \\(page (\\d+)\\):") to "Последние записи ($1) для $2, страница $3:",
-        r("Last (\\d+) ledger entries for (.*):") to "Последние записи ($1) для $2:",
-        r("No ledger entries for (.*)\\.") to "Нет записей для $1.",
-        r("Nothing matched for (.*) in what was read\\.") to "Ничего не найдено для $1 в прочитанном.",
-        r("Nothing matched for (.*), but the read stopped before the whole area was seen\\. Narrow the radius or ask for more with (.*)\\.") to
-            "Ничего не найдено для $1, но чтение остановилось раньше, чем увидело всю область. Сузь радиус или запроси больше через $2.",
-        r("Count of (\\d+) ledger entries for (.*):") to "Сводка по записям ($1) для $2:",
-        r("  \\.\\.\\. older entries are cut off; page:(\\d+) shows the next ones") to "  ... старые записи обрезаны; page:$1 покажет следующие",
-        r("  \\.\\.\\. the read stopped early; these are counts of what it saw") to "  ... чтение остановилось раньше; это сводка прочитанного",
         r("The lookup failed; the server log has the details\\.") to "Поиск не удался; подробности в логе сервера.",
         r("A world-wide lookup needs a player, user:<name>, or a radius\\.") to "Поиску по всему миру нужен игрок user:<имя> или радиус.",
         r("This world's block log is not open\\.") to "Журнал блоков этого мира не открыт.",
         r("Unknown player: (.*)") to "Неизвестный игрок: $1",
+        r("Unknown world: (.*)") to "Неизвестный мир: $1",
         // Inspector, purge, status, self-checks, reconcile
-        r("Inspector enabled\\..*") to "Инспектор включён. Левый клик по блоку читает его, правый клик по грани — место перед ней, клик по сущности — саму сущность.",
-        r("Inspector disabled\\.") to "Инспектор выключен.",
         r("Only a player can use the inspector\\.") to "Инспектором может пользоваться только игрок.",
         r("Purge refused: give an age of at least a day, for example 90d\\.") to "Очистка отклонена: укажи возраст не меньше дня, например 90d.",
         r("Purge refused: a rollback is running\\.") to "Очистка отклонена: идёт откат.",
@@ -125,7 +115,8 @@ object Texts {
         r("'(.*)' is neither yes nor no") to "'$1' — ни 'yes', ни 'no'",
         r("'(.*)' is not an amount, expected 5, >=5, <10 or 5-10") to "'$1' — не количество; ожидается 5, >=5, <10 или 5-10",
         r("'(.*)' is not an event, click a lookup line to fill one in") to "'$1' — не событие; нажми на строку поиска, чтобы подставить его",
-        r("unknown flag '(.*)', expected #count or #sum") to "неизвестный флаг '$1'; ожидается #count или #sum",
+        r("unknown flag '(.*)', expected #count, #sum or #all") to "неизвестный флаг '$1'; ожидается #count, #sum или #all",
+        r("'(.*)' is not a position, expected x,y,z") to "'$1' — не позиция; ожидается x,y,z",
         r("'(.*)' is not a row count between 1 and (\\d+)") to "'$1' — не число строк от 1 до $2",
         r("  \\.\\.\\. and (\\d+) more") to "  ... и ещё $1",
         r("Two planes: (\\d+) positions compared, (\\d+) gaps, (\\d+) overdrawn, (\\d+) the block plane never recorded, (\\d+) too recent to judge, (\\d+) unreadable\\.") to "Две плоскости: сравнено позиций $1, разрывов $2, перерасходов $3, не записано плоскостью блоков $4, слишком свежих $5, нечитаемых $6.",
