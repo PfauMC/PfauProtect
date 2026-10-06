@@ -959,13 +959,15 @@ class Lookups(
             val line = run.first
             var out = line.draw(run.amount, run.rows, clickable)
             val event = line.event?.takeIf { run.rows == 1 }
-            if (line.undone) out = out.decorate(TextDecoration.STRIKETHROUGH)
+            // Struck through for the eye, said in words for whoever cannot see the line drawn.
+            val back = if (line.undone) arrayOf(tr("rolled back", "откачено")) else emptyArray()
+            if (line.undone) out = if (clickable) out.decorate(TextDecoration.STRIKETHROUGH) else out.append(Ui.text("  (${back[0]})", Ui.FAINT))
             // A player clicks a single event to have its rollback typed out for them; the console cannot
             // click and is given the event to type. A folded line is many events and has no one to give.
             out = when {
-                run.rows > 1 -> Ui.hover(out, tr("${run.rows} in a row; #all shows each", "${run.rows} подряд; #all покажет каждое"))
-                event == null -> out
-                clickable -> Ui.hover(out, tr("Click to roll back this one event", "Клик — откатить это событие"))
+                run.rows > 1 -> Ui.hover(out, *back, tr("${run.rows} in a row; #all shows each", "${run.rows} подряд; #all покажет каждое"))
+                event == null -> if (line.undone && clickable) Ui.hover(out, *back) else out
+                clickable -> Ui.hover(out, *back, tr("Click to roll back this one event", "Клик — откатить это событие"))
                     .clickEvent(ClickEvent.suggestCommand("/pp rollback $event"))
                 else -> out.append(Ui.text("  $event", Ui.FAINT))
             }
@@ -1004,7 +1006,7 @@ class Lookups(
         }
         sender.sendMessage(Component.text().append(Ui.text(tr("Count of ${found.size} rows: ", "Сводка, строк ${found.size}: "), Ui.FAINT)).append(where).build())
         for ((key, n) in found.groupingBy { it.cause to it.who }.eachCount().entries.sortedByDescending { it.value }) {
-            sender.sendMessage(row(Ui.text("  $n", Ui.MUTED), verb(key.first), who(key.second, Confidence.FACT)))
+            sender.sendMessage(row(Ui.text("  $n", Ui.MUTED), Ui.hover(verb(key.first), key.first.name.lowercase()), who(key.second, Confidence.FACT)))
         }
         if (!complete) sender.sendMessage(Ui.text(tr("  … the read stopped early; these are counts of what it saw", "  … чтение остановилось раньше; это сводка прочитанного"), Ui.MUTED))
     }
@@ -1244,9 +1246,16 @@ class Lookups(
         }
         // How it died says what nobody named cannot: dried out on land, crammed, fell.
         val details = listOfNotNull(
-            row.uuid.toString(),
+            "${row.type} ${row.uuid}",
+            when (row.kind) {
+                EntityKind.REMOVED -> tr("gone", "исчезновение")
+                EntityKind.CREATED -> tr("brought in", "появление")
+                EntityKind.CHANGED -> tr("changed", "изменение")
+                EntityKind.MOVED -> tr("led away", "увод")
+                else -> null
+            },
             row.death?.let {
-                if (it.startsWith(TRANSFORMED)) tr("turned into ${it.removePrefix(TRANSFORMED)}", "превращение в ${it.removePrefix(TRANSFORMED)}")
+                if (it.startsWith(TRANSFORMED)) tr("turned (${it.removePrefix(TRANSFORMED)})", "превращение (${it.removePrefix(TRANSFORMED)})")
                 else tr("died of ${it.removePrefix("minecraft:")}", "причина смерти: ${it.removePrefix("minecraft:")}")
             },
             tr("${row.drops.size} items fell out", "выпало предметов: ${row.drops.size}").takeIf { row.kind != EntityKind.DROPPED && row.drops.isNotEmpty() },
