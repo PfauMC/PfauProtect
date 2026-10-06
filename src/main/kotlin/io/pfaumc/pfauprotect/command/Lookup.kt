@@ -849,16 +849,16 @@ class Lookups(
         val positions = touches.flatMap { it.positions }.toSet()
         val keeps = rowFilter(query, users)
         val fetch = minOf(query.wanted * FETCH_FACTOR, MAX_FETCH)
-        val rows = positions.flatMap { (x, y, z) -> log.at(x, y, z, fromTs, toTs, limit = fetch, reverse = true) }.filter(keeps::keeps)
-        val entities = positions.flatMap { (x, y, z) -> log.entitiesAt(x, y, z, fromTs, toTs, MAX_ENTITY_WALK).rows }.filter(keeps::keeps)
+        val rows = positions.flatMap { (x, y, z) -> log.at(x, y, z, fromTs, toTs, limit = fetch, reverse = true) }
+        val entities = positions.flatMap { (x, y, z) -> log.entitiesAt(x, y, z, fromTs, toTs, MAX_ENTITY_WALK).rows }
         val entries = positions.flatMap { (x, y, z) ->
             listOf(Container(target.world, x, y, z, 0), WorldBlock(target.world, x, y, z)).flatMap {
                 ledger.holderPage(it, fromTs, toTs, reverse = true, limit = fetch).entries
             }
         }.sortedByDescending { it.timestamp }
         val lines = entryLines(wholeTransactions(ledger, filter(entries, query, users))) +
-            marked(rows).map { (row, back) -> lineOf(target.world, row, back) } +
-            markedEntities(entities).map { (row, back) -> lineOf(target.world, row, back) }
+            marked(rows).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(target.world, row, back) } +
+            markedEntities(entities).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(target.world, row, back) }
         val who = query.users.joinToString(", ")
         answer(sender, lines, touches.all { it.complete }, Ui.text(tr("everything by $who", "всё от $who")), query, target)
     }
@@ -944,12 +944,12 @@ class Lookups(
         // difference between "nothing happened here" and "I did not get far enough to see". A read
         // that stopped early inside a busy chunk hands back rows from one corner of it, and answering
         // that with silence would clear a position the reader is standing in the crater of.
+        val stopped = tr(
+            "the read stopped before the whole area was seen; narrow the radius or ask for more with limit:${query.limit * 4}",
+            "чтение остановилось раньше, чем увидело всю область; сузь радиус или запроси больше через limit:${query.limit * 4}",
+        )
         if (lines.isEmpty()) {
-            val why = if (complete) tr("nothing recorded", "ничего не записано")
-            else tr(
-                "nothing matched, but the read stopped before the whole area was seen; narrow the radius or ask for more with limit:${query.limit * 4}",
-                "ничего не найдено, но чтение остановилось раньше, чем увидело всю область; сузь радиус или запроси больше через limit:${query.limit * 4}",
-            )
+            val why = if (complete) tr("nothing recorded", "ничего не записано") else tr("nothing matched, but ", "ничего не найдено, но ") + stopped
             sender.sendMessage(header(where, target).append(Ui.text(" — $why", Ui.MUTED)))
             return
         }
@@ -976,13 +976,16 @@ class Lookups(
         // A truncated view that says nothing about being truncated reads as the whole history, and an
         // investigator would conclude the item came from nowhere. The read itself stops early too, and
         // it stops before the filter runs, so a page cut short says so even when few rows matched.
-        val more = runs.size > query.limit * query.page || matched.size > query.wanted || !complete
+        val more = runs.size > query.limit * query.page || matched.size > query.wanted
         // An entity's own story has no command to ask for its next page by; it can only say there is more.
         if (!pages) {
-            if (more) sender.sendMessage(Ui.text(tr("  … older rows are cut off", "  … старые строки обрезаны"), Ui.MUTED))
-        } else if (query.page > 1 || more) {
-            sender.sendMessage(footer(query, target, more, clickable))
+            if (more || !complete) sender.sendMessage(Ui.text(tr("  … older rows are cut off", "  … старые строки обрезаны"), Ui.MUTED))
+            return
         }
+        if (query.page > 1 || more) sender.sendMessage(footer(query, target, more, clickable))
+        // The next page starts past every row matched so far and would be empty: only a narrower or a
+        // bigger read sees what the cut hid.
+        if (!more && !complete) sender.sendMessage(Ui.text("  … $stopped", Ui.MUTED))
     }
 
     private fun header(where: Component, target: LookupTarget): Component =
@@ -1041,15 +1044,15 @@ class Lookups(
                 .sortedByDescending { it.timestamp }
         }
         val keeps = rowFilter(query, users)
-        val kept = rows.asSequence().filter(keeps::keeps).take(query.wanted + 1).toList()
-        val blockLines = marked(kept).map { (row, back) -> lineOf(target.world, row, back) }
+        val kept = marked(rows).asSequence().filter { keeps.keeps(it.first) }.take(query.wanted + 1).toList()
+        val blockLines = kept.map { (row, back) -> lineOf(target.world, row, back) }
         return blockLines + entityLines(log, target, query, keeps, fromTs, toTs)
     }
 
     /**
      * Each row with a mark when a rollback since put back what it took: a later rollback row at its position
      * that returned the state it replaced. Read among the rows at hand, so a rollback outside the window is
-     * not seen.
+     * not seen; and before the filter, which under action: would have dropped the rollback rows.
      */
     private fun marked(rows: List<BlockRow>): List<Pair<BlockRow, Boolean>> {
         val rollbacks = rows.filter { it.cause == Cause.ROLLBACK }.groupBy { Triple(it.x, it.y, it.z) }
@@ -1083,8 +1086,8 @@ class Lookups(
                 }
             }
         }
-        val kept = rows.filter(keeps::keeps).sortedByDescending { it.timestamp }.take(query.wanted + 1)
-        return markedEntities(kept).map { (row, back) -> lineOf(target.world, row, back) }
+        val kept = markedEntities(rows).filter { keeps.keeps(it.first) }.sortedByDescending { it.first.timestamp }.take(query.wanted + 1)
+        return kept.map { (row, back) -> lineOf(target.world, row, back) }
     }
 
     private fun read(target: LookupTarget, query: LookupQuery): EntryPage {
