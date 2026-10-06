@@ -318,6 +318,7 @@ class PfauProtectPlugin : JavaPlugin() {
         // items taken back on the join have to come after.
         server.pluginManager.registerEvents(confiscations, this)
         server.pluginManager.registerEvents(inspector, this)
+        server.pluginManager.registerEvents(rollbacks.ghosts, this)
         server.pluginManager.registerEvents(io.pfaumc.pfauprotect.capture.ChatCapture(chat), this)
         server.servicesManager.register(io.pfaumc.pfauprotect.api.PfauProtectApi::class.java, Api(running), this, org.bukkit.plugin.ServicePriority.Normal)
         server.globalRegionScheduler.runAtFixedRate(this, {

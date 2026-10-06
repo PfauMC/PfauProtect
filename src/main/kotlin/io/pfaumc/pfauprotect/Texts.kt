@@ -36,6 +36,8 @@ object Texts {
         r("radius:global undoes what named players did; give user: as well\\.") to "radius:global отменяет сделанное названными игроками; укажи и user:.",
         r("Rollback preview dropped\\.") to "Предпросмотр отката сброшен.",
         r("  you see the blocks as they would stand; nothing changes before /pp apply\\.") to "  вы видите блоки такими, какими они станут; до /pp apply в мире ничего не меняется.",
+        r("  you see the nearest blocks \\((\\d+) of (\\d+)\\) as they would stand; nothing changes before /pp apply\\.") to
+            "  вы видите ближайшие блоки ($1 из $2) такими, какими они станут; до /pp apply в мире ничего не меняется.",
         r("No rollback preview to drop\\.") to "Нет предпросмотра отката.",
         r("Stopping the rollback that runs now: the chunks it has not reached yet stay as they are\\.") to
             "Останавливаю идущий откат: чанки, до которых он не дошёл, останутся как есть.",

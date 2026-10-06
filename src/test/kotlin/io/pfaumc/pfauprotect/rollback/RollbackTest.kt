@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import io.pfaumc.pfauprotect.ServerRegistries
 import net.minecraft.world.SimpleContainer
+import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.item.Items
 import java.nio.file.Path
 import java.util.UUID
@@ -465,6 +466,21 @@ class RollbackTest {
         assertEquals(listOf(WorldBlock(world, 2, 104, 2)), named.chunks.flatMap { it.positions }.map { it.at })
         val cube = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, 0, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
         assertTrue(cube.chunks.flatMap { it.positions }.isEmpty())
+    }
+
+    // A preview bigger than what a player is shown shows the part around them, then other worlds.
+    @Test
+    fun `a preview shows the nearest ghosts first`() {
+        ServerRegistries.access
+        val stone = Blocks.STONE.defaultBlockState().asBlockData()
+        val nether = UUID.fromString("00000000-0000-4000-8000-000000000007")
+        val ghosts = listOf(
+            Ghost(world, 150, 64, 0, stone), Ghost(nether, 1, 64, 0, stone), Ghost(world, 3, 64, 0, stone),
+            Ghost(world, -40, 64, 0, stone), Ghost(world, 0, 70, 0, stone),
+        )
+        val shown = nearest(ghosts, world, 0.5, 64.0, 0.5, 4).map { Triple(it.world == world, it.x, it.y) }
+        assertEquals(listOf(Triple(true, 3, 64), Triple(true, 0, 70), Triple(true, -40, 64), Triple(true, 150, 64)), shown)
+        assertEquals(nether, nearest(ghosts, world, 0.5, 64.0, 0.5, 5).last().world)
     }
 
     private fun around(filter: RowFilter): Planned {

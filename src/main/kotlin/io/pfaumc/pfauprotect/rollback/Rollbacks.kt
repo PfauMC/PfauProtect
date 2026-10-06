@@ -62,8 +62,6 @@ import net.kyori.adventure.text.Component
 import io.pfaumc.pfauprotect.Texts
 import io.pfaumc.pfauprotect.Ui
 import io.pfaumc.pfauprotect.tr
-import io.papermc.paper.math.Position
-import org.bukkit.block.data.BlockData
 import net.kyori.adventure.text.event.ClickEvent
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
@@ -93,9 +91,6 @@ private const val PLACE_FLAGS = Block.UPDATE_CLIENTS or Block.UPDATE_SKIP_BLOCK_
 // How long a preview waits for `apply`. The world goes on changing under it, so apply reads it all
 // again; this only bounds how stale the question can be.
 private const val PENDING_MILLIS = 5 * 60_000L
-
-// How many blocks of a preview its player is shown at most.
-private const val GHOST_LIMIT = 50_000
 
 // A chunk task that never runs — its world unloaded under it — would hold the one rollback slot for
 // good. Past this a running rollback is taken as lost and the slot handed on.
@@ -163,9 +158,6 @@ private val TIME_FORMAT: DateTimeFormatter =
  * is that much of the lead's debt already settled.
  */
 class Trace(val lead: Holder, val formId: Long, val qty: Int)
-
-/** A block as a preview would put it, shown to the player who previews until it is applied or dropped. */
-class Ghost(val world: UUID, val x: Int, val y: Int, val z: Int, val data: BlockData)
 
 /** Work on a live entity, done on its own thread once every chunk has had its turn. */
 class EntityJob(val entity: Entity, val run: (Tally) -> Unit)
@@ -678,7 +670,7 @@ class Rollbacks(
     private val stopping = java.util.concurrent.atomic.AtomicBoolean()
     private val reader = RollbackReader(ledger, blocks)
     // The blocks each player sees as a preview of theirs would put them.
-    private val shown = ConcurrentHashMap<UUID, List<Ghost>>()
+    val ghosts = Ghosts(plugin, PENDING_MILLIS)
 
     fun preview(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
         refusalOf(query)?.let {
@@ -913,7 +905,7 @@ class Rollbacks(
     private fun finish(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, rows: String?) {
         val owed = confiscations.owedFor(total)
         report(sender, total, read, where, apply, rows)
-        if (!apply) show(sender, total.ghosts)
+        if (!apply) (sender as? Player)?.let { ghosts.show(it, total.ghosts) }
         // A killed player gets back what fell out of them, wherever it went.
         for (death in total.deaths.distinctBy { it.eventId to it.uuid }) {
             val back = restitutionFor(ledger, death)
@@ -943,44 +935,8 @@ class Rollbacks(
         confiscations.take(owed, actor, sender)
     }
 
-    /**
-     * The previewing player sees the blocks as the rollback would put them, for them alone, until they apply,
-     * cancel, preview again or the preview runs out. Nothing in the world changes.
-     */
-    private fun show(sender: CommandSender, ghosts: List<Ghost>) {
-        val player = sender as? Player ?: return
-        hide(player)
-        val world = player.world.uid
-        // The first ones in plan order, not the nearest: a rollback bigger than the limit shows only part.
-        // Not where the player stands: their client pushes them out of a ghost, and the apply then finds them
-        // beside the wall instead of in it, to lift them onto it.
-        val body = player.boundingBox
-        val mine = ghosts.filter {
-            it.world == world && !body.overlaps(org.bukkit.util.BoundingBox(it.x.toDouble(), it.y.toDouble(), it.z.toDouble(), it.x + 1.0, it.y + 1.0, it.z + 1.0))
-        }.take(GHOST_LIMIT)
-        if (mine.isEmpty()) return
-        shown[player.uniqueId] = mine
-        player.sendMultiBlockChange(mine.associate { Position.block(it.x, it.y, it.z) to it.data })
-        sender.say("  you see the blocks as they would stand; nothing changes before /pp apply.")
-        Bukkit.getAsyncScheduler().runDelayed(plugin, {
-            if (shown.remove(player.uniqueId, mine)) restore(player, mine)
-        }, PENDING_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)
-    }
-
     private fun hide(sender: CommandSender) {
-        val player = sender as? Player ?: return
-        shown.remove(player.uniqueId)?.let { restore(player, it) }
-    }
-
-    // The client is told again what really stands there, read on each chunk's own region.
-    private fun restore(player: Player, ghosts: List<Ghost>) {
-        val world = Bukkit.getWorld(ghosts.first().world) ?: return
-        for ((chunk, group) in ghosts.groupBy { (it.x shr 4) to (it.z shr 4) }) {
-            Bukkit.getRegionScheduler().execute(plugin, world, chunk.first, chunk.second) {
-                if (!player.isOnline || !world.isChunkLoaded(chunk.first, chunk.second)) return@execute
-                player.sendMultiBlockChange(group.associate { Position.block(it.x, it.y, it.z) to world.getBlockData(it.x, it.y, it.z) })
-            }
-        }
+        (sender as? Player)?.let(ghosts::hide)
     }
 
     // The counts that are not zero, a line to each kind of thing, so a preview reads at a glance.
