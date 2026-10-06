@@ -33,8 +33,6 @@ object Texts {
         r("player: reads what a player carries and has no place to roll back; use user:\\.") to "player: читает то, что игрок несёт, и откатывать там нечего; используй user:.",
         r("A rollback needs radius: the blocks around you it covers, or global with user:\\.") to "Откату нужен radius: сколько блоков вокруг тебя он охватывает, или 'global' вместе с user:.",
         r("radius:global undoes what named players did; give user: as well\\.") to "radius:global отменяет сделанное названными игроками; укажи и user:.",
-        r("\\[apply\\]") to "[применить]",
-        r("\\[cancel\\]") to "[отменить]",
         r("Rollback preview dropped\\.") to "Предпросмотр отката сброшен.",
         r("  you see the blocks as they would stand; nothing changes before /pp apply\\.") to "  вы видите блоки такими, какими они станут; до /pp apply в мире ничего не меняется.",
         r("No rollback preview to drop\\.") to "Нет предпросмотра отката.",
@@ -46,11 +44,7 @@ object Texts {
         r("The rollback failed; the server log has the details\\.") to "Откат не удался; подробности в логе сервера.",
         r("Taking back what the rollback gave back failed; the server log has the details\\.") to "Изъятие возвращённого откатом не удалось; подробности в логе сервера.",
         r("Nothing to roll back: (.*)\\.") to "Откатывать нечего: $1.",
-        r("Rollback preview for (.*?): (\\d+) blocks would change, (\\d+) already as they were, (\\d+) stopped by a later change; (\\d+) slot postings to give back; (\\d+) entities to bring back, (\\d+) to take away, (\\d+) to change back, (\\d+) already as they were \\((.*)\\)\\.") to
-            "Предпросмотр отката: $1. Блоков изменится: $2, уже как были: $3, остановлено поздней переменой: $4; слотов вернуть: $5; сущностей вернуть: $6, убрать: $7, изменить обратно: $8, уже как были: $9 ($10).",
-        r("Rolled back (.*?): (\\d+) blocks put back, (\\d+) already as they were, (\\d+) stopped by a later change; (\\d+) slot postings given back; (\\d+) entities brought back, (\\d+) taken away, (\\d+) changed back, (\\d+) already as they were\\.") to
-            "Откачено: $1. Блоков возвращено: $2, уже как были: $3, остановлено поздней переменой: $4; слотов возвращено: $5; сущностей возвращено: $6, убрано: $7, изменено обратно: $8, уже как были: $9.",
-        r("  /pp apply within 5 minutes runs it, /pp cancel drops it(.*)\\.") to "  /pp apply в течение 5 минут применит, /pp cancel сбросит$1.",
+        r("  /pp apply within (\\d+) minutes runs it, /pp cancel drops it(.*)\\.") to "  /pp apply в течение $1 мин применит, /pp cancel сбросит$2.",
         r("  would take back from (.*)\\.") to "  будет изъято: $1.",
         r("  taking back from (.*):") to "  изымаю: $1:",
         r("  would give back to (\\S+) what they lost: (.*)") to "  будет возвращено игроку $1 потерянное: $2",

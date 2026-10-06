@@ -59,10 +59,12 @@ import net.minecraft.world.level.block.entity.CampfireBlockEntity
 import net.minecraft.world.level.block.entity.LecternBlockEntity
 import net.minecraft.world.level.storage.TagValueInput
 import net.kyori.adventure.text.Component
+import io.pfaumc.pfauprotect.Texts
+import io.pfaumc.pfauprotect.Ui
+import io.pfaumc.pfauprotect.tr
 import io.papermc.paper.math.Position
 import org.bukkit.block.data.BlockData
 import net.kyori.adventure.text.event.ClickEvent
-import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.CraftWorld
@@ -783,7 +785,7 @@ class Rollbacks(
                     }
                     else -> {
                         val leftBefore = if (apply || users.isEmpty()) 0 else reader.leftByThemBefore(plans, users, from)
-                        dispatch(sender, plans, where, apply, release, global = query.global, leftBefore = leftBefore, since = from)
+                        dispatch(sender, plans, where, apply, release, rows = rowsOf(query, target), leftBefore = leftBefore, since = from)
                     }
                 }
             } catch (failure: Throwable) {
@@ -807,7 +809,7 @@ class Rollbacks(
         where: String,
         apply: Boolean,
         release: () -> Unit,
-        global: Boolean,
+        rows: String?,
         leftBefore: Int = 0,
         since: Long = 0,
     ) {
@@ -825,7 +827,7 @@ class Rollbacks(
         total.since = since
         total.deaths += plans.flatMap { it.deaths }
         // Only deaths to give back for, and no place to touch: straight on to them.
-        if (work.isEmpty()) return finishing(sender, total, read, where, apply, actor, global, release)
+        if (work.isEmpty()) return finishing(sender, total, read, where, apply, actor, rows, release)
         val hold = ChunkHold(work)
         if (!hold.take()) {
             sender.say("Rollback refused: the chunks it works in did not load within ${LOAD_MILLIS / 1000} s.")
@@ -841,7 +843,8 @@ class Rollbacks(
             Unit
         }
         val left = AtomicInteger(work.size)
-        val done = { if (left.decrementAndGet() == 0) entityJobs(total) { finishing(sender, total, read, where, apply, actor, global, freed) } }
+        val progress = Progress(sender as? Player, work.size, apply)
+        val done = { val n = left.decrementAndGet(); progress.step(work.size - n); if (n == 0) entityJobs(total) { finishing(sender, total, read, where, apply, actor, rows, freed) } }
         // A few chunks at a time, each starting the next as it ends: a /pp cancel then reaches the chunks not
         // begun yet, and a big rollback does not land on every region in the same tick.
         val queue = java.util.concurrent.ConcurrentLinkedQueue(work)
@@ -894,10 +897,10 @@ class Rollbacks(
     }
 
     // Following what was given back to whoever holds it reads the ledger, which a region thread may not.
-    private fun finishing(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, global: Boolean, release: () -> Unit) {
+    private fun finishing(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, rows: String?, release: () -> Unit) {
         Bukkit.getAsyncScheduler().runNow(plugin) {
             try {
-                finish(sender, total, read, where, apply, actor, global)
+                finish(sender, total, read, where, apply, actor, rows)
             } catch (failure: Throwable) {
                 plugin.logger.log(Level.SEVERE, "taking back what the rollback at $where gave back failed", failure)
                 sender.say("Taking back what the rollback gave back failed; the server log has the details.")
@@ -907,9 +910,9 @@ class Rollbacks(
         }
     }
 
-    private fun finish(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, global: Boolean) {
+    private fun finish(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, rows: String?) {
         val owed = confiscations.owedFor(total)
-        report(sender, total, read, where, apply, global)
+        report(sender, total, read, where, apply, rows)
         if (!apply) show(sender, total.ghosts)
         // A killed player gets back what fell out of them, wherever it went.
         for (death in total.deaths.distinctBy { it.eventId to it.uuid }) {
@@ -980,35 +983,73 @@ class Rollbacks(
         }
     }
 
-    private fun report(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, global: Boolean) {
-        val blocks = "${total.changed} blocks ${if (apply) "put back" else "would change"}, " +
-            "${total.unchanged} already as they were, ${total.conflicts} stopped by a later change"
-        val slots = "${total.slots} slot postings ${if (apply) "given back" else "to give back"}"
-        val entities = "${total.entitiesBack} entities ${if (apply) "brought back" else "to bring back"}, " +
-            "${total.entitiesTaken} ${if (apply) "taken away" else "to take away"}, " +
-            "${total.entitiesReverted} ${if (apply) "changed back" else "to change back"}, " +
-            "${total.entitiesAlready} already as they were"
+    // The counts that are not zero, a line to each kind of thing, so a preview reads at a glance.
+    private fun report(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, rows: String?) {
+        fun parts(vararg counts: Pair<Int, String>) = counts.filter { it.first > 0 }.joinToString(" · ") { "${it.second} ${it.first}" }
+        val blocks = parts(
+            total.changed to (if (apply) tr("put back", "возвращено") else tr("to change", "изменится")),
+            total.unchanged to tr("already as they were", "уже как были"),
+            total.conflicts to tr("stopped by a later change", "остановлено поздней переменой"),
+        )
+        val slots = parts(total.slots to (if (apply) tr("given back", "возвращено") else tr("to give back", "вернуть")))
+        val entities = parts(
+            total.entitiesBack to (if (apply) tr("brought back", "возвращено") else tr("to bring back", "вернуть")),
+            total.entitiesTaken to (if (apply) tr("taken away", "убрано") else tr("to take away", "убрать")),
+            total.entitiesReverted to (if (apply) tr("changed back", "изменено обратно") else tr("to change back", "изменить обратно")),
+            total.entitiesAlready to tr("already as they were", "уже как были"),
+        )
+        val title = if (apply) tr("Rolled back", "Откачено") else tr("Rollback preview", "Предпросмотр отката")
+        sender.sendMessage(Component.text().append(Ui.text("PfauProtect · ", Ui.FAINT)).append(Ui.text("$title: ")).append(Ui.text(Texts.translate(where), Ui.MUTED)).build())
+        for ((label, counts) in listOf(tr("blocks", "блоки") to blocks, tr("slots", "слоты") to slots, tr("entities", "сущности") to entities)) {
+            if (counts.isNotEmpty()) sender.sendMessage(Component.text().append(Ui.text("  $label: ", Ui.MUTED)).append(Ui.text(counts)).build())
+        }
         if (!apply) {
-            sender.say("Rollback preview for $where: $blocks; $slots; $entities ($read).")
-            // A world-wide lookup has no index to read by, so it cannot show the rows of a global one.
-            val rows = if (global) "" else "; /pp lookup with the same words shows the rows"
+            sender.sendMessage(Ui.text("  " + Texts.translate(read), Ui.FAINT))
             if (total.leftBefore > 0) sender.say(
                 "  the window may be shorter than a full rollback needs: ${total.leftBefore} of these positions stood " +
                     "as the same player had left them when it opened, and go back to that; a longer time: reaches further.",
             )
-            sender.say("  /pp apply within 5 minutes runs it, /pp cancel drops it$rows.")
-            if (sender is Player) sender.sendMessage(
-                Component.text("  ")
-                    .append(Component.text(io.pfaumc.pfauprotect.Texts.translate("[apply]"), NamedTextColor.GREEN).clickEvent(ClickEvent.runCommand("/pp apply")))
-                    .append(Component.text(" "))
-                    .append(Component.text(io.pfaumc.pfauprotect.Texts.translate("[cancel]"), NamedTextColor.RED).clickEvent(ClickEvent.runCommand("/pp cancel"))),
+            val minutes = PENDING_MILLIS / 60_000
+            if (sender !is Player) {
+                // A world-wide lookup has no index to read by, so it cannot show the rows of a global one.
+                sender.say("  /pp apply within $minutes minutes runs it, /pp cancel drops it${if (rows == null) "" else "; /pp lookup with the same words shows the rows"}.")
+                return
+            }
+            val buttons = Component.text().append(Ui.text("  "))
+                .append(Ui.button(tr("[apply]", "[применить]"), "/pp apply", Ui.GAINED, tr("Run this rollback", "Выполнить откат"), "/pp apply"))
+                .append(Ui.text(" "))
+                .append(Ui.button(tr("[cancel]", "[отменить]"), "/pp cancel", Ui.LOST, tr("Drop the preview", "Сбросить предпросмотр"), "/pp cancel"))
+            if (rows != null) buttons.append(Ui.text(" ")).append(
+                Ui.hover(Ui.text(tr("[rows]", "[строки]"), Ui.WHO), tr("The rows it undoes", "Строки, которые он отменяет"), rows)
+                    .clickEvent(ClickEvent.runCommand(rows)),
             )
+            buttons.append(Ui.text(tr("  expires in $minutes min", "  действует $minutes мин"), Ui.FAINT))
+            sender.sendMessage(buttons.build())
             return
         }
-        sender.say("Rolled back $where: $blocks; $slots; $entities.")
         if (total.entitiesGoneSince > 0) sender.say("  ${total.entitiesGoneSince} entities to change back are gone since.")
         if (total.missed > 0) sender.say("  ${total.missed} slot postings found no room or nothing left to take out.")
         if (total.failed > 0) sender.say("  ${total.failed} positions failed; the server log has the details.")
         if (total.skipped > 0) sender.say("  stopped by /pp cancel: ${total.skipped} positions in chunks it had not reached are left as they were.")
     }
+
+    // The lookup that shows what a rollback undoes, about the place it covers; a world-wide one has no place.
+    private fun rowsOf(query: LookupQuery, target: LookupTarget): String? =
+        if (query.global || query.event != null) null else query.pageCommand(target, 1)
 }
+
+/** How far an apply has got, above the hotbar of whoever ran it, at most a few times a second. */
+private class Progress(private val player: Player?, private val chunks: Int, private val apply: Boolean) {
+    private val shown = AtomicLong()
+
+    fun step(done: Int) {
+        if (player == null || !apply) return
+        val now = System.currentTimeMillis()
+        val last = shown.get()
+        if (done < chunks && (now - last < PROGRESS_MILLIS || !shown.compareAndSet(last, now))) return
+        val percent = done * 100 / chunks
+        player.sendActionBar(Ui.text(tr("Rollback: $percent% ($done/$chunks chunks)", "Откат: $percent% ($done/$chunks чанков)"), Ui.CHANGED))
+    }
+}
+
+private const val PROGRESS_MILLIS = 250L
