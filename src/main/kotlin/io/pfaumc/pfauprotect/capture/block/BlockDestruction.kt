@@ -905,6 +905,15 @@ class BlockDestructionListener(
         // fire answers nothing and the whole chain off it burns unattributed.
         val lit = BaseFireBlock.getState(block.level, block.position).asBlockData().asString
         val player = event.player
+        // A fire charge out of a dispenser somebody pressed, a burning arrow, a channeling trident's bolt: the
+        // fire answers to whoever stands behind what lit it, and the whole chain off it with it.
+        val entity = event.ignitingEntity
+        if (player == null && entity != null) {
+            val by = behindChange(entity) ?: return
+            if (by.confidence != Confidence.NEARBY) attribution.placed(positionOf(block), lit, by.actor)
+            readBack(listOf(block), by.inferred(), Cause.BLK_FIRE_SPREAD)
+            return
+        }
         if (player == null) {
             // Lava sets fire on a random tick, and nothing else announces the fire it puts down.
             if (event.cause != BlockIgniteEvent.IgniteCause.LAVA) return
