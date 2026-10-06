@@ -110,6 +110,7 @@ import org.bukkit.event.block.EntityBlockFormEvent
 import org.bukkit.event.block.LeavesDecayEvent
 import org.bukkit.event.entity.EntityChangeBlockEvent
 import org.bukkit.event.entity.EntityExplodeEvent
+import org.bukkit.event.entity.EntitySpawnEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.player.PlayerBucketEmptyEvent
 import org.bukkit.event.player.PlayerBucketFillEvent
@@ -740,6 +741,10 @@ private val PRIMED_ELSEWHERE = setOf(
     TNTPrimeEvent.PrimeCause.EXPLOSION, TNTPrimeEvent.PrimeCause.FIRE, TNTPrimeEvent.PrimeCause.BLOCK_BREAK,
 )
 
+// Between dynamite primed and the entity it becomes there is one call; a note older than this was for an
+// entity that never came.
+private const val PRIMING_MILLIS = 1_000L
+
 // How long after stepping through a portal a player can still be who the far side was built for: the
 // journey loads the chunks there first.
 private const val TRAVEL_MILLIS = 30_000L
@@ -841,6 +846,8 @@ class BlockDestructionListener(
 
     private val growing = GrowClaims()
     private val readBacks = ReadBacks()
+    // Who stands behind dynamite a fire or a blast primed, on its position until the entity appears there.
+    private val priming = ConcurrentHashMap<WorldBlock, Pair<Attributed, Long>>()
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onEntityExplode(event: EntityExplodeEvent) {
@@ -1310,6 +1317,8 @@ class BlockDestructionListener(
     fun settleGrowth() {
         growing.settle()
         readBacks.sweep()
+        val stale = System.currentTimeMillis() - PRIMING_MILLIS
+        priming.values.removeIf { it.second < stale }
     }
 
     /**
@@ -1376,10 +1385,21 @@ class BlockDestructionListener(
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPrime(event: TNTPrimeEvent) {
-        if (event.cause in PRIMED_ELSEWHERE) return
         val block = event.block
-        val log = logs.get(block.world.uid) ?: return
         val at = positionOf(block)
+        if (event.cause in PRIMED_ELSEWHERE) {
+            // Primed by a fire or a blast, the entity gets no owner from the server, and where it goes off,
+            // thrown about by the blasts beside it, nobody put dynamite down: a whole chain lit from one fire
+            // went off as nobody's. Who set off what primed it is known now, and goes to the entity.
+            val by = when (event.cause) {
+                TNTPrimeEvent.PrimeCause.EXPLOSION -> event.primingEntity?.let(::whoSetOff)
+                TNTPrimeEvent.PrimeCause.FIRE -> event.primingBlock?.let(::fireStartedBy)
+                else -> null
+            } ?: placerOf(at, TNT)
+            if (by != null) priming[at] = by.inferred() to System.currentTimeMillis()
+            return
+        }
+        val log = logs.get(block.world.uid) ?: return
         val lit = event.primingEntity.let { it as? Player ?: (it as? Projectile)?.shooter as? Player }
         val by = lit?.let { Attributed(it.uniqueId, Confidence.FACT) }
             ?: event.primingBlock?.let { energyAt(it, energy) }
@@ -1388,6 +1408,14 @@ class BlockDestructionListener(
         val standing = block.blockData
         file(log, listOf(Site(at, block, standing, AIR)), Cause.BLK_TNT, by ?: placer, expectsDrops = false)
         (by ?: placer)?.culprit()?.let { attribution.placed(at, standing.asString, it) }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onTntSpawn(event: EntitySpawnEvent) {
+        val tnt = event.entity as? TNTPrimed ?: return
+        val (by, at) = priming.remove(positionOf(tnt.location.block)) ?: return
+        if (tnt.source is Player || System.currentTimeMillis() - at > PRIMING_MILLIS) return
+        entities.appeared(tnt.uniqueId, by.actor, by.confidence)
     }
 
     // A sponge drinking the water around it: the water and the plants in it go, and the sponge turns
@@ -1900,14 +1928,14 @@ class BlockDestructionListener(
 
     private fun whoSetOff(source: Entity): Attributed? {
         litBy(source)?.let { return Attributed(it.uniqueId, Confidence.FACT) }
+        // Where the dynamite came from, noted when it was primed; a wither nobody lit was still built by
+        // somebody, and the explosion it opens with is the first thing it does.
+        entities.summonerOf(firedBy(source).uniqueId)?.let { return it }
         // Only a block that stood somewhere can be asked about, and of the entities that explode only
-        // dynamite was one.
+        // dynamite was one. A guess by where it went off, which a blast beside it may have thrown it from.
         if (source.type == EntityType.TNT) {
             placerOf(positionOf(source.location.block), TNT)?.let { return it }
         }
-        // A wither nobody lit was still built by somebody, and the explosion it opens with is the first
-        // thing it does.
-        entities.summonerOf(firedBy(source).uniqueId)?.let { return it }
         // The last rung: a creeper goes off at whoever it was after. Led to a wall, that is the one who led
         // it; met by chance, the one it met. Either way only a witness, never rolled back on its own.
         return ((source as? Creeper)?.target as? Player)?.let { Attributed(it.uniqueId, Confidence.NEARBY) }
