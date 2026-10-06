@@ -983,6 +983,10 @@ class BlockDestructionListener(
         // carry does, so an arbitrarily long chain stays attributed while no note covers more than a step.
         val leapt = if (blockNameOf(after) in FIRES) fireStartedBy(event.source) else null
         if (leapt != null && leapt.confidence != Confidence.NEARBY) attribution.placed(at, after, leapt.actor)
+        // A block burnt away in this very tick, with fire leaping straight into the air it left: the burn's
+        // read-back files the block to fire. A row of the spread's own here would settle the position and
+        // the read-back would drop the block, which a rollback then never puts back.
+        if (blockNameOf(after) in FIRES && readBacks.pending(at)) return
         val cause = spreadCause(after)
         // Sculk spreads off a catalyst's bloom, and the bloom off a death somebody stands behind.
         val bloomed = if (cause == Cause.BLK_SCULK) attribution.killerNear(at, SCULK_REACH) else null
