@@ -7,8 +7,9 @@ fun CommandSender.say(text: String) = sendMessage(Texts.translate(text))
 
 /**
  * What the plugin says, in Russian when config.yml asks for it. Every message is written in English where
- * it is made, and translated here as a whole line on its way out: the sentences by pattern, the rows of a
- * lookup word by word. A line no rule knows goes out in English, which is a missing rule and no error.
+ * it is made, and translated here as a whole line on its way out: the sentences by pattern, the places they
+ * name word by word. A line no rule knows goes out in English, which is a missing rule and no error. Lines
+ * made of parts — a lookup row, a rollback's counts — are put together in the language already, with tr().
  */
 object Texts {
     fun translate(text: String): String {
@@ -40,6 +41,12 @@ object Texts {
             "Останавливаю идущий откат: чанки, до которых он не дошёл, останутся как есть.",
         r("Nothing to apply: preview a rollback with /pp rollback first\\.") to "Нечего применять: сначала предпросмотр через /pp rollback.",
         r("Another rollback is still running; apply again once it has reported\\.") to "Другой откат ещё идёт; примени снова, когда он отчитается.",
+        r("Rollback refused: (\\d+) positions changed in that window, more than the (\\d+) one rollback may write; narrow the radius or the time\\.") to
+            "Откат отклонён: за это окно изменилось позиций: $1, а один откат записывает не больше $2; сузь радиус или время.",
+        r("Rollback refused: that window holds more history than one rollback reads; narrow the radius or the time\\.") to
+            "Откат отклонён: в этом окне больше истории, чем читает один откат; сузь радиус или время.",
+        r("Rollback refused: (\\d+) rows in that window could not be read by this build, and a rollback over part of the history would put back part of the place; nothing was done\\.") to
+            "Откат отклонён: строк в этом окне, которые эта сборка не смогла прочитать: $1; откат по части истории вернул бы место лишь отчасти, ничего не сделано.",
         r("Rollback refused: (.*)\\.") to "Откат отклонён: $1.",
         r("The rollback failed; the server log has the details\\.") to "Откат не удался; подробности в логе сервера.",
         r("Taking back what the rollback gave back failed; the server log has the details\\.") to "Изъятие возвращённого откатом не удалось; подробности в логе сервера.",
@@ -91,6 +98,9 @@ object Texts {
         r("  unexplained since the last report: nothing") to "  необъяснённое с прошлого отчёта: ничего",
         r("  unexplained since the last report: (.*)") to "  необъяснённое с прошлого отчёта: $1",
         r("  rollback: none running") to "  откат: не идёт",
+        r("  registry (\\S+) has handed out (\\d+) of its (\\d+) numbers and reuses none of them: a wider field has to be in place before the last one is gone") to
+            "  реестр $1 выдал $2 из $3 номеров и не переиспользует их: поле надо расширить до того, как кончится последний",
+        r("  gap: (.*)") to "  разрыв: $1",
         r("  rollback: one running for (\\d+) s") to "  откат: идёт уже $1 с",
         r("Running both self-checks to the end; this reads the whole journal\\.") to "Запускаю обе самопроверки до конца; это читает весь журнал.",
         r("The self-checks failed; the server log has the details\\.") to "Самопроверки не удались; подробности в логе сервера.",
@@ -119,55 +129,22 @@ object Texts {
         r("Anything held before the ledger was opened differs by exactly that much for ever; a difference that stays put is that constant rather than a leak\\.") to "Всё, что было до открытия журнала, навсегда расходится ровно на эту величину; неизменная разница — это она, а не утечка.",
         r("The ledger is not open\\.") to "Журнал не открыт.",
         r("Nothing said or run matches\\.") to "Ничего сказанного или выполненного не найдено.",
-        r("Last (\\d+) lines said and run:") to "Последние строки чата и команд ($1):",
     )
 
     private val WORDS: List<Pair<Regex, String>> = listOf(
-        r("  by nobody named") to "  никем",
-        r("  chat  ") to "  чат  ",
-        r("  command  ") to "  команда  ",
-        r("  join  ") to "  вход  ",
-        r("  quit  ") to "  выход  ",
-        r(" \\(worked out\\)") to " (вычислено)",
-        r("(\\S+) was nearby") to "рядом был $1",
-        r("  by ") to "  — ",
-        r("died of ") to "умер: ",
-        r("turned \\(") to "превращён (",
-        r("  via ") to "  через ",
-        r("\\((\\d+) items fell out\\)") to "(выпало предметов: $1)",
-        r("dropped (\\d+) items") to "выронено предметов: $1",
-        r("\\(rolled back\\)") to "(откачено)",
-        r("\\(changed in place\\)") to "(изменён на месте)",
-        r("\\(other half\\)") to "(вторая половина)",
-        r("\\+contents") to "+содержимое",
-        r("  text ") to "  текст ",
-        r("  gone  ") to "  исчез  ",
-        r("  brought in  ") to "  появился  ",
-        r("  changed  ") to "  изменён  ",
-        r("  led away  ") to "  уведён  ",
-        r("  died: ") to "  погиб: ",
         // Before " slot ", which would take a word out of each.
         r("block rows, ") to "строк блоков, ",
         r("slot rows read") to "строк слотов прочитано",
-        r(" equipment slot ") to " слот снаряжения ",
-        r(" ender chest slot ") to " эндер-сундук, слот ",
-        r(" cursor") to " курсор",
         r(" slot ") to " слот ",
         r("container ") to "контейнер ",
-        r("dropped item ") to "предмет на земле ",
-        r("block (-?\\d+) (-?\\d+) (-?\\d+)") to "блок $1 $2 $3",
-        r(" from nowhere") to " из ниоткуда",
-        r(" to nowhere") to " в никуда",
         r(" from ") to " из ",
         r(" to ") to " в ",
         r(" at (-?\\d+) (-?\\d+) (-?\\d+)") to " в $1 $2 $3",
         r("(\\d+) blocks around ") to "$1 блоков вокруг ",
-        r("everything (.*) did in this world") to "всё, что сделал $1 в этом мире",
         r("everything (.*) did since ") to "всё, что сделал $1, с ",
         r(" since ") to " с ",
         r(" until ") to " до ",
         r("event (\\d+) в ") to "событие $1 в ",
-        r("player (\\S+)") to "игрок $1",
         r("(\\d+) items lying in the world: ") to "предметов в мире ($1): ",
         r("gone for good: ") to "пропало насовсем: ",
         r(" \\(offline, at their next join\\)") to " (не в сети, при следующем входе)",

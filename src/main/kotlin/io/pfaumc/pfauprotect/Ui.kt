@@ -57,8 +57,9 @@ object Ui {
      * Where a row happened: a mark a player clicks to be taken there, the coordinates themselves for the
      * console, which can neither click nor go.
      */
-    fun place(world: UUID, x: Int, y: Int, z: Int, clickable: Boolean): Component {
-        val name = worldName(world)
+    fun place(world: UUID, x: Int, y: Int, z: Int, clickable: Boolean): Component = place(worldName(world), x, y, z, clickable)
+
+    fun place(name: String, x: Int, y: Int, z: Int, clickable: Boolean): Component {
         if (!clickable) return text("$x $y $z", FAINT)
         return hover(text("⌖", MUTED), "$x $y $z $name", tr("Click to teleport", "Клик — телепорт"))
             .clickEvent(ClickEvent.runCommand("/pp tp $x $y $z $name"))
