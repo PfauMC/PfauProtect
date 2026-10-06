@@ -468,6 +468,19 @@ class RollbackTest {
         assertTrue(cube.chunks.flatMap { it.positions }.isEmpty())
     }
 
+    // A machine is put back with no signal in it, or it fires before it settles; a switch keeps its own state.
+    @Test
+    fun `a rollback puts redstone back with no signal in it`() {
+        assertEquals("minecraft:comparator[facing=west,mode=subtract,powered=false]", quiet("minecraft:comparator[facing=west,mode=subtract,powered=true]"))
+        assertEquals("minecraft:redstone_wire[east=side,north=none,power=0,south=side,west=none]", quiet("minecraft:redstone_wire[east=side,north=none,power=15,south=side,west=none]"))
+        assertEquals("minecraft:observer[facing=north,powered=false]", quiet("minecraft:observer[facing=north,powered=true]"))
+        assertEquals("minecraft:redstone_torch[lit=true]", quiet("minecraft:redstone_torch[lit=false]"))
+        assertEquals("minecraft:lever[face=floor,facing=east,powered=true]", quiet("minecraft:lever[face=floor,facing=east,powered=true]"))
+        assertEquals("minecraft:light_weighted_pressure_plate[power=4]", quiet("minecraft:light_weighted_pressure_plate[power=4]"))
+        assertEquals("minecraft:dispenser[facing=east,triggered=true]", quiet("minecraft:dispenser[facing=east,triggered=true]"))
+        assertEquals("minecraft:stone", quiet("minecraft:stone"))
+    }
+
     // A preview bigger than what a player is shown shows the part around them, then other worlds.
     @Test
     fun `a preview shows the nearest ghosts first`() {

@@ -22,6 +22,7 @@ import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.nbt.NbtIo
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.TicketType
@@ -43,6 +44,8 @@ import net.minecraft.world.entity.EntitySpawnRequest
 import net.minecraft.world.entity.EntityType
 import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.ObserverBlock
+import net.minecraft.world.level.levelgen.structure.BoundingBox
 import net.minecraft.world.level.block.LiquidBlock
 import net.minecraft.world.level.block.BaseFireBlock
 import net.minecraft.tags.BlockTags
@@ -353,7 +356,7 @@ class ChunkRollback(
         val before = spots.map { standingAt(level, it, codec) }
         val touched = BooleanArray(positions.size)
         val settles = positions.mapIndexed { i, plan -> settle(before[i].state.asBlockData().asString, plan.steps) }
-        val targets = settles.map { settled -> settled.back?.before?.let { if (passing(it)) "minecraft:air" else it } }
+        val targets = settles.map { settled -> settled.back?.before?.let { if (passing(it)) "minecraft:air" else quiet(it) } }
         // What a source being taken away had run into goes with it, before anything is put back: a plank
         // put back in the middle of the flow would cut the walk off, and lava left running sets fire to
         // the house the rollback is putting back.
@@ -367,7 +370,8 @@ class ChunkRollback(
         for ((pos, _) in drained) level.setBlock(pos, Blocks.AIR.defaultBlockState(), PLACE_FLAGS)
         positions.forEachIndexed { i, plan ->
             val was = before[i]
-            val standing = was.state.asBlockData().asString
+            // A signal is the neighbours' to set, not the rollback's to put back or to count as a difference.
+            val standing = quiet(was.state.asBlockData().asString)
             val settled = settles[i]
             if (settled.conflict) tally.conflicts++
             val back = settled.back
@@ -401,6 +405,17 @@ class ChunkRollback(
             }
         }
         if (apply) lift(level, spots.filterIndexed { i, _ -> touched[i] })
+        // An observer sees the rollback put a block in front of it, or take the griefer's trigger away, and fires:
+        // the flying machine it is part of, just put back, set off again under the rollback's name (D100).
+        if (apply) positions.indices.filter { touched[it] }.forEach { i ->
+            for (face in Direction.entries) {
+                val at = spots[i].relative(face)
+                val state = level.getBlockState(at)
+                if (state.block is ObserverBlock && at.relative(state.getValue(ObserverBlock.FACING)) == spots[i]) {
+                    level.blockTicks.clearArea(BoundingBox(at))
+                }
+            }
+        }
         // Around every position of the plan, not only the ones put back: fire on a plank the griefer's lava had
         // not yet burnt stood next to nothing that came back, and burnt the house again (D80).
         val doused = if (!apply) emptyList() else douse(level, spots, spots.toSet())

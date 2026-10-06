@@ -506,3 +506,20 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             "history would put back part of the place; nothing was done"
     )
 }
+
+private val SIGNAL_POWER = Regex("(?<=[\\[,])power=\\d+")
+
+/**
+ * A block as it stands with no signal in it: put back lit, a comparator, a wire or an observer fired whatever
+ * stood beside it before it settled, and a machine the rollback put together set off again (D100). The
+ * neighbours' pass after the blocks powers what is really powered. A lever, a button and a plate are on or off
+ * by themselves, and their own rows put that back; a dispenser's trigger is left too, or one beside a lever an
+ * owner left on would fire.
+ */
+internal fun quiet(state: String): String {
+    val name = state.substringBefore('[')
+    if (name == "minecraft:lever" || name.endsWith("_button") || name.endsWith("_pressure_plate")) return state
+    val torch = name == "minecraft:redstone_torch" || name == "minecraft:redstone_wall_torch"
+    return state.replace("powered=true", "powered=false").replace(SIGNAL_POWER, "power=0")
+        .let { if (torch) it.replace("lit=false", "lit=true") else it }
+}
