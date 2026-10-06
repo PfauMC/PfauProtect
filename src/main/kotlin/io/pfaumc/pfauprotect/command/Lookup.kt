@@ -1169,15 +1169,18 @@ class Lookups(
         else -> Ui.text(playerName(actor), Ui.WHO)
     }
 
-    private fun act(sign: String, cause: Cause): Component =
-        Component.text().append(sign(sign)).append(Component.text(" ")).append(verb(cause)).build()
+    // The cause's own name waits on the hover: what config.yml and action: filters are written in.
+    private fun act(sign: String, cause: Cause, vararg more: String): Component = Ui.hover(
+        Component.text().append(sign(sign)).append(Component.text(" ")).append(verb(cause)).build(),
+        cause.name.lowercase(), *more,
+    )
 
     private fun draw(entry: LedgerEntry, who: UUID?, amount: Int, clickable: Boolean): Component {
         val gained = entry.qty > 0
-        var act = act(if (gained) "+" else "-", entry.cause)
         // Both halves of a mutation face the Void, so without this they read as an item destroyed and
         // an unrelated item created at the same instant, which is the very thing they exist to deny.
-        if (entry.kind == Kind.MUTATE) act = Ui.hover(act, tr("changed in place", "изменён на месте"))
+        val act = if (entry.kind == Kind.MUTATE) act(if (gained) "+" else "-", entry.cause, tr("changed in place", "изменён на месте"))
+        else act(if (gained) "+" else "-", entry.cause)
         val (from, to) = if (gained) entry.counterparty to entry.holder else entry.holder to entry.counterparty
         val flow = Component.text().append(holder(from)).append(Ui.text(" → ", Ui.FAINT)).append(holder(to)).build()
         val at = listOf(entry.holder, entry.counterparty).firstNotNullOfOrNull {

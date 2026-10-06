@@ -132,10 +132,8 @@ class LookupReadTest {
         // Newest first across both planes; rows sharing an instant keep the item plane ahead of the
         // block plane, which is the order the two were read in and is stable.
         assertEquals(
-            listOf("- block.minecraft.tnt ∅", "- block.minecraft.tnt event", "+ placed ∅", "+ placed event"),
-            lines.drop(1).map { line ->
-                line.trim().split("  ")[2] + if ("∅" in line) " ∅" else if ("event:" in line) " event" else ""
-            },
+            listOf("- block.minecraft.tnt{blk_tnt}", "- block.minecraft.tnt{blk_tnt}", "+ placed{block_place}", "+ placed{blk_player_place}"),
+            lines.drop(1).map { line -> line.trim().split("  ")[2] },
             "$lines",
         )
     }
