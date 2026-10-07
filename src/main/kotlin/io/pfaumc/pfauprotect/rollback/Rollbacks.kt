@@ -434,7 +434,7 @@ class ChunkRollback(
         }
         // Around every position of the plan, not only the ones put back: fire on a plank the griefer's lava had
         // not yet burnt stood next to nothing that came back, and burnt the house again (D80).
-        val doused = if (!apply) emptyList() else douse(level, spots, spots.toSet())
+        val doused = if (!apply) emptyList() else douse(level, spots)
         // After the blocks, so a chest that came back is there to take its contents.
         val givenBack = ArrayList<PostingRef>()
         positions.forEachIndexed { i, plan ->
@@ -468,10 +468,13 @@ class ChunkRollback(
         for (plan in positions) if (plan.at in tally.restored) tally.piles += plan.dropped
         if (!apply) return tally
         val difference = Difference(world, Cause.ROLLBACK, Cause.ROLLBACK, Cause.ROLLBACK, Kind.TRANSFER, actor, System.currentTimeMillis())
+        // A position of the plan that was only doused is one row, written here with the rest of the plan.
+        val dousedAt = doused.mapTo(HashSet()) { it.first }
         positions.forEachIndexed { i, plan ->
-            difference.add(plan.at.x, plan.at.y, plan.at.z, before[i], standingAt(level, spots[i], codec), blockRow = touched[i])
+            difference.add(plan.at.x, plan.at.y, plan.at.z, before[i], standingAt(level, spots[i], codec), blockRow = touched[i] || spots[i] in dousedAt)
         }
-        for ((pos, was) in doused) difference.add(pos.x, pos.y, pos.z, was, standingAt(level, pos, codec), blockRow = true)
+        val planned = spots.toHashSet()
+        for ((pos, was) in doused) if (pos !in planned) difference.add(pos.x, pos.y, pos.z, was, standingAt(level, pos, codec), blockRow = true)
         if (difference.rows.isNotEmpty()) logs.get(world)?.submit(difference.rows)
         if (difference.moved) sink(difference.transfers(givenBack))
         difference.writeOff(plugin, placed, sink)
@@ -487,11 +490,14 @@ class ChunkRollback(
      * burns caught again from the fire that had spread between the reading and the putting back, or had
      * jumped where no row of the window reached, and a second rollback found it burnt anew. Fire that
      * stands on a block meant to burn for ever is somebody's hearth and stays.
+     *
+     * The plan's own positions too, once the blocks are in: one the plan left as it stood — its walk stopped
+     * on a later change — kept its fire, and a house rolled back under the lava's fire burnt down again (D113).
      */
-    private fun douse(level: ServerLevel, back: List<BlockPos>, planned: Set<BlockPos>): List<Pair<BlockPos, Standing>> {
+    private fun douse(level: ServerLevel, back: List<BlockPos>): List<Pair<BlockPos, Standing>> {
         val out = LinkedHashMap<BlockPos, Standing>()
         for (spot in back) for (pos in BlockPos.betweenClosed(spot.offset(-DOUSE_REACH, -DOUSE_REACH, -DOUSE_REACH), spot.offset(DOUSE_REACH, DOUSE_REACH, DOUSE_REACH))) {
-            if (pos in planned || pos in out) continue
+            if (pos in out) continue
             if (!Bukkit.isOwnedByCurrentRegion(level.world, pos.x shr 4, pos.z shr 4)) continue
             val state = level.getBlockState(pos)
             if (state.block !is BaseFireBlock) continue
