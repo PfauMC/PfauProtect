@@ -36,7 +36,7 @@ class TextsCoverageTest {
 
     private fun messagesIn(source: String): List<String> {
         val out = ArrayList<String>()
-        for (call in Regex("""\b(say|said|LiteralMessage)\(""").findAll(source)) {
+        for (call in Regex("""\b(say|sayNamed|said|LiteralMessage)\(""").findAll(source)) {
             var i = call.range.last + 1
             val text = StringBuilder()
             var whole = true

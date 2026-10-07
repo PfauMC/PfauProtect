@@ -1,6 +1,6 @@
 package io.pfaumc.pfauprotect.rollback
 
-import io.pfaumc.pfauprotect.say
+import io.pfaumc.pfauprotect.sayNamed
 import io.pfaumc.pfauprotect.capture.item.ContainerCaptureListener
 import io.pfaumc.pfauprotect.capture.item.Intent
 import io.pfaumc.pfauprotect.capture.item.WorldItemListener
@@ -411,7 +411,7 @@ class Confiscations(
                 is Lying -> Bukkit.getGlobalRegionScheduler().execute(plugin) {
                     val pile = Bukkit.getEntity(taker.entity) as? Item
                     if (pile == null) {
-                        sender.say("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
+                        sender.sayNamed("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
                     } else {
                         pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender, taken) } }, null)
                     }
@@ -453,7 +453,7 @@ class Confiscations(
         if (added > 0) capture.intend(player, Intent(Cause.ROLLBACK, from = Void, form = form, qty = added, actor = actor))
         if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor) }
         val message = "  gave back $added ${name(formId)} to ${player.name}" + if (left > 0) "; $left more at their next join." else "."
-        if (sender != null) sender.say(message) else plugin.logger.info("rollback at join:$message")
+        if (sender != null) sender.sayNamed(message) else plugin.logger.info("rollback at join:$message")
     }
 
     /**
@@ -494,7 +494,7 @@ class Confiscations(
                 }
                 if (got > 0) {
                     taken(item.formId, got)
-                    sender?.say("  took back $got ${name(item.formId)} from the container at ${stash.x} ${stash.y} ${stash.z} it was put into.")
+                    sender?.sayNamed("  took back $got ${name(item.formId)} from the container at ${stash.x} ${stash.y} ${stash.z} it was put into.")
                 }
                 next(left - got)
             }
@@ -524,7 +524,7 @@ class Confiscations(
                     if (got > 0) {
                         taken(item.formId, got)
                         val at = pile.location
-                        sender?.say("  took back $got ${name(item.formId)} out of a shulker box lying at ${at.blockX} ${at.blockY} ${at.blockZ}.")
+                        sender?.sayNamed("  took back $got ${name(item.formId)} out of a shulker box lying at ${at.blockX} ${at.blockY} ${at.blockZ}.")
                     }
                     next(left - got)
                 }) { next(left) }
@@ -571,7 +571,7 @@ class Confiscations(
         val player = carrier?.let(Bukkit::getPlayer)
         val conversion = item.conversions.firstOrNull()
         if (player == null || conversion == null) {
-            sender?.say("  $need ${name(item.formId)} are beyond reach.")
+            sender?.sayNamed("  $need ${name(item.formId)} are beyond reach.")
             return
         }
         val results = (need + conversion.inputsEach - 1) / conversion.inputsEach
@@ -637,7 +637,7 @@ class Confiscations(
             val rest = if (followed) "the rest is looked for where they put it and what they made of it" else "the rest is beyond reach"
             val message = if (left == 0) "  took back $got ${name(item.formId)} from ${player.name}."
             else "  ${player.name} held only $got of ${item.qty} ${name(item.formId)}; $rest."
-            if (sender != null) sender.say(message) else plugin.logger.info("rollback at join:$message")
+            if (sender != null) sender.sayNamed(message) else plugin.logger.info("rollback at join:$message")
             if (left > 0 && followed) short(item, left)
         }
         if (direct.isNotEmpty()) sink(direct)
@@ -646,7 +646,7 @@ class Confiscations(
     // On the thread of the region the pile lies in.
     private fun fromPile(pile: Item, owed: Owed, actor: UUID?, sender: CommandSender, taken: (Long, Int) -> Unit = { _, _ -> }) {
         if (!pile.isValid) {
-            sender.say("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
+            sender.sayNamed("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
             return
         }
         val stack = pile.itemStack
@@ -666,7 +666,7 @@ class Confiscations(
         }
         sink(rows)
         taken(owed.formId, n)
-        sender.say("  took back $n ${name(owed.formId)} lying in the world.")
+        sender.sayNamed("  took back $n ${name(owed.formId)} lying in the world.")
     }
 
     /** What was owed by a player while they were offline, taken on their join. */

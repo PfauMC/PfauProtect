@@ -73,6 +73,20 @@ object Ui {
 
     fun item(key: String): Component = game(key) { BuiltInRegistries.ITEM.getOptional(it).map { i -> i.descriptionId }.orElse(null) }
 
+    /** A line as it is, but with each item id in it as the game's own name of the item. */
+    fun named(line: String): Component {
+        val out = Component.text()
+        var at = 0
+        for (id in ITEM_ID.findAll(line)) {
+            out.append(Component.text(line.substring(at, id.range.first))).append(item(id.value))
+            at = id.range.last + 1
+        }
+        return out.append(Component.text(line.substring(at))).build()
+    }
+
+    // No dot: the one after an id ends the sentence.
+    private val ITEM_ID = Regex("minecraft:[a-z0-9_/]+")
+
     fun entity(key: String): Component = game(key) { BuiltInRegistries.ENTITY_TYPE.getOptional(it).map { e -> e.descriptionId }.orElse(null) }
 
     /** A key that may name an entity, an item or a block — what pressed a switch, what a kill was made with. */

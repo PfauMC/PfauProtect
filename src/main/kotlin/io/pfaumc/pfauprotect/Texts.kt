@@ -5,6 +5,9 @@ import org.bukkit.command.CommandSender
 /** Says a line in the language config.yml names. */
 fun CommandSender.say(text: String) = sendMessage(Texts.translate(text))
 
+/** The same, with the item ids it names drawn as the game's names of the items, in the reader's language. */
+fun CommandSender.sayNamed(text: String) = sendMessage(Ui.named(Texts.translate(text)))
+
 /**
  * What the plugin says, in Russian when config.yml asks for it. Every message is written in English where
  * it is made, and translated here as a whole line on its way out: the sentences by pattern, the places they
@@ -135,9 +138,6 @@ object Texts {
     )
 
     private val WORDS: List<Pair<Regex, String>> = listOf(
-        // Before " slot ", which would take a word out of each.
-        r("block rows, ") to "строк блоков, ",
-        r("slot rows read") to "строк слотов прочитано",
         r(" slot ") to " слот ",
         r("container ") to "контейнер ",
         r(" from ") to " из ",

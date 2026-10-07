@@ -49,6 +49,7 @@ import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
+import io.pfaumc.pfauprotect.TELEPORT_PERMISSION
 import io.pfaumc.pfauprotect.Ui
 import io.pfaumc.pfauprotect.tr
 import net.kyori.adventure.key.Key
@@ -965,7 +966,8 @@ class Lookups(
             sender.sendMessage(header(where, target).append(Ui.text(" — $why", Ui.MUTED)))
             return
         }
-        val clickable = sender is Player
+        // The mark runs /pp tp: shown to whoever may go, the coordinates to anyone else.
+        val clickable = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
         sender.sendMessage(header(where, target))
         for (run in lines) {
             val line = run.first

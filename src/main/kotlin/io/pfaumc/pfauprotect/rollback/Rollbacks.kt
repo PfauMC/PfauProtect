@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.rollback
 
 import io.pfaumc.pfauprotect.say
+import io.pfaumc.pfauprotect.sayNamed
 import ca.spottedleaf.concurrentutil.util.Priority
 import io.pfaumc.pfauprotect.capture.block.Difference
 import io.pfaumc.pfauprotect.capture.block.ranFrom
@@ -849,7 +850,9 @@ class Rollbacks(
     ) {
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
-        val read = "${plans.sumOf { it.rows }} block rows, ${plans.sumOf { it.postings }} slot rows read"
+        val (blockRows, slotRows) = plans.sumOf { it.rows } to plans.sumOf { it.postings }
+        // The number after its word: "1 rows" and «1 строк» both read wrong.
+        val read = tr("rows read: blocks $blockRows, slots $slotRows", "прочитано строк: блоков $blockRows, слотов $slotRows")
         if (work.isEmpty() && plans.all { it.deaths.isEmpty() }) {
             sender.say("Nothing to roll back: $where.")
             release()
@@ -953,7 +956,7 @@ class Rollbacks(
             val back = restitutionFor(ledger, death)
             if (back.isEmpty()) continue
             val victim = Bukkit.getOfflinePlayer(death.uuid).name ?: death.uuid.toString()
-            sender.say("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
+            sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
             if (apply) confiscations.restore(death.uuid, back, actor, sender, pileBirths(ledger, death).values.flatten(), fellFrom(ledger, death))
         }
         // A mob let out of a bucket is no longer in it: the bucket with the mob for the one it was before.
@@ -961,19 +964,19 @@ class Rollbacks(
             val who = Bukkit.getOfflinePlayer(bucket.player).name ?: bucket.player.toString()
             val swap = "${confiscations.name(bucket.withMob)} from $who for ${confiscations.name(bucket.empty)}"
             if (!apply) {
-                sender.say("  would swap back $swap.")
+                sender.sayNamed("  would swap back $swap.")
                 continue
             }
-            sender.say("  swapping back $swap:")
+            sender.sayNamed("  swapping back $swap:")
             confiscations.exchange(bucket.player, bucket.withMob, bucket.empty, actor, sender)
         }
         if (owed.isEmpty()) return
         val whom = confiscations.describe(owed)
         if (!apply) {
-            sender.say("  would take back from $whom.")
+            sender.sayNamed("  would take back from $whom.")
             return
         }
-        sender.say("  taking back from $whom:")
+        sender.sayNamed("  taking back from $whom:")
         confiscations.take(owed, actor, sender)
     }
 
@@ -1002,7 +1005,7 @@ class Rollbacks(
             if (counts.isNotEmpty()) sender.sendMessage(Component.text().append(Ui.text("  $label: ", Ui.MUTED)).append(Ui.text(counts)).build())
         }
         if (!apply) {
-            sender.sendMessage(Ui.text("  " + Texts.translate(read), Ui.FAINT))
+            sender.sendMessage(Ui.text("  " + read, Ui.FAINT))
             if (total.leftBefore > 0) sender.say(
                 "  the window may be shorter than a full rollback needs: ${total.leftBefore} of these positions stood " +
                     "as the same player had left them when it opened, and go back to that; a longer time: reaches further.",

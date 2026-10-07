@@ -1,5 +1,7 @@
 package io.pfaumc.pfauprotect
 
+import net.kyori.adventure.text.TextComponent
+import net.kyori.adventure.text.TranslatableComponent
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
@@ -18,7 +20,19 @@ class TextsTest {
         Settings.language = "ru"
         assertEquals("  изъято 32 minecraft:diamond у Test2.", Texts.translate(line))
         assertEquals("Откатывать нечего: 5 блоков вокруг 1 2 3.", Texts.translate("Nothing to roll back: 5 blocks around 1 2 3."))
-        // " slot " is a word of its own only after the phrases that hold it.
-        assertEquals("(1 строк блоков, 1 строк слотов прочитано)", Texts.translate("(1 block rows, 1 slot rows read)"))
+    }
+
+    // The items a rollback takes back are named as the game names them, in the reader's own language.
+    @Test
+    fun `an item id in a line is the game's name of the item`() {
+        ServerRegistries.access
+        val parts = Ui.named("  изъято 32 minecraft:diamond у Test2.").children()
+        assertEquals("  изъято 32 ", (parts[0] as TextComponent).content())
+        assertEquals("item.minecraft.diamond", (parts[1] as TranslatableComponent).key())
+        assertEquals(" у Test2.", (parts[2] as TextComponent).content())
+        // The dot after an id ends the sentence, it is no part of the id.
+        val last = Ui.named("  would take back from Test2: 16 minecraft:diamond.").children()
+        assertEquals("item.minecraft.diamond", (last[1] as TranslatableComponent).key())
+        assertEquals(".", (last[2] as TextComponent).content())
     }
 }
