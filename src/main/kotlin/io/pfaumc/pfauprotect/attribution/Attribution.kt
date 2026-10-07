@@ -15,9 +15,11 @@ import kotlin.math.abs
 // between a block being placed and being set off is the journal's business, not this table's.
 internal const val NOTE_MILLIS = 30_000L
 
-// A block gives way in the tick the support goes or the one after it. Every removal is noted, an
-// explosion included, so this window is what keeps the table the size of one tick's work.
-internal const val SUPPORT_MILLIS = 100L
+// A block gives way in the tick the support goes or up to two after it, and two ticks are 100 ms only at
+// a full 20 TPS: under the very TNT being traced a fall came 206 ms after its support, and was nobody's.
+// The window is wall-clock because a note may be read on another region, whose tick counter is not this
+// one's. Every removal is noted, an explosion included, so a few seconds of them is still a small table.
+internal const val SUPPORT_MILLIS = 2_000L
 
 // Leaves decay on random ticks, a minute on average and several in the tail, long after the log that
 // held them is gone. The note is written when the log goes, so this only has to outlast the decay.
@@ -284,7 +286,7 @@ class Attribution(
 
     /**
      * Belongs on the per-tick task, alongside the other sweep. The removal notes are the table worth
-     * that cadence: they stand for a tenth of a second, and one tick of a vein miner can park
+     * that cadence: they stand for a couple of seconds, and one tick of a vein miner can park
      * thousands of them.
      */
     fun sweepRemovals() {

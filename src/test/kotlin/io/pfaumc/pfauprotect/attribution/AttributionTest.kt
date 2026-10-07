@@ -288,6 +288,16 @@ class AttributionTest {
         assertNull(attribution.supportRemoverAt(at(6, 65, 6)))
     }
 
+    // Concrete powder under a griefer's TNT came down 206 ms after the planks under it, the server
+    // running behind on the very blast, and was filed on nobody while the window was 100 ms.
+    @Test
+    fun `a fall late behind a lagging blast still finds who took its support`() {
+        attribution.removed(at(5, 64, 5), alice)
+
+        clock += 206
+        assertEquals(alice, attribution.supportRemoverAt(at(5, 65, 5))?.actor)
+    }
+
     // Two players mining shoulder to shoulder in one tick: the cell under the column is the one that
     // was holding it up, whatever the scan order over the corners would have said.
     @Test
