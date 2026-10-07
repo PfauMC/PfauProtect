@@ -581,6 +581,18 @@ class BlockLog(
         found
     }
 
+    /** The rows of a position older than `ts`, newest first, at most `limit` of them. */
+    fun rowsBefore(x: Int, y: Int, z: Int, ts: Long, limit: Int): List<BlockRow> = dbLock.read {
+        if (closed) return emptyList()
+        val found = ArrayList<BlockRow>()
+        forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = true) { key, value ->
+            val row = BlockCodec.decodeOrNull(key, value, shared.registries) ?: return@forEachUnder true
+            if (row.timestamp < ts) found += row
+            found.size < limit
+        }
+        found
+    }
+
     // Reads run on any thread, so the native handles may only be freed once every reader has left,
     // and a write arriving from a region thread during shutdown would dereference a freed handle and
     // take the JVM down. Hence: writers first, handles after.

@@ -13,6 +13,7 @@ import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.WorldBlock
+import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.storage.EntityRow
@@ -44,6 +45,25 @@ private val NATURE = setOf(
 )
 
 private fun passable(row: BlockRow) = row.cause == Cause.ROLLBACK || row.actor == null && row.cause in NATURE
+
+// How far back a position is read for what it held before the players a rollback names first touched it.
+private const val ORIGIN_WALK = 64
+
+/**
+ * What a position held before the players a rollback names first touched it, from its rows older than the
+ * window, newest first: back over their rows and past nature and earlier rollbacks, as far as somebody
+ * else's row. Null where the rollback undoes rollbacks, which have no such beginning.
+ */
+internal fun originOf(older: List<BlockRow>, keepsRow: (BlockRow) -> Boolean): Int? {
+    var origin: Int? = null
+    for (row in older) {
+        if (keepsRow(row)) {
+            if (row.cause == Cause.ROLLBACK) return null
+            origin = row.stateBefore
+        } else if (!passable(row)) break
+    }
+    return origin
+}
 
 private val ROW_ORDER = compareBy<BlockRow> { it.eventId }.thenBy { it.ordinal }
 
@@ -117,6 +137,14 @@ class Step(val before: String, val after: String, val payloadBefore: ByteArray?)
 
 /** What undoing a position comes to: `back` is the step whose `before` it returns to, null for none. */
 class Settled(val back: Step?, val conflict: Boolean)
+
+/**
+ * A position the window opens on in the middle of the players' work, standing again as it did before they
+ * first touched it, is done: undone from the window's start it would get back their own TNT, their own
+ * burnt walls. A house an earlier rollback had put back got 153 blocks of dynamite from a later one (D108).
+ */
+fun settle(standing: String, steps: List<Step>, origin: String?): Settled =
+    if (origin != null && blockOf(standing) == blockOf(origin)) Settled(null, conflict = false) else settle(standing, steps)
 
 /**
  * Undoes the rows of one position, newest first, from what stands there now. A row whose `after` is
@@ -225,6 +253,8 @@ class PositionPlan(
     val breaks: List<LedgerEntry> = emptyList(),
     val entities: List<EntityPlan> = emptyList(),
     val dropped: List<UUID> = emptyList(),
+    // What the position held before the players first touched it, where the window opens on their work.
+    val origin: String? = null,
 )
 
 class ChunkPlan(val chunkX: Int, val chunkZ: Int, val positions: List<PositionPlan>)
@@ -308,7 +338,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         )
         if (!page.complete) return tooMuch()
         val (slots, positions) = page.entries.filter(keepsEntry).partition { it.holder is Container }
-        return plan(world, rows + passedBy(rows, nature, ::turf), slots, positions.filter { it.qty < 0 }, entityRows, toTs, unreadable + page.unreadable)
+        return plan(world, rows + passedBy(rows, nature, ::turf), slots, positions.filter { it.qty < 0 }, entityRows, toTs, unreadable + page.unreadable, origins(log, world, rows, fromTs, keepsRow))
     }
 
     /**
@@ -399,7 +429,15 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             }
             if (rows.size + slots.size > MAX_ROLLBACK_ROWS) return tooMuch()
         }
-        return plan(world, rows + passedBy(rows, nature, ::turf), slots, losses, entityRows, toTs, unreadable)
+        return plan(world, rows + passedBy(rows, nature, ::turf), slots, losses, entityRows, toTs, unreadable, origins(log, world, rows, fromTs, keepsRow))
+    }
+
+    // Read off the region threads with the rest of the plan; a window from the beginning has nothing before it.
+    private fun origins(log: BlockLog, world: UUID, rows: List<BlockRow>, fromTs: Long, keepsRow: (BlockRow) -> Boolean): Map<WorldBlock, String> {
+        if (fromTs <= 0) return emptyMap()
+        return rows.mapTo(HashSet()) { Triple(it.x, it.y, it.z) }.mapNotNull { (x, y, z) ->
+            originOf(log.rowsBefore(x, y, z, fromTs, ORIGIN_WALK), keepsRow)?.let(::state)?.let { WorldBlock(world, x, y, z) to it }
+        }.toMap()
     }
 
     private fun plan(
@@ -410,6 +448,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         entityRows: List<EntityRow>,
         toTs: Long,
         unreadable: Int,
+        origins: Map<WorldBlock, String> = emptyMap(),
     ): Reading {
         if (unreadable > 0) return unreadable(unreadable)
         // Given back once already, a posting is skipped — unless what gave it back is being rolled back
@@ -482,7 +521,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             .map {
                 PositionPlan(
                     it, steps[it].orEmpty(), refills[it].orEmpty(), breaks[it].orEmpty(),
-                    entities[it].orEmpty(), dropped[it].orEmpty(),
+                    entities[it].orEmpty(), dropped[it].orEmpty(), origins[it],
                 )
             }
             .groupBy { (it.at.x shr 4) to (it.at.z shr 4) }

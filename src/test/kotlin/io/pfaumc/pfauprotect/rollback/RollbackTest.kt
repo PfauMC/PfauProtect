@@ -259,6 +259,24 @@ class RollbackTest {
         assertEquals(1, reader.leftByThemBefore(listOf(planned), setOf(alice), T0 + 50))
     }
 
+    // Alice put dynamite down before the window and blew it up inside; an earlier rollback had already put the
+    // air back. From the window's start the position would get her dynamite again (D108); it stands as before
+    // her, so there is nothing to do. Where it does not, the window's start is still what it goes back to.
+    @Test
+    fun `a position standing as before the player first touched it is left alone`() {
+        val tnt = "minecraft:tnt[unstable=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, tnt, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, tnt, AIR, Cause.BLK_TNT, T0 + 100, actor = alice)))
+        log.drain()
+
+        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
+        val planned = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, T0 + 50, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
+        val position = planned.chunks.flatMap { it.positions }.single()
+        assertEquals(AIR, position.origin)
+        assertNull(settle(AIR, position.steps, position.origin).back)
+        assertEquals(tnt, settle(STONE, position.steps.map { Step(it.before, STONE, null) }, position.origin).back?.before)
+    }
+
     @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)

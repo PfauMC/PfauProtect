@@ -362,7 +362,7 @@ class ChunkRollback(
         val spots = positions.map { BlockPos(it.at.x, it.at.y, it.at.z) }
         val before = spots.map { standingAt(level, it, codec) }
         val touched = BooleanArray(positions.size)
-        val settles = positions.mapIndexed { i, plan -> settle(before[i].state.asBlockData().asString, plan.steps) }
+        val settles = positions.mapIndexed { i, plan -> settle(before[i].state.asBlockData().asString, plan.steps, plan.origin) }
         val targets = settles.map { settled -> settled.back?.before?.let { if (passing(it)) "minecraft:air" else quiet(it) } }
         // What a source being taken away had run into goes with it, before anything is put back: a plank
         // put back in the middle of the flow would cut the walk off, and lava left running sets fire to
