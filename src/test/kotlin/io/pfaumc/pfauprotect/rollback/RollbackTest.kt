@@ -508,6 +508,9 @@ class RollbackTest {
         assertEquals("minecraft:lever[face=floor,facing=east,powered=true]", quiet("minecraft:lever[face=floor,facing=east,powered=true]"))
         assertEquals("minecraft:light_weighted_pressure_plate[power=4]", quiet("minecraft:light_weighted_pressure_plate[power=4]"))
         assertEquals("minecraft:dispenser[facing=east,triggered=true]", quiet("minecraft:dispenser[facing=east,triggered=true]"))
+        // A leaf's distance is its neighbours' (D112); one a player placed keeps it, never decaying anyway.
+        assertEquals("minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]", quiet("minecraft:oak_leaves[distance=7,persistent=false,waterlogged=false]"))
+        assertEquals("minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]", quiet("minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]"))
         assertEquals("minecraft:stone", quiet("minecraft:stone"))
     }
 

@@ -48,6 +48,7 @@ import net.minecraft.world.entity.EntityType
 import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.ObserverBlock
+import net.minecraft.world.level.block.LeavesBlock
 import net.minecraft.world.level.levelgen.structure.BoundingBox
 import net.minecraft.world.level.block.LiquidBlock
 import net.minecraft.world.level.block.BaseFireBlock
@@ -412,6 +413,13 @@ class ChunkRollback(
             }
         }
         if (apply) reshapeAround(level, spots.filterIndexed { i, _ -> touched[i] })
+        // Leaves put back at distance 1 count their way to a log again: the tick sets the distance and tells the
+        // leaves beside it, which count on from there.
+        if (apply) for (i in positions.indices) {
+            if (!touched[i]) continue
+            val state = level.getBlockState(spots[i])
+            if (state.block is LeavesBlock && !state.getValue(LeavesBlock.PERSISTENT)) level.scheduleTick(spots[i], state.block, 1)
+        }
         if (apply) lift(level, spots.filterIndexed { i, _ -> touched[i] })
         // An observer sees the rollback put a block in front of it, or take the griefer's trigger away, and fires:
         // the flying machine it is part of, just put back, set off again under the rollback's name (D100).

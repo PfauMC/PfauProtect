@@ -557,6 +557,8 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
 
 private val SIGNAL_POWER = Regex("(?<=[\\[,])power=\\d+")
 
+private val LEAF_DISTANCE = Regex("(?<=[\\[,])distance=\\d+")
+
 /**
  * A block as it stands with no signal in it: put back lit, a comparator, a wire or an observer fired whatever
  * stood beside it before it settled, and a machine the rollback put together set off again (D100). The
@@ -567,6 +569,9 @@ private val SIGNAL_POWER = Regex("(?<=[\\[,])power=\\d+")
 internal fun quiet(state: String): String {
     val name = state.substringBefore('[')
     if (name == "minecraft:lever" || name.endsWith("_button") || name.endsWith("_pressure_plate")) return state
+    // A leaf's distance is its neighbours' to count, as a signal is: a leaf that decayed is written down at
+    // distance 7, and put back so it decayed again (D112). Put back at 1, it counts anew on its next tick.
+    if (name.endsWith("_leaves") && "persistent=false" in state) return state.replace(LEAF_DISTANCE, "distance=1")
     val torch = name == "minecraft:redstone_torch" || name == "minecraft:redstone_wall_torch"
     return state.replace("powered=true", "powered=false").replace(SIGNAL_POWER, "power=0")
         .let { if (torch) it.replace("lit=false", "lit=true") else it }
