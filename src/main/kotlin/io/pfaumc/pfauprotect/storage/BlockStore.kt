@@ -581,6 +581,17 @@ class BlockLog(
         found
     }
 
+    /** The first row the position has, or null for none; what stood there before it is what the plane never saw. */
+    fun oldestAt(x: Int, y: Int, z: Int): BlockRow? = dbLock.read {
+        if (closed) return null
+        var row: BlockRow? = null
+        forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = false) { key, value ->
+            row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            row == null
+        }
+        row
+    }
+
     /** The rows of a position older than `ts`, newest first, at most `limit` of them. */
     fun rowsBefore(x: Int, y: Int, z: Int, ts: Long, limit: Int): List<BlockRow> = dbLock.read {
         if (closed) return emptyList()

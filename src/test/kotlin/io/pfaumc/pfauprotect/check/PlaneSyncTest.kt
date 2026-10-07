@@ -245,6 +245,21 @@ class PlaneSyncTest {
         assertEquals(0, report.unrecorded)
     }
 
+    // A house that stood before the plugin gives up its planks to the first blast with nothing booked to set
+    // against them; on a real map that was thousands of positions a pass (O24). Not a fault of the capture.
+    @Test
+    fun `a block that stood before the block plane saw it is not overdrawn when it goes`() {
+        releaseItem(9, 64, 9)
+        blockRow(9, 64, 9, STONE, AIR)
+        drainBoth()
+
+        val report = sync.pass(100, now)
+
+        assertEquals(0, report.overdrawn)
+        assertEquals(1, report.unrecorded)
+        assertEquals(emptyList<PlaneGap>(), report.gaps)
+    }
+
     @Test
     fun `a confirmed holding written off by a guess is a disagreement and not a settled position`() {
         holdItem(10, 64, 10)
