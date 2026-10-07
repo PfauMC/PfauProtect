@@ -15,6 +15,7 @@ import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.LookupTarget
 import io.pfaumc.pfauprotect.command.Lookups
 import io.pfaumc.pfauprotect.command.RowFilter
+import io.pfaumc.pfauprotect.command.offThread
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.PostingRef
@@ -352,9 +353,9 @@ class ChunkRollback(
     private val placed: PlacedForms,
     private val sink: (List<Transfer>) -> Unit,
     // The ledger's forms, from memory: nothing here may read the database.
-    private val formOf: (Long) -> ByteArray? = { null },
+    private val formOf: (Long) -> ByteArray?,
     // Tells the entity capture that a removal is the rollback's own and written by it.
-    private val forget: (UUID) -> Unit = {},
+    private val forget: (UUID) -> Unit,
 ) {
     fun run(level: ServerLevel, chunk: ChunkPlan, actor: UUID?, apply: Boolean): Tally {
         val tally = Tally()
@@ -864,8 +865,8 @@ class Rollbacks(
         apply: Boolean,
         release: () -> Unit,
         rows: String?,
-        leftBefore: Int = 0,
-        since: Long = 0,
+        leftBefore: Int,
+        since: Long,
     ) {
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
@@ -954,12 +955,13 @@ class Rollbacks(
 
     // Following what was given back to whoever holds it reads the ledger, which a region thread may not.
     private fun finishing(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, rows: String?, release: () -> Unit) {
-        Bukkit.getAsyncScheduler().runNow(plugin) {
+        plugin.offThread(
+            sender,
+            "taking back what the rollback at $where gave back failed",
+            "Taking back what the rollback gave back failed; the server log has the details.",
+        ) {
             try {
                 finish(sender, total, read, where, apply, actor, rows)
-            } catch (failure: Throwable) {
-                plugin.logger.log(Level.SEVERE, "taking back what the rollback at $where gave back failed", failure)
-                sender.say("Taking back what the rollback gave back failed; the server log has the details.")
             } finally {
                 release()
             }
@@ -967,7 +969,7 @@ class Rollbacks(
     }
 
     private fun finish(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, rows: String?) {
-        val owed = confiscations.owedFor(total)
+        val owed = owedFor(ledger, total)
         report(sender, total, read, where, apply, rows)
         if (!apply) (sender as? Player)?.let { ghosts.show(it, total.ghosts) }
         // A killed player gets back what fell out of them, wherever it went.

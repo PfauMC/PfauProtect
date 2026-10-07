@@ -128,7 +128,7 @@ internal fun trace(
  * anyone to all of it. Off the region thread: it reads the ledger.
  */
 internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
-    val rowsOf = { pile: ItemEntityRef -> ledger.holderEntries(pile, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
+    val rowsOf = pileRows(ledger)
     val owed = ArrayList<Owed>()
     for (given in tally.traces) {
         if (given.qty > 0) {
@@ -337,8 +337,6 @@ class Confiscations(
     private val sink: (List<Transfer>) -> Unit,
 ) : Listener {
 
-    fun owedFor(tally: Tally): List<Owed> = owedFor(ledger, tally)
-
     // Players one by one; piles together, since there can be dozens of them and none has a name.
     fun describe(owed: List<Owed>): String {
         val players = owed.filter { it.taker is Carrier }.groupBy { it.taker as Carrier }.map { (taker, all) ->
@@ -367,8 +365,8 @@ class Confiscations(
         owed: List<Owed>,
         actor: UUID?,
         sender: CommandSender,
-        births: List<PostingRef> = emptyList(),
-        slots: Map<Long, List<Int>> = emptyMap(),
+        births: List<PostingRef>,
+        slots: Map<Long, List<Int>>,
     ) {
         take(owed.filter { it.taker !is Vanished }, actor, sender) { formId, n -> give(victim, formId, n, actor, sender, slots[formId].orEmpty()) }
         for (gone in owed.filter { it.taker is Vanished }) give(victim, gone.formId, gone.qty, actor, sender, slots[gone.formId].orEmpty())
@@ -386,24 +384,21 @@ class Confiscations(
         for ((taker, all) in owed.groupBy { it.taker }) {
             when (taker) {
                 is Carrier -> {
-                    val player = Bukkit.getPlayer(taker.player)
-                    if (player == null) {
+                    fun oweAll() {
                         for (item in all) {
                             ledger.owe(taker.player, item.formId, item.qty, actor)
                             taken(item.formId, item.qty)
                         }
+                    }
+                    val player = Bukkit.getPlayer(taker.player)
+                    if (player == null) {
+                        oweAll()
                         continue
                     }
                     // A player who leaves between the two is owed it instead. What they hold no more is
                     // looked for in what they put it into.
-                    val fromHands: (Long, Int) -> Unit = { formId, n -> taken(formId, n) }
-                    player.scheduler.run(plugin, { fromPlayer(player, all, actor, sender, fromHands) { item, left -> fromStashes(item, left, actor, sender, taken) } }) {
-                        Bukkit.getAsyncScheduler().runNow(plugin) {
-                            for (item in all) {
-                                ledger.owe(taker.player, item.formId, item.qty, actor)
-                                taken(item.formId, item.qty)
-                            }
-                        }
+                    player.scheduler.run(plugin, { fromPlayer(player, all, actor, sender, taken) { item, left -> fromStashes(item, left, actor, sender, taken) } }) {
+                        Bukkit.getAsyncScheduler().runNow(plugin) { oweAll() }
                     }
                 }
                 // Looking an entity up by its uuid is a tick thread's business, and the pile may lie in any
@@ -644,7 +639,7 @@ class Confiscations(
     }
 
     // On the thread of the region the pile lies in.
-    private fun fromPile(pile: Item, owed: Owed, actor: UUID?, sender: CommandSender, taken: (Long, Int) -> Unit = { _, _ -> }) {
+    private fun fromPile(pile: Item, owed: Owed, actor: UUID?, sender: CommandSender, taken: (Long, Int) -> Unit) {
         if (!pile.isValid) {
             sender.sayNamed("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
             return

@@ -38,6 +38,8 @@ internal fun nearest(ghosts: List<Ghost>, world: UUID, x: Double, y: Double, z: 
  * player went away and came back, a click on the block. Each time it is shown again.
  */
 class Ghosts(private val plugin: Plugin, private val expiryMillis: Long) : Listener {
+    // A class rather than the bare map for its identity: an expiry removes only the preview it was set
+    // for, and a second preview of the same blocks is an equal map.
     private class Shown(val byChunk: Map<Pair<UUID, Long>, List<Ghost>>)
 
     private val shown = ConcurrentHashMap<UUID, Shown>()
