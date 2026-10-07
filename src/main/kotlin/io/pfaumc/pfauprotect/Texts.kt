@@ -61,6 +61,7 @@ object Texts {
         r("  would swap back (.*) from (\\S+) for (.*)\\.") to "  будет обменено обратно у $2: $1 на $3.",
         r("  swapping back (.*) from (\\S+) for (.*):") to "  обмениваю обратно у $2: $1 на $3:",
         r("  took back (\\d+) (\\S+) from the container at (.*) it was put into\\.") to "  изъято $1 $2 из контейнера $3, куда их положили.",
+        r("  took back (\\d+) (\\S+) out of a shulker box lying at (.*)\\.") to "  изъято $1 $2 из шалкерового ящика, лежащего на $3.",
         r("  took back (\\d+) (\\S+) lying in the world\\.") to "  изъято $1 $2, лежавших в мире.",
         r("  took back (\\d+) (\\S+) from (\\S+)\\.") to "  изъято $1 $2 у $3.",
         r("  (\\S+) held only (\\d+) of (\\d+) (\\S+); the rest is beyond reach\\.") to "  у $1 было только $2 из $3 $4; остальное недосягаемо.",
