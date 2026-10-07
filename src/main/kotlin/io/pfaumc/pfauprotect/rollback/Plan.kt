@@ -159,23 +159,32 @@ fun settle(standing: String, steps: List<Step>, origin: String?): Settled =
  * Blocks are compared, not whole states: a fence, a wire and a leaf change their properties with
  * their neighbours and never get a row for it, and comparing strings would make every one of them a
  * conflict. What is put back is the whole state the row recorded.
+ *
+ * Water and lava are one block whatever their level: a flow becomes a source by itself between two
+ * sources, with no row, and the walk that met that source where its row had left a flow stopped there
+ * and put the source back, which drowned the house a sponge had already dried (D109).
  */
 fun settle(standing: String, steps: List<Step>): Settled {
     var state = standing
     var back: Step? = null
     for (step in steps) {
-        when (blockOf(state)) {
-            blockOf(step.after) -> {
+        when {
+            same(state, step.after) -> {
                 state = step.before
                 back = step
             }
-            blockOf(step.before) -> continue
-            blockOf(steps.last().before) -> break
+            same(state, step.before) -> continue
+            same(state, steps.last().before) -> break
             else -> return Settled(back, conflict = true)
         }
     }
     return Settled(back, conflict = false)
 }
+
+private fun fluidOf(state: String): String? =
+    state.substringBefore('[').takeIf { it == "minecraft:water" || it == "minecraft:lava" }
+
+private fun same(a: String, b: String): Boolean = blockOf(a) == blockOf(b) || fluidOf(a)?.let { it == fluidOf(b) } == true
 
 /**
  * One slot posting given back: `qty` above zero is what left the slot and goes back in, below zero is

@@ -277,6 +277,18 @@ class RollbackTest {
         assertEquals(tnt, settle(STONE, position.steps.map { Step(it.before, STONE, null) }, position.origin).back?.before)
     }
 
+    // Alice's water ran in, became a source by itself between two others, and her sponge drank it twice
+    // over. The walk met a source where her row had left a flow, stopped, and put the source back (D109).
+    @Test
+    fun `a flow that became a source by itself is the same water`() {
+        val source = "minecraft:water[level=0]"
+        val flow = "minecraft:water[level=3]"
+        val steps = listOf(step(source, AIR), step(source, AIR), step(AIR, flow))
+        val settled = settle(AIR, steps)
+        assertEquals(AIR, settled.back?.before)
+        assertFalse(settled.conflict)
+    }
+
     @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)
