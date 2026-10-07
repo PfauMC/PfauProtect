@@ -868,7 +868,7 @@ class BlockDestructionListener(
     // The shaped neighbours waiting for their read, one per position and tick: the first look is the
     // state the tick found, and the next change beside it in that tick would only see it half rewritten.
     private val shapeReads = ReadBacks()
-    // Who stands behind dynamite a fire or a blast primed, on its position until the entity appears there.
+    // Who stands behind dynamite just primed, on its position until the entity appears there.
     private val priming = ConcurrentHashMap<WorldBlock, Pair<Attributed, Long>>()
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -1473,6 +1473,9 @@ class BlockDestructionListener(
         val standing = block.blockData
         file(log, listOf(Site(at, block, standing, AIR)), Cause.BLK_TNT, by ?: placer, expectsDrops = false)
         (by ?: placer)?.culprit()?.let { attribution.placed(at, standing.asString, it) }
+        // The entity carries it too: dynamite lit by a redstone block in the air fell and went off where
+        // nobody had put any, and the whole crater was nobody's (D106).
+        (by ?: placer)?.let { priming[at] = it to System.currentTimeMillis() }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
