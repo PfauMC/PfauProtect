@@ -97,18 +97,13 @@ class Energy(private val now: () -> Long = System::currentTimeMillis) {
         val now = now()
         var best: Note? = null
         for (centre in centres) {
-            for (dx in -reach..reach) {
-                for (dy in -reach..reach) {
-                    for (dz in -reach..reach) {
-                        val here = centre.copy(x = centre.x + dx, y = centre.y + dy, z = centre.z + dz)
-                        val note = notes[here] ?: continue
-                        if (now - note.at > ENERGY_MILLIS) continue
-                        if (best == null || note.at > best.at ||
-                            (note.at == best.at && note.by.confidence.id < best.by.confidence.id)
-                        ) {
-                            best = note
-                        }
-                    }
+            for (here in cube(centre, reach)) {
+                val note = notes[here] ?: continue
+                if (now - note.at > ENERGY_MILLIS) continue
+                if (best == null || note.at > best.at ||
+                    (note.at == best.at && note.by.confidence.id < best.by.confidence.id)
+                ) {
+                    best = note
                 }
             }
         }
@@ -233,8 +228,6 @@ class Nudges(private val now: () -> Long = System::currentTimeMillis) {
     private class Note(val by: Attributed, val until: Long)
 
     private val notes = ConcurrentHashMap<UUID, Note>()
-
-    val size: Int get() = notes.size
 
     fun nudged(entity: Entity, by: Attributed) {
         val window = if (entity is Minecart || entity is Boat) VEHICLE_NUDGE_MILLIS else NUDGE_MILLIS
@@ -510,18 +503,16 @@ class RedstoneListener(
         val by = behind.by
         val distance = behind.distance?.let { " " + String.format(Locale.ROOT, "%.1f", it) } ?: ""
         log.submit(
-            listOf(
-                BlockChange(
-                    x = block.x,
-                    y = block.y,
-                    z = block.z,
-                    before = block.blockData.asString,
-                    after = after.asString,
-                    cause = cause,
-                    confidence = by?.confidence ?: Confidence.FACT,
-                    actor = by?.actor,
-                    payloadAfter = type?.let { (it + distance).toByteArray(Charsets.UTF_8) },
-                )
+            BlockChange(
+                x = block.x,
+                y = block.y,
+                z = block.z,
+                before = block.blockData.asString,
+                after = after.asString,
+                cause = cause,
+                confidence = by?.confidence ?: Confidence.FACT,
+                actor = by?.actor,
+                payloadAfter = type?.let { (it + distance).toByteArray(Charsets.UTF_8) },
             )
         )
     }

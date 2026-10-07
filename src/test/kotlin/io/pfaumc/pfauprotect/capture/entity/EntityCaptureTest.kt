@@ -59,9 +59,9 @@ class EntityCaptureTest {
     // one of a farm's crowd, a zombie the night spawned never.
     @Test
     fun `a death with nobody behind it is kept for a mob somebody owns`() {
-        assertTrue(worthRecording(touched = true, keepsItsPlace = false, sameKindInChunk = 50))
-        assertTrue(worthRecording(touched = false, keepsItsPlace = true, sameKindInChunk = 1))
-        assertFalse(worthRecording(touched = false, keepsItsPlace = true, sameKindInChunk = CROWD))
-        assertFalse(worthRecording(touched = false, keepsItsPlace = false, sameKindInChunk = 1))
+        assertTrue(worthRecording(touched = true, keepsItsPlace = false, sameKindInChunk = 50, crowd = 8))
+        assertTrue(worthRecording(touched = false, keepsItsPlace = true, sameKindInChunk = 1, crowd = 8))
+        assertFalse(worthRecording(touched = false, keepsItsPlace = true, sameKindInChunk = 8, crowd = 8))
+        assertFalse(worthRecording(touched = false, keepsItsPlace = false, sameKindInChunk = 1, crowd = 8))
     }
 }

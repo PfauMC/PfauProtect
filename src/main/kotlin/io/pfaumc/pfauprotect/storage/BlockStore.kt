@@ -380,6 +380,8 @@ class BlockLog(
         return true
     }
 
+    fun submit(one: WorldChange): Boolean = submit(listOf(one))
+
     fun drain() {
         if (!closed) progress.drain()
     }

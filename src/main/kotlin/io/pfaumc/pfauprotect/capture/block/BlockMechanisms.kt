@@ -32,7 +32,6 @@ import io.pfaumc.pfauprotect.attribution.energyAt
 import io.pfaumc.pfauprotect.attribution.culprit
 import io.pfaumc.pfauprotect.capture.item.equipmentSlotOf
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
-import io.pfaumc.pfauprotect.capture.item.mutation
 import io.pfaumc.pfauprotect.capture.item.positionOf
 import org.bukkit.Location
 import org.bukkit.Material
@@ -635,7 +634,7 @@ class BlockMechanismListener(
         // a half left alone would go on naming a block that stands nowhere.
         forget(broken.at)
         broken.partner?.let(::forget)
-        gaveBack(remembered, shellForm(state))?.let {
+        gaveBack(remembered, codec.shellOf((state.blockData as CraftBlockData).state.block))?.let {
             transaction += Transfer(
                 cause = Cause.BLOCK_DROP,
                 from = position,
@@ -839,15 +838,6 @@ class BlockMechanismListener(
     private fun rememberedAt(at: WorldBlock) = placed.formAt(at.world, at.x, at.y, at.z)
 
     private fun forget(at: WorldBlock) = placed.clearFormAt(at.world, at.x, at.y, at.z)
-
-    // What the block was made of, not what breaking it yields: a crop answers with the seed it was
-    // planted from, and a block with no item form of its own — fire, a liquid, a portal — answers
-    // with nothing and so is never written off.
-    private fun shellForm(state: BlockState): ByteArray? {
-        val data = state.blockData as CraftBlockData
-        val stack = NmsItemStack(itemOf(data.state.block))
-        return if (stack.isEmpty) null else codec.encode(stack).form
-    }
 
     private fun key(stack: BukkitItemStack?): ItemKey? = codec.encodeOrNull(stack)?.key
 }

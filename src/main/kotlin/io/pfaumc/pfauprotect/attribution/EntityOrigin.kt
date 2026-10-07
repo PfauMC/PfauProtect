@@ -18,7 +18,7 @@ private const val BUILD_REACH = 3
 // The reasons that name a player if anything does. Everything else — a raid, a natural spawn, a
 // breeding pair, a spawner — has no person behind it, and asking after one would put a name on the
 // nearest builder for something they had nothing to do with.
-private val BUILT = setOf(
+internal val BUILT = setOf(
     SpawnReason.BUILD_WITHER,
     SpawnReason.BUILD_SNOWMAN,
     SpawnReason.BUILD_IRONGOLEM,

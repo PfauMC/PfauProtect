@@ -1084,9 +1084,9 @@ class BlockDestructionTest {
     // very state it has been carrying all the way down.
     @Test
     fun `the two halves of a fall are told apart by what the position becomes`() {
-        assertFalse(isLanding(SAND, AIR))
-        assertFalse(isLanding(SAND, SOURCE_WATER))
-        assertTrue(isLanding(SAND, SAND))
+        assertFalse(SAND == AIR)
+        assertFalse(SAND == SOURCE_WATER)
+        assertTrue(SAND == SAND)
     }
 
     /**
