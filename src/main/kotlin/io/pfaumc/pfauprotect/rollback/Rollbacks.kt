@@ -30,6 +30,7 @@ import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManage
 import net.minecraft.util.ProblemReporter
 import net.minecraft.world.Clearable
 import io.pfaumc.pfauprotect.capture.entity.VOLATILE
+import io.pfaumc.pfauprotect.capture.entity.keepingOthersMarks
 import io.pfaumc.pfauprotect.capture.entity.nbtOf
 import io.pfaumc.pfauprotect.capture.entity.snapshotOf
 import io.pfaumc.pfauprotect.capture.entity.changedBetween
@@ -582,8 +583,9 @@ class ChunkRollback(
             return
         }
         val merged = nbtOf(now)
-        for (key in before.keySet()) if (key !in VOLATILE) merged.put(key, before.get(key)!!.copy())
-        for (key in merged.keySet().toList()) if (key !in VOLATILE && !before.contains(key)) merged.remove(key)
+        val wanted = keepingOthersMarks(before, merged)
+        for (key in wanted.keySet()) if (key !in VOLATILE) merged.put(key, wanted.get(key)!!.copy())
+        for (key in merged.keySet().toList()) if (key !in VOLATILE && !wanted.contains(key)) merged.remove(key)
         handle.load(TagValueInput.create(ProblemReporter.DISCARDING, handle.registryAccess(), merged))
         slotsBack(plan, actor, tally)
         filed(plan, EntityKind.CHANGED, actor, before = now, after = snapshotOf(handle))
