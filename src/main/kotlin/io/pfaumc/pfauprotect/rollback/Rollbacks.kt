@@ -809,13 +809,18 @@ class Rollbacks(
                 val refused = readings.filterIsInstance<Refused>().firstOrNull()
                 val plans = readings.filterIsInstance<Planned>()
                 val positions = plans.sumOf { it.positions }
+                val limit = io.pfaumc.pfauprotect.Settings.maxRollbackPositions
                 when {
-                    refused != null -> {
-                        sender.say("Rollback refused: ${refused.reason}.")
-                        release()
-                    }
-                    positions > io.pfaumc.pfauprotect.Settings.maxRollbackPositions -> {
-                        sender.say("Rollback refused: ${reader.tooMany(positions).reason}.")
+                    refused != null || positions > limit -> {
+                        sender.say("Rollback refused: ${(refused ?: reader.tooMany(positions)).reason}.")
+                        // How to cut it, worked out, rather than left to tries: a griefer's 52 220 positions
+                        // were rolled back by hand in four squares of radius 32.
+                        val over = refused?.positions ?: positions.takeIf { it > limit }
+                        if (over != null && event == null && !query.global && radius != null) {
+                            val pieces = kotlin.math.ceil(kotlin.math.sqrt(over.toDouble() / limit)).toInt()
+                            val side = (2 * radius + 1 + pieces - 1) / pieces
+                            sender.say("  cut it into $pieces×$pieces squares: radius:${side / 2} around points $side apart.")
+                        }
                         release()
                     }
                     else -> {

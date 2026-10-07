@@ -29,8 +29,6 @@ internal const val MAX_ROLLBACK_ROWS = 100_000
 // rows are keyed by position before time, so a window costs the whole history of every chunk it reads.
 internal const val BLOCK_WALK_BUDGET = 2_000_000
 
-// The vanilla `/fill` limit: as many positions as the server lets one command write.
-internal const val MAX_ROLLBACK_POSITIONS = 32_768
 
 // The entity rows that say what an entity was before: the rest only mark an event at a place.
 private val STORIES = setOf(EntityKind.REMOVED, EntityKind.CREATED, EntityKind.CHANGED, EntityKind.MOVED)
@@ -270,7 +268,8 @@ class ChunkPlan(val chunkX: Int, val chunkZ: Int, val positions: List<PositionPl
 
 sealed interface Reading
 
-class Refused(val reason: String) : Reading
+// `positions` is set where the refusal is the position limit, which a smaller radius gets under.
+class Refused(val reason: String, val positions: Int? = null) : Reading
 
 // `deaths` are players killed by those the filter names: what fell out of them goes back to them (SPEC-v7 §11).
 class Planned(
@@ -542,7 +541,8 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
 
     internal fun tooMany(positions: Int) = Refused(
         "$positions positions changed in that window, more than the ${io.pfaumc.pfauprotect.Settings.maxRollbackPositions} one rollback " +
-            "may write; narrow the radius or the time"
+            "may write; narrow the radius or the time",
+        positions,
     )
 
     private fun tooMuch() = Refused(

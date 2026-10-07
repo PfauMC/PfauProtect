@@ -21,7 +21,7 @@ object Settings {
     @Volatile var disabledCauses: Set<Cause> = emptySet()
 
     @Volatile var maxRadius = 200
-    @Volatile var maxRollbackPositions = 32_768
+    @Volatile var maxRollbackPositions = 131_072
     @Volatile var freshMillis = 10 * 60 * 1000L
     @Volatile var crowd = 8
 

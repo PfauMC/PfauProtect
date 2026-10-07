@@ -48,6 +48,8 @@ object Texts {
         r("Another rollback is still running; apply again once it has reported\\.") to "Другой откат ещё идёт; примени снова, когда он отчитается.",
         r("Rollback refused: (\\d+) positions changed in that window, more than the (\\d+) one rollback may write; narrow the radius or the time\\.") to
             "Откат отклонён: за это окно изменилось позиций: $1, а один откат записывает не больше $2; сузь радиус или время.",
+        r("  cut it into (\\d+)×(\\d+) squares: radius:(\\d+) around points (\\d+) apart\\.") to
+            "  раздели на квадраты $1×$2: radius:$3, центры шагом $4.",
         r("Rollback refused: that window holds more history than one rollback reads; narrow the radius or the time\\.") to
             "Откат отклонён: в этом окне больше истории, чем читает один откат; сузь радиус или время.",
         r("Rollback refused: (\\d+) rows in that window could not be read by this build, and a rollback over part of the history would put back part of the place; nothing was done\\.") to

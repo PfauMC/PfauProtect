@@ -18,7 +18,7 @@ lookup:
 
 rollback:
   # The most positions one rollback puts back; a larger one is refused and has to be cut by time.
-  max-positions: 32768
+  max-positions: 131072
 
 mobs:
   # How long a change a player made around a mob answers for its death: water let in, a floor taken away.
