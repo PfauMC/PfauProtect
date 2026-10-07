@@ -58,8 +58,8 @@ internal fun keepsItems(type: Material): Boolean =
         type == Material.CAMPFIRE || type == Material.SOUL_CAMPFIRE || type == Material.LECTERN ||
         type == Material.FLOWER_POT || type.name.endsWith("_SHELF")
 
-// What a click did to a block's slots: each slot that holds more of a form than before took it in,
-// each that holds less gave it out.
+// What a click did to a block's slots, or a mob to its pocket: each slot that holds more of a form than
+// before took it in, each that holds less gave it out.
 internal fun slotDiff(before: List<Stack?>, after: List<Stack?>): List<SlotChange> {
     val changes = ArrayList<SlotChange>()
     for (slot in 0 until maxOf(before.size, after.size)) {
@@ -85,7 +85,7 @@ class HolderListener(
     private val codec: ItemFormCodec,
     private val origins: SpawnOrigins,
     // Runs a task on the block's own region a tick later.
-    private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
+    private val later: (Block, () -> Unit) -> Unit,
 ) : Listener {
 
     private class Handed(val player: Player, val hand: EquipmentSlot, val form: ByteArray?, val tick: Int)
@@ -146,7 +146,7 @@ class HolderListener(
             is BlockInventoryHolder -> state.inventory.contents.toList()
             else -> return null
         }
-        return stacks.map { stack -> codec.encodeOrNull(stack)?.let { Stack(it.key, it.count) } }
+        return stacks.map(codec::stackOf)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

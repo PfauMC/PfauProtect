@@ -3,6 +3,7 @@ package io.pfaumc.pfauprotect.capture.item
 import org.bukkit.Material
 import com.destroystokyo.paper.event.entity.EntityAddToWorldEvent
 import io.papermc.paper.event.entity.EntityCompostItemEvent
+import io.pfaumc.pfauprotect.capture.block.SlotChange
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
@@ -73,25 +74,12 @@ internal fun carriesInventory(entity: Entity) = entity is Mob && entity is Inven
 
 internal class Pocket(val slot: Int, val key: ItemKey, val count: Int)
 
-internal class PocketChange(val slot: Int, val key: ItemKey, val qty: Int, val gained: Boolean)
-
 /** Slot by slot, what went between two readings of one pocket. */
-internal fun pocketChanges(before: List<Pocket>, after: List<Pocket>): List<PocketChange> {
-    val was = before.associateBy { it.slot }
-    val now = after.associateBy { it.slot }
-    val changes = ArrayList<PocketChange>()
-    for (slot in (was.keys + now.keys).sorted()) {
-        val old = was[slot]
-        val new = now[slot]
-        if (old != null && new != null && old.key.form.contentEquals(new.key.form)) {
-            val delta = new.count - old.count
-            if (delta != 0) changes += PocketChange(slot, new.key, kotlin.math.abs(delta), delta > 0)
-            continue
-        }
-        if (old != null) changes += PocketChange(slot, old.key, old.count, gained = false)
-        if (new != null) changes += PocketChange(slot, new.key, new.count, gained = true)
-    }
-    return changes
+internal fun pocketChanges(before: List<Pocket>, after: List<Pocket>): List<SlotChange> = slotDiff(slots(before), slots(after))
+
+private fun slots(pockets: List<Pocket>): List<Stack?> {
+    val bySlot = pockets.associate { it.slot to Stack(it.key, it.count) }
+    return List((pockets.maxOfOrNull { it.slot } ?: -1) + 1) { bySlot[it] }
 }
 
 /**
@@ -100,22 +88,22 @@ internal fun pocketChanges(before: List<Pocket>, after: List<Pocket>): List<Pock
  * before it finds out there is no bed for a child. Anything else is an edit nobody saw.
  */
 internal fun villagerGuess(
-    changes: List<PocketChange>,
+    changes: List<SlotChange>,
     wheat: (ByteArray) -> Boolean,
     bread: (ByteArray) -> Boolean,
     food: (ByteArray) -> Boolean,
 ): List<Cause> {
     val causes = MutableList(changes.size) { Cause.INVENTORY_LOAD }
-    val baked = changes.filter { it.gained && bread(it.key.form) }.sumOf { it.qty }
-    val spent = changes.filter { !it.gained && wheat(it.key.form) }.sumOf { it.qty }
+    val baked = changes.filter { it.gain && bread(it.key.form) }.sumOf { it.qty }
+    val spent = changes.filter { !it.gain && wheat(it.key.form) }.sumOf { it.qty }
     if (baked > 0 && spent == 3 * baked) {
         changes.forEachIndexed { i, change ->
-            if (!change.gained && wheat(change.key.form)) causes[i] = Cause.CRAFT_CONSUME
-            if (change.gained && bread(change.key.form)) causes[i] = Cause.CRAFT_RESULT
+            if (!change.gain && wheat(change.key.form)) causes[i] = Cause.CRAFT_CONSUME
+            if (change.gain && bread(change.key.form)) causes[i] = Cause.CRAFT_RESULT
         }
     }
     val rest = changes.indices.filter { causes[it] == Cause.INVENTORY_LOAD }
-    if (rest.isNotEmpty() && rest.all { !changes[it].gained && food(changes[it].key.form) }) {
+    if (rest.isNotEmpty() && rest.all { !changes[it].gain && food(changes[it].key.form) }) {
         for (i in rest) causes[i] = Cause.CONSUME_FOOD
     }
     return causes
@@ -129,7 +117,7 @@ internal fun villagerGuess(
  * and the rest went from where it was. What is left over on either side after that changed besides, as
  * a villager eats a slot empty just before it is saved, and comes back slot by slot.
  */
-internal fun pocketShifts(before: List<Pocket>, after: List<Pocket>): Pair<List<Pair<Pocket, Pocket>>, List<PocketChange>> {
+internal fun pocketShifts(before: List<Pocket>, after: List<Pocket>): Pair<List<Pair<Pocket, Pocket>>, List<SlotChange>> {
     val left = after.toMutableList()
     val gone = ArrayList<Pocket>()
     val moves = ArrayList<Pair<Pocket, Pocket>>()
@@ -161,13 +149,12 @@ internal class PocketLabel(
     val other: Holder,
     val cause: Cause,
     var qty: Int,
-    val actor: UUID? = null,
     val placing: WorldBlock? = null,
     // Where a pickup the pocket did not take went instead.
     val hand: Int? = null,
 ) {
-    fun fits(change: PocketChange) =
-        qty > 0 && gained == change.gained && (form == null || form.contentEquals(change.key.form))
+    fun fits(change: SlotChange) =
+        qty > 0 && gained == change.gain && (form == null || form.contentEquals(change.key.form))
 }
 
 /**
@@ -182,9 +169,9 @@ internal fun explainPocket(
     after: List<Pocket>,
     waiting: List<PocketLabel>,
     held: (PocketLabel) -> Boolean,
-): List<Pair<PocketChange, PocketLabel?>> {
-    val out = ArrayList<Pair<PocketChange, PocketLabel?>>()
-    fun explain(change: PocketChange) {
+): List<Pair<SlotChange, PocketLabel?>> {
+    val out = ArrayList<Pair<SlotChange, PocketLabel?>>()
+    fun explain(change: SlotChange) {
         var left = change.qty
         for (label in waiting) {
             if (left <= 0) break
@@ -192,9 +179,9 @@ internal fun explainPocket(
             val qty = minOf(left, label.qty)
             label.qty -= qty
             left -= qty
-            out += PocketChange(change.slot, change.key, qty, change.gained) to label
+            out += SlotChange(change.slot, change.key, qty, change.gain) to label
         }
-        if (left > 0) out += PocketChange(change.slot, change.key, left, change.gained) to null
+        if (left > 0) out += SlotChange(change.slot, change.key, left, change.gain) to null
     }
     pocketChanges(before, after).forEach(::explain)
     for (label in waiting) {
@@ -202,10 +189,10 @@ internal fun explainPocket(
         if (label.hand == null || label.qty <= 0 || held(label)) continue
         val slot = (after + before).firstOrNull { it.key.form.contentEquals(form) }?.slot
             ?: generateSequence(0) { it + 1 }.first { free -> after.none { it.slot == free } }
-        val through = PocketChange(slot, ItemKey(form, null), label.qty, gained = true)
+        val through = SlotChange(slot, ItemKey(form, null), label.qty, gain = true)
         out += through to label
         label.qty = 0
-        explain(PocketChange(slot, through.key, through.qty, gained = false))
+        explain(SlotChange(slot, through.key, through.qty, gain = false))
     }
     return out
 }
@@ -245,7 +232,7 @@ class MobInventories(
     private val placed: PlacedForms,
     private val sink: (List<Transfer>) -> Unit,
     // Runs a task on the entity's own scheduler a tick later.
-    private val later: (Entity, () -> Unit) -> Unit = { _, _ -> },
+    private val later: (Entity, () -> Unit) -> Unit,
 ) : Listener {
     private val labels = ConcurrentHashMap<UUID, MutableList<PocketLabel>>()
 
@@ -262,7 +249,7 @@ class MobInventories(
 
     private fun bookedFood(mob: Entity): Int? = mob.persistentDataContainer.get(FOOD_KEY, PersistentDataType.INTEGER)
 
-    private fun foodPoints(change: PocketChange) =
+    private fun foodPoints(change: SlotChange) =
         (codec.decode(change.key.form, 1, null).get(DataComponents.VILLAGER_FOOD)?.nutrition() ?: 0) * change.qty
 
     internal fun forget(mob: Entity) = book(mob, emptyList())
@@ -309,7 +296,7 @@ class MobInventories(
             if (label == null) continue
             val slot = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + change.slot)
             label.placing?.let { placed.setFormAt(it.world, it.x, it.y, it.z, change.key.form) }
-            rows += row(change, slot, label.other, label.cause, change.qty, timestamp, Confidence.FACT, label.actor)
+            rows += row(change, slot, label.other, label.cause, timestamp, Confidence.FACT)
         }
         // A breeding names what both parents ate, and their food points moved for that as well.
         val fed = explained.filter { it.second?.cause == Cause.CONSUME_FOOD }.sumOf { foodPoints(it.first) }
@@ -324,7 +311,7 @@ class MobInventories(
      */
     private fun guessed(
         mob: Entity,
-        unexplained: List<PocketChange>,
+        unexplained: List<SlotChange>,
         timestamp: Long,
         foodBefore: Int?,
         fed: Int = 0,
@@ -337,7 +324,7 @@ class MobInventories(
             val slot = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + change.slot)
             val cause = causes?.get(i) ?: Cause.INVENTORY_LOAD
             val confidence = if (ate && cause == Cause.CONSUME_FOOD) Confidence.FACT else Confidence.INFERRED
-            row(change, slot, Void, cause, change.qty, timestamp, confidence, null)
+            row(change, slot, Void, cause, timestamp, confidence)
         }
     }
 
@@ -370,26 +357,16 @@ class MobInventories(
 
     private fun isVillagerFood(form: ByteArray) = codec.decode(form, 1, null).has(DataComponents.VILLAGER_FOOD)
 
-    private fun row(
-        change: PocketChange,
-        slot: Holder,
-        other: Holder,
-        cause: Cause,
-        qty: Int,
-        timestamp: Long,
-        confidence: Confidence,
-        actor: UUID?,
-    ) = Transfer(
-        cause = cause,
-        from = if (change.gained) other else slot,
-        to = if (change.gained) slot else other,
-        form = change.key.form,
-        damage = change.key.damage,
-        qty = qty,
-        timestamp = timestamp,
-        confidence = confidence,
-        actor = actor,
-    )
+    private fun row(change: SlotChange, slot: Holder, other: Holder, cause: Cause, timestamp: Long, confidence: Confidence) =
+        Transfer(
+            cause = cause,
+            from = if (change.gain) other else slot,
+            to = if (change.gain) slot else other,
+            key = change.key,
+            qty = change.qty,
+            timestamp = timestamp,
+            confidence = confidence,
+        )
 
     // A pocket loaded with its chunk comes back packed; the slots it moved between are written before
     // anything reads the pocket against its copy. Whatever else it did since the copy, as a villager
@@ -416,8 +393,7 @@ class MobInventories(
                 cause = Cause.INVENTORY_LOAD,
                 from = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + was.slot),
                 to = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + now.slot),
-                form = now.key.form,
-                damage = now.key.damage,
+                key = now.key,
                 qty = now.count,
                 timestamp = timestamp,
             )

@@ -33,6 +33,7 @@ import io.pfaumc.pfauprotect.attribution.culprit
 import io.pfaumc.pfauprotect.capture.item.equipmentSlotOf
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
 import io.pfaumc.pfauprotect.capture.item.positionOf
+import io.pfaumc.pfauprotect.capture.item.stackOf
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.block.Block
@@ -603,7 +604,7 @@ class BlockMechanismListener(
     private fun contentsOf(block: Block): List<Stack?>? {
         val inventory = (block.getState(false) as? ContainerBlock)?.inventory ?: return null
         return (0 until inventory.size).map { slot ->
-            codec.encodeOrNull(inventory.getItem(slot))?.let { Stack(it.key, it.count) }
+            codec.stackOf(inventory.getItem(slot))
         }
     }
 

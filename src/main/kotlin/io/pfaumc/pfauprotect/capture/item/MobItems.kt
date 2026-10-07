@@ -3,6 +3,7 @@ import org.bukkit.event.vehicle.VehicleCreateEvent
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntitySlot
+import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
@@ -57,7 +58,6 @@ import org.bukkit.event.hanging.HangingBreakEvent
 import org.bukkit.event.player.PlayerFishEvent
 import org.bukkit.event.player.PlayerHarvestBlockEvent
 import org.bukkit.event.player.PlayerShearEntityEvent
-import org.bukkit.event.player.PlayerUnleashEntityEvent
 import org.bukkit.persistence.PersistentDataType
 import java.util.UUID
 import net.minecraft.world.entity.EquipmentSlot as NmsEquipmentSlot
@@ -113,10 +113,10 @@ internal fun giftFrom(entity: Entity) =
  * as wolf armour does under the hits the wolf would have taken, and breaks away with no drop and no
  * event of its own.
  */
-internal fun wornThrough(stack: net.minecraft.world.item.ItemStack, damage: Int): Boolean =
-    stack.isDamageableItem && stack.damageValue + damage >= stack.maxDamage
-
-internal fun wornThrough(item: BukkitItemStack, damage: Int): Boolean = wornThrough(CraftItemStack.unwrap(item), damage)
+internal fun wornThrough(item: BukkitItemStack, damage: Int): Boolean {
+    val stack = CraftItemStack.unwrap(item)
+    return stack.isDamageableItem && stack.damageValue + damage >= stack.maxDamage
+}
 
 /** Which booked slot a dropped form came out of, and whether it is the whole of what was booked there. */
 internal fun heldSlotOf(held: Map<Int, ByteArray>, form: ByteArray): Int? =
@@ -148,9 +148,9 @@ class MobItemListener(
     private val codec: ItemFormCodec,
     private val pending: TickCoalescer,
     private val origins: SpawnOrigins,
-    private val inventories: MobInventories? = null,
+    private val inventories: MobInventories,
     // Runs a task on the region of the location a tick later.
-    private val later: (Location, () -> Unit) -> Unit = { _, _ -> },
+    private val later: (Location, () -> Unit) -> Unit,
 ) : Listener {
     // A boat, a minecart, a frame is removed before it drops what it was made of: what it booked
     // stays here for that drop until the next tick. Touched on the region that owns the entity.
@@ -282,7 +282,7 @@ class MobItemListener(
         // A villager sharing food, an allay handing over what it collected: out of the pocket, which
         // has already given it up. Asked first, because an allay goes on holding the item it was given
         // while it hands over the same kind out of its pocket.
-        val pocket = if (carriesInventory(entity)) inventories?.thrown(entity, encoded.form) else null
+        val pocket = if (carriesInventory(entity)) inventories.thrown(entity, encoded.form) else null
         val slot = if (pocket != null) null else claimHeld(heldBy(entity), removed[entity.uniqueId], encoded.form)
         val booked = slot?.let {
             unbookHeld(entity, it)
@@ -370,14 +370,10 @@ class MobItemListener(
         }
     }
 
-    // The lead comes off the mob as an item in the same call.
+    // The lead comes off the mob as an item in the same call. A player's unleashing has no handler list
+    // of its own, so it arrives here as well.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onUnleash(event: EntityUnleashEvent) {
-        if (event.isDropLeash) unleashed.set(Marked(event.entity.uniqueId, Bukkit.getCurrentTick()))
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    fun onPlayerUnleash(event: PlayerUnleashEntityEvent) {
         if (event.isDropLeash) unleashed.set(Marked(event.entity.uniqueId, Bukkit.getCurrentTick()))
     }
 
@@ -395,40 +391,35 @@ class MobItemListener(
         val left = IntArray(inventory?.size ?: 0) { inventory?.get(it)?.amount ?: 0 }
         // A piglin spills its pocket and a villager keeps it; either way the pocket booked is what
         // went, since a piglin's is already empty by the time this is raised.
-        val pockets = if (carriesInventory(mob)) inventories?.booked(mob) else null
-        val pocketLeft = IntArray(pockets?.size ?: 0) { pockets!![it].count }
+        val pockets = if (carriesInventory(mob)) inventories.booked(mob) else emptyList()
+        val pocketLeft = IntArray(pockets.size) { pockets[it].count }
         val drops = event.drops.map { codec.encodeOrNull(it) }
         // The game clears a dying mob's equipment only after this event, so the slots still hold it.
         val holding = held.mapNotNull { (slot, form) -> holding(mob, slot, form)?.let { slot to it } }.toMap()
+        // Takes what a drop still needs out of each slot that fits, as far as what is left in it goes,
+        // and answers what none of them covered.
+        fun spend(need: Int, key: ItemKey, left: IntArray, fits: (Int) -> Boolean, from: (Int) -> Holder): Int {
+            var rest = need
+            for (slot in left.indices) {
+                if (rest <= 0) break
+                if (left[slot] <= 0 || !fits(slot)) continue
+                val qty = minOf(rest, left[slot])
+                left[slot] -= qty
+                rest -= qty
+                origins.expect(from(slot), Cause.CONTAINER_BREAK_DROP, key, spot, qty, killer, DEATH_REACH, tag = mob.uniqueId)
+            }
+            return rest
+        }
         for ((index, dropped) in event.drops.withIndex()) {
             val encoded = drops[index] ?: continue
-            var need = encoded.count
-            if (inventory != null) {
-                for (slot in inventory.indices) {
-                    if (need <= 0) break
-                    if (left[slot] <= 0 || inventory[slot]?.isSimilar(dropped) != true) continue
-                    val qty = minOf(need, left[slot])
-                    left[slot] -= qty
-                    need -= qty
-                    val booked = horseSlot(slot)
-                    // A saddle put on with a click is booked on the mob as well; it has fallen out here.
-                    held.remove(booked)
-                    val from = EntitySlot(mob.uniqueId, booked)
-                    origins.expect(from, Cause.CONTAINER_BREAK_DROP, encoded.key, spot, qty, killer, DEATH_REACH, tag = mob.uniqueId)
-                }
+            var need = spend(encoded.count, encoded.key, left, { inventory?.get(it)?.isSimilar(dropped) == true }) { slot ->
+                val booked = horseSlot(slot)
+                // A saddle put on with a click is booked on the mob as well; it has fallen out here.
+                held.remove(booked)
+                EntitySlot(mob.uniqueId, booked)
             }
-            if (need <= 0) continue
-            if (pockets != null) {
-                for (index in pockets.indices) {
-                    if (need <= 0) break
-                    val pocket = pockets[index]
-                    if (pocketLeft[index] <= 0 || !pocket.key.form.contentEquals(encoded.form)) continue
-                    val qty = minOf(need, pocketLeft[index])
-                    pocketLeft[index] -= qty
-                    need -= qty
-                    val from = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + pocket.slot)
-                    origins.expect(from, Cause.CONTAINER_BREAK_DROP, encoded.key, spot, qty, killer, DEATH_REACH, tag = mob.uniqueId)
-                }
+            need = spend(need, encoded.key, pocketLeft, { pockets[it].key.form.contentEquals(encoded.form) }) {
+                EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + pockets[it].slot)
             }
             if (need <= 0) continue
             val later = drops.subList(index + 1, drops.size).mapNotNull { it?.takeIf { d -> d.form.contentEquals(encoded.form) }?.count }
@@ -447,11 +438,11 @@ class MobItemListener(
             pending.add(EntitySlot(mob.uniqueId, slot), Void, Cause.MOB_EQUIPMENT_LOST, ItemKey(form, null), holding[slot] ?: 1, killer)
         }
         for (slot in HELD_SLOTS) unbookHeld(mob, slot)
-        pockets?.forEachIndexed { index, pocket ->
+        pockets.forEachIndexed { index, pocket ->
             val from = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + pocket.slot)
             pending.add(from, Void, Cause.MOB_EQUIPMENT_LOST, pocket.key, pocketLeft[index], killer)
         }
-        if (pockets != null) inventories?.forget(mob)
+        if (carriesInventory(mob)) inventories.forget(mob)
     }
 
     // How many of the booked form an equipment slot holds right now; nothing for a slot that is not
@@ -465,7 +456,6 @@ class MobItemListener(
     // A pocket that leaves the world other than by death or with its chunk: a villager struck into a
     // witch, a plugin removing a piglin. Nothing carries it on.
     private fun pocketGone(entity: Entity) {
-        val inventories = inventories ?: return
         if (!carriesInventory(entity)) return
         for (pocket in inventories.booked(entity)) {
             val from = EntitySlot(entity.uniqueId, MOB_INVENTORY_BASE + pocket.slot)

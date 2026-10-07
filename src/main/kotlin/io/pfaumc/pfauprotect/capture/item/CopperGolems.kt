@@ -13,7 +13,6 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.inventory.EquipmentSlot
-import org.bukkit.inventory.Inventory
 import io.papermc.paper.event.entity.EntityEquipmentChangedEvent
 import org.bukkit.block.Container as ContainerBlock
 import java.util.UUID
@@ -41,7 +40,7 @@ class CopperGolemListener(
     private val codec: ItemFormCodec,
     private val sink: (List<Transfer>) -> Unit,
     // Runs a task every tick on the entity's own scheduler until it answers false.
-    private val watch: (CopperGolem, () -> Boolean) -> Unit = { _, _ -> },
+    private val watch: (CopperGolem, () -> Boolean) -> Unit,
 ) : Listener {
     private class Target(
         val block: Block,
@@ -77,14 +76,10 @@ class CopperGolemListener(
 
     private fun contents(block: Block): Map<Holder, Stack>? {
         val inventory = (block.getState(false) as? ContainerBlock)?.inventory ?: return null
-        return slotsOf(inventory)
-    }
-
-    private fun slotsOf(inventory: Inventory): Map<Holder, Stack>? {
         val holders = containerHolders(inventory) ?: return null
         val stacks = HashMap<Holder, Stack>()
         for (slot in 0 until inventory.size) {
-            codec.encodeOrNull(inventory.getItem(slot))?.let { stacks[holders(slot)] = Stack(it.key, it.count) }
+            codec.stackOf(inventory.getItem(slot))?.let { stacks[holders(slot)] = it }
         }
         return stacks
     }
@@ -121,8 +116,7 @@ class CopperGolemListener(
             cause = if (took) Cause.CONTAINER_REMOVE else Cause.CONTAINER_ADD,
             from = if (took) slot else hand,
             to = if (took) hand else slot,
-            form = key.form,
-            damage = key.damage,
+            key = key,
             qty = qty,
             timestamp = timestamp,
         )

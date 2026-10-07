@@ -95,6 +95,8 @@ private const val OFFHAND_SLOT = 40
 
 data class Stack(val key: ItemKey, val count: Int)
 
+internal fun ItemFormCodec.stackOf(stack: BukkitItemStack?): Stack? = encodeOrNull(stack)?.let { Stack(it.key, it.count) }
+
 // What one pass saw. Which container items were in view is part of that and not a detail: a row filed
 // under a container is only comparable against a pass that had the same container in front of it.
 class Snapshot(
@@ -129,16 +131,8 @@ internal fun comparable(before: Snapshot, after: Snapshot): Pair<Snapshot, Snaps
 internal fun namingRows(after: Snapshot, timestamp: Long): List<List<Transfer>> =
     after.named.mapNotNull { (holder, naming) ->
         val stack = after.stacks[holder] ?: return@mapNotNull null
-        fun row(from: Holder, to: Holder, key: ItemKey) = Transfer(
-            cause = Cause.CONTAINER_NAMED,
-            from = from,
-            to = to,
-            form = key.form,
-            damage = key.damage,
-            qty = stack.count,
-            timestamp = timestamp,
-            kind = Kind.MUTATE,
-        )
+        fun row(from: Holder, to: Holder, key: ItemKey) =
+            Transfer(Cause.CONTAINER_NAMED, from, to, key, stack.count, timestamp, kind = Kind.MUTATE)
         listOf(row(holder, Void, naming.unnamed), row(Void, holder, stack.key))
     }
 
@@ -331,16 +325,6 @@ internal fun playerHolders(uuid: UUID, inventory: PlayerInventory): (Int) -> Hol
     return { slot -> if (slot < storageSize) PlayerInv(uuid, slot) else PlayerEquip(uuid, slot) }
 }
 
-// A transformation reaches the pass as ends that pair with nothing, and a `Void` on one side is what
-// marks them: the ingredients go nowhere and the product comes from nowhere. Gathered under one
-// transaction they can be read back from any one of them; left apart they are unrelated losses and an
-// unexplained gain, which is the shape a laundered stack has too.
-//
-// Anything else the same pass turned up happened for its own reasons and keeps them.
-// What taking the result out of a station turns one thing into another for. A station whose recipe
-// only ever rearranges whole items — a workbench, and everything folded into it: dyeing, a signed
-// book, a copied banner, a scaled map — consumes and produces rather than mutates, so its two sides
-// carry the ordinary form. The rest hand back the very item that went in, changed.
 // The special recipes that copy or recolour rather than make, named by the game's own recipe key.
 // Dyeing and copying a banner are a recipe per item or per colour: `leather_chestplate_dyed`,
 // `red_shulker_box`, `white_banner_duplicate`.
@@ -356,6 +340,10 @@ private fun specialCraft(key: String): Cause? = when {
     else -> SPECIAL_CRAFTS[key]
 }
 
+// What taking the result out of a station turns one thing into another for. A station whose recipe
+// only ever rearranges whole items — a workbench, and everything folded into it: dyeing, a signed
+// book, a copied banner, a scaled map — consumes and produces rather than mutates, so its two sides
+// carry the ordinary form. The rest hand back the very item that went in, changed.
 internal fun shiftOf(top: Inventory): Shift? = when (top) {
     // Read while the click is delivered, like the smithing recipe below: the match is gone after it.
     is CraftingInventory -> (top.recipe as? Keyed)?.key?.takeIf { it.namespace == "minecraft" }?.let { specialCraft(it.key) }
@@ -395,6 +383,12 @@ internal fun withoutForeignEnds(moves: List<Move>, shift: Shift?): List<Move> {
 
 private fun isForeign(holder: Holder) = holder is Container || holder is EntitySlot
 
+// A transformation reaches the pass as ends that pair with nothing, and a `Void` on one side is what
+// marks them: the ingredients go nowhere and the product comes from nowhere. Gathered under one
+// transaction they can be read back from any one of them; left apart they are unrelated losses and an
+// unexplained gain, which is the shape a laundered stack has too.
+//
+// Anything else the same pass turned up happened for its own reasons and keeps them.
 internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
     if (shift == null) return moves.map { listOf(it) }
     val transformed = ArrayList<Move>()
@@ -470,8 +464,7 @@ internal fun transferOf(move: Move, timestamp: Long, kind: Kind = Kind.TRANSFER)
     cause = move.cause,
     from = move.from,
     to = move.to,
-    form = move.key.form,
-    damage = move.key.damage,
+    key = move.key,
     qty = move.qty,
     timestamp = timestamp,
     // A creative copy leaves the stack it was copied from where it was: the copy is a second carrier,
@@ -588,8 +581,7 @@ class ContainerCaptureListener(
         for (slot in 0 until top.size) {
             val holder = holders(slot) as? Container ?: return
             positions += holder.copy(slot = 0)
-            val encoded = codec.encodeOrNull(top.getItem(slot)) ?: continue
-            live.getOrPut(holder) { HashMap() }.merge(FormKey(encoded.form), encoded.count, Int::plus)
+            live.count(holder, top.getItem(slot))
         }
         val at = System.currentTimeMillis()
         if (!plugin.isEnabled) return
@@ -601,17 +593,19 @@ class ContainerCaptureListener(
     // Every slot the ledger files under the player's own name, ender chest included, by form.
     private fun ownSlots(player: Player): Map<Holder, Map<FormKey, Int>> {
         val slots = HashMap<Holder, HashMap<FormKey, Int>>()
-        fun count(holder: Holder, stack: BukkitItemStack?) {
-            val encoded = codec.encodeOrNull(stack) ?: return
-            slots.getOrPut(holder) { HashMap() }.merge(FormKey(encoded.form), encoded.count, Int::plus)
-        }
         val inventory = player.inventory
         val holders = playerHolders(player.uniqueId, inventory)
-        for (slot in 0 until inventory.size) count(holders(slot), inventory.getItem(slot))
-        count(PlayerCursor(player.uniqueId), player.itemOnCursor)
+        for (slot in 0 until inventory.size) slots.count(holders(slot), inventory.getItem(slot))
+        slots.count(PlayerCursor(player.uniqueId), player.itemOnCursor)
         val ender = player.enderChest
-        for (slot in 0 until ender.size) count(PlayerEnder(player.uniqueId, slot), ender.getItem(slot))
+        for (slot in 0 until ender.size) slots.count(PlayerEnder(player.uniqueId, slot), ender.getItem(slot))
         return slots
+    }
+
+    // What a slot holds, added to its count by form: the ledger is compared without the wear.
+    private fun HashMap<Holder, HashMap<FormKey, Int>>.count(holder: Holder, stack: BukkitItemStack?) {
+        val encoded = codec.encodeOrNull(stack) ?: return
+        getOrPut(holder) { HashMap() }.merge(FormKey(encoded.form), encoded.count, Int::plus)
     }
 
     // Scheduled work is dropped when the player's scheduler retires, which happens in the same block
@@ -651,7 +645,7 @@ class ContainerCaptureListener(
     fun onLootGenerate(event: LootGenerateEvent) {
         if (!plugin.isEnabled) return
         val block = (event.inventoryHolder as? BlockInventoryHolder)?.block ?: return
-        val generated = event.loot.mapNotNull { encode(it) }
+        val generated = event.loot.mapNotNull { codec.stackOf(it) }
         if (generated.isEmpty()) return
         // Vault and trial rewards roll per player on purpose, so who triggered the table is what tells
         // a legitimate second helping apart from an item appearing twice.
@@ -667,7 +661,7 @@ class ContainerCaptureListener(
         for (stack in generated) pending.merge(stack.key, stack.count, Int::plus)
         val timestamp = System.currentTimeMillis()
         for (slot in 0 until inventory.size) {
-            val found = encode(inventory.getItem(slot)) ?: continue
+            val found = codec.stackOf(inventory.getItem(slot)) ?: continue
             val left = pending[found.key] ?: continue
             val qty = minOf(left, found.count)
             if (qty <= 0) continue
@@ -677,8 +671,7 @@ class ContainerCaptureListener(
                     cause = Cause.LOOT_GENERATE,
                     from = Void,
                     to = containerAt(block, slot),
-                    form = found.key.form,
-                    damage = found.key.damage,
+                    key = found.key,
                     qty = qty,
                     timestamp = timestamp,
                     actor = actor,
@@ -847,8 +840,7 @@ class ContainerCaptureListener(
                         cause = Cause.DROP_ON_DISCONNECT,
                         from = PlayerCursor(player.uniqueId),
                         to = ItemEntityRef(drop.uniqueId),
-                        form = encoded.form,
-                        damage = encoded.damage,
+                        key = encoded.key,
                         qty = encoded.count,
                         timestamp = System.currentTimeMillis(),
                     )
@@ -972,8 +964,7 @@ class ContainerCaptureListener(
                         cause = Cause.DEATH_DESTROY_VANISHING,
                         from = slot.holder,
                         to = Void,
-                        form = slot.key.form,
-                        damage = slot.key.damage,
+                        key = slot.key,
                         qty = slot.left,
                         timestamp = timestamp,
                     )
@@ -1050,7 +1041,7 @@ class ContainerCaptureListener(
         val left = (0 until top.size).mapNotNullTo(ArrayList()) { slot ->
             val holder = holders(slot)
             if (slot == preview || holder is PlayerHolder) return@mapNotNullTo null
-            encode(top.getItem(slot))?.let { Leaving(holder, it.key.form) }
+            codec.stackOf(top.getItem(slot))?.let { Leaving(holder, it.key.form) }
         }
         if (left.isNotEmpty()) closing[player.uniqueId] = left
     }
@@ -1064,8 +1055,7 @@ class ContainerCaptureListener(
             cause = Cause.DROP_MENU_CLOSE,
             from = left.removeAt(at).holder,
             to = ItemEntityRef(drop),
-            form = encoded.form,
-            damage = encoded.damage,
+            key = encoded.key,
             qty = encoded.count,
             timestamp = System.currentTimeMillis(),
             actor = player.uniqueId,
@@ -1241,9 +1231,6 @@ class ContainerCaptureListener(
             into[Nested(owner, index)] = Stack(inside.key, inside.count)
         }
     }
-
-    private fun encode(stack: BukkitItemStack?): Stack? =
-        codec.encodeOrNull(stack)?.let { Stack(it.key, it.count) }
 
     private fun topHolders(player: Player, inventory: Inventory): ((Int) -> Holder)? {
         val viewer = player.uniqueId
