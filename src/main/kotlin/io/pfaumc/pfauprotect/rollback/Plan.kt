@@ -314,6 +314,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         }
         val rows = ArrayList<BlockRow>()
         val nature = ArrayList<BlockRow>()
+        val foreign = ArrayList<BlockRow>()
         val entityRows = ArrayList<EntityRow>()
         var unreadable = 0
         var budget = BLOCK_WALK_BUDGET
@@ -325,6 +326,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                 unreadable += window.unreadable
                 window.rows.filterTo(rows) { keepsRow(it) && it.cause != Cause.BLK_LIQUID_FLOW }
                 window.rows.filterTo(nature) { passable(it) && !keepsRow(it) }
+                window.rows.filterTo(foreign) { !keepsRow(it) && !passable(it) }
                 val entities = log.entitiesInChunk(cx, cz, fromTs, toTs, budget, inBox)
                 if (!entities.complete) return tooMuch()
                 budget -= entities.walked
@@ -346,7 +348,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         )
         if (!page.complete) return tooMuch()
         val (slots, positions) = page.entries.filter(keepsEntry).partition { it.holder is Container }
-        return plan(world, rows + passedBy(rows, nature, ::turf), slots, positions.filter { it.qty < 0 }, entityRows, toTs, unreadable + page.unreadable, origins(log, world, rows, fromTs, keepsRow))
+        return plan(world, rows + passedBy(rows, nature, ::turf), slots, positions.filter { it.qty < 0 }, entityRows, toTs, unreadable + page.unreadable, origins(log, world, rows, foreign, fromTs, keepsRow))
     }
 
     /**
@@ -410,6 +412,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         if (positions.size > io.pfaumc.pfauprotect.Settings.maxRollbackPositions) return tooMany(positions.size)
         val rows = ArrayList<BlockRow>()
         val nature = ArrayList<BlockRow>()
+        val foreign = ArrayList<BlockRow>()
         val entityRows = ArrayList<EntityRow>()
         val slots = ArrayList<LedgerEntry>()
         val losses = ArrayList<LedgerEntry>()
@@ -422,6 +425,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             unreadable += window.unreadable
             window.rows.filterTo(rows, keepsRow)
             window.rows.filterTo(nature) { passable(it) && !keepsRow(it) }
+            window.rows.filterTo(foreign) { !keepsRow(it) && !passable(it) }
             val entities = log.entitiesAt(at.x, at.y, at.z, fromTs, toTs, budget)
             if (!entities.complete) return tooMuch()
             budget -= entities.walked
@@ -437,13 +441,19 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             }
             if (rows.size + slots.size > MAX_ROLLBACK_ROWS) return tooMuch()
         }
-        return plan(world, rows + passedBy(rows, nature, ::turf), slots, losses, entityRows, toTs, unreadable, origins(log, world, rows, fromTs, keepsRow))
+        return plan(world, rows + passedBy(rows, nature, ::turf), slots, losses, entityRows, toTs, unreadable, origins(log, world, rows, foreign, fromTs, keepsRow))
     }
 
     // Read off the region threads with the rest of the plan; a window from the beginning has nothing before it.
-    private fun origins(log: BlockLog, world: UUID, rows: List<BlockRow>, fromTs: Long, keepsRow: (BlockRow) -> Boolean): Map<WorldBlock, String> {
+    // A position somebody else changed inside the window is not one that stands as the players found it,
+    // whatever it holds: leaves a command put back after the griefer's earlier fire, burnt by him again, were
+    // left as air (D112's bot run).
+    private fun origins(
+        log: BlockLog, world: UUID, rows: List<BlockRow>, foreign: List<BlockRow>, fromTs: Long, keepsRow: (BlockRow) -> Boolean,
+    ): Map<WorldBlock, String> {
         if (fromTs <= 0) return emptyMap()
-        return rows.mapTo(HashSet()) { Triple(it.x, it.y, it.z) }.mapNotNull { (x, y, z) ->
+        val touched = foreign.mapTo(HashSet()) { Triple(it.x, it.y, it.z) }
+        return rows.mapTo(HashSet()) { Triple(it.x, it.y, it.z) }.filter { it !in touched }.mapNotNull { (x, y, z) ->
             originOf(log.rowsBefore(x, y, z, fromTs, ORIGIN_WALK), keepsRow)?.let(::state)?.let { WorldBlock(world, x, y, z) to it }
         }.toMap()
     }

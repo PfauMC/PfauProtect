@@ -277,6 +277,23 @@ class RollbackTest {
         assertEquals(tnt, settle(STONE, position.steps.map { Step(it.before, STONE, null) }, position.origin).back?.before)
     }
 
+    // Alice burnt a leaf before the window; a command put it back inside it, and she burnt it again. Air stands
+    // as before her first burning, but the window opens on the command's leaf, and that is what goes back.
+    @Test
+    fun `a position somebody else changed inside the window goes back to the window's start`() {
+        val leaf = "minecraft:oak_leaves[distance=2,persistent=false,waterlogged=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, leaf, AIR, Cause.BLK_FIRE_BURN, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, leaf, Cause.BLK_COMMAND, T0 + 100)))
+        log.submit(listOf(BlockChange(1, 64, 1, leaf, AIR, Cause.BLK_FIRE_BURN, T0 + 200, actor = alice)))
+        log.drain()
+
+        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
+        val planned = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, T0 + 50, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
+        val position = planned.chunks.flatMap { it.positions }.single()
+        assertNull(position.origin)
+        assertEquals(leaf, settle(AIR, position.steps, position.origin).back?.before)
+    }
+
     // Alice's water ran in, became a source by itself between two others, and her sponge drank it twice
     // over. The walk met a source where her row had left a flow, stopped, and put the source back (D109).
     @Test
