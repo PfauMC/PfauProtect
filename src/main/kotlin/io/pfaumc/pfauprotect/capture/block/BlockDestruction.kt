@@ -15,6 +15,7 @@ import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.attribution.FIRING_CAUSES
 import io.pfaumc.pfauprotect.attribution.Falling
 import io.pfaumc.pfauprotect.attribution.POURING_CAUSES
+import io.pfaumc.pfauprotect.attribution.FLOWING_CAUSES
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
@@ -1168,9 +1169,12 @@ class BlockDestructionListener(
         val at = positionOf(liquid)
         val standing = liquid.blockData.asString
         attribution.placerAt(at, standing)?.let { return it }
-        val found = sourcesOf(liquid).firstNotNullOfOrNull {
-            attribution.journalPlacerAt(positionOf(it), it.blockData.asString, POURING_CAUSES)
-        } ?: return null
+        // Its own flow row first: lava that ran far from its bucket is past any walk back to the source, and
+        // 6595 fires it set on a real map were nobody's (D110).
+        val found = attribution.journalPlacerAt(at, standing, FLOWING_CAUSES)
+            ?: sourcesOf(liquid).firstNotNullOfOrNull {
+                attribution.journalPlacerAt(positionOf(it), it.blockData.asString, POURING_CAUSES)
+            } ?: return null
         if (found.confidence != Confidence.NEARBY) attribution.placed(at, standing, found.actor)
         return found
     }

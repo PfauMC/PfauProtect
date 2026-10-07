@@ -138,6 +138,16 @@ class AttributionTest {
         assertEquals(Confidence.NEARBY, attribution.journalPlacerAt(there, "minecraft:lava[level=0]", POURING_CAUSES)?.confidence)
     }
 
+    // Lava that ran far from its bucket sets fire where no walk back to the source reaches, and the flow row
+    // of the lava block itself names who let it run: 6595 ignitions on a real map were nobody's (D110).
+    @Test
+    fun `the journal names who let a flow run`() {
+        val here = at(10, 64, 10)
+        journalled(here, AIR, "minecraft:lava[level=6]", bob, cause = Cause.BLK_LIQUID_FLOW)
+        assertEquals(bob, attribution.journalPlacerAt(here, "minecraft:lava[level=6]", FLOWING_CAUSES)?.actor)
+        assertNull(attribution.journalPlacerAt(here, "minecraft:lava[level=6]", POURING_CAUSES))
+    }
+
     // A fire outlives its note; the row that set it there, by spreading or by a plank burning into it,
     // still names whose fire it is. A break of the fire puts nothing down.
     @Test
