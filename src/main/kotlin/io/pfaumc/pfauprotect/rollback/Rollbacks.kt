@@ -4,6 +4,7 @@ import io.pfaumc.pfauprotect.say
 import ca.spottedleaf.concurrentutil.util.Priority
 import io.pfaumc.pfauprotect.capture.block.Difference
 import io.pfaumc.pfauprotect.capture.block.ranFrom
+import io.pfaumc.pfauprotect.capture.block.shapeKeysOf
 import io.pfaumc.pfauprotect.capture.block.standingAt
 import io.pfaumc.pfauprotect.capture.block.Standing
 import io.pfaumc.pfauprotect.check.emptied
@@ -89,7 +90,11 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 
 // The flags vanilla `/fill` places with: the client is told, and a container taken away takes what it
 // held with it instead of spilling it on the ground. The neighbours are told once everything is in.
-private const val PLACE_FLAGS = Block.UPDATE_CLIENTS or Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS
+private const val SHAPE_FLAGS = Block.UPDATE_CLIENTS or Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS
+
+// And the shape each row names is the shape put back: a block set with its neighbours' shapes worked out
+// anew made a wall the builder left low tall beside the plank that came back (D104).
+private const val PLACE_FLAGS = SHAPE_FLAGS or Block.UPDATE_KNOWN_SHAPE
 
 
 // How long a preview waits for `apply`. The world goes on changing under it, so apply reads it all
@@ -405,6 +410,7 @@ class ChunkRollback(
                 plugin.logger.log(Level.WARNING, "a rollback could not put back the block at ${spots[i]}", failure)
             }
         }
+        if (apply) reshapeAround(level, spots.filterIndexed { i, _ -> touched[i] })
         if (apply) lift(level, spots.filterIndexed { i, _ -> touched[i] })
         // An observer sees the rollback put a block in front of it, or take the griefer's trigger away, and fires:
         // the flying machine it is part of, just put back, set off again under the rollback's name (D100).
@@ -631,6 +637,25 @@ class ChunkRollback(
     private fun restored(tally: Tally, plan: PositionPlan) {
         tally.restored += plan.at
         tally.breaks += plan.breaks
+    }
+
+    /**
+     * The neighbours outside the plan told of what came back beside them, the way the game tells them of any
+     * block set: leaves count their way to a log again. One that takes its shape from what is beside it is
+     * left as it stands, since what a griefer made of it is a row of its own and in the plan (D104). Before
+     * the observers are quietened, which this would set off.
+     */
+    private fun reshapeAround(level: ServerLevel, put: List<BlockPos>) {
+        val planned = put.toHashSet()
+        for (pos in planned) {
+            val state = level.getBlockState(pos)
+            for (face in Direction.entries) {
+                val near = pos.relative(face)
+                if (near in planned || !Bukkit.isOwnedByCurrentRegion(level.world, near.x shr 4, near.z shr 4)) continue
+                if (shapeKeysOf(level.getBlockState(near).asBlockData().asString.substringBefore('[')).isNotEmpty()) continue
+                level.neighborShapeChanged(face.opposite, near, pos, state, SHAPE_FLAGS, Block.UPDATE_LIMIT - 1)
+            }
+        }
     }
 
     /**

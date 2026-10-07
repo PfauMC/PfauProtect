@@ -166,6 +166,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     DISPENSER(setOf(Cause.BLK_DISPENSER), "dispenser", "dispensers"),
     PORTAL(setOf(Cause.BLK_PORTAL_CREATE, Cause.BLK_PORTAL_DESTROY), "portal", "portals"),
     SIGN(setOf(Cause.BLK_SIGN_EDIT), "sign", "signs", "edit"),
+    SHAPE(setOf(Cause.BLK_SHAPE), "shape", "shapes", "joined"),
     SWITCH(setOf(Cause.BLK_PLAYER_SWITCH, Cause.BLK_ENTITY_SWITCH), "switch", "switches", "pressed"),
     INTERACT(setOf(Cause.BLK_PLAYER_USE), "interact", "clicked", "toggled"),
     COMMAND(setOf(Cause.BLK_COMMAND, Cause.BLK_PLUGIN), "command", "commands", "worldedit", "plugin"),
@@ -238,7 +239,7 @@ private val USE_CAUSES = setOf(
 
 // The block plane's whole range, so a filter can name it without listing thirty-two causes.
 private val BLOCK_CAUSES: Set<Cause> =
-    Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT + Cause.BLK_PLAYER_SWITCH +
+    Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT + Cause.BLK_SHAPE + Cause.BLK_PLAYER_SWITCH +
         Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE + Cause.BLK_BUCKET +
         Cause.BLK_SPONGE + Cause.BLK_COMMAND + Cause.BLK_LIQUID_FLOW + Cause.BLK_PLUGIN
 
@@ -599,7 +600,18 @@ internal class RowFilter(
         return (included.isEmpty() || named.any { it in included }) && named.none { it in excluded }
     }
 
-    private fun caused(cause: Cause) = causes?.contains(cause) ?: (!rollback || cause != Cause.ROLLBACK)
+    // A neighbour's shape goes back with whatever went back beside it, so a rollback narrowed to fire or to
+    // explosions takes the shape rows too; undoing a rollback is the one reading that leaves them, since the
+    // rollback wrote none. A lookup shows them only when asked: there is one for every fence beside every
+    // block that changed (D104).
+    private val all = query.all
+
+    private fun caused(cause: Cause): Boolean {
+        if (cause == Cause.BLK_SHAPE) {
+            return if (rollback) causes?.contains(Cause.ROLLBACK) != true else all || causes?.contains(cause) == true
+        }
+        return causes?.contains(cause) ?: (!rollback || cause != Cause.ROLLBACK)
+    }
 }
 
 // A rollback reads by place and time, so the words that only shape a lookup's answer are not offered for it.

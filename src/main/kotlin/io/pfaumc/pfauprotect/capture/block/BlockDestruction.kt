@@ -693,19 +693,37 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
 
 // Properties that carry the signal rather than the block, which the switch rows of phase 5.7 already
 // cover; ones a block takes from its neighbours — grass under snow, a stair's corner, which sides a
-// fence or a pane joins — which change with the neighbour that was filed; and ones that a hand flips
-// and the block flips back by itself. None of them is something a rollback would have to put back.
+// fence or a pane joins — which change with the neighbour and are filed by [Cause.BLK_SHAPE], not as the
+// hand's; and ones that a hand flips and the block flips back by itself.
 private val SIGNAL_PROPERTIES = setOf("powered", "power")
 
 private val SIDES = setOf("north", "south", "east", "west", "up")
 
-private fun selfRevertingOf(name: String): Set<String> = when {
-    // Taken from the neighbours. A vine's or a lichen's sides are what it clings to, and are not.
-    name.endsWith("_fence") || name.endsWith("_pane") || name.endsWith("_wall") || name == "minecraft:iron_bars" ||
+/**
+ * The properties a block takes from its neighbours alone. A hand never sets them, and the server rewrites
+ * them as a neighbour changes without raising anything: they get rows of their own, [Cause.BLK_SHAPE].
+ * A vine's or a lichen's sides are what it clings to, and are not.
+ */
+internal fun shapeKeysOf(name: String): Set<String> = when {
+    name.endsWith("_fence") || name.endsWith("_pane") || name.endsWith("_wall") || name.endsWith("_bars") ||
         name == "minecraft:redstone_wire" || name == "minecraft:tripwire" -> SIDES + "attached"
     name.endsWith("_stairs") -> setOf("shape")
     name.endsWith("_fence_gate") -> setOf("in_wall")
     name == "minecraft:grass_block" || name == "minecraft:podzol" || name == "minecraft:mycelium" -> setOf("snowy")
+    else -> emptySet()
+}
+
+/** Whether a block went from one state to the other by what it takes from its neighbours and nothing else. */
+internal fun reshaped(before: String, after: String): Boolean {
+    val name = blockNameOf(before)
+    if (before == after || name != blockNameOf(after)) return false
+    val was = propertiesOf(before)
+    val now = propertiesOf(after)
+    val keys = shapeKeysOf(name)
+    return (was.keys + now.keys).filter { was[it] != now[it] }.all { it in keys }
+}
+
+private fun selfRevertingOf(name: String): Set<String> = shapeKeysOf(name) + when {
     name == "minecraft:barrel" -> setOf("open")
     name.endsWith("_bed") -> setOf("occupied")
     name.endsWith("redstone_ore") -> setOf("lit")
@@ -752,7 +770,8 @@ private const val TRAVEL_MILLIS = 30_000L
 // The largest portal the game builds is 21 by 21.
 private const val PORTAL_MAX_BLOCKS = 21 * 21
 
-private val PORTAL_FACES = listOf(
+// A portal's sheet and a block's shaped neighbours are both found through the six faces.
+private val SIX_FACES = listOf(
     BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN,
 )
 
@@ -846,6 +865,9 @@ class BlockDestructionListener(
 
     private val growing = GrowClaims()
     private val readBacks = ReadBacks()
+    // The shaped neighbours waiting for their read, one per position and tick: the first look is the
+    // state the tick found, and the next change beside it in that tick would only see it half rewritten.
+    private val shapeReads = ReadBacks()
     // Who stands behind dynamite a fire or a blast primed, on its position until the entity appears there.
     private val priming = ConcurrentHashMap<WorldBlock, Pair<Attributed, Long>>()
 
@@ -1326,6 +1348,7 @@ class BlockDestructionListener(
     fun settleGrowth() {
         growing.settle()
         readBacks.sweep()
+        shapeReads.sweep()
         val stale = System.currentTimeMillis() - PRIMING_MILLIS
         priming.values.removeIf { it.second < stale }
     }
@@ -1340,6 +1363,9 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPhysics(event: BlockPhysicsEvent) {
         val block = event.block as CraftBlock
+        // Raised about the block itself once it is set and before its neighbours are told, which is the last
+        // moment they still stand as they were.
+        if (event.sourceBlock == block) watchShapes(block)
         // Every retract passes through here too, and the ones that did raise their event have filed
         // this same change already; the read-back refuses the second row.
         retractingBase(block)?.let { base ->
@@ -1358,6 +1384,36 @@ class BlockDestructionListener(
         defer(block, block.blockData, Cause.BLK_FADE, attribution.supportRemoverAt(positionOf(block)), expectsDrops = false)
     }
 
+    /**
+     * What a change here does to the blocks beside it: the sides bars or a fence join, a stair's corner, a
+     * wall's height. The server rewrites them with no event, so the neighbours are read now and again a tick
+     * later, and each that changed gets a row on whoever changed this block. Without it bars beside a plank
+     * that burnt were filed as joining air when the TNT took them, and the rollback put them back so (D104).
+     */
+    private fun watchShapes(block: CraftBlock) {
+        val at = positionOf(block)
+        // Only a change somebody is noted for. A world changing by itself is nobody's to roll back, and grass
+        // under every snowfall would fill the journal; a radius rollback that needs more widens this.
+        val by = attribution.removerAt(at) ?: attribution.placerAt(at, block.blockData.asString) ?: return
+        if (!plugin.isEnabled || commanded(block)) return
+        val log = logs.get(block.world.uid) ?: return
+        val timestamp = System.currentTimeMillis()
+        for (face in SIX_FACES) {
+            val near = block.getRelative(face)
+            if (!Bukkit.isOwnedByCurrentRegion(near)) continue
+            val before = near.blockData
+            if (shapeKeysOf(blockNameOf(before.asString)).isEmpty()) continue
+            val there = positionOf(near)
+            if (!shapeReads.claim(there)) continue
+            plugin.server.regionScheduler.execute(plugin, near.world, near.x shr 4, near.z shr 4) {
+                shapeReads.done(there)
+                val now = near.blockData.asString
+                if (!reshaped(before.asString, now) || readBacks.settled(there)) return@execute
+                log.submit(listOf(row(Site(there, near, before, now, payload = null), Cause.BLK_SHAPE, by, timestamp)))
+            }
+        }
+    }
+
     // Every portal block joined to this one, read back: those the broken frame took with it are filed
     // on whoever broke the frame. The walk stays on the region that owns this block.
     private fun commanded(block: Block) = CommandBirths.writing(block.world.uid, block.x, block.y, block.z)
@@ -1370,7 +1426,7 @@ class BlockDestructionListener(
         while (edge.isNotEmpty() && sheet.size < PORTAL_MAX_BLOCKS) {
             val next = ArrayList<Block>()
             for (at in edge) {
-                for (face in PORTAL_FACES) {
+                for (face in SIX_FACES) {
                     val near = at.getRelative(face)
                     if (near in sheet || near.type != Material.NETHER_PORTAL || !Bukkit.isOwnedByCurrentRegion(near)) continue
                     sheet += near

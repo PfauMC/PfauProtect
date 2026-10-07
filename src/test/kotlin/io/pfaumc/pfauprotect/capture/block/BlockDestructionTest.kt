@@ -1609,6 +1609,29 @@ class BlockDestructionTest {
         assertFalse(handMade(TORCH, TORCH))
     }
 
+    // Bars beside a plank that burnt let go of it with no event, and were put back still facing air (D104):
+    // what the neighbours decide gets a row of its own, and only that does.
+    @Test
+    fun `a shape is told apart from every other change of a block`() {
+        assertTrue(reshaped("minecraft:iron_bars[east=false,north=true,south=true,waterlogged=false,west=false]",
+            "minecraft:iron_bars[east=false,north=false,south=true,waterlogged=false,west=false]"))
+        assertTrue(reshaped("minecraft:diorite_wall[east=none,north=none,south=low,up=true,waterlogged=false,west=none]",
+            "minecraft:diorite_wall[east=none,north=none,south=tall,up=true,waterlogged=false,west=none]"))
+        assertTrue(reshaped("minecraft:quartz_stairs[facing=east,half=top,shape=inner_right,waterlogged=false]",
+            "minecraft:quartz_stairs[facing=east,half=top,shape=straight,waterlogged=false]"))
+        assertTrue(reshaped("minecraft:grass_block[snowy=false]", "minecraft:grass_block[snowy=true]"))
+
+        // Water let in is the bucket's row, a stair turned is the hand's, a block gone is not a shape.
+        assertFalse(reshaped("minecraft:iron_bars[east=false,north=true,south=true,waterlogged=false,west=false]",
+            "minecraft:iron_bars[east=false,north=true,south=true,waterlogged=true,west=false]"))
+        assertFalse(reshaped("minecraft:quartz_stairs[facing=east,half=top,shape=straight,waterlogged=false]",
+            "minecraft:quartz_stairs[facing=west,half=top,shape=straight,waterlogged=false]"))
+        assertFalse(reshaped("minecraft:iron_bars[east=false,north=true,south=true,waterlogged=false,west=false]", "minecraft:air"))
+        assertFalse(reshaped("minecraft:vine[east=false,north=true,south=false,up=false,west=false]",
+            "minecraft:vine[east=true,north=true,south=false,up=false,west=false]"))
+        assertFalse(reshaped("minecraft:grass_block[snowy=false]", "minecraft:grass_block[snowy=false]"))
+    }
+
     // A second hand in the same tick must not queue a second read, and a row filed by the capture that
     // made the change is what the read leaves the position to.
     @Test
