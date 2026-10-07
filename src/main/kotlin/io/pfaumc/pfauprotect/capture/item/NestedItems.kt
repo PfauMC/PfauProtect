@@ -3,7 +3,7 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.model.Nested
-import io.pfaumc.pfauprotect.storage.NestedOwners
+import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import net.minecraft.core.UUIDUtil
 import net.minecraft.core.component.DataComponentType
@@ -71,7 +71,7 @@ object NestedItems {
  * inside it, and the name the position kept is the one the item has to carry.
  */
 internal fun packShulker(
-    owners: NestedOwners,
+    owners: RocksItemLog,
     block: Block,
     box: ShulkerBox,
     pack: (slot: Int, owner: UUID, item: ItemStack) -> Unit,
@@ -91,7 +91,7 @@ internal fun packShulker(
 // are addressed by its own name. Both ends of that switch are written so the chain of custody runs
 // through the cycle instead of ending at it.
 class NestedCaptureListener(
-    private val owners: NestedOwners,
+    private val owners: RocksItemLog,
     private val codec: ItemFormCodec,
     private val pending: TickCoalescer,
 ) : Listener {

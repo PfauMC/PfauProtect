@@ -146,6 +146,10 @@ object Zcode {
     private const val MIN_Y = -Y_BIAS
     private const val MAX_Y = Y_BIAS - 1
 
+    // The 48-bit Morton code of a chunk: its z on the even bits, its x on the odd ones.
+    private const val EVEN_BITS = 0x5555_5555_5555L
+    private const val ODD_BITS = 0xAAAA_AAAA_AAAAL
+
     fun encode(x: Int, y: Int, z: Int): ByteArray {
         require(y in MIN_Y..MAX_Y) { "y $y outside $MIN_Y..$MAX_Y" }
         val out = ByteArray(SIZE)
@@ -167,12 +171,8 @@ object Zcode {
         require(off >= 0 && off + SIZE <= buf.size) { "position needs $SIZE bytes at $off, buffer holds ${buf.size}" }
         var morton = 0L
         for (i in 0 until CHUNK_PREFIX_SIZE) morton = (morton shl 8) or (buf[off + i].toLong() and 0xFF)
-        var chunkX = 0
-        var chunkZ = 0
-        for (i in 0 until 24) {
-            chunkZ = chunkZ or (((morton ushr (2 * i)) and 1L).toInt() shl i)
-            chunkX = chunkX or (((morton ushr (2 * i + 1)) and 1L).toInt() shl i)
-        }
+        val chunkX = java.lang.Long.compress(morton, ODD_BITS).toInt()
+        val chunkZ = java.lang.Long.compress(morton, EVEN_BITS).toInt()
         val local = buf[off + 6].toInt() and 0xFF
         val biasedY = ((buf[off + 7].toInt() and 0xFF) shl 8) or (buf[off + 8].toInt() and 0xFF)
         return intArrayOf(
@@ -185,17 +185,9 @@ object Zcode {
     private fun writeChunk(out: ByteArray, chunkX: Int, chunkZ: Int) {
         require(chunkX in MIN_CHUNK..MAX_CHUNK) { "chunk x $chunkX outside $MIN_CHUNK..$MAX_CHUNK" }
         require(chunkZ in MIN_CHUNK..MAX_CHUNK) { "chunk z $chunkZ outside $MIN_CHUNK..$MAX_CHUNK" }
-        val morton = interleave(chunkX + CHUNK_BIAS, chunkZ + CHUNK_BIAS)
+        val morton = java.lang.Long.expand((chunkX + CHUNK_BIAS).toLong(), ODD_BITS) or
+            java.lang.Long.expand((chunkZ + CHUNK_BIAS).toLong(), EVEN_BITS)
         for (i in 0 until CHUNK_PREFIX_SIZE) out[i] = (morton ushr (40 - 8 * i)).toByte()
-    }
-
-    private fun interleave(oddBits: Int, evenBits: Int): Long {
-        var morton = 0L
-        for (i in 0 until 24) {
-            morton = morton or ((evenBits.toLong() ushr i and 1L) shl (2 * i))
-            morton = morton or ((oddBits.toLong() ushr i and 1L) shl (2 * i + 1))
-        }
-        return morton
     }
 }
 
@@ -277,10 +269,6 @@ object EntryCodec {
         if (entry.damage != null) w.varInt(entry.damage)
         return w.toByteArray()
     }
-
-    fun decode(key: ByteArray, value: ByteArray, names: IdLookup): LedgerEntry =
-        decodeEntry(key, value, names)
-            ?: throw IllegalArgumentException("record version ${value[0].toInt() and VERSION_MASK} is not supported")
 
     // Null for anything this build cannot read, a torn or truncated row as much as another layout
     // version. A scan walks rows it did not choose, and one bad row taken as a throw ends the whole

@@ -668,13 +668,13 @@ class StorageTest {
 
     @Test
     fun `region entries cover the block box and nothing else`() {
-        val inBox = log.regionEntries(world, 96, -208, 112, -192, 0, Long.MAX_VALUE)
+        val inBox = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE).entries
         assertEquals(listOf(32, -5, 1, -3), inBox.map { it.qty })
         assertTrue(inBox.all { it.holder is Container })
         assertEquals(5, (inBox[1].holder as Container).slot)
 
-        assertTrue(log.regionEntries(world, 5000, 5000, 5016, 5016, 0, Long.MAX_VALUE).isEmpty())
-        assertTrue(log.regionEntries(UUID.randomUUID(), 96, -208, 112, -192, 0, Long.MAX_VALUE).isEmpty())
+        assertTrue(log.regionPage(world, 5000, 5000, 5016, 5016, 0, Long.MAX_VALUE).entries.isEmpty())
+        assertTrue(log.regionPage(UUID.randomUUID(), 96, -208, 112, -192, 0, Long.MAX_VALUE).entries.isEmpty())
     }
 
     @Test
@@ -682,30 +682,30 @@ class StorageTest {
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, farSideOfChunk, cobblestone, null, 2, T0 + 50))
         log.drain()
 
-        val whole = log.regionEntries(world, 96, -208, 112, -192, 0, Long.MAX_VALUE)
+        val whole = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE).entries
         assertEquals(5, whole.size)
         assertEquals(1, whole.count { it.holder == farSideOfChunk })
 
-        val window = log.regionEntries(world, 96, -208, 112, -192, T0 + 10, T0 + 30)
+        val window = log.regionPage(world, 96, -208, 112, -192, T0 + 10, T0 + 30).entries
         assertEquals(listOf(T0 + 10, T0 + 20, T0 + 30), window.map { it.timestamp })
-        assertTrue(log.regionEntries(world, 96, -208, 112, -192, T0 + 60, Long.MAX_VALUE).isEmpty())
+        assertTrue(log.regionPage(world, 96, -208, 112, -192, T0 + 60, Long.MAX_VALUE).entries.isEmpty())
     }
 
     // A capped region read has to keep the newest rows, not the oldest, or every lookup of a busy
     // area answers with its earliest history.
     @Test
     fun `a reversed region read keeps the newest rows`() {
-        val forwards = log.regionEntries(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, limit = 2)
+        val forwards = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, limit = 2).entries
         assertEquals(listOf(T0, T0 + 10), forwards.map { it.timestamp })
 
-        val backwards = log.regionEntries(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, reverse = true, limit = 2)
+        val backwards = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, reverse = true, limit = 2).entries
         assertEquals(listOf(T0 + 30, T0 + 20), backwards.map { it.timestamp })
     }
 
     @Test
     fun `an oversized region is refused instead of scanned`() {
         assertThrows(IllegalArgumentException::class.java) {
-            log.regionEntries(world, 0, 0, 100_000, 0, 0, Long.MAX_VALUE)
+            log.regionPage(world, 0, 0, 100_000, 0, 0, Long.MAX_VALUE).entries
         }
     }
 
@@ -783,7 +783,7 @@ class StorageTest {
         log.submit(Transfer(Cause.BLOCK_PLACE, aliceInv, position, cobblestone, null, 1, T0 + 70))
         log.drain()
 
-        val inBox = log.regionEntries(world, 96, -208, 112, -192, 0, Long.MAX_VALUE)
+        val inBox = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE).entries
         assertEquals(1, inBox.count { it.holder is WorldBlock })
         assertEquals(4, inBox.count { it.holder is Container })
         assertEquals(position, inBox.single { it.holder is WorldBlock }.holder)
@@ -791,7 +791,7 @@ class StorageTest {
 
         // Read backwards it is the same rows in the other order, both holder kinds included: the two
         // kinds live under prefixes of their own and a reversed walk seeks into each one separately.
-        val backwards = log.regionEntries(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, reverse = true)
+        val backwards = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, reverse = true).entries
         assertEquals(inBox.reversed(), backwards)
     }
 
@@ -844,7 +844,7 @@ class StorageTest {
         assertEquals(T0 + 119, newestFirst.first().timestamp)
         assertEquals(
             listOf(T0 + 119, T0 + 118),
-            log.regionEntries(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, reverse = true, limit = 2)
+            log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, reverse = true, limit = 2).entries
                 .map { it.timestamp },
         )
 

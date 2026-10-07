@@ -20,7 +20,7 @@ import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.capture.item.Stack
 import org.bukkit.block.data.Directional
 import org.bukkit.Tag
-import io.pfaumc.pfauprotect.storage.NestedOwners
+import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.capture.item.NestedItems
 import io.pfaumc.pfauprotect.model.Transfer
@@ -414,7 +414,7 @@ class BlockMechanismListener(
     private val sink: (List<Transfer>) -> Unit,
     private val energy: Energy = Energy(),
     private val entities: EntityOrigins = EntityOrigins(),
-    private val owners: NestedOwners? = null,
+    private val owners: RocksItemLog? = null,
     // Leaves a reason for the next pass over a player's slots, which are the pass's alone to write.
     private val intend: (Player, Intent) -> Unit = { _, _ -> },
     // Runs a task on the block's own region a tick later.

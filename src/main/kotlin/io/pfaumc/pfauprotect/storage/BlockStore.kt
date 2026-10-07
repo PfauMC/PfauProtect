@@ -5,9 +5,7 @@ import io.pfaumc.pfauprotect.model.EntityKind
 import org.rocksdb.BloomFilter
 import org.rocksdb.ColumnFamilyDescriptor
 import org.rocksdb.ColumnFamilyHandle
-import org.rocksdb.ColumnFamilyOptions
 import org.rocksdb.DBOptions
-import org.rocksdb.Options
 import org.rocksdb.ReadOptions
 import org.rocksdb.RocksDB
 import org.rocksdb.Slice
@@ -19,7 +17,6 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import java.util.logging.Level
 import kotlin.concurrent.read
@@ -101,12 +98,6 @@ private const val BLOCK_SCHEMA_VERSION = 3L
 private const val INDEXED_FROM = 1L
 private const val WITHOUT_ENTITIES = 2L
 
-// How many deletes a purge writes at a time.
-private const val PURGE_BATCH = 10_000
-
-// How many index rows a base being indexed for the first time writes per batch.
-private const val INDEX_BATCH = 10_000
-
 private const val ACTOR_KEY_SIZE = 4 + BlockCodec.KEY_SIZE
 private val NOTHING = ByteArray(0)
 
@@ -118,14 +109,6 @@ private val ENTITIES_CF = "entities".toByteArray()
 private val META_SCHEMA_KEY = "schema".toByteArray()
 private val META_EVENT_ID = "event_id".toByteArray()
 private val META_LAST_TS = "last_ts".toByteArray()
-
-// Padded rather than the upper bound: seeking backwards has to start from a key that still belongs
-// to this prefix, or the prefix filter is asked about the wrong one and finds nothing.
-private fun lastUnder(prefix: ByteArray): ByteArray =
-    ByteWriter(prefix.size + KEY_TAIL_PAD)
-        .bytes(prefix)
-        .bytes(ByteArray(KEY_TAIL_PAD) { 0xFF.toByte() })
-        .toByteArray()
 
 // One world's block history. The world number is not in the key because the database is the world,
 // which is what makes deleting a world a matter of deleting a directory: registry numbers are never
@@ -183,17 +166,13 @@ class BlockLog(
     private val entitiesCf: ColumnFamilyHandle
 
     private val queue = LinkedBlockingQueue<List<WorldChange>>()
-    private val submitted = AtomicLong()
-    private val written = AtomicLong()
+    private val progress = WriterProgress("block", "submissions", queue)
 
     /** Submissions handed to the writer and not written yet. */
-    val backlog: Long get() = submitted.get() - written.get()
+    val backlog: Long get() = progress.backlog
 
     @Volatile
     private var running = true
-
-    @Volatile
-    private var writerFailure: Throwable? = null
 
     @Volatile
     private var closed = false
@@ -210,15 +189,12 @@ class BlockLog(
         // Opening writes every missing column family into the manifest before anything can look at
         // the schema, and a build that does not know those families can no longer open the database
         // at all. A database refused for its schema has to be left exactly as it was found.
-        val stored = try {
-            storedSchema(path)?.also {
+        val stored = cleaningUpOnFailure({ closeOptions() }) {
+            storedSchema(path, BLOCK_META_CF, META_SCHEMA_KEY)?.also {
                 require(it == BLOCK_SCHEMA_VERSION || it == INDEXED_FROM || it == WITHOUT_ENTITIES) {
                     "block database schema $it cannot be read by this build (schema $BLOCK_SCHEMA_VERSION)"
                 }
             }
-        } catch (failure: Throwable) {
-            runCatching { closeOptions() }
-            throw failure
         }
         val descriptors = listOf(
             RocksDB.DEFAULT_COLUMN_FAMILY to metaOptions,
@@ -230,27 +206,17 @@ class BlockLog(
         // A stale lock file or a truncated manifest fails the open, and the options, the cache and the
         // filter behind it answer to nothing afterwards: the bindings free no native memory on their
         // own, and every world load that retries would strand another set of them.
-        db = try {
-            RocksDB.open(dbOptions, path, descriptors, cfHandles)
-        } catch (failure: Throwable) {
-            runCatching { closeOptions() }
-            throw failure
-        }
+        db = cleaningUpOnFailure({ closeOptions() }) { RocksDB.open(dbOptions, path, descriptors, cfHandles) }
         rowsCf = cfHandles[1]
         metaCf = cfHandles[2]
         byActorCf = cfHandles[3]
         entitiesCf = cfHandles[4]
 
-        // Nothing outside reaches a constructor that threw, so a failure here would hold the file
-        // lock and the native memory until the process ends and no later open could succeed.
-        try {
+        cleaningUpOnFailure({ closeNatives() }) {
             if (stored == INDEXED_FROM) indexActors()
             if (stored != BLOCK_SCHEMA_VERSION) db.put(metaCf, META_SCHEMA_KEY, longBytes(BLOCK_SCHEMA_VERSION))
             nextEventId = readCounter(META_EVENT_ID)
             lastTs = readCounter(META_LAST_TS)
-        } catch (failure: Throwable) {
-            runCatching { closeNatives() }
-            throw failure
         }
     }
 
@@ -260,8 +226,7 @@ class BlockLog(
     private fun indexActors() {
         ReadOptions().setTotalOrderSeek(true).use { options ->
             db.newIterator(rowsCf, options).use { iter ->
-                var batch = WriteBatch()
-                try {
+                ChunkedBatch(db, writeOptions).use { batch ->
                     iter.seekToFirst()
                     while (iter.isValid) {
                         val key = iter.key()
@@ -269,25 +234,14 @@ class BlockLog(
                         if (actor != null && key.size == BlockCodec.KEY_SIZE) {
                             batch.put(byActorCf, actorKey(actor, key), NOTHING)
                         }
-                        if (batch.count() >= INDEX_BATCH) {
-                            db.write(writeOptions, batch)
-                            batch.close()
-                            batch = WriteBatch()
-                        }
                         iter.next()
                     }
-                    db.write(writeOptions, batch)
-                } finally {
-                    batch.close()
+                    batch.flush()
                 }
             }
         }
     }
 
-    /**
-     * Where an actor's rows in the window stand: the positions, from the index, without reading a row.
-     * `budget` bounds the index rows walked, and a walk that reaches it says so.
-     */
     /**
      * Rows older than the cutoff, deleted unless `dryRun`: every one but the newest of a position no later
      * row stands over, which is what the attribution asks a position. The index entries of those rows and
@@ -297,15 +251,9 @@ class BlockLog(
         if (closed) return 0 to 0
         var rows = 0
         var entities = 0
-        var batch = WriteBatch()
+        val batch = ChunkedBatch(db, writeOptions)
         fun delete(cf: ColumnFamilyHandle, key: ByteArray) {
-            if (dryRun) return
-            batch.delete(cf, key)
-            if (batch.count() >= PURGE_BATCH) {
-                db.write(writeOptions, batch)
-                batch.close()
-                batch = WriteBatch()
-            }
+            if (!dryRun) batch.delete(cf, key)
         }
         fun timeOf(key: ByteArray, at: Int) = ByteReader(key.copyOfRange(at, at + 8)).longBE()
         db.newIterator(rowsCf).use { iter ->
@@ -348,11 +296,14 @@ class BlockLog(
                 iter.next()
             }
         }
-        if (!dryRun && batch.count() > 0) db.write(writeOptions, batch)
-        batch.close()
+        batch.use { it.flush() }
         rows to entities
     }
 
+    /**
+     * Where an actor's rows in the window stand: the positions, from the index, without reading a row.
+     * `budget` bounds the index rows walked, and a walk that reaches it says so.
+     */
     fun touchedBy(actor: UUID, fromTs: Long, toTs: Long, budget: Int): ActorTouches = dbLock.read {
         val number = shared.registries.lookupKey(RegistryNamespace.PLAYER, actor.toString())
         if (closed) return ActorTouches(emptySet(), false)
@@ -421,8 +372,8 @@ class BlockLog(
         // writer stops there is nobody left to take the queue. A change accepted in between would be
         // counted as submitted, sit in the queue and never be written, and `drain` would not wait for
         // it either. Refusing it is the difference between a caller that knows and history that lies.
-        if (!running || closed || writerFailure != null || changes.isEmpty()) return false
-        submitted.incrementAndGet()
+        if (!running || closed || progress.failure != null || changes.isEmpty()) return false
+        progress.submitted.incrementAndGet()
         queue.add(changes)
         val blocks = changes.filterIsInstance<BlockChange>()
         if (blocks.isNotEmpty()) watch(blocks)
@@ -430,18 +381,7 @@ class BlockLog(
     }
 
     fun drain() {
-        if (closed) return
-        val target = submitted.get()
-        val deadline = System.nanoTime() + DRAIN_TIMEOUT_NANOS
-        while (written.get() < target) {
-            failIfWriterStopped()
-            check(System.nanoTime() < deadline) {
-                "block writer did not catch up in ${DRAIN_TIMEOUT_NANOS / 1_000_000} ms, " +
-                    "${target - written.get()} submissions are unwritten"
-            }
-            Thread.sleep(1)
-        }
-        failIfWriterStopped()
+        if (!closed) progress.drain()
     }
 
     fun at(
@@ -511,10 +451,7 @@ class BlockLog(
 
     private fun blockRow(key: ByteArray, value: ByteArray): BlockRow? = BlockCodec.decodeOrNull(key, value, shared.registries)
 
-    private fun entityRow(key: ByteArray, value: ByteArray): EntityRow? =
-        EntityCodec.decodeOrNull(key, value, shared.registries, { shared.registries.keyOf(RegistryNamespace.DAMAGE_TYPE, it) }) {
-            shared.registries.keyOf(RegistryNamespace.ENTITY_TYPE, it)
-        }
+    private fun entityRow(key: ByteArray, value: ByteArray): EntityRow? = EntityCodec.decodeOrNull(key, value, shared.registries)
 
     private fun <T> window(
         cf: ColumnFamilyHandle,
@@ -641,43 +578,12 @@ class BlockLog(
         found
     }
 
-    // The bounds keep the walk inside the prefix, which under a prefix extractor is the only way to
-    // do it: an iterator in prefix mode may not be carried past the prefix it was seeked into, and a
-    // seek to the key just after the prefix lands in the next prefix, where the filter answers with
-    // nothing at all. The slices have to outlive the iterator. `action` returns false to stop.
     private inline fun forEachUnder(
         prefix: ByteArray,
         reverse: Boolean,
         cf: ColumnFamilyHandle = rowsCf,
         action: (ByteArray, ByteArray) -> Boolean,
-    ) {
-        val lower = Slice(prefix)
-        val upper = Slice(afterPrefix(prefix))
-        try {
-            ReadOptions()
-                .setIterateLowerBound(lower)
-                .setIterateUpperBound(upper)
-                // A prefix shorter than the extractor spreads its rows over many extractor prefixes,
-                // so no seek key can stand for all of them. A prefix exactly as long as the extractor
-                // is no better off: its upper bound is the first key of the next extractor prefix, and
-                // an upper bound outside the prefix seeked into leaves what an iterator in prefix mode
-                // returns undefined. Either way the walk has to leave prefix mode. A longer prefix
-                // keeps the extractor bytes it shares with its own bound and stays in it.
-                .setTotalOrderSeek(prefix.size <= Zcode.CHUNK_PREFIX_SIZE)
-                .use { options ->
-                    db.newIterator(cf, options).use { iter ->
-                        if (reverse) iter.seekForPrev(lastUnder(prefix)) else iter.seekToFirst()
-                        while (iter.isValid) {
-                            if (!action(iter.key(), iter.value())) return
-                            if (reverse) iter.prev() else iter.next()
-                        }
-                    }
-                }
-        } finally {
-            lower.close()
-            upper.close()
-        }
-    }
+    ) = db.forEachUnder(cf, prefix, Zcode.CHUNK_PREFIX_SIZE, reverse, action = action)
 
     private fun runWriter() {
         var lastFlush = System.nanoTime()
@@ -690,7 +596,7 @@ class BlockLog(
                     batched += first
                     queue.drainTo(batched, MAX_BATCH - 1)
                     writeAll(batched)
-                    written.addAndGet(batched.size.toLong())
+                    progress.written.addAndGet(batched.size.toLong())
                 }
                 if (System.nanoTime() - lastFlush >= WAL_FLUSH_INTERVAL_NANOS) {
                     db.flushWal(true)
@@ -698,7 +604,7 @@ class BlockLog(
                 }
             }
         } catch (failure: Throwable) {
-            writerFailure = failure
+            progress.failure = failure
             running = false
             LOGGER.log(
                 Level.SEVERE,
@@ -833,26 +739,6 @@ class BlockLog(
         return ts
     }
 
-    // Read-only and with exactly the families already on disk, so a database this build refuses is
-    // handed back untouched. Null means there is nothing to refuse: no database, or one from before
-    // the schema was stamped.
-    private fun storedSchema(path: String): Long? = Options().use { probe ->
-        val existing = RocksDB.listColumnFamilies(probe, path)
-        val metaIndex = existing.indexOfFirst { it.contentEquals(BLOCK_META_CF) }
-        if (metaIndex < 0) return null
-        val handles = ArrayList<ColumnFamilyHandle>()
-        ColumnFamilyOptions().use { cfOptions ->
-            DBOptions().use { options ->
-                try {
-                    RocksDB.openReadOnly(options, path, existing.map { ColumnFamilyDescriptor(it, cfOptions) }, handles)
-                        .use { probed -> probed.get(handles[metaIndex], META_SCHEMA_KEY)?.let { ByteReader(it).longBE() } }
-                } finally {
-                    handles.forEach { it.close() }
-                }
-            }
-        }
-    }
-
     private fun closeNatives() {
         cfHandles.forEach { it.close() }
         db.close()
@@ -871,12 +757,6 @@ class BlockLog(
     }
 
     private fun readCounter(key: ByteArray): Long = db.get(metaCf, key)?.let { ByteReader(it).longBE() } ?: 0L
-
-    private fun failIfWriterStopped() {
-        writerFailure?.let {
-            throw IllegalStateException("block writer stopped and ${queue.size} submissions are unwritten", it)
-        }
-    }
 }
 
 // One database per world, each in a directory named after it.
@@ -912,12 +792,6 @@ class BlockLogs(
                 LOGGER.log(Level.SEVERE, "the block log of world $world did not close", it)
             }
         }
-    }
-
-    // The handles go before the files they hold open.
-    fun delete(world: UUID) {
-        close(world)
-        dirOf(world).toFile().deleteRecursively()
     }
 
     override fun close() = closeAll()

@@ -22,7 +22,7 @@ import io.pfaumc.pfauprotect.storage.itemTypeIdOf
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.capture.item.NestedItems
-import io.pfaumc.pfauprotect.storage.NestedOwners
+import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
@@ -856,7 +856,7 @@ class BlockDestructionListener(
     private val origins: SpawnOrigins,
     private val entities: EntityOrigins,
     private val placed: PlacedForms,
-    private val owners: NestedOwners,
+    private val owners: RocksItemLog,
     private val sink: (List<Transfer>) -> Unit,
     private val energy: Energy = Energy(),
     private val touches: HandTouches = HandTouches(),

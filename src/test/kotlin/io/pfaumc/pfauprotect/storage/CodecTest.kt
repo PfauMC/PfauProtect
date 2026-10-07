@@ -204,7 +204,7 @@ class CodecTest {
                 )
                 val key = EntryCodec.key(entry.holder, entry.timestamp, entry.txId, entry.ordinal, registries)
                 val value = EntryCodec.value(entry, registries)
-                assertEquals(entry, EntryCodec.decode(key, value, registries))
+                assertEquals(entry, EntryCodec.decodeOrNull(key, value, registries))
                 seed++
             }
         }
@@ -230,7 +230,7 @@ class CodecTest {
         val key = EntryCodec.key(holder, 7L, 8L, 0, registries)
         for (confidence in Confidence.entries) {
             val value = EntryCodec.value(entry(holder, Void).copy(confidence = confidence, actor = playerA), registries)
-            assertEquals(confidence, EntryCodec.decode(key, value, registries).confidence)
+            assertEquals(confidence, EntryCodec.decodeOrNull(key, value, registries)!!.confidence)
         }
     }
 
@@ -243,11 +243,11 @@ class CodecTest {
         val key = EntryCodec.key(holder, 7L, 8L, 0, registries)
         val value = EntryCodec.value(withActor, registries)
         assertEquals(0x10, value[0].toInt() and 0x10)
-        assertEquals(playerA, EntryCodec.decode(key, value, registries).actor)
+        assertEquals(playerA, EntryCodec.decodeOrNull(key, value, registries)!!.actor)
 
         val without = EntryCodec.value(withActor.copy(actor = null), registries)
         assertEquals(0x00, without[0].toInt() and 0x10)
-        assertNull(EntryCodec.decode(key, without, registries).actor)
+        assertNull(EntryCodec.decodeOrNull(key, without, registries)!!.actor)
         assertEquals(value.size - without.size, 1)
     }
 
@@ -259,7 +259,6 @@ class CodecTest {
             val value = EntryCodec.value(entry(holder, Void), registries)
             value[0] = ((value[0].toInt() and 0xF8) or version).toByte()
             assertNull(EntryCodec.decodeOrNull(key, value, registries)) { "version $version was decoded" }
-            assertThrows(IllegalArgumentException::class.java) { EntryCodec.decode(key, value, registries) }
         }
     }
 
@@ -274,7 +273,6 @@ class CodecTest {
         for (kept in 0 until value.size) {
             val torn = value.copyOf(kept)
             assertNull(EntryCodec.decodeOrNull(key, torn, registries)) { "$kept bytes of a record decoded" }
-            assertThrows(Exception::class.java) { EntryCodec.decode(key, torn, registries) }
         }
         for (kept in 0 until key.size) {
             val torn = key.copyOf(kept)

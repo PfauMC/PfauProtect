@@ -358,9 +358,9 @@ class BlockCaptureTest {
             rows.map { it.stateAfter },
         )
 
-        assertEquals(shared.payloadId(placed), rows[0].payloadAfter)
+        assertEquals(shared.payloads.lookup(placed), rows[0].payloadAfter)
         assertNull(rows[0].payloadBefore)
-        assertEquals(shared.payloadId(edited), rows[1].payloadBefore)
+        assertEquals(shared.payloads.lookup(edited), rows[1].payloadBefore)
         assertNull(rows[1].payloadAfter)
         assertArrayEquals(placed, shared.payload(rows[0].payloadAfter!!))
         assertArrayEquals(edited, shared.payload(rows[1].payloadBefore!!))
