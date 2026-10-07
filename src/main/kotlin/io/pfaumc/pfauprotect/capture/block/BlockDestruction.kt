@@ -867,7 +867,9 @@ class BlockDestructionListener(
     private val readBacks = ReadBacks()
     // The shaped neighbours waiting for their read, one per position and tick: the first look is the
     // state the tick found, and the next change beside it in that tick would only see it half rewritten.
-    private val shapeReads = ReadBacks()
+    // A capture that files the position before the read takes the look over (D107).
+    private class ShapeWatch(val before: BlockData, val by: Attributed, val timestamp: Long)
+    private val shapeWatches = ConcurrentHashMap<WorldBlock, ShapeWatch>()
     // Who stands behind dynamite just primed, on its position until the entity appears there.
     private val priming = ConcurrentHashMap<WorldBlock, Pair<Attributed, Long>>()
 
@@ -1348,7 +1350,9 @@ class BlockDestructionListener(
     fun settleGrowth() {
         growing.settle()
         readBacks.sweep()
-        shapeReads.sweep()
+        // A read whose task never ran, its chunk gone first.
+        val unread = System.currentTimeMillis() - TOUCH_STALE_MILLIS
+        shapeWatches.values.removeIf { it.timestamp < unread }
         val stale = System.currentTimeMillis() - PRIMING_MILLIS
         priming.values.removeIf { it.second < stale }
     }
@@ -1404,14 +1408,28 @@ class BlockDestructionListener(
             val before = near.blockData
             if (shapeKeysOf(blockNameOf(before.asString)).isEmpty()) continue
             val there = positionOf(near)
-            if (!shapeReads.claim(there)) continue
+            val held = shapeWatches[there]
+            if (held != null && timestamp - held.timestamp <= READ_BACK_MILLIS) continue
+            val watch = ShapeWatch(before, by, timestamp)
+            shapeWatches[there] = watch
             plugin.server.regionScheduler.execute(plugin, near.world, near.x shr 4, near.z shr 4) {
-                shapeReads.done(there)
+                if (!shapeWatches.remove(there, watch)) return@execute
                 val now = near.blockData.asString
                 if (!reshaped(before.asString, now) || readBacks.settled(there)) return@execute
                 log.submit(listOf(row(Site(there, near, before, now, payload = null), Cause.BLK_SHAPE, by, timestamp)))
             }
         }
+    }
+
+    /**
+     * A shaped block filed by a capture while what a change beside it made of it still waits for its read:
+     * that goes first, up to the state the capture found. A fence let go by a plank that burnt and blown up
+     * by TNT in the same tick was read back as air, and its blast row named it already let go (D107).
+     */
+    private fun shapeFirst(log: BlockLog, at: WorldBlock, block: Block, found: BlockData) {
+        val watch = shapeWatches.remove(at) ?: return
+        if (!reshaped(watch.before.asString, found.asString)) return
+        log.submit(listOf(row(Site(at, block, watch.before, found.asString, payload = null), Cause.BLK_SHAPE, watch.by, watch.timestamp)))
     }
 
     // Every portal block joined to this one, read back: those the broken frame took with it are filed
@@ -1751,6 +1769,7 @@ class BlockDestructionListener(
     ) {
         val real = sites.filter { unfiled(it) && !commanded(it.block) }
         val rows = real + carried.filter { unfiled(it) && !commanded(it.block) }
+        for (site in rows) shapeFirst(log, site.at, site.block, site.before)
         log.submit(rows.map { row(it, cause, by, timestamp) })
         for (site in rows) readBacks.filed(site.at, site.before.asString, site.after)
         val gone = real.filter { wentAway(it.before.asString, it.after) }
@@ -1916,6 +1935,7 @@ class BlockDestructionListener(
         // One position raises two physics events in one tick, and a second read-back of it would find
         // the same air the first did and file the disappearance again, in both planes.
         if (!readBacks.claim(at)) return
+        logs.get(block.world.uid)?.let { shapeFirst(it, at, block, before) }
         // The time of the event, not of the read: the change happened in the tick that raised it, and
         // a position whose rows are out of order stops answering what stands in it.
         val timestamp = System.currentTimeMillis()
