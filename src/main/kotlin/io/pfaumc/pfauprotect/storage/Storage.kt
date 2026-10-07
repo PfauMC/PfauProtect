@@ -471,7 +471,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             COMPENSATED_CF to pointReadOptions,
             CONFISCATIONS_CF to unfilteredOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
-        db = RocksDB.open(dbOptions, path, descriptors, cfHandles)
+        db = cleaningUpOnFailure({ closeOptions() }) { RocksDB.open(dbOptions, path, descriptors, cfHandles) }
         entriesCf = cfHandles[1]
         itemFormsCf = cfHandles[2]
         registryCf = cfHandles[3]
