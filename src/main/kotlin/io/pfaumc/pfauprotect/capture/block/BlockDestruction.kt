@@ -1866,7 +1866,9 @@ class BlockDestructionListener(
         // Here and not in the read-back: the items are already in the world by then, and a note that
         // arrives after the spawn it explains is a note nobody can claim.
         if (expectsDrops) dropsOf(block, cause, by)
-        by.culprit()?.let { attribution.givingWay(block, it) }
+        // The log is still standing here, and by the read-back it is not: a wall of stripped wood burnt
+        // away read as air there, and the leaves it held decayed on nobody.
+        by.culprit()?.let { attribution.givingWay(block, it); attribution.felledBy(block, it) }
         plugin.server.regionScheduler.execute(plugin, block.world, block.x shr 4, block.z shr 4) {
             readBacks.done(at)
             val now = block.blockData.asString
