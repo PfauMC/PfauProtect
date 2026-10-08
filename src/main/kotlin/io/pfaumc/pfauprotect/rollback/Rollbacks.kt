@@ -39,6 +39,8 @@ import io.pfaumc.pfauprotect.capture.entity.snapshotOf
 import io.pfaumc.pfauprotect.capture.entity.changedBetween
 import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.ItemEntityRef
+import io.pfaumc.pfauprotect.model.PlayerHolder
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.storage.EntityChange
 import io.pfaumc.pfauprotect.storage.EntityRow
@@ -438,6 +440,8 @@ class ChunkRollback(
         val doused = if (!apply) emptyList() else douse(level, spots)
         // After the blocks, so a chest that came back is there to take its contents.
         val givenBack = ArrayList<PostingRef>()
+        // The form a bare mark of the given-back postings is written under when no slot moves to carry it.
+        var marker: ByteArray? = null
         positions.forEachIndexed { i, plan ->
             for (refill in plan.refills) {
                 tally.slots++
@@ -452,14 +456,24 @@ class ChunkRollback(
                 // griefer set under a chest is a stop on the way, and both ends of the stop are done.
                 if (container == null && touched[i]) {
                     givenBack += refill.posting
-                    if (refill.qty < 0) tally.traces += Trace(refill.lead, refill.formId, refill.qty)
+                    marker = marker ?: refill.form
+                    // What a player or a pile carried out of it is in their hands, not at another stop: the
+                    // griefer who emptied his own hopper kept the owner's diamonds (D115).
+                    if (refill.qty < 0 || refill.lead is PlayerHolder || refill.lead is ItemEntityRef) {
+                        tally.traces += Trace(refill.lead, refill.formId, refill.qty)
+                    }
                     continue
                 }
                 val moved = if (container == null) 0 else putBack(
                     container, refill.at.slot, codec.decode(refill.form, 1, refill.damage), refill.qty,
                 ) { codec.encode(it).form.contentEquals(refill.form) }
                 if (moved < abs(refill.qty)) tally.missed++
-                if (moved > 0) givenBack += refill.posting
+                if (moved > 0) {
+                    givenBack += refill.posting
+                    // What went in and came out again leaves the container as it was: nothing moves to carry
+                    // the mark on.
+                    marker = marker ?: refill.form
+                }
                 if (moved > 0) tally.traces += Trace(refill.lead, refill.formId, if (refill.qty > 0) moved else -moved)
             }
         }
@@ -477,7 +491,13 @@ class ChunkRollback(
         val planned = spots.toHashSet()
         for ((pos, was) in doused) if (pos !in planned) difference.add(pos.x, pos.y, pos.z, was, standingAt(level, pos, codec), blockRow = true)
         if (difference.rows.isNotEmpty()) logs.get(world)?.submit(difference.rows)
-        if (difference.moved) sink(difference.transfers(givenBack))
+        if (difference.moved) {
+            sink(difference.transfers(givenBack))
+        } else if (givenBack.isNotEmpty()) {
+            // Containers taken away empty, the griefer's dispensers fired out (D116): nothing moves, but the
+            // postings are given back all the same, or every rollback after this one counts them again.
+            sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, marker!!, null, 1, difference.timestamp, actor = actor, reverts = givenBack)))
+        }
         difference.writeOff(plugin, placed, sink)
         // Last, and after the rows: what the neighbours do now is theirs, and the capture files it.
         for (i in positions.indices) if (touched[i]) level.updateNeighboursOnBlockSet(spots[i], before[i].state)
