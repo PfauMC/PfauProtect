@@ -119,6 +119,13 @@ private const val HOLD_LINGER_TICKS = 200L
 // How far from a block it put back a rollback puts fire out.
 private const val DOUSE_REACH = 2
 
+// How far above and below the plan's positions running liquid is looked for once the rollback is done: a
+// cast's lava falls from the roofs to the street.
+private const val DRAIN_SPAN = 40
+
+// A running liquid bigger than this is a river someone feeds, not what is left of a griefer's bucket.
+private const val FLOW_LIMIT = 8192
+
 // Canvas loads an unloaded chunk for `canvas$loadOrRunAtChunksAsync` and then never calls back when no
 // player keeps it loaded: the rollback waited for good and answered nothing. So a rollback holds its
 // chunks itself, with a ticket of its own, each run under its own identifier so that two runs over the
@@ -371,12 +378,17 @@ class ChunkRollback(
         // What a source being taken away had run into goes with it, before anything is put back: a plank
         // put back in the middle of the flow would cut the walk off, and lava left running sets fire to
         // the house the rollback is putting back.
+        // So does a flow the players' rows stand in whose source is no more: the lava of a cast whose sources the
+        // water turned to stone ran on down the restored roofs for minutes, read as air and left to drain (NX1).
         val drained = if (!apply) emptyList() else positions.indices.flatMap { i ->
             val was = before[i].state
             val removed = was.block is LiquidBlock && was.fluidState.isSource &&
                 targets[i].let { it != null && it != was.asBlockData().asString }
-            if (!removed) emptyList()
-            else ranFrom(spots[i], level::getBlockState) { Bukkit.isOwnedByCurrentRegion(level.world, it.x shr 4, it.z shr 4) }
+            when {
+                was.block is LiquidBlock && !was.fluidState.isSource && positions[i].steps.isNotEmpty() -> listOf(spots[i] to was)
+                !removed -> emptyList()
+                else -> ranFrom(spots[i], level::getBlockState) { Bukkit.isOwnedByCurrentRegion(level.world, it.x shr 4, it.z shr 4) }
+            }
         }
         for ((pos, _) in drained) level.setBlock(pos, Blocks.AIR.defaultBlockState(), PLACE_FLAGS)
         positions.forEachIndexed { i, plan ->
@@ -504,6 +516,59 @@ class ChunkRollback(
         for ((pos, was) in drained) level.updateNeighboursOnBlockSet(pos, was)
         for ((pos, was) in doused) level.updateNeighboursOnBlockSet(pos, was.state)
         return tally
+    }
+
+    /**
+     * Once every chunk is done, the running liquid in the chunk that no source feeds any more: a chunk put back
+     * first was flowed into again from its neighbour's sources, not yet taken, and the lava of a cast lay on the
+     * street long after the rollback, flows whose way down from the cast no row had followed (NX1). The game
+     * takes such a flow away by itself, tick by tick; a flow any source still feeds is left to it.
+     */
+    fun drainLeft(level: ServerLevel, chunk: ChunkPlan) {
+        if (chunk.positions.isEmpty()) return
+        val owned = { pos: BlockPos -> Bukkit.isOwnedByCurrentRegion(level.world, pos.x shr 4, pos.z shr 4) }
+        val low = maxOf(level.minY, chunk.positions.minOf { it.at.y } - DRAIN_SPAN)
+        val high = minOf(level.maxY - 1, chunk.positions.maxOf { it.at.y } + DRAIN_SPAN)
+        val seen = HashSet<BlockPos>()
+        val orphaned = LinkedHashMap<BlockPos, net.minecraft.world.level.block.state.BlockState>()
+        for (x in chunk.chunkX * 16 until chunk.chunkX * 16 + 16) for (z in chunk.chunkZ * 16 until chunk.chunkZ * 16 + 16) {
+            for (y in low..high) {
+                val pos = BlockPos(x, y, z)
+                if (pos in seen || !running(level.getBlockState(pos))) continue
+                val (flow, fed) = flowFrom(pos, level, owned, seen)
+                if (!fed) orphaned.putAll(flow)
+            }
+        }
+        for (pos in orphaned.keys) level.setBlock(pos, Blocks.AIR.defaultBlockState(), PLACE_FLAGS)
+        for ((pos, was) in orphaned) level.updateNeighboursOnBlockSet(pos, was)
+    }
+
+    private fun running(state: net.minecraft.world.level.block.state.BlockState) = state.block is LiquidBlock && !state.fluidState.isSource
+
+    // The running liquid joined to `start`, and whether a source of it touches any of it. One too big to walk is
+    // taken as fed.
+    private fun flowFrom(
+        start: BlockPos, level: ServerLevel, owned: (BlockPos) -> Boolean, seen: MutableSet<BlockPos>,
+    ): Pair<Map<BlockPos, net.minecraft.world.level.block.state.BlockState>, Boolean> {
+        val fluid = level.getBlockState(start).fluidState.type
+        val flow = LinkedHashMap<BlockPos, net.minecraft.world.level.block.state.BlockState>()
+        val queue = ArrayDeque(listOf(start))
+        seen += start
+        var fed = false
+        while (queue.isNotEmpty()) {
+            val at = queue.removeFirst()
+            flow[at] = level.getBlockState(at)
+            for (direction in Direction.entries) {
+                val near = at.relative(direction)
+                if (!owned(near)) continue
+                val state = level.getBlockState(near)
+                if (!state.fluidState.type.isSame(fluid)) continue
+                if (state.fluidState.isSource) fed = true
+                else if (state.block is LiquidBlock && seen.add(near)) queue += near
+            }
+            if (flow.size > FLOW_LIMIT) return flow to true
+        }
+        return flow to fed
     }
 
     /**
@@ -922,7 +987,11 @@ class Rollbacks(
         }
         val left = AtomicInteger(work.size)
         val progress = Progress(sender as? Player, work.size, apply)
-        val done = { val n = left.decrementAndGet(); progress.step(work.size - n); if (n == 0) entityJobs(total) { finishing(sender, total, read, where, apply, actor, rows, freed) } }
+        val done = {
+            val n = left.decrementAndGet()
+            progress.step(work.size - n)
+            if (n == 0) drainAll(work, apply) { entityJobs(total) { finishing(sender, total, read, where, apply, actor, rows, freed) } }
+        }
         // A few chunks at a time, each starting the next as it ends: a /pp cancel then reaches the chunks not
         // begun yet, and a big rollback does not land on every region in the same tick.
         val queue = java.util.concurrent.ConcurrentLinkedQueue(work)
@@ -952,6 +1021,23 @@ class Rollbacks(
             }
         }
         repeat(minOf(CONCURRENT_CHUNKS, work.size)) { next() }
+    }
+
+    // The liquid left running, every chunk on its own region, once all of them are put back.
+    private fun drainAll(work: List<Pair<ServerLevel, ChunkPlan>>, apply: Boolean, then: () -> Unit) {
+        if (!apply) return then()
+        val left = AtomicInteger(work.size)
+        for ((level, chunk) in work) {
+            level.`canvas$loadOrRunAtChunksAsync`(chunk.chunkX, chunk.chunkX, chunk.chunkZ, chunk.chunkZ, Priority.NORMAL) {
+                try {
+                    chunks.drainLeft(level, chunk)
+                } catch (failure: Throwable) {
+                    plugin.logger.log(Level.WARNING, "a rollback could not drain the chunk at ${chunk.chunkX} ${chunk.chunkZ}", failure)
+                } finally {
+                    if (left.decrementAndGet() == 0) then()
+                }
+            }
+        }
     }
 
     // Live entities are worked on their own threads once every chunk is done; the rest waits for them.
