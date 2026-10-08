@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.rollback
 
 import io.pfaumc.pfauprotect.attribution.flowing
+import io.pfaumc.pfauprotect.capture.block.reshaped
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntityKind
@@ -143,9 +144,12 @@ class Settled(val back: Step?, val conflict: Boolean)
  * A position the window opens on in the middle of the players' work, standing again as it did before they
  * first touched it, is done: undone from the window's start it would get back their own TNT, their own
  * burnt walls. A house an earlier rollback had put back got 153 blocks of dynamite from a later one (D108).
+ * A wall or a pane is that block only in the shape it had: the same diorite wall, joined to air after a
+ * second blast on a street the griefer had blown up before, read as standing as before him (D120).
  */
 fun settle(standing: String, steps: List<Step>, origin: String?): Settled =
-    if (origin != null && blockOf(standing) == blockOf(origin)) Settled(null, conflict = false) else settle(standing, steps)
+    if (origin != null && blockOf(standing) == blockOf(origin) && !reshaped(standing, origin)) Settled(null, conflict = false)
+    else settle(standing, steps)
 
 /**
  * Undoes the rows of one position, newest first, from what stands there now. A row whose `after` is
