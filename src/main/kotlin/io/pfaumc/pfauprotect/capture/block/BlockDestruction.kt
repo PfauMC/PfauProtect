@@ -606,6 +606,9 @@ internal class GrowClaims {
 // for a tick and no longer.
 internal const val READ_BACK_MILLIS = 50L
 
+// How recent the row a read-back takes for its own change has to be: the tick before, under a lagging region.
+private const val FILED_MILLIS = 5_000L
+
 /**
  * The positions a read-back is already queued for. Two physics events reach one position in one tick:
  * `Level.setBlock` fires one through `updateNeighborsAt`, and the neighbour shape update behind it
@@ -1963,6 +1966,10 @@ class BlockDestructionListener(
         // Asked here first because a row filed in this same tick is still on its way to the journal.
         if (readBacks.settled(at)) return true
         val row = log.standingAt(at.x, at.y, at.z).row ?: return false
+        // That same change, filed a moment ago: one filed an hour before is another change, after which
+        // something that writes no row put the block back. A lantern CoreProtect had hung up again fell
+        // under the next blast with no row, and the rollback left it down (D122).
+        if (System.currentTimeMillis() - row.timestamp > FILED_MILLIS) return false
         return registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore) == before &&
             registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) == after
     }
