@@ -16,7 +16,8 @@ class SpawnOriginsTest {
     private val world = UUID.randomUUID()
     private val written = ArrayList<Transfer>()
     private val coalescer = TickCoalescer(written::add)
-    private val origins = SpawnOrigins(coalescer)
+    private var clock = 0L
+    private val origins = SpawnOrigins(coalescer) { clock }
 
     private val dropper = Container(world, 4, 70, 8, 2)
     private val honeycomb = ItemKey("honeycomb".toByteArray(), null)
@@ -221,6 +222,34 @@ class SpawnOriginsTest {
         origins.claim(UUID.randomUUID(), at, stone, 1)
         assertEquals(1, rows().size)
 
+        origins.sweep()
+        assertTrue(origins.isEmpty)
+    }
+
+    // A blast read off by its own row claims nothing of the next one along the street (D114).
+    @Test
+    fun `an event read off leaves the next one's drops to it`() {
+        val first = Any()
+        val second = Any()
+        origins.expect(Void, Cause.BLK_TNT, stone, at, 1, rolled = true, tag = first)
+        val early = UUID.randomUUID()
+        origins.claim(early, at, stone, 3)
+        assertEquals(listOf(early), origins.droppedFor(first))
+
+        origins.expect(Void, Cause.BLK_TNT, stone, at, 1, rolled = true, tag = second)
+        val late = UUID.randomUUID()
+        origins.claim(late, at, stone, 5)
+        assertEquals(listOf(late), origins.droppedFor(second))
+    }
+
+    // A crater breaks for longer than two sweeps of the global region before its drops spawn (D114).
+    @Test
+    fun `a note waits out sweeps that come quicker than its spawn`() {
+        origins.expect(Void, Cause.BLK_TNT, stone, at, 1, rolled = true)
+        repeat(10) { origins.sweep() }
+        assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1))
+
+        clock += 1_000
         origins.sweep()
         assertTrue(origins.isEmpty)
     }
