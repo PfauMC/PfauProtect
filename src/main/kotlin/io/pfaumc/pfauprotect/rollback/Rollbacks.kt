@@ -678,8 +678,9 @@ class ChunkRollback(
     /**
      * The neighbours outside the plan told of what came back beside them, the way the game tells them of any
      * block set: leaves count their way to a log again. One that takes its shape from what is beside it is
-     * left as it stands, since what a griefer made of it is a row of its own and in the plan (D104). Before
-     * the observers are quietened, which this would set off.
+     * left as it stands, since what a griefer made of it is a row of its own and in the plan (D104): worked out
+     * again it would lose a shape no rule of the game gives, which a builder's tool put there. Before the
+     * observers are quietened, which this would set off.
      */
     private fun reshapeAround(level: ServerLevel, put: List<BlockPos>) {
         val planned = put.toHashSet()

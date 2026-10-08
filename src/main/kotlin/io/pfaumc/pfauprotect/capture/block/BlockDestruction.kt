@@ -1384,11 +1384,16 @@ class BlockDestructionListener(
         if (!plugin.isEnabled || commanded(block)) return
         val log = logs.get(block.world.uid) ?: return
         val timestamp = System.currentTimeMillis()
-        for (face in SIX_FACES) {
-            val near = block.getRelative(face)
-            if (!Bukkit.isOwnedByCurrentRegion(near)) continue
+        // And the shaped blocks beside those: the wall under a wall that lost its neighbour grows low with it,
+        // a change of a change with no event of its own, and was put back tall under a wall put back low (D117).
+        val shaped = SIX_FACES.map { block.getRelative(it) }.filter { Bukkit.isOwnedByCurrentRegion(it) && shapedNow(it) }
+        val watched = LinkedHashSet<Block>(shaped)
+        for (near in shaped) for (face in SIX_FACES) {
+            val next = near.getRelative(face)
+            if (next != block && Bukkit.isOwnedByCurrentRegion(next) && shapedNow(next)) watched += next
+        }
+        for (near in watched) {
             val before = near.blockData
-            if (shapeKeysOf(blockNameOf(before.asString)).isEmpty()) continue
             val there = positionOf(near)
             val held = shapeWatches[there]
             if (held != null && timestamp - held.timestamp <= READ_BACK_MILLIS) continue
@@ -1402,6 +1407,8 @@ class BlockDestructionListener(
             }
         }
     }
+
+    private fun shapedNow(block: Block) = shapeKeysOf(blockNameOf(block.blockData.asString)).isNotEmpty()
 
     /**
      * A shaped block filed by a capture while what a change beside it made of it still waits for its read:
