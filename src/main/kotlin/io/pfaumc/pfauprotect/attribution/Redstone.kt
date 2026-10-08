@@ -194,6 +194,9 @@ internal fun powered(data: BlockData, current: Int): BlockData = data.clone().al
 private fun isSwitch(type: Material) =
     Tag.BUTTONS.isTagged(type) || Tag.PRESSURE_PLATES.isTagged(type) || type == Material.LEVER
 
+// What lays a trap: a hand, or a command a player ran.
+private val TRAP_CAUSES = PLACING_CAUSES + Cause.BLK_COMMAND
+
 // How long a push, a pull or a knock stays behind the entity it moved: a mob stops within seconds, a
 // cart or a boat coasts on for a while.
 private const val NUDGE_MILLIS = 10_000L
@@ -304,6 +307,7 @@ class RedstoneListener(
     private val logs: BlockLogs,
     private val entities: EntityOrigins,
     private val nudges: Nudges,
+    private val attribution: Attribution? = null,
 ) : Listener {
     private class Pressed(val at: WorldBlock, val actor: UUID, val nanos: Long)
 
@@ -320,13 +324,26 @@ class RedstoneListener(
         if (event.action != Action.RIGHT_CLICK_BLOCK && event.action != Action.PHYSICAL) return
         val block = event.clickedBlock ?: return
         val at = positionOf(block)
-        val by = Attributed(event.player.uniqueId, Confidence.FACT)
+        val by = trapOf(block, at, event) ?: Attributed(event.player.uniqueId, Confidence.FACT)
         energy.note(at, by)
         when {
             // A tripwire raises nothing of its own: the change is on the hook, however far along.
             block.type == Material.TRIPWIRE -> tripped(block, Cause.BLK_PLAYER_SWITCH, Behind(by), null)
             isSwitch(block.type) -> pressing.set(Pressed(at, by.actor, System.nanoTime()))
         }
+    }
+
+    /**
+     * A plate or a tripwire somebody else put down, stepped on: a trap, and what it sets off is the one who
+     * laid it. The griefer's mines under the street went off as the owner's, who walked over the plate,
+     * and the griefer's rollback left the crater (D118). A switch pressed by hand stays the presser's.
+     */
+    private fun trapOf(block: Block, at: WorldBlock, event: PlayerInteractEvent): Attributed? {
+        if (event.action != Action.PHYSICAL || attribution == null) return null
+        if (!Tag.PRESSURE_PLATES.isTagged(block.type) && block.type != Material.TRIPWIRE) return null
+        val standing = block.blockData.asString
+        val placer = attribution.placerAt(at, standing) ?: attribution.journalPlacerAt(at, standing, TRAP_CAUSES) ?: return null
+        return placer.takeIf { it.actor != event.player.uniqueId }?.inferred()
     }
 
     // Pressure plates, tripwire and a button an arrow hits raise this for anything but a player.

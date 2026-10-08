@@ -53,7 +53,7 @@ private val DIAGONALS = (-1..1).flatMap { dx ->
 // a block that was already standing there — a break writes a row at the position it emptied, and the
 // surviving half of a double chest is rewritten to `type=single` when its partner goes — and the
 // actor of such a row put nothing down.
-private val PLACING_CAUSES = setOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_BONEMEAL)
+internal val PLACING_CAUSES = setOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_BONEMEAL)
 
 // The same for a liquid source: a bucket emptied by hand or by a dispenser.
 internal val POURING_CAUSES = setOf(Cause.BLK_BUCKET, Cause.BLK_DISPENSER)
