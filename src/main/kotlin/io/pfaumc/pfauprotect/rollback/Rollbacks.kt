@@ -617,7 +617,7 @@ class Rollbacks(
                 } finally {
                     done()
                 }
-            }, done)
+            }, done) ?: done()
         }
     }
 

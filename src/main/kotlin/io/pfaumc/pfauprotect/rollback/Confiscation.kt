@@ -236,23 +236,22 @@ class Confiscations(
         for ((taker, all) in owed.groupBy { it.taker }) {
             when (taker) {
                 is Carrier -> {
-                    val player = Bukkit.getPlayer(taker.player)
-                    if (player == null) {
+                    fun oweAll() {
                         for (item in all) {
                             ledger.owe(taker.player, item.formId, item.qty, actor)
                             taken(item.formId, item.qty)
                         }
+                    }
+                    val player = Bukkit.getPlayer(taker.player)
+                    if (player == null) {
+                        oweAll()
                         continue
                     }
-                    // A player who leaves between the two is owed it instead.
+                    // A player who leaves between the two is owed it instead, whether they left before the
+                    // task was queued (a null task) or after.
                     player.scheduler.run(plugin, { fromPlayer(player, all, actor, sender, gone, taken) }) {
-                        Bukkit.getAsyncScheduler().runNow(plugin) {
-                            for (item in all) {
-                                ledger.owe(taker.player, item.formId, item.qty, actor)
-                                taken(item.formId, item.qty)
-                            }
-                        }
-                    }
+                        Bukkit.getAsyncScheduler().runNow(plugin) { oweAll() }
+                    } ?: Bukkit.getAsyncScheduler().runNow(plugin) { oweAll() }
                 }
                 // Looking an entity up by its uuid is a tick thread's business, and the pile may lie in any
                 // region; the global one may ask, and the pile's own scheduler does the rest.
@@ -280,9 +279,8 @@ class Confiscations(
             Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) }
             return
         }
-        online.scheduler.run(plugin, { toPlayer(online, formId, qty, actor, sender) }) {
-            Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) }
-        }
+        val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) } }
+        online.scheduler.run(plugin, { toPlayer(online, formId, qty, actor, sender) }) { owe() } ?: owe()
     }
 
     // On the player's own thread.
