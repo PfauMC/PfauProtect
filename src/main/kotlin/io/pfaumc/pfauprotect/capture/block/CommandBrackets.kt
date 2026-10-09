@@ -108,11 +108,26 @@ class CommandBrackets(
             val source = context.source
             val actor = (source.entity as? ServerPlayer)?.uuid
             val kind = if (name == "clone") Writes.CLONE else Writes.WRITE
+            // Run here when nothing has to hop: the count of a fill is what `execute store` and a
+            // conditional read, and a syntax failure belongs to the dispatcher. Only a hop has to answer
+            // before the command has run.
+            if (areas.all { it.owned() }) {
+                var result = 0
+                bracket(areas, kind, actor, source, rethrow = true) { original.run(context).also { result = it } }
+                return result
+            }
             areas.first().onRegion { bracket(areas, kind, actor, source) { original.run(context) } }
             return Command.SINGLE_SUCCESS
         }
 
-        private fun bracket(areas: List<Area>, kind: Writes, actor: UUID?, source: CommandSourceStack, run: () -> Int) {
+        private fun bracket(
+            areas: List<Area>,
+            kind: Writes,
+            actor: UUID?,
+            source: CommandSourceStack,
+            rethrow: Boolean = false,
+            run: () -> Int,
+        ) {
             val before = ConcurrentHashMap<Int, Array<Standing>>()
             // An area this region does not own is read on its own region, queued now so it runs before
             // the command's own hop there, which is queued behind it.
@@ -127,6 +142,7 @@ class CommandBrackets(
             try {
                 CommandBirths.during(births) { run() }
             } catch (failure: CommandSyntaxException) {
+                if (rethrow) throw failure
                 // Thrown on the region rather than to the dispatcher, so it is reported the way the
                 // server reports a failure once it has hopped.
                 source.sendFailure(ComponentUtils.fromMessage(failure.rawMessage))
