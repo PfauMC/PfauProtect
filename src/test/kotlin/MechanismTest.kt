@@ -53,6 +53,13 @@ class MechanismTest {
         assertTrue(dispenseChanges(before, after, 0, ejected = 1).isEmpty())
     }
 
+    // The last item of a slot: the slot is gone empty, and the spawn took it, so nothing is left to write.
+    @Test
+    fun `the last item thrown out of a dispenser is not written off either`() {
+        val before = listOf(held("diamond", 1), null)
+        assertTrue(dispenseChanges(before, listOf(null, null), 0, ejected = 1).isEmpty())
+    }
+
     @Test
     fun `bone meal spent by a dispenser leaves its slot`() {
         val before = listOf(null, held("bone_meal", 8))

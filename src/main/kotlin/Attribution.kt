@@ -48,6 +48,13 @@ private val PLACING_CAUSES = setOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_BONEMEAL)
  */
 data class Attributed(val actor: UUID, val confidence: Confidence = Confidence.INFERRED)
 
+/**
+ * The player an item row may name. Such a row has no confidence of its own for its actor — its
+ * confidence is about the movement — so a player who was only near is left off it rather than shown
+ * as the one who did it; the block rows of the same chain say who was near.
+ */
+internal fun Attributed?.culprit(): UUID? = this?.takeIf { it.confidence != Confidence.NEARBY }?.actor
+
 /** A block between the position it broke loose from and the one it lands in. */
 // The form travels with the block rather than being fetched back at the landing: the position it left
 // is free the moment it leaves, and whatever moves in there during the flight owns the note by then.
@@ -271,14 +278,15 @@ internal const val ORIGIN_MILLIS = 6 * 60 * 60 * 1000L
  * entity appears — so there is nothing here for the journal rung to fall back on.
  */
 class EntityOrigins(private val now: () -> Long = System::currentTimeMillis) {
-    private class Note(val actor: UUID, val at: Long)
+    private class Note(val actor: UUID, val at: Long, val confidence: Confidence)
 
     private val origins = ConcurrentHashMap<UUID, Note>()
 
     val isEmpty: Boolean get() = origins.isEmpty()
 
-    fun appeared(entity: UUID, actor: UUID) {
-        origins[entity] = Note(actor, now())
+    // A dispenser set off by nobody but a witness hands the witness on as a witness.
+    fun appeared(entity: UUID, actor: UUID, confidence: Confidence = Confidence.INFERRED) {
+        origins[entity] = Note(actor, now(), confidence)
     }
 
     fun gone(entity: UUID) {
@@ -287,7 +295,7 @@ class EntityOrigins(private val now: () -> Long = System::currentTimeMillis) {
 
     /** Worked out from what a player did, never witnessed on the event that destroyed the block. */
     fun summonerOf(entity: UUID): Attributed? =
-        origins[entity]?.takeIf { now() - it.at <= ORIGIN_MILLIS }?.let { Attributed(it.actor) }
+        origins[entity]?.takeIf { now() - it.at <= ORIGIN_MILLIS }?.let { Attributed(it.actor, it.confidence) }
 
     fun sweep() {
         val cutoff = now() - ORIGIN_MILLIS

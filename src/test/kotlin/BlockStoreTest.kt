@@ -161,6 +161,19 @@ class BlockStoreTest {
         assertFalse(BlockCodec.decode(key, BlockCodec.value(row.copy(alongside = false), IdResolver { _, _ -> 0 }), names).alongside)
     }
 
+    // The witness flag took the top bit of the version field, which every row so far has clear.
+    @Test
+    fun `a witness row says so through the bytes and the other confidences stay as they were`() {
+        val names = IdLookup { _, _ -> alice }
+        for (confidence in Confidence.entries) {
+            val row = BlockRow(1, 2, 3, T0, 0, 0, Cause.BLK_ENTITY_SWITCH, 1, 2, confidence = confidence, actor = alice)
+            val key = BlockCodec.key(1, 2, 3, T0, 0, 0)
+            val value = BlockCodec.value(row, IdResolver { _, _ -> 0 })
+            assertEquals(confidence == Confidence.NEARBY, value[0].toInt() and 0x04 != 0)
+            assertEquals(row, BlockCodec.decode(key, value, names))
+        }
+    }
+
     @Test
     fun `a row of an unknown layout version is skipped rather than guessed at`() {
         val row = BlockRow(1, 2, 3, T0, 0, 0, Cause.BLK_GROW, 1, 2)

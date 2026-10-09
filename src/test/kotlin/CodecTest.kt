@@ -204,6 +204,19 @@ class CodecTest {
         assertEquals(0x40, EntryCodec.header(Kind.MUTATE, Confidence.FACT))
         assertEquals(0xA0, EntryCodec.header(Kind.CLONE, Confidence.INFERRED))
         assertEquals(0x10, EntryCodec.header(Kind.TRANSFER, Confidence.FACT, actor = true))
+        assertEquals(0x08, EntryCodec.header(Kind.TRANSFER, Confidence.NEARBY))
+    }
+
+    // The third confidence went into a bit every earlier row has clear, so nothing written before it
+    // changes meaning, and it comes back as itself.
+    @Test
+    fun `a witness confidence round-trips without touching the older two`() {
+        val holder = Container(worldA, 4, 70, 9, 2)
+        val key = EntryCodec.key(holder, 7L, 8L, 0, registries)
+        for (confidence in Confidence.entries) {
+            val value = EntryCodec.value(entry(holder, Void).copy(confidence = confidence, actor = playerA), registries)
+            assertEquals(confidence, EntryCodec.decode(key, value, registries).confidence)
+        }
     }
 
     // The flag has to live above the version field, which keeps rows written before the field existed

@@ -1,0 +1,181 @@
+# Результаты прогона TESTING-v5
+
+Дата: 2026-09-30. Canvas 26.3 build 956 (alpha), плагин 1.0.0, ветка `mvp` начиная с ed1d5f4. Сервер в
+контейнере (`scripts/test-server.sh`), плоский мир, выживание, мирная сложность. Игрок — SPY_me.
+Строки сняты с консоли (`test-server.sh cmd`) и офлайн-копией `ledger/` (`Scan.java`, `Forms.java`).
+
+Формат: пункт — что делали — что вышло — строки журнала. Время — UTC сервера.
+
+Счётчик непокрытого снимается на последней остановке. Контейнер сервера удаляется при остановке,
+поэтому счётчики промежуточных перезапусков (правки D17–D19) потеряны; к итогу они не относятся.
+
+---
+
+## 5.1 Использование
+
+### U1–U6 — ПРОЙДЕНЫ
+
+Костная мука на саженец, светокамень в якорь, око в рамку портала Энда, соты на медь, яйцо призыва
+свиньи, огненный заряд по незераку.
+
+```
+10:23:21  bonemeal_use            -1 minecraft:bone_meal       SPY_me slot 0  to nowhere
+10:23:26  item_into_single_block  -1 minecraft:glowstone       SPY_me slot 1  to nowhere
+10:23:29  eye_into_frame          -1 minecraft:ender_eye       SPY_me slot 2  to nowhere
+10:23:34  wax_apply               -1 minecraft:honeycomb       SPY_me slot 3  to nowhere
+10:23:43  spawn_egg_use           -1 minecraft:pig_spawn_egg   SPY_me slot 4  to nowhere
+10:23:45  item_used               -1 minecraft:fire_charge     SPY_me slot 5  to nowhere
+```
+
+Выдача и очистка перед U1 через RCON легли `direct_new_item` и `item_vanished` — дефект D17.
+
+### U7–U9 — ПРОЙДЕНЫ
+
+Ведро воды вылить и набрать, ведро лавы, молоко с коровы, треска в ведро и обратно, бутылочка из
+пруда и из котла, вода из бутылочки в пустой котёл, отмывка красной кожаной куртки. Все — превращение
+в слоте, без `direct_new_item` и `item_vanished` (D10 закрыт).
+
+```
+10:31:48  bucket_empty        -1 water_bucket / +1 bucket       SPY_me slot 1  (changed in place)
+10:31:49  bucket_fill         -1 bucket / +1 water_bucket       SPY_me slot 1  (changed in place)
+10:32:07  bucket_fill         -1 bucket / +1 milk_bucket        SPY_me slot 2  (changed in place)
+10:32:25  bucket_capture_mob  -1 water_bucket / +1 cod_bucket   SPY_me slot 1  (changed in place)
+10:32:29  bucket_release_mob  -1 cod_bucket / +1 bucket         SPY_me slot 1  (changed in place)
+10:32:34  bottle_fill         -1 glass_bottle / +1 potion       SPY_me slot 3 → 6
+10:32:42  bottle_empty        -1 potion / +1 glass_bottle       SPY_me slot 4  (changed in place)
+10:32:49  cauldron_wash       -1 / +1 leather_chestplate        SPY_me slot 5  (changed in place)
+```
+
+### U10–U12 — ПРОЙДЕНЫ
+
+```
+10:33:54  container_add       +1 minecraft:iron_ingot   container 61 -60 61 slot 0  from SPY_me cursor
+10:33:59  beacon_payment      -1 minecraft:iron_ingot   container 61 -60 61 slot 0  to nowhere
+10:34:14  transmute_on_break  -1 carrot_on_a_stick / +1 fishing_rod  SPY_me slot 1  (changed in place)
+10:34:39  hotbar_swap         -1 minecraft:stone  SPY_me slot 31  to SPY_me slot 4        (pick-block)
+10:34:49  equip_armor         iron_helmet ↔ diamond_helmet  SPY_me slot 3 ↔ equipment slot 39
+```
+
+Обмен шлемов по ПКМ — четыре строки на обмен (по паре на каждую сторону).
+
+### U13 — ПРОЙДЕН после D18, D19; атрибуция — D20
+
+Первый заход: костная мука, вёдра, бутылочка, стрелы сошлись. Динамит списан дважды (D18), алмаз,
+выброшенный последним в слоте, родился `item_spawn` без убыли слота (D19).
+
+После правки: алмаз по одному из разных слотов, стак булыжника (тег серного куба — два события),
+два динамита — по одной строке на раздачу, баланс слотов раздатчика сходится.
+
+```
+10:47:47  dispenser_eject     -1 minecraft:diamond      container 70 -60 50 slot 0  to dropped item 5d8e6dfa…
+10:47:54  dispenser_eject     -1 minecraft:diamond      container 70 -60 50 slot 4  to dropped item 427042fb…
+10:48:03  dispenser_eject     -1 minecraft:cobblestone  container 70 -60 50 slot 0  to dropped item 80305ffe…
+10:48:13  dispenser_behavior  -1 minecraft:tnt          container 70 -60 50 slot 0  to nowhere
+10:48:15  dispenser_behavior  -1 minecraft:tnt          container 70 -60 50 slot 0  to nowhere
+```
+
+Динамит взорвал раздатчик и выпавшие предметы. Предметы ушли `item_destroy_explosion` (алмаз,
+булыжник после слияния), всё выбитое родилось `blk_tnt`. Ни одна строка не назвала игрока — D20.
+
+## 5.7 Кто запустил механизм
+
+Сборки 27d5ec6 (часть 1), d263f60 (часть 2), 7744507 (энергорельсы).
+
+### S1–S3 — ПРОЙДЕНЫ
+
+```
+11:27:01  blk_player_switch  stone_button powered=false -> true  block 80 -59 50  by SPY_me
+11:27:01  dispenser_eject    -1 minecraft:diamond  container 80 -60 50 slot 4  to dropped item d279b652…  by SPY_me
+11:27:16  dispenser_behavior -1 minecraft:tnt      container 80 -60 50 slot 4  to nowhere  by SPY_me
+11:27:20  blk_tnt            dispenser -> air      block 80 -60 50  by SPY_me (worked out)  +contents
+11:27:52  blk_player_switch  lever powered=true -> false  block 80 -60 60  by SPY_me
+11:27:53  dispenser_eject    -1 minecraft:diamond  container 104 -60 60 slot 4  …  by SPY_me     (S2: 19 блоков провода, 2 повторителя, факел)
+11:28:09  blk_fall_land      air -> sand           block 80 -60 69  by SPY_me (worked out)
+11:28:09  dispenser_eject    -1 minecraft:diamond  container 80 -60 71 slot 4  …  by SPY_me     (S3: песок в воздухе → наблюдатель)
+```
+
+Алмаз, выброшенный в S1 и взорванный динамитом из того же раздатчика, — `ITEM_DESTROY_EXPLOSION`,
+`actor=SPY_me` (офлайн). Вариант S2 с Alternate Current не прогонялся.
+
+### S4–S7 — ПРОЙДЕНЫ
+
+```
+12:36:58  blk_player_switch  stone_pressure_plate  block 90 -60 80  by SPY_me                              (пешком)
+12:37:07  blk_entity_switch  stone_pressure_plate  block 90 -60 80  by SPY_me  pressed by minecraft:pig     (верхом)
+12:37:16  blk_entity_switch  stone_pressure_plate  block 90 -60 80  by SPY_me  pressed by minecraft:horse
+12:37:29  blk_player_switch  stone_pressure_plate  block 90 -60 80  by SPY_me                              (в лодке)
+12:37:37  blk_entity_switch  oak_pressure_plate    block 96 -60 80  by SPY_me  pressed by minecraft:item
+12:38:46  blk_entity_switch  stone_pressure_plate  block 102 -60 80  SPY_me was nearby (1.5 blocks away)  pressed by minecraft:sheep
+12:39:00  blk_entity_switch  stone_pressure_plate  block 102 -60 80  by SPY_me (worked out)  pressed by minecraft:sheep   (удочка)
+12:39:44  blk_entity_switch  stone_pressure_plate  block 102 -60 80  by SPY_me (worked out)  pressed by minecraft:sheep   (удар)
+```
+
+- В лодке пластину нажал сам игрок: его хитбокс в пластине, строка `blk_player_switch`, `FACT`.
+- Выброс раздатчика после толкания телом (`NEARBY`) — без игрока: строки предметов свидетеля не
+  называют.
+
+### S8–S12 — ПРОЙДЕНЫ
+
+```
+12:48:52  blk_entity_switch  detector_rail  block 94 -60 90  by SPY_me  pressed by minecraft:minecart               (сидел внутри)
+12:48:56  blk_entity_switch  detector_rail  block 94 -60 90  by SPY_me (worked out)  pressed by minecraft:minecart  (толкнул)
+12:49:14  blk_entity_switch  detector_rail  block 94 -60 90  by SPY_me (worked out)  pressed by minecraft:minecart  (энергорельсы)
+12:49:41  dispenser_eject    container 90 -60 97   by SPY_me     (заряд ветра по каменной кнопке)
+12:49:49  blk_entity_switch  oak_button  block 94 -59 97  by SPY_me  pressed by minecraft:arrow
+12:49:53  dispenser_eject    container 98 -60 97   by SPY_me     (стрела в мишень)
+12:50:13  dispenser_eject    container 102 -60 97  by SPY_me     (скалковый сенсор, брошенный булыжник; раскачка — тоже на игрока)
+12:50:29  dispenser_eject    container 106 -60 97  by SPY_me     (сундук → компаратор)
+12:50:37  blk_piston_extend  air -> stone  block 110 -60 96  by SPY_me (worked out)
+12:50:38  dispenser_eject    container 110 -60 98  by SPY_me     (поршень → наблюдатель)
+```
+
+Вагонетку в третьем заходе поставил тот же игрок, так что её происхождение (`EntityPlaceEvent`) дало
+бы тот же ответ; разгон энергорельсами отдельно от этого не различить.
+
+### S13 — ПРОЙДЕН
+
+Пять булыжников, брошенных рукой рядом с динамитом, который игрок поджёг огнивом: рождение
+`drop_from_hand … actor=SPY_me`, конец `ITEM_DESTROY_EXPLOSION … actor=SPY_me` (офлайн), блоки —
+`blk_tnt … by SPY_me`.
+
+### S14 — ПРОЙДЕН
+
+Часы из двух наблюдателей, запущенные игроком, питают лист редстоунового провода 20×20 (400 блоков).
+Сразу после запуска: TPS 20,00, 11,51 мс на тик, 23,0 % загрузки региона. Через 10 минут: TPS 20,00,
+11,69 мс, 23,4 %; память контейнера 1,4 ГиБ. Роста нет; заметки энергии ограничены числом позиций
+по построению (карта по позиции).
+
+---
+
+## Дефекты
+
+### D17. `/give`, `/clear` из RCON — `direct_new_item`, `item_vanished` — ИСПРАВЛЕН (35e6365)
+
+Canvas ставит действие команды не из региона игрока в его планировщик на следующий тик
+(`AbstractCommandExecution.java:293`). Намерение `cmd_give` ставило пересчёт в ту же очередь раньше
+команды, и пересчёт тратил его на нетронутый инвентарь. Причина теперь кладётся тиком позже, если поток
+не владеет регионом игрока. Проверено: RCON-выдача и очистка легли `cmd_give` и `cmd_clear`.
+
+### D18. Одна раздача записана дважды — ИСПРАВЛЕН (12f76a5)
+
+Динамит и блоки тега `sulfur_cube_swallowable` поднимают `BlockDispenseEvent` дважды: из проверки
+серного куба (`SulfurCubeBlockDispenseItemBehavior.java:22`) и из самого поведения.
+
+### D19. Последний предмет слота — `item_spawn` без убыли — ИСПРАВЛЕН (12f76a5)
+
+Выброс по умолчанию отщепляет предмет от слота до события (`DefaultDispenseItemBehavior.java:28`), и
+пустой слот не находился. Разбор раздачи теперь опирается на `BlockPreDispenseEvent`: один раз, до
+поведения, со слотом.
+
+### D20. Раздатчик и взрыв не называют игрока — ЗАКРЫТ фазой 5.7
+
+Раздатчик не передавал виновника, конец предмета от взрыва писался на бросившего. Закрыто целиком:
+энергия по любой цепи редстоуна и лестница «кто стоит за сущностью» — SPEC-v5 §4 5.7 и §7 5.7,
+TESTING-v5 S1–S14 (27d5ec6, d263f60, 7744507, 5569368).
+
+---
+
+## Не проверяется на этом сервере
+
+- `/item` и `/data` на сервере отключены (`Unknown or incomplete command`), часть C1 про
+  `/item replace` и `/item modify` проверить нельзя.

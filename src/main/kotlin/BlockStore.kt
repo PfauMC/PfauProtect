@@ -76,7 +76,12 @@ private fun lastUnder(prefix: ByteArray): ByteArray =
 // no write-ahead log spanning the two databases. The guarantee is the order: what a row names is
 // made durable before the row that names it. An orphaned payload is garbage nobody reads; a row
 // whose payload never landed is lost data.
-class BlockLog(dir: Path, private val shared: RocksItemLog) : AutoCloseable {
+class BlockLog(
+    dir: Path,
+    private val shared: RocksItemLog,
+    // Shown every list the log accepts, on the thread that submitted it.
+    private val watch: (List<BlockChange>) -> Unit = {},
+) : AutoCloseable {
     private val dbOptions = DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true)
     private val blockCache = LRUCache(BLOCK_CACHE_BYTES)
     private val bloom = BloomFilter(BLOOM_BITS_PER_KEY)
@@ -186,6 +191,7 @@ class BlockLog(dir: Path, private val shared: RocksItemLog) : AutoCloseable {
         if (!running || closed || writerFailure != null || changes.isEmpty()) return false
         submitted.incrementAndGet()
         queue.add(changes)
+        watch(changes)
         return true
     }
 
@@ -502,10 +508,17 @@ class BlockLog(dir: Path, private val shared: RocksItemLog) : AutoCloseable {
 }
 
 // One database per world, each in a directory named after it.
-class BlockLogs(private val root: Path, private val shared: RocksItemLog) : AutoCloseable {
+class BlockLogs(
+    private val root: Path,
+    private val shared: RocksItemLog,
+    // Every accepted change, with the world it belongs to: a row that names somebody is also the
+    // freshest thing that somebody did at that position.
+    private val watch: (UUID, List<BlockChange>) -> Unit = { _, _ -> },
+) : AutoCloseable {
     private val logs = ConcurrentHashMap<UUID, BlockLog>()
 
-    fun open(world: UUID): BlockLog = logs.computeIfAbsent(world) { BlockLog(dirOf(it), shared) }
+    fun open(world: UUID): BlockLog =
+        logs.computeIfAbsent(world) { BlockLog(dirOf(it), shared) { changes -> watch(it, changes) } }
 
     fun get(world: UUID): BlockLog? = logs[world]
 

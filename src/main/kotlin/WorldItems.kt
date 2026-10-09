@@ -2,11 +2,13 @@ package io.pfaumc.pfauprotect
 
 import java.util.UUID
 import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.entity.EntityType
 import org.bukkit.entity.Item
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
+import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.event.entity.EntityDamageEvent
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityPickupItemEvent
@@ -19,6 +21,15 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 // beginning stands on the other side of the row instead. Deliberately written as a guess: an end
 // nobody explained is a path the capture still misses, and it has to be counted as one.
 private val UNNAMED_END = Cause.ITEM_SPAWN to Confidence.INFERRED
+
+/**
+ * Who answers for the end of an item. An explosion is whoever set it off; everything else, and an
+ * explosion nobody can be named for, is whoever put the item where it ended — the player who threw
+ * it, or the one who set off the dispenser that threw it out. The thrower is never lost either way:
+ * their name is on the row the item was born with.
+ */
+internal fun endedBy(cause: Cause, blaster: UUID?, thrower: UUID?, dispensedBy: UUID?): UUID? =
+    (if (cause == Cause.ITEM_DESTROY_EXPLOSION) blaster else null) ?: thrower ?: dispensedBy
 
 // A pile never takes more than this in one merge, however high the item itself stacks.
 private const val MERGE_CAP = 64
@@ -107,6 +118,8 @@ class WorldItemListener(
     private val pending: TickCoalescer,
     private val origins: SpawnOrigins,
     private val capture: ContainerCaptureListener,
+    private val attribution: Attribution? = null,
+    private val entities: EntityOrigins = EntityOrigins(),
 ) : Listener {
 
     // Every path that adds an entity to a world comes through here, so this is the only place a birth
@@ -133,6 +146,19 @@ class WorldItemListener(
         )
     }
 
+    // The same ladder an explosion climbs for the blocks it takes, short of the journal: one explosion
+    // ends a pile of items, and a seek per item has no business on the region thread. The damage the
+    // item died of is still on it when it is removed.
+    private fun blaster(item: Item): UUID? {
+        val source = (item.lastDamageCause as? EntityDamageByEntityEvent)?.damager ?: return null
+        litBy(source)?.let { return it.uniqueId }
+        if (source.type == EntityType.TNT) {
+            val at = positionOf(source.location.block)
+            attribution?.placerAt(at, BlockDestructionListener.TNT)?.let { return it.actor }
+        }
+        return entities.summonerOf(firedBy(source).uniqueId).culprit()
+    }
+
     // A box that fell out of a block something other than a hand broke is given the name its contents
     // were packed under before its form is read, or it would not match the form its drop was expected
     // under and its contents would belong to no item at all. A name it already carries is overwritten:
@@ -156,12 +182,17 @@ class WorldItemListener(
         val encoded = codec.encodeOrNull(item.itemStack) ?: return
         // Whoever threw it is who put it where it ended: into the lava, onto the cactus, over the edge.
         // The server keeps that on the entity, so it is read rather than worked out.
-        val thrower = item.thrower
-        pending.add(ItemEntityRef(item.uniqueId), Void, cause, encoded.key, encoded.count, thrower, confidence)
+        val by = endedBy(
+            cause,
+            blaster = if (cause == Cause.ITEM_DESTROY_EXPLOSION) blaster(item) else null,
+            thrower = item.thrower,
+            dispensedBy = entities.summonerOf(item.uniqueId).culprit(),
+        )
+        pending.add(ItemEntityRef(item.uniqueId), Void, cause, encoded.key, encoded.count, by, confidence)
         // What spilled has already been claimed by its own spawn; everything else goes down with the box.
         if (spills(event.cause, item.health)) return
         for ((inside, child) in namedContents(CraftItemStack.asNMSCopy(item.itemStack), codec)) {
-            pending.add(inside, Void, cause, child.key, child.count, thrower, confidence)
+            pending.add(inside, Void, cause, child.key, child.count, by, confidence)
         }
     }
 

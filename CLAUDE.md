@@ -85,14 +85,17 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
   SPEC-v4 covers crafting and stations. Later specs override earlier ones, and SPEC-v3 supersedes BLOCKS-notes.
   PLAN-v1-iteration-1 is outdated.
 - SPEC-v5 is full coverage: every cause class the earlier phases deferred (0x30 rest, 0x50, 0x60, 0x70,
-  0xF0, creative), what they missed, and the phase order 5.1–5.6. It overrides the "deferred" lists of
-  SPEC-v2 and SPEC-v4. Projectiles are `EntitySlot(uuid, 0)`, not a new holder type.
+  0xF0, creative), what they missed, and the phase order 5.1–5.7. It overrides the "deferred" lists of
+  SPEC-v2 and SPEC-v4. Projectiles are `EntitySlot(uuid, 0)`, not a new holder type. Phase 5.7 carries
+  the player who started a mechanism through any redstone chain, and resolves who stands behind an
+  entity on a switch; `Confidence.NEARBY` marks a player who was only nearby.
 - SPEC-v4 §15 records how phase 4 was actually built and overrides §3–§13. Window slots are booked to
   their real owner: the crafting grid to the player (`EntitySlot`), a station to its block (`Container`).
   `MenuSlot` is left only for ownerless GUIs.
 - PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
-- TESTING-v5 is the live run for SPEC-v5, written and not yet run. TESTING-v4-RESULTS holds the v4 run,
+- TESTING-v5 is the live run for SPEC-v5, in progress; TESTING-v5-RESULTS holds it so far, with D17–D20.
+  TESTING-v4-RESULTS holds the v4 run,
   the D1–D16 defects and the v3 leftovers (R1).
 - TESTING-v3 / TESTING-v3-RESULTS is the manual test plan and its 2026-08-18 run. Sections B–F must be run in
   survival. TESTING-v4 covers crafting and stations, plus section R with the unrun v3 items and re-checks
