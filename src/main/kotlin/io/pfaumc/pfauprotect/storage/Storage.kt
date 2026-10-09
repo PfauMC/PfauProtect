@@ -40,6 +40,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock
 import java.util.logging.Level
 import java.util.logging.Logger
 import kotlin.concurrent.read
+import kotlin.concurrent.withLock
 import kotlin.concurrent.write
 
 // A position takes over the item it was built from, and breaking it has to give back the same thing.
@@ -436,6 +437,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     private var pendingBatch: WriteBatch? = null
 
+    // Held by the writer around each batch and by a purge around its single write: both take transaction
+    // ids, and the counter is not shared otherwise.
+    private val writing = java.util.concurrent.locks.ReentrantLock()
+
     // A staging session belongs to the thread that opened it: two threads sharing one batch would be
     // writing into the same native object, and a bulk fill is the only caller that opens one.
     private val stagingBatch = ThreadLocal<WriteBatch?>()
@@ -605,38 +610,55 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     }
 
     /**
-     * Every posting older than the cutoff, deleted unless `dryRun`, with what each holder held of each item
-     * at the cutoff: the opening balances that keep every later balance whole, to be submitted by the
-     * caller. Unreadable rows are left where they are. One walk of the whole family, off any region thread.
+     * Deletes every posting older than the cutoff and writes, dated at the cutoff, what each holder held by
+     * then. Both go in one write: a purge cut short between them would leave every balance short of what it
+     * deleted, or holding it twice. The writer waits meanwhile, as the openings take its transaction ids.
+     * Unreadable rows are left where they are. One walk of the whole family, off any region thread. Returns
+     * how many postings went and how many openings stand for them.
      */
-    fun purgeBefore(cutoff: Long, dryRun: Boolean): Pair<Int, List<Transfer>> = dbLock.read {
-        if (closed) return 0 to emptyList()
-        val held = HashMap<Triple<Holder, Long, Int?>, Int>()
-        var deleted = 0
-        ChunkedBatch(db, writeOptions).use { batch ->
-            db.newIterator(entriesCf, wholeCfRead).use { iter ->
-                iter.seekToFirst()
-                while (iter.isValid) {
-                    val entry = EntryCodec.decodeOrNull(iter.key(), iter.value(), registries)
-                    if (entry != null && entry.timestamp < cutoff) {
-                        held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
-                        deleted++
-                        if (!dryRun) {
-                            batch.delete(entriesCf, iter.key())
-                            batch.delete(txCf, longBytes(entry.txId))
+    // ponytail: the whole purge is one batch in memory, a few dozen bytes a posting; delete by holder ranges
+    // if a purge ever outgrows that.
+    fun purgeBefore(cutoff: Long, dryRun: Boolean): Pair<Int, Int> = dbLock.read {
+        if (closed) return 0 to 0
+        writing.withLock {
+            WriteBatch().use { batch ->
+                val held = HashMap<Triple<Holder, Long, Int?>, Int>()
+                var deleted = 0
+                // A posting whose form cannot be read has no opening to stand for it, and deleting it would
+                // take its holder's balance with it: it stays.
+                val readable = HashMap<Long, Boolean>()
+                db.newIterator(entriesCf, wholeCfRead).use { iter ->
+                    iter.seekToFirst()
+                    while (iter.isValid) {
+                        val entry = EntryCodec.decodeOrNull(iter.key(), iter.value(), registries)
+                        if (entry != null && entry.timestamp < cutoff && readable.getOrPut(entry.itemFormId) { form(entry.itemFormId) != null }) {
+                            held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
+                            deleted++
+                            if (!dryRun) {
+                                batch.delete(entriesCf, iter.key())
+                                batch.delete(txCf, longBytes(entry.txId))
+                            }
                         }
+                        iter.next()
                     }
-                    iter.next()
                 }
+                val openings = held.filterValues { it != 0 }.map { (key, qty) ->
+                    val form = form(key.second)!!
+                    if (qty > 0) Transfer(Cause.PURGE_OPENING, Void, key.first, form, key.third, qty, cutoff)
+                    else Transfer(Cause.PURGE_OPENING, key.first, Void, form, key.third, -qty, cutoff)
+                }
+                if (!dryRun) {
+                    pendingBatch = batch
+                    try {
+                        for (opening in openings) writeTransaction(batch, listOf(opening))
+                    } finally {
+                        pendingBatch = null
+                    }
+                    db.write(writeOptions, batch)
+                }
+                return deleted to openings.size
             }
-            batch.flush()
         }
-        val openings = held.filterValues { it != 0 }.mapNotNull { (key, qty) ->
-            val form = form(key.second) ?: return@mapNotNull null
-            if (qty > 0) Transfer(Cause.PURGE_OPENING, Void, key.first, form, key.third, qty, cutoff)
-            else Transfer(Cause.PURGE_OPENING, key.first, Void, form, key.third, -qty, cutoff)
-        }
-        deleted to openings
     }
 
     fun transactionEntries(entry: LedgerEntry): List<LedgerEntry> = dbLock.read {
@@ -900,6 +922,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         if (closed) return
         val write = NoteWrite(NoteKey(family, world, x, y, z), value)
         pendingNotes[write.key] = write
+        // A stopped writer drains nothing, and the overlay above is all a read still gets.
+        if (progress.failure != null) return
         progress.submitted.incrementAndGet()
         noteQueue.add(write)
     }
@@ -999,7 +1023,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                     val batched = ArrayList<List<Transfer>>(MAX_BATCH)
                     batched += first
                     queue.drainTo(batched, MAX_BATCH - 1)
-                    writeAll(batched)
+                    writing.withLock { writeAll(batched) }
                     progress.written.addAndGet(batched.size.toLong())
                 }
                 if (System.nanoTime() - lastFlush >= WAL_FLUSH_INTERVAL_NANOS) {
@@ -1029,11 +1053,20 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             try {
                 for (transaction in transactions) {
                     batch.setSavePoint()
+                    forms.recording()
+                    payloads.recording()
                     try {
                         writeTransaction(batch, transaction)
                     } catch (failure: Exception) {
                         batch.rollbackToSavePoint()
+                        // The forms this transaction named left with it; still interned, their numbers would
+                        // go to later postings with no form row behind them.
+                        forms.forgetRecorded()
+                        payloads.forgetRecorded()
                         LOGGER.log(Level.SEVERE, "a movement could not be written and was dropped", failure)
+                    } finally {
+                        forms.stopRecording()
+                        payloads.stopRecording()
                     }
                 }
             } finally {
@@ -1252,6 +1285,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             idByValue[FormKey(value)]?.let { return it }
             val id = nextId++
             remember(id, value)
+            minted.get()?.add(id)
             stage {
                 it.put(cf, longBytes(id), value)
                 it.put(metaCf, counterKey, longBytes(nextId))
@@ -1260,6 +1294,20 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         }
 
         fun valueOf(id: Long): ByteArray? = valueById[id]
+
+        // The ids this thread mints from `recording()` on, so the writer can forget the ones whose rows a
+        // rolled-back transaction took with it. Other threads stage into batches of their own.
+        private val minted = ThreadLocal<MutableList<Long>?>()
+
+        fun recording() = minted.set(ArrayList())
+
+        fun stopRecording() = minted.remove()
+
+        @Synchronized
+        fun forgetRecorded() {
+            for (id in minted.get().orEmpty()) valueById.remove(id)?.let { idByValue.remove(FormKey(it), id) }
+            minted.get()?.clear()
+        }
 
         // Asking whether a form is known must not name it: a reconciliation that walks a live
         // inventory would otherwise mint an id for every item the ledger has never recorded.

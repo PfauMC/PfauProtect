@@ -241,7 +241,8 @@ class PfauProtectPlugin : JavaPlugin() {
         val entityCapture = EntityCapture(
             blocks, origins, attribution, entities,
             later = { at, task -> server.regionScheduler.run(this, at) { task() } },
-            laterOn = { entity, task -> entity.scheduler.run(this, { task() }, null) },
+            // A null task means the entity was gone before it could be scheduled, and neither ever runs.
+            laterOn = { entity, task, retired -> entity.scheduler.run(this, { task() }, retired) ?: retired() },
             offThread = { task -> server.asyncScheduler.runNow(this) { task() } },
         )
         val confiscations = Confiscations(this, ledger, codec, capture, worldItems, uncovered::submit)
@@ -709,11 +710,7 @@ class PfauProtectPlugin : JavaPlugin() {
                 rows += r
                 entities += e
             }
-            if (confirm) {
-                for (opening in openings) running.ledger.submit(opening)
-                running.ledger.drain()
-            }
-            val counts = "$entries item rows, $rows block rows, $entities entity rows; ${openings.size} opening balances"
+            val counts = "$entries item rows, $rows block rows, $entities entity rows; $openings opening balances"
             sender.say(if (confirm) "Purged $counts written." else "A purge would delete $counts to write. /pp purge $age confirm runs it.")
         }
         return Command.SINGLE_SUCCESS
@@ -743,6 +740,8 @@ class PfauProtectPlugin : JavaPlugin() {
             sender.sendMessage(failure.rawMessage.string)
             return 0
         }
+        // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
+        val teleports = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
         server.asyncScheduler.runNow(this) {
             val users = running.lookups.resolveAll(sender, query.users) ?: return@runNow
             val text = query.filter?.lowercase()
@@ -760,7 +759,7 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.QUIT -> Component.text().append(who).append(Ui.text(tr(" left", " · выход"), Ui.MUTED)).build()
                 }
                 val out = Component.text().append(Ui.text(" ")).append(Ui.ago(line.timestamp)).append(Ui.text("  ")).append(what)
-                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, sender is Player && sender.hasPermission(TELEPORT_PERMISSION)))
+                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, teleports))
                 sender.sendMessage(out.build())
             }
         }
@@ -907,8 +906,8 @@ private class Api(private val running: Running) : io.pfaumc.pfauprotect.api.Pfau
     override fun lookup(at: org.bukkit.Location, words: String): java.util.concurrent.CompletableFuture<List<String>> {
         val lines = java.util.Collections.synchronizedList(ArrayList<String>())
         val sender = org.bukkit.Bukkit.createCommandSender { lines += net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(it) }
-        val query = io.pfaumc.pfauprotect.command.parseLookupQuery(words)
         return java.util.concurrent.CompletableFuture.supplyAsync {
+            val query = io.pfaumc.pfauprotect.command.parseLookupQuery(words)
             running.lookups.report(sender, io.pfaumc.pfauprotect.command.lookupTargetAt(at), query)
             lines.toList()
         }

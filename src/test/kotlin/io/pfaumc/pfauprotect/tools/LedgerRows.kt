@@ -7,6 +7,7 @@ import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.LedgerEntry
 import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.PlayerInv
+import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.storage.EntryCodec
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
@@ -37,11 +38,28 @@ fun main(args: Array<String>) {
                     if (e.timestamp >= from && (causes.isEmpty() || e.cause.name in causes)) print(e)
                 }
             }
-            "holder" -> log.holderEntries(holderOf(args[2]), args.getOrNull(3)?.toLong() ?: 0, Long.MAX_VALUE, limit = 10_000).forEach(print)
+            "holder" -> holderRows(log, holderOf(args[2]), args.getOrNull(3)?.toLong() ?: 0, print)
             else -> error("unknown query ${args[1]}")
         }
     }
 }
+
+// A page at a time, each from the timestamp the last one ended at; the rows of that millisecond it
+// already printed are skipped by their reference.
+private fun holderRows(log: RocksItemLog, holder: Holder, from: Long, print: (LedgerEntry) -> Unit) {
+    val printed = HashSet<PostingRef>()
+    var since = from
+    while (true) {
+        val page = log.holderPage(holder, since, Long.MAX_VALUE, limit = PAGE)
+        page.entries.filter { printed.add(it.ref) }.forEach(print)
+        if (page.complete || page.entries.isEmpty()) return
+        val last = page.entries.last().timestamp
+        if (last == since) error("more than $PAGE rows of $holder at $since; the rest are not printed")
+        since = last
+    }
+}
+
+private const val PAGE = 10_000
 
 private fun holderOf(spec: String): Holder {
     val p = spec.split(":")

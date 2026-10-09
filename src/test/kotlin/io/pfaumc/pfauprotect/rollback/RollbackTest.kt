@@ -11,6 +11,7 @@ import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockChange
+import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.RocksItemLog
@@ -285,6 +286,23 @@ class RollbackTest {
         val steps = listOf(Step(joined, loose, null))
         assertEquals(joined, settle(loose, steps, joined).back?.before)
         assertNull(settle(joined, steps, joined).back)
+    }
+
+    // Alice put stone into running water before the window and broke it inside. The air the break left is
+    // not the running water it was put into: the stone is what the window opens on, and it goes back.
+    @Test
+    fun `air left by a break is not the running water the block was put into`() {
+        val flow = "minecraft:water[level=3]"
+        assertEquals(STONE, settle(AIR, listOf(Step(STONE, AIR, null)), flow).back?.before)
+        assertNull(settle(AIR, listOf(Step(STONE, AIR, null)), AIR).back)
+    }
+
+    // A row this build cannot read may be anybody's change, so no beginning is known past it.
+    @Test
+    fun `an unreadable row ends the walk back to the origin`() {
+        val placed = BlockRow(1, 64, 1, T0, 1, 0, Cause.BLK_PLAYER_PLACE, 0, 1, actor = alice)
+        assertEquals(0, originOf(listOf(placed)) { it.actor == alice })
+        assertNull(originOf(listOf(null, placed)) { it.actor == alice })
     }
 
     // Alice burnt a leaf before the window; a command put it back inside it, and she burnt it again. Air stands

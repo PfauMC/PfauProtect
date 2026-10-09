@@ -23,6 +23,7 @@ import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import java.util.UUID
+import kotlin.math.abs
 
 // Rows one rollback may hold, per plane. A place with more history than this in the window is more than
 // one rollback should undo, and it is refused rather than cut.
@@ -55,9 +56,12 @@ private const val ORIGIN_WALK = 64
  * window, newest first: back over their rows and past nature and earlier rollbacks, as far as somebody
  * else's row. Null where the rollback undoes rollbacks, which have no such beginning.
  */
-internal fun originOf(older: List<BlockRow>, keepsRow: (BlockRow) -> Boolean): Int? {
+internal fun originOf(older: List<BlockRow?>, keepsRow: (BlockRow) -> Boolean): Int? {
     var origin: Int? = null
     for (row in older) {
+        // A row that cannot be read may be anybody's: no beginning is known past it, and the position is
+        // rolled back as the window has it.
+        if (row == null) return null
         if (keepsRow(row)) {
             if (row.cause == Cause.ROLLBACK) return null
             origin = row.stateBefore
@@ -148,8 +152,15 @@ class Settled(val back: Step?, val conflict: Boolean)
  * second blast on a street the griefer had blown up before, read as standing as before him (D120).
  */
 fun settle(standing: String, steps: List<Step>, origin: String?): Settled =
-    if (origin != null && blockOf(standing) == blockOf(origin) && !reshaped(standing, origin)) Settled(null, conflict = false)
+    if (origin != null && sameBlock(standing, origin) && !reshaped(standing, origin)) Settled(null, conflict = false)
     else settle(standing, steps)
+
+// The block itself, with fire and running liquid kept as what they are: air a break left is not the running
+// water the stone was put into, and taking one for the other would skip the stone's break.
+private fun sameBlock(a: String, b: String): Boolean {
+    val name = { s: String -> s.substringBefore('[').let { if (it in AIRS) "minecraft:air" else it } }
+    return name(a) == name(b)
+}
 
 /**
  * Undoes the rows of one position, newest first, from what stands there now. A row whose `after` is
@@ -241,17 +252,15 @@ private const val BUCKETING_MILLIS = 5_000L
 internal fun bucketOf(ledger: RocksItemLog, row: EntityRow): Bucketed? {
     if (row.kind != EntityKind.REMOVED || row.cause != Cause.BUCKET_CAPTURE_MOB) return null
     val player = row.actor ?: return null
-    // The slot never enters the key: slot 0 reads every slot of its kind.
-    for (slot in listOf(PlayerInv(player, 0), PlayerEquip(player, 0))) {
-        val rows = ledger.holderEntries(slot, row.timestamp - BUCKETING_MILLIS, row.timestamp + BUCKETING_MILLIS, limit = 100)
-            .filter { it.cause == Cause.BUCKET_CAPTURE_MOB }
-        for ((_, change) in rows.groupBy { it.txId }) {
-            val gained = change.firstOrNull { it.qty > 0 } ?: continue
-            val lost = change.firstOrNull { it.qty < 0 } ?: continue
-            return Bucketed(player, gained.itemFormId, lost.itemFormId)
-        }
-    }
-    return null
+    // The slot never enters the key: slot 0 reads every slot of its kind. Two mobs bucketed within the window
+    // are told apart by time: the change nearest the row is the one that took this one.
+    val rows = listOf(PlayerInv(player, 0), PlayerEquip(player, 0)).flatMap {
+        ledger.holderEntries(it, row.timestamp - BUCKETING_MILLIS, row.timestamp + BUCKETING_MILLIS, limit = 100)
+    }.filter { it.cause == Cause.BUCKET_CAPTURE_MOB }
+    val change = rows.groupBy { it.txId }.values
+        .filter { tx -> tx.any { it.qty > 0 } && tx.any { it.qty < 0 } }
+        .minByOrNull { tx -> abs(tx.first().timestamp - row.timestamp) } ?: return null
+    return Bucketed(player, change.first { it.qty > 0 }.itemFormId, change.first { it.qty < 0 }.itemFormId)
 }
 
 /**
@@ -433,7 +442,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     ): Reading {
         val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
         if (positions.size > io.pfaumc.pfauprotect.Settings.maxRollbackPositions) return tooMany(positions.size)
-        val read = Collected(keepsRow, keepsEntity, keepsRow)
+        val read = Collected(keepsRow, keepsEntity) { keepsRow(it) && it.cause != Cause.BLK_LIQUID_FLOW }
         val slots = ArrayList<LedgerEntry>()
         val losses = ArrayList<LedgerEntry>()
         for (at in positions) {
@@ -537,7 +546,11 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             val removals = story.filter { it.kind == EntityKind.REMOVED }
             // What fell out of it when it went, and what a hand took off it in passing: shorn wool.
             entities.getOrPut(at) { ArrayList() } +=
-                EntityPlan(at, uuid, oldest.type, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty(), bucketOf(ledger, oldest))
+                EntityPlan(
+                    at, uuid, oldest.type, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty(),
+                    // Changed or led first and bucketed after: the bucket is the removal's, not the first row's.
+                    bucketOf(ledger, removals.maxByOrNull { it.eventId } ?: oldest),
+                )
         }
         if (unnamed > 0) return unreadable(unnamed)
         val positions = steps.keys + refills.keys + entities.keys

@@ -982,4 +982,20 @@ class StorageTest {
         val byPosition = log.holderEntries(position, 0, Long.MAX_VALUE)
         assertEquals(byPosition, wholeTransactions(log, byPosition))
     }
+
+    // What each holder held at the cutoff stays as one opening, written with the deletes it stands for.
+    @Test
+    fun `a purge leaves each holder its balance at the cutoff`() {
+        fun balance() = listOf(chest, aliceInv).associateWith { h -> log.holderEntries(h, 0, Long.MAX_VALUE, limit = 1000).sumOf { it.qty } }
+        val before = balance()
+
+        assertEquals(2 to 3, log.purgeBefore(T0 + 15, dryRun = true).let { it.first / 2 to it.second })
+        assertEquals(before, balance())
+        log.purgeBefore(T0 + 15, dryRun = false)
+
+        assertEquals(before, balance())
+        val left = log.holderEntries(chest, 0, Long.MAX_VALUE, limit = 1000)
+        assertTrue(left.none { it.timestamp < T0 + 15 }, "$left")
+        assertTrue(left.any { it.cause == Cause.PURGE_OPENING && it.timestamp == T0 + 15 }, "$left")
+    }
 }

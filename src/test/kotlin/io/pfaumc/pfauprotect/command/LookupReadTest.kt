@@ -7,6 +7,9 @@ import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.model.Kind
+import io.pfaumc.pfauprotect.model.PlayerCursor
+import io.pfaumc.pfauprotect.model.PlayerEnder
+import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.ServerRegistries
@@ -112,6 +115,19 @@ class LookupReadTest {
         org.bukkit.plugin.Plugin::class.java.classLoader,
         arrayOf(org.bukkit.plugin.Plugin::class.java),
     ) { _, _, _ -> null } as org.bukkit.plugin.Plugin
+
+    // Pages count folded runs, so the rows are folded before they are cut: ten blasts are one run on page
+    // one, and the placement before them is page two rather than lost between the pages.
+    @Test
+    fun `a page after a folded run shows the next run`() {
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
+        repeat(10) { log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + 1000 + it))) }
+        log.drain()
+
+        assertTrue(said(LookupQuery(limit = 1)).any { it.contains("block.minecraft.tnt") })
+        val second = said(LookupQuery(limit = 1, page = 2))
+        assertTrue(second.any { it.contains("+ placed") }, "$second")
+    }
 
     @Test
     fun `a position answers with both planes in the order things happened`() {
@@ -338,13 +354,23 @@ class LookupReadTest {
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 3), stone, null, 5, T0))
         shared.submit(Transfer(Cause.CRAFT_CONSUME, EntitySlot(alice, 1), Void, stone, null, 8, T0 + 1))
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), stone, null, 2, T0 + 2))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerEquip(alice, 5), stone, null, 1, T0 + 3))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerCursor(alice), stone, null, 1, T0 + 4))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerEnder(alice, 7), stone, null, 1, T0 + 5))
         shared.drain()
 
         val lines = said(LookupQuery(players = listOf("Alice")), players = mapOf("Alice" to alice, "Bob" to bob))
 
         assertTrue(lines.any { it.contains("Alice{inventory, slot 3}") }, "$lines")
         assertTrue(lines.any { it.contains("block.minecraft.crafting_table") && it.contains("Alice{crafting grid, slot 1}") }, "$lines")
+        assertTrue(lines.any { it.contains("Alice{equipment, slot 5}") }, "$lines")
+        assertTrue(lines.any { it.contains("Alice{cursor}") }, "$lines")
+        assertTrue(lines.any { it.contains("ender_chest") && it.contains("{slot 7}") }, "$lines")
         assertTrue(lines.none { it.contains("Bob") }, "$lines")
+        assertTrue(
+            said(LookupQuery(players = listOf("Alice"), radius = 5), players = mapOf("Alice" to alice))
+                .single().contains("drop the radius"),
+        )
         assertEquals(
             listOf("Unknown player: Carol"),
             said(LookupQuery(players = listOf("Carol")), players = mapOf("Alice" to alice)),
