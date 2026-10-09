@@ -1,36 +1,45 @@
 package io.pfaumc.pfauprotect
 
 import io.canvasmc.canvas.event.PlayerPostRespawnAsyncEvent
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.logging.Level
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.enchantment.EnchantmentEffectComponents
 import net.minecraft.world.item.enchantment.EnchantmentHelper
+import net.minecraft.world.level.block.entity.BlockEntity
 import org.bukkit.Bukkit
+import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.craftbukkit.entity.CraftLivingEntity
+import org.bukkit.craftbukkit.inventory.CraftInventory
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
+import org.bukkit.event.Event
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.event.block.BlockPlaceEvent
+import org.bukkit.event.enchantment.EnchantItemEvent
 import org.bukkit.event.entity.EntityResurrectEvent
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.inventory.ClickType
 import org.bukkit.event.inventory.InventoryAction
 import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.inventory.InventoryCloseEvent
+import org.bukkit.event.inventory.InventoryCreativeEvent
 import org.bukkit.event.inventory.InventoryDragEvent
 import org.bukkit.event.inventory.InventoryOpenEvent
-import org.bukkit.event.enchantment.EnchantItemEvent
 import org.bukkit.event.inventory.InventoryType
 import org.bukkit.event.player.PlayerDropItemEvent
+import org.bukkit.event.player.PlayerEditBookEvent
+import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.player.PlayerItemBreakEvent
 import org.bukkit.event.player.PlayerItemConsumeEvent
 import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
-import org.bukkit.event.player.PlayerEditBookEvent
 import org.bukkit.event.player.PlayerSwapHandItemsEvent
 import org.bukkit.event.world.LootGenerateEvent
 import org.bukkit.inventory.AnvilInventory
@@ -43,13 +52,12 @@ import org.bukkit.inventory.GrindstoneInventory
 import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.InventoryView
 import org.bukkit.inventory.LoomInventory
+import org.bukkit.inventory.MerchantInventory
 import org.bukkit.inventory.PlayerInventory
 import org.bukkit.inventory.SmithingInventory
 import org.bukkit.inventory.SmithingTrimRecipe
 import org.bukkit.inventory.StonecutterInventory
 import org.bukkit.plugin.Plugin
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import org.bukkit.block.Container as ContainerBlock
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
@@ -60,9 +68,50 @@ data class Stack(val key: ItemKey, val count: Int)
 
 // What one pass saw. Which container items were in view is part of that and not a detail: a row filed
 // under a container is only comparable against a pass that had the same container in front of it.
-class Snapshot(val stacks: Map<Holder, Stack>, val containers: Set<UUID> = emptySet()) {
+class Snapshot(
+    val stacks: Map<Holder, Stack>,
+    val containers: Set<UUID> = emptySet(),
+    // Container items this very snapshot gave a name to. The name is part of the form, so on its own
+    // it would read as one item going and another arriving in the same slot.
+    val named: Map<Holder, Naming> = emptyMap(),
+) {
     fun sees(nested: Nested) = nested.ownerId in containers
 }
+
+class Naming(val unnamed: ItemKey, val owner: UUID)
+
+// The pair a pass compares when this snapshot named something. The named slot is compared under the
+// form it had before the name, so it moves only if it really moved; and the container is taken to have
+// been in view before, empty, so what was put into it in the same pass has somewhere to go.
+internal fun comparable(before: Snapshot, after: Snapshot): Pair<Snapshot, Snapshot> {
+    if (after.named.isEmpty()) return before to after
+    val stacks = LinkedHashMap(after.stacks)
+    val owners = HashSet<UUID>()
+    for ((holder, naming) in after.named) {
+        val stack = stacks[holder] ?: continue
+        stacks[holder] = Stack(naming.unnamed, stack.count)
+        if (before.stacks[holder]?.key == naming.unnamed) owners += naming.owner
+    }
+    return Snapshot(before.stacks, before.containers + owners) to Snapshot(stacks, after.containers)
+}
+
+// Naming changes the item where it lies, so it is written as that: the unnamed form out of the slot and
+// the named one into it, as one mutation.
+internal fun namingRows(after: Snapshot, timestamp: Long): List<List<Transfer>> =
+    after.named.mapNotNull { (holder, naming) ->
+        val stack = after.stacks[holder] ?: return@mapNotNull null
+        fun row(from: Holder, to: Holder, key: ItemKey) = Transfer(
+            cause = Cause.CONTAINER_NAMED,
+            from = from,
+            to = to,
+            form = key.form,
+            damage = key.damage,
+            qty = stack.count,
+            timestamp = timestamp,
+            kind = Kind.MUTATE,
+        )
+        listOf(row(holder, Void, naming.unnamed), row(Void, holder, stack.key))
+    }
 
 data class Edge(
     val from: Holder,
@@ -198,6 +247,17 @@ internal fun containerHolders(inventory: Inventory): ((Int) -> Holder)? {
             }
         }
     }
+    // A block entity knows where it stands. Asking the inventory for its holder reads the block state
+    // out of the world, which only the thread ticking that region may do — and while the server shuts
+    // down no thread does, so the last pass over an open furnace failed and took the rest of the
+    // shutdown with it.
+    val entity = (inventory as? CraftInventory)?.inventory as? BlockEntity
+    val level = entity?.level
+    if (entity != null && level != null) {
+        val at = entity.blockPos
+        val container = Container(level.world.uid, at.x, at.y, at.z, 0)
+        return { slot -> container.copy(slot = slot) }
+    }
     // Only the position is wanted, and a snapshot holder would copy the whole block state.
     val holder = inventory.getHolder(false)
     val block = (holder as? BlockInventoryHolder)?.block
@@ -207,9 +267,9 @@ internal fun containerHolders(inventory: Inventory): ((Int) -> Holder)? {
     }
     // A minecart rides the rails, so only its uuid addresses it; its position is where something
     // happened, not what it is.
-    val entity = holder as? Entity
-    if (entity != null) {
-        val uuid = entity.uniqueId
+    val cart = holder as? Entity
+    if (cart != null) {
+        val uuid = cart.uniqueId
         return { slot -> EntitySlot(uuid, slot) }
     }
     return null
@@ -265,8 +325,24 @@ internal fun shiftOf(top: Inventory): Shift? = when (top) {
     is StonecutterInventory -> Shift(Cause.STONECUTTER, Cause.STONECUTTER, Kind.MUTATE)
     is LoomInventory -> Shift(Cause.LOOM, Cause.LOOM, Kind.MUTATE)
     is CartographyInventory -> Shift(Cause.CARTOGRAPHY, Cause.CARTOGRAPHY, Kind.MUTATE)
+    // The payment is destroyed and the goods are made, both in the trader's window.
+    is MerchantInventory -> Shift(Cause.TRADE_PAYMENT, Cause.TRADE_RESULT, Kind.TRANSFER)
     else -> null
 }
+
+// A block or an entity that is not the player changes its own slots: a furnace smelts, a stand brews,
+// a hopper fills the chest that is open, another player takes from it. Each of those is written by its
+// own listener, and the pass that saw the window change would write it a second time, as a movement out
+// of nowhere, and put the container's balance out by exactly that much. Only a transformation is the
+// player's own business on such a slot, and it is the one case that names a shift.
+internal fun withoutForeignEnds(moves: List<Move>, shift: Shift?): List<Move> {
+    if (shift != null) return moves
+    return moves.filterNot { move ->
+        (move.from == Void && isForeign(move.to)) || (move.to == Void && isForeign(move.from))
+    }
+}
+
+private fun isForeign(holder: Holder) = holder is Container || holder is EntitySlot
 
 internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
     if (shift == null) return moves.map { listOf(it) }
@@ -312,6 +388,12 @@ internal fun transferOf(move: Move, timestamp: Long, kind: Kind = Kind.TRANSFER)
     actor = move.actor,
 )
 
+// Nothing named this end. The cause says so rather than borrowing the name of a click that never
+// happened: a gain nobody explained is an item that turned up, a loss one that went. A transformation
+// renames these ends afterwards; everything left under these two is what the capture could not see.
+internal fun unexplainedCause(edge: Edge): Cause =
+    if (edge.from == Void) Cause.DIRECT_NEW_ITEM else Cause.ITEM_VANISHED
+
 internal fun causeOf(edge: Edge): Cause = when {
     edge.to is Nested -> Cause.BUNDLE_INSERT
     edge.from is Nested -> Cause.BUNDLE_EXTRACT
@@ -332,7 +414,7 @@ internal fun causeOf(edge: Edge): Cause = when {
 internal fun previewSlot(top: Inventory): Int? = when (top) {
     // Ingredients first, result last, for every station built on a result inventory.
     is AnvilInventory, is GrindstoneInventory, is SmithingInventory,
-    is StonecutterInventory, is LoomInventory, is CartographyInventory,
+    is StonecutterInventory, is LoomInventory, is CartographyInventory, is MerchantInventory,
     -> top.size - 1
     // A crafting inventory is the other way round: the result is addressed ahead of the grid.
     is CraftingInventory -> 0
@@ -375,8 +457,16 @@ class ContainerCaptureListener(
         intents.forget(event.player.uniqueId)
     }
 
+    // At shutdown, one player's pass that fails must not cost everybody else theirs, nor the rest of
+    // the shutdown that drains what the mechanisms were still holding.
     fun recomputeAll() {
-        for (player in Bukkit.getOnlinePlayers()) recompute(player)
+        for (player in Bukkit.getOnlinePlayers()) {
+            try {
+                recompute(player)
+            } catch (failure: Exception) {
+                plugin.logger.log(Level.SEVERE, "the last pass for ${player.name} failed; its movements are lost", failure)
+            }
+        }
     }
 
     // A new line of reference discards everything the old one was still holding, so whatever the last
@@ -461,7 +551,7 @@ class ContainerCaptureListener(
 
     // The offhand is one slot past the armour in the player's own numbering, and the snapshot walks
     // those same numbers, so a hand is nameable as a holder the moment the event says which one.
-    private fun handSlot(player: Player, hand: EquipmentSlot?): Holder? {
+    internal fun handSlot(player: Player, hand: EquipmentSlot?): Holder? {
         val inventory = player.inventory
         val slot = when (hand) {
             EquipmentSlot.HAND -> inventory.heldItemSlot
@@ -474,9 +564,27 @@ class ContainerCaptureListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onClick(event: InventoryClickEvent) {
         val player = event.whoClicked as? Player ?: return
+        // A furnace smelting into the open window, a hopper filling it or another player at the same
+        // chest changes slots under the baseline with no pass of this player's to see it, and taking
+        // such an item out would read as the slot unchanged and the cursor filled from nowhere. The
+        // click arrives before it is applied, so a pass here counts everything up to it — the foreign
+        // part is dropped as the container's own business — and leaves the baseline where the click
+        // starts from.
+        recompute(player)
         // A craft arrives here and not at a handler of its own: CraftItemEvent declares no handler list
         // and is dispatched into this one, so a second listener would be a second callback for one
         // click and would leave the reason twice.
+        // The creative inventory sets slots to whatever the client asks for, conjuring and deleting as
+        // it goes. What it made and what it threw away is named as that rather than left unexplained,
+        // and only in the slot it set and on the cursor: an intent with no slot would name every
+        // unexplained movement of the pass creative and hide a real duplication behind the click.
+        if (event is InventoryCreativeEvent) {
+            val slot = (event.clickedInventory as? PlayerInventory)?.let { playerHolders(player.uniqueId, it)(event.slot) }
+            for (end in listOfNotNull(slot, PlayerCursor(player.uniqueId))) {
+                intend(player, Intent(Cause.CREATIVE_SET, from = Void, holder = end))
+                intend(player, Intent(Cause.CREATIVE_SET, to = Void, holder = end))
+            }
+        }
         val top = event.view.topInventory
         val shift = if (event.rawSlot == previewSlot(top)) shiftOf(top) else null
         if (shift != null) intend(player, Intent(shift.consume, shift = shift))
@@ -499,6 +607,18 @@ class ContainerCaptureListener(
         intend(event.enchanter, Intent(shift.consume, shift = shift))
     }
 
+    // Using an empty map writes a filled one, in the hand that held it or beside it when the empty map
+    // was one of a stack. It is driven by a use rather than a click, like signing a book, and it is as
+    // much one item turning into another. A right click in the air is raised already denied, so the
+    // item's own verdict is what says whether the use went ahead.
+    @EventHandler(priority = EventPriority.MONITOR)
+    fun onUseMap(event: PlayerInteractEvent) {
+        if (!event.action.isRightClick || event.item?.type != Material.MAP) return
+        if (event.useItemInHand() == Event.Result.DENY) return
+        val shift = Shift(Cause.MAP_FILL, Cause.MAP_FILL, Kind.MUTATE)
+        intend(event.player, Intent(shift.consume, shift = shift))
+    }
+
     // Signing turns a writable book into a written one in the slot it is held in, driven by a packet
     // rather than a click, so nothing would schedule a pass for it and the form change would be picked
     // up by whatever unrelated pass ran next and written as two strangers.
@@ -512,7 +632,10 @@ class ContainerCaptureListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDrag(event: InventoryDragEvent) {
-        intend(event.whoClicked as? Player ?: return, Intent(Cause.QUICK_CRAFT_DISTRIBUTE))
+        val player = event.whoClicked as? Player ?: return
+        // For the same reason as a click: the drag starts from whatever the window holds now.
+        recompute(player)
+        intend(player, Intent(Cause.QUICK_CRAFT_DISTRIBUTE))
     }
 
     // Every getter here reports the state after the swap, so nothing but the reason is worth taking.
@@ -561,6 +684,8 @@ class ContainerCaptureListener(
                 to = ItemEntityRef(drop.uniqueId),
                 form = encoded.form,
                 qty = encoded.count,
+                // Also what tells a drop the pass could not find apart: one conjured by creative.
+                actor = player.uniqueId,
             )
         )
         // The entity is added to the world inside this same call and the spawn funnel writes a birth
@@ -587,6 +712,14 @@ class ContainerCaptureListener(
     // mirror that will read as empty by the time the pass runs.
     @EventHandler(priority = EventPriority.MONITOR)
     fun onItemBreak(event: PlayerItemBreakEvent) {
+        // A rod with bait on it wears down into the bare rod rather than into nothing: one item turned
+        // into another, in the same slot.
+        val type = event.brokenItem.type
+        if (type == Material.CARROT_ON_A_STICK || type == Material.WARPED_FUNGUS_ON_A_STICK) {
+            val shift = Shift(Cause.TRANSMUTE_ON_BREAK, Cause.TRANSMUTE_ON_BREAK, Kind.MUTATE)
+            intend(event.player, Intent(shift.consume, shift = shift))
+            return
+        }
         val form = codec.encodeOrNull(event.brokenItem)?.form ?: return
         intend(event.player, Intent(Cause.DURABILITY_BREAK, to = Void, form = form, qty = 1))
     }
@@ -771,20 +904,25 @@ class ContainerCaptureListener(
         }
         val after = snapshot(player, baseline.view)
         baselines[player.uniqueId] = Baseline(baseline.view, after)
+        val (was, now) = comparable(baseline.seen, after)
         // One item that became another is a mutation; a recipe that ate three and made one is not, so
         // the kind comes from the event and never from the size of what the pass happened to gather.
         val shift = taken.firstNotNullOfOrNull { it.shift }
-        val edges = Netting.diff(baseline.seen, after, taken, player.uniqueId, stationSlots(player, baseline, shift))
+        val edges = Netting.diff(was, now, taken, player.uniqueId, stationSlots(player, baseline, shift))
         val timestamp = System.currentTimeMillis()
-        val moves = Intents.explain(edges, taken, player.uniqueId, unspent) { form ->
+        // A bundle the player holds is theirs to empty: a drop out of it is still their drop.
+        val carried = { nested: Nested -> nested.ownerId in was.containers }
+        val moves = Intents.explain(edges, taken, player.uniqueId, unspent, carried) { form ->
             after.stacks.entries.firstOrNull { (holder, stack) ->
                 holder is PlayerHolder && holder.uuid == player.uniqueId && stack.key.form.contentEquals(form)
             }?.key
         }
-        for (group in transactions(moves, shift)) {
+        for (group in transactions(withoutForeignEnds(moves, shift), shift)) {
             val kind = if (shift != null && group.size > 1) shift.kind else Kind.TRANSFER
             sink(group.map { transferOf(it, timestamp, kind) })
         }
+        // After the movements, so a bundle picked up unnamed arrives under the form it was carried in.
+        for (rows in namingRows(after, timestamp)) sink(rows)
     }
 
     private fun rebaseline(player: Player) {
@@ -807,20 +945,21 @@ class ContainerCaptureListener(
     private fun snapshot(player: Player, view: InventoryView): Snapshot {
         val stacks = LinkedHashMap<Holder, Stack>()
         val containers = HashSet<UUID>()
+        val named = HashMap<Holder, Naming>()
         val top = view.topInventory
         val topHolder = topHolders(player, top)
         if (topHolder != null) {
             val preview = previewSlot(top)
             for (slot in 0 until top.size) {
                 if (slot == preview) continue
-                record(stacks, containers, topHolder(slot), top.getItem(slot))
+                record(stacks, containers, named, topHolder(slot), top.getItem(slot))
             }
         }
         val inventory = player.inventory
         val holders = playerHolders(player.uniqueId, inventory)
-        for (slot in 0 until inventory.size) record(stacks, containers, holders(slot), inventory.getItem(slot))
-        record(stacks, containers, PlayerCursor(player.uniqueId), player.itemOnCursor)
-        return Snapshot(stacks, containers)
+        for (slot in 0 until inventory.size) record(stacks, containers, named, holders(slot), inventory.getItem(slot))
+        record(stacks, containers, named, PlayerCursor(player.uniqueId), player.itemOnCursor)
+        return Snapshot(stacks, containers, named)
     }
 
     // Bukkit hands out live mirrors of the server's stacks, so a snapshot has to turn every slot into
@@ -833,6 +972,7 @@ class ContainerCaptureListener(
     private fun record(
         into: MutableMap<Holder, Stack>,
         containers: MutableSet<UUID>,
+        named: MutableMap<Holder, Naming>,
         holder: Holder,
         stack: BukkitItemStack?,
     ) {
@@ -843,10 +983,12 @@ class ContainerCaptureListener(
         // one on the next pass and the diff would invent a movement out of it. A box that already
         // carries a name keeps answering to it while it stands empty, which is what lets the next pass
         // tell a container emptied in place from one carried out of view.
+        val unnamed = if (contents.isNotEmpty() && NestedItems.ownerOf(live) == null) codec.encode(live).key else null
         val owner = if (contents.isEmpty()) NestedItems.ownerOf(live) else NestedItems.own(live)
         val encoded = codec.encode(live)
         into[holder] = Stack(encoded.key, encoded.count)
         if (owner == null) return
+        if (unnamed != null) named[holder] = Naming(unnamed, owner)
         containers += owner
         for ((index, child) in contents) {
             val inside = codec.encode(child)

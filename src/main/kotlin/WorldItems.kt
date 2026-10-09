@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect
 
+import java.util.UUID
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Item
 import org.bukkit.entity.Player
@@ -86,9 +87,14 @@ internal fun mergedAmount(donor: Int, target: Int, targetMax: Int): Int =
 // menu empties no slot, so the pass has nothing to see and writes nothing, and the entity is never
 // born at all — whatever becomes of it next is then a debit against a credit nobody made. What the
 // pass could not spend is born here after all, as the row the funnel would have written.
-internal fun unspentDrop(pending: TickCoalescer, intent: Intent, qty: Int) {
+internal fun unspentDrop(pending: TickCoalescer, intent: Intent, qty: Int, creative: (UUID) -> Boolean = { false }) {
     val entity = intent.to as? ItemEntityRef ?: return
     val form = intent.form ?: return
+    // Out of the creative menu the item was made by the drop itself, and that is known, not guessed.
+    if (intent.actor?.let(creative) == true) {
+        pending.add(Void, entity, Cause.CREATIVE_SET, ItemKey(form, null), qty, intent.actor)
+        return
+    }
     pending.add(Void, entity, Cause.ITEM_SPAWN, ItemKey(form, null), qty, confidence = Confidence.INFERRED)
 }
 
@@ -129,11 +135,13 @@ class WorldItemListener(
 
     // A box that fell out of a block something other than a hand broke is given the name its contents
     // were packed under before its form is read, or it would not match the form its drop was expected
-    // under and its contents would belong to no item at all.
+    // under and its contents would belong to no item at all. A name it already carries is overwritten:
+    // it is the one from its last life, and the contents were packed under the position's.
     private fun nameBox(entity: Item, spot: Spot) {
         val stack = CraftItemStack.asNMSCopy(entity.itemStack)
-        if (!NestedItems.isShulkerBox(stack) || NestedItems.ownerOf(stack) != null) return
+        if (!NestedItems.isShulkerBox(stack)) return
         val owner = origins.ownerFor(stack, spot) ?: return
+        if (NestedItems.ownerOf(stack) == owner) return
         NestedItems.mark(stack, owner)
         entity.itemStack = CraftItemStack.asBukkitCopy(stack)
     }
@@ -219,9 +227,13 @@ class WorldItemListener(
             )
             return
         }
+        val slot = equipmentSlotOf(picker, stack)
+        // Whatever it does with the item later — drops it, dies holding it, trades it — has to come
+        // out of this slot, so the mob remembers what went in.
+        bookHeld(picker, slot, encoded.form)
         pending.add(
             ItemEntityRef(item.uniqueId),
-            EntitySlot(picker.uniqueId, equipmentSlotOf(picker, stack)),
+            EntitySlot(picker.uniqueId, slot),
             Cause.ITEM_PICKUP_BY_MOB,
             encoded.key,
             encoded.count - event.remaining,

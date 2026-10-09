@@ -75,6 +75,15 @@ class IntentTest {
         assertEquals(listOf(Move(grid, bag(5), key("diamond"), 9, Cause.MENU_CLOSE_RETURN, Confidence.FACT)), moves)
     }
 
+    // An unexplained end is named for what it is. Borrowing the name of a click made the counter of
+    // unexplained movements read as shift-clicks nobody could account for.
+    @Test
+    fun `an end nothing explains is named as turning up or going`() {
+        val moves = Intents.explain(listOf(gained("stone", 2), lost("dirt", 1)), emptyList(), player)
+        assertEquals(listOf(Cause.DIRECT_NEW_ITEM, Cause.ITEM_VANISHED), moves.map { it.cause })
+        assertTrue(moves.all { it.confidence == Confidence.INFERRED })
+    }
+
     @Test
     fun `an intent nobody needed leaves no trace`() {
         val intents = listOf(Intent(Cause.BLOCK_PLACE, to = placed, qty = 1))
@@ -85,7 +94,7 @@ class IntentTest {
     fun `a remainder nothing explains stays inferred and faces the void`() {
         val moves =
             Intents.explain(listOf(lost("stone", 4)), listOf(Intent(Cause.PICKUP, from = ground)), player)
-        assertEquals(listOf(Move(bag(0), Void, key("stone"), 4, Cause.QUICK_MOVE, Confidence.INFERRED)), moves)
+        assertEquals(listOf(Move(bag(0), Void, key("stone"), 4, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
 
     @Test
@@ -98,7 +107,7 @@ class IntentTest {
         assertEquals(
             listOf(
                 Move(bag(0), ground, key("stone"), 2, Cause.DROP_FROM_HAND, Confidence.FACT),
-                Move(bag(0), Void, key("stone"), 3, Cause.QUICK_MOVE, Confidence.INFERRED),
+                Move(bag(0), Void, key("stone"), 3, Cause.ITEM_VANISHED, Confidence.INFERRED),
             ),
             moves,
         )
@@ -198,7 +207,7 @@ class IntentTest {
             listOf(Intent(Cause.BLOCK_PLACE, to = placed, form = "dirt".toByteArray(), qty = 1)),
             player,
         )
-        assertEquals(listOf(Move(bag(0), Void, key("stone"), 1, Cause.QUICK_MOVE, Confidence.INFERRED)), moves)
+        assertEquals(listOf(Move(bag(0), Void, key("stone"), 1, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
 
     // The open container is snapshotted before the player's own slots, so its unpaired loss is offered
@@ -214,7 +223,7 @@ class IntentTest {
         )
         assertEquals(
             listOf(
-                Move(chest, Void, key("stone"), 1, Cause.CONTAINER_REMOVE, Confidence.INFERRED),
+                Move(chest, Void, key("stone"), 1, Cause.ITEM_VANISHED, Confidence.INFERRED),
                 Move(bag(0), ground, key("stone"), 1, Cause.DROP_FROM_HAND, Confidence.FACT),
             ),
             moves,
@@ -229,7 +238,7 @@ class IntentTest {
             listOf(Intent(Cause.DROP_FROM_HAND, to = ground, qty = 1)),
             player,
         )
-        assertEquals(listOf(Move(stranger, Void, key("stone"), 1, Cause.QUICK_MOVE, Confidence.INFERRED)), moves)
+        assertEquals(listOf(Move(stranger, Void, key("stone"), 1, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
 
     // A drop out of the creative menu empties no slot, so the pass finds nothing to spend the intent
@@ -360,7 +369,7 @@ class IntentTest {
             ),
             player,
         )
-        assertEquals(listOf(Move(bag(0), Void, key("stone"), 1, Cause.QUICK_MOVE, Confidence.INFERRED)), moves)
+        assertEquals(listOf(Move(bag(0), Void, key("stone"), 1, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
 
     // An intent that named both of its ends is its own counterparty on both sides of the netting, and

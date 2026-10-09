@@ -43,6 +43,47 @@ class MechanismTest {
     private fun stone(count: Int = 1) = ItemStack(Items.STONE, count)
     private fun dirt(count: Int = 1) = ItemStack(Items.DIRT, count)
 
+    private fun held(name: String, count: Int) = Stack(ItemKey(name.toByteArray(), null), count)
+
+    // What came out as an entity is the spawn's to write; the dispenser only owes what it spent.
+    @Test
+    fun `an item thrown out of a dispenser is not written off a second time`() {
+        val before = listOf(held("diamond", 5), null)
+        val after = listOf(held("diamond", 4), null)
+        assertTrue(dispenseChanges(before, after, 0, ejected = 1).isEmpty())
+    }
+
+    @Test
+    fun `bone meal spent by a dispenser leaves its slot`() {
+        val before = listOf(null, held("bone_meal", 8))
+        val after = listOf(null, held("bone_meal", 7))
+        val change = dispenseChanges(before, after, 1, ejected = 0).single()
+        assertEquals(1, change.slot)
+        assertEquals(1, change.qty)
+        assertTrue(!change.gain)
+    }
+
+    // A single bucket filled in place: the slot holds something else, which is one item changed.
+    @Test
+    fun `a bucket filled by a dispenser changes in its own slot`() {
+        val before = listOf(held("bucket", 1))
+        val after = listOf(held("water_bucket", 1))
+        val changes = dispenseChanges(before, after, 0, ejected = 0)
+        assertEquals(listOf(false, true), changes.map { it.gain })
+        assertEquals("water_bucket", String(changes[1].key.form))
+    }
+
+    // One bottle out of a stack of them: the stack is one short and the water bottle turns up in a slot
+    // that did not hold it. Another slot already holding bottles is left alone.
+    @Test
+    fun `a bottle filled from a stack lands in another slot as the product`() {
+        val before = listOf(held("glass_bottle", 4), null, held("glass_bottle", 2))
+        val after = listOf(held("glass_bottle", 3), held("potion", 1), held("glass_bottle", 2))
+        val changes = dispenseChanges(before, after, 0, ejected = 0)
+        assertEquals(2, changes.size)
+        assertEquals(listOf(0 to false, 1 to true), changes.map { it.slot to it.gain })
+    }
+
     @Test
     fun `an empty container takes the whole stack into its first slot`() {
         assertEquals(Fitting(0, 8), Placement.fit(chest(), stone(8), null))

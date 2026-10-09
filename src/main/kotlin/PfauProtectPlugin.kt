@@ -8,6 +8,7 @@ import io.papermc.paper.command.brigadier.argument.ArgumentTypes
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents
 import net.minecraft.server.MinecraftServer
+import org.bukkit.GameMode
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.entity.Player
@@ -127,7 +128,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val capture = ContainerCaptureListener(
             this, uncovered::submit, codec, ledger.registries, origins, ledger,
         ) { intent, qty ->
-            unspentDrop(mechanisms, intent, qty)
+            unspentDrop(mechanisms, intent, qty) { server.getPlayer(it)?.gameMode == GameMode.CREATIVE }
         }
         val entities = EntityOrigins()
         val destruction = BlockDestructionListener(
@@ -150,10 +151,21 @@ class PfauProtectPlugin : JavaPlugin() {
         // A change to a world with no base open is dropped rather than journalled, so this goes after
         // the load handler and after the bases opened by hand. Against the other handlers of equal
         // priority the order is free: nothing it reads is written by any of them.
-        server.pluginManager.registerEvents(BlockCaptureListener(blocks, attribution), this)
+        server.pluginManager.registerEvents(
+            BlockCaptureListener(blocks, attribution) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
+            this,
+        )
         server.pluginManager.registerEvents(destruction, this)
         server.pluginManager.registerEvents(EntityOriginListener(attribution, entities), this)
         server.pluginManager.registerEvents(capture, this)
+        server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
+        server.pluginManager.registerEvents(ProjectileListener(capture, codec, mechanisms, origins), this)
+        server.pluginManager.registerEvents(MobItemListener(codec, mechanisms, origins), this)
+        server.pluginManager.registerEvents(CommandListener(capture, codec, origins), this)
+        server.pluginManager.registerEvents(
+            HolderListener(capture, codec, origins) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
+            this,
+        )
         server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
         // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
         // just dropped and the block capture then reads the form of that same stack. Handlers of equal
@@ -161,7 +173,9 @@ class PfauProtectPlugin : JavaPlugin() {
         // drop under a form that has no owner on it and the chain of custody would end at the break.
         server.pluginManager.registerEvents(NestedCaptureListener(ledger, codec, mechanisms), this)
         server.pluginManager.registerEvents(
-            BlockMechanismListener(codec, mechanisms, origins, ledger, uncovered::submit),
+            BlockMechanismListener(codec, mechanisms, origins, ledger, uncovered::submit) { block, task ->
+                server.regionScheduler.run(this, block.location) { task() }
+            },
             this,
         )
         server.pluginManager.registerEvents(WorldItemListener(codec, mechanisms, origins, capture), this)
@@ -300,7 +314,10 @@ class PfauProtectPlugin : JavaPlugin() {
                     "ever booked to them"
             )
         }
-        if (report.reachedEnd && (report.checked > 0 || report.unrecorded > 0)) {
+        // A last page of nothing but positions too fresh to judge is still the end of the cycle; a
+        // busy piston clock keeps its own positions fresh for ever, and staying quiet then read as a
+        // cursor that never came round.
+        if (report.reachedEnd && (report.checked > 0 || report.unrecorded > 0 || report.settling > 0)) {
             logger.info(
                 "planes compared to the end of the item plane, ${report.checked} positions in this pass, " +
                     "${report.unrecorded} the block plane never recorded, ${report.settling} too recent " +

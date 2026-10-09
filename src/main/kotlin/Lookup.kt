@@ -87,6 +87,8 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     // One filter over every station rather than one per station: an investigator asks what became of
     // an item, not which bench it happened at, and the cause on each row already says that.
     TRANSFORM(TRANSFORM_CAUSES, "transform", "transforms", "changed"),
+    USE(USE_CAUSES, "use", "used", "spent"),
+    PROJECTILE(PROJECTILE_CAUSES, "projectile", "projectiles", "shot"),
 
     // A cause is only worth offering as a filter once something actually writes it: an empty answer
     // from a filter that sounds certain reads as "nothing happened there".
@@ -120,6 +122,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     ),
     DISPENSER(setOf(Cause.BLK_DISPENSER), "dispenser", "dispensers"),
     PORTAL(setOf(Cause.BLK_PORTAL_CREATE, Cause.BLK_PORTAL_DESTROY), "portal", "portals"),
+    SIGN(setOf(Cause.BLK_SIGN_EDIT), "sign", "signs", "edit"),
     ;
 
     companion object {
@@ -133,11 +136,23 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
 private val TRANSFORM_CAUSES = setOf(
     Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Cause.CRAFT_REMAINDER, Cause.SMELT, Cause.BREW,
     Cause.ANVIL_COMBINE, Cause.GRINDSTONE, Cause.SMITHING_TRANSFORM, Cause.SMITHING_TRIM,
-    Cause.ENCHANT_APPLY, Cause.STONECUTTER, Cause.LOOM, Cause.CARTOGRAPHY, Cause.BOOK_SIGN,
+    Cause.ENCHANT_APPLY, Cause.STONECUTTER, Cause.LOOM, Cause.CARTOGRAPHY, Cause.BOOK_SIGN, Cause.MAP_FILL,
+    Cause.BUCKET_FILL, Cause.BUCKET_EMPTY, Cause.BUCKET_CAPTURE_MOB, Cause.BUCKET_RELEASE_MOB,
+    Cause.BOTTLE_FILL, Cause.BOTTLE_EMPTY, Cause.CAULDRON_WASH, Cause.TRANSMUTE_ON_BREAK,
+)
+
+// Everything thrown, shot or launched, and what became of it after.
+private val PROJECTILE_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0x70..0x7F }.toSet() +
+    setOf(Cause.CROSSBOW_LOAD, Cause.CROSSBOW_SHOOT)
+
+// An item spent by using it on something, rather than by eating it or building with it.
+private val USE_CAUSES = setOf(
+    Cause.BONEMEAL_USE, Cause.SPAWN_EGG_USE, Cause.WAX_APPLY, Cause.ITEM_INTO_SINGLE_BLOCK,
+    Cause.EYE_INTO_FRAME, Cause.ITEM_USED, Cause.BEACON_PAYMENT,
 )
 
 // The block plane's whole range, so a filter can name it without listing thirty-two causes.
-private val BLOCK_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet()
+private val BLOCK_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT
 
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
 private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")

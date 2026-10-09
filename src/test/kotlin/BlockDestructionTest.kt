@@ -162,7 +162,8 @@ class BlockDestructionTest {
         attribution: Attribution = Attribution(shared.registries, logs),
         sink: (List<Transfer>) -> Unit = {},
     ) = BlockDestructionListener(
-        plugin = stub(Plugin::class.java, emptyMap()),
+        // Disabled, so a read-back is never queued: there is no region scheduler to queue it on.
+        plugin = stub(Plugin::class.java, mapOf("isEnabled" to false)),
         registries = shared.registries,
         logs = logs,
         attribution = attribution,
@@ -1375,6 +1376,54 @@ class BlockDestructionTest {
 
         assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(stoneDrop).key, 1))
         assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(diamondDrop).key, 1))
+    }
+
+    // A box broken by hand before carries the name it was given then, and the loot of its next break
+    // may or may not copy it onto the drop. Either way the drop is expected, and named, under the name
+    // its contents were just packed under.
+    @Test
+    fun `a box used before is given the name its contents were packed under`() {
+        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
+        val packed = UUID.randomUUID()
+        val box = NmsItemStack(Items.SHULKER_BOX).apply {
+            set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(NmsItemStack(Items.DIAMOND, 5))))
+            NestedItems.mark(this, UUID.randomUUID())
+        }
+        val state = Blocks.SHULKER_BOX.defaultBlockState().asBlockData()
+        expectDrops(
+            origins, codec, blockStub(5, 64, 7, state, drops = listOf(CraftItemStack.asBukkitMirror(box.copy()))),
+            Cause.BLK_TNT, null, packed,
+        )
+        val spot = Spot(world, 5.2, 64.0, 7.4)
+
+        // The drop still carries the old name; the new one wins.
+        val spawned = box.copy()
+        assertEquals(packed, origins.ownerFor(spawned, spot))
+        NestedItems.mark(spawned, packed)
+        assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(spawned).key, 1))
+    }
+
+    @Test
+    fun `a crater reaches as far as its blocks are apart`() {
+        val stone = Blocks.STONE.defaultBlockState().asBlockData()
+        assertEquals(SPAWN_REACH, craterReach(emptyList()))
+        assertEquals(SPAWN_REACH, craterReach(listOf(blockStub(0, 64, 0, stone))))
+        assertEquals(7.0, craterReach(listOf(blockStub(0, 64, 0, stone), blockStub(6, 62, -2, stone))))
+    }
+
+    // A cactus breaks a tick after its support, from its own block tick, while the read-back that the
+    // support's physics queued may still hold the position. The destroy event is the moment the drops
+    // are certain and follow at once, so it expects them whatever the read-back is doing.
+    @Test
+    fun `a block the world destroys expects its drops on the destroy event itself`() {
+        val cactus = CraftItemStack.asBukkitMirror(NmsItemStack(Items.CACTUS))
+        val data = Blocks.CACTUS.defaultBlockState().asBlockData()
+        val block = blockStub(5, 64, 7, data, drops = listOf(cactus))
+
+        listener().onBlockDestroy(BlockDestroyEvent(block, Blocks.AIR.defaultBlockState().asBlockData(), data, 0, true))
+
+        val key = ItemFormCodec(shared.registries, ServerRegistries.access).encodeOrNull(cactus)!!.key
+        assertEquals(1, origins.claim(UUID.randomUUID(), Spot(world, 5.3, 64.0, 7.6), key, 1))
     }
 
     @Test

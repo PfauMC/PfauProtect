@@ -27,6 +27,7 @@ enum class Cause(val id: Int) {
     DEATH_DESTROY_VANISHING(0x92),
     TOTEM_CONSUME(0x93),
     INVENTORY_LOAD(0x94),
+    ITEM_VANISHED(0x95),
 
     CONTAINER_ADD(0x10),
     CONTAINER_REMOVE(0x11),
@@ -53,6 +54,8 @@ enum class Cause(val id: Int) {
     CAMPFIRE_COOK_DROP(0xA5),
     BEEHIVE_HARVEST(0xA6),
     BRUSHABLE_REVEAL(0xA7),
+    // A container item given the name its contents are filed under.
+    CONTAINER_NAMED(0xA8),
 
     ITEM_SPAWN(0x20),
     ITEM_MERGE(0x21),
@@ -112,6 +115,7 @@ enum class Cause(val id: Int) {
     BANNER_DUPLICATE(0xC6),
     MAP_CLONE(0xC7),
     MAP_SCALE_LOCK(0xC8),
+    MAP_FILL(0xC9),
 
     BLOCK_PLACE(0x50),
     BONEMEAL_USE(0x51),
@@ -124,6 +128,12 @@ enum class Cause(val id: Int) {
     ITEM_INTO_SINGLE_BLOCK(0x58),
     PLACE_ENTITY_ITEM(0x59),
     EYE_INTO_FRAME(0x5A),
+    // Spent on a block or an entity by a path that has no cause of its own: a fire charge, a trial key.
+    ITEM_USED(0x5B),
+    BOTTLE_FILL(0x5C),
+    CAULDRON_WASH(0x5D),
+    BEACON_PAYMENT(0x5E),
+    BOTTLE_EMPTY(0x5F),
 
     FEED_MOB(0x60),
     TAME_MOB(0x61),
@@ -137,6 +147,9 @@ enum class Cause(val id: Int) {
     BUCKET_RELEASE_MOB(0x69),
     GIVE_ITEM_TO_MOB(0x6A),
     ARMOR_STAND_SWAP(0x6B),
+    MOB_TRANSFORM(0x6C),
+    ENTITY_BREAK_DROP(0x6D),
+    MOB_EQUIPMENT_LOST(0x6E),
 
     PROJ_SHOT(0x70),
     PROJ_SHOT_PHANTOM(0x71),
@@ -214,6 +227,8 @@ enum class Cause(val id: Int) {
     // Never written, only decoded into. Causes are added without touching the record version, so a
     // row from a newer build carries a number this one has no name for — and the quantity beside it
     // is still readable and still counts towards a balance, which a skipped row would not.
+    // The block plane's thirty-two slots are full, so it goes on here.
+    BLK_SIGN_EDIT(0xFE),
     UNKNOWN(0xFF),
     ;
 

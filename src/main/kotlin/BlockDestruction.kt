@@ -116,6 +116,7 @@ internal fun expectDrops(
     // the name is part of its form, so the drop is expected under the named form and the entity is
     // named the same way before its spawn reads it.
     boxOwner: UUID? = null,
+    reach: Double = SPAWN_REACH,
 ) {
     val spot = spotOf(block.location)
     for (drop in block.drops) {
@@ -125,8 +126,20 @@ internal fun expectDrops(
             origins.expectBox(stack, boxOwner, spot)
             NestedItems.mark(stack, boxOwner)
         }
-        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor)
+        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor, reach)
     }
+}
+
+// How far apart two blocks of one crater can stand, along any axis: an explosion drops each pile where
+// the first block of its kind stood, which can be anywhere in the crater.
+internal fun craterReach(blocks: Collection<Block>): Double {
+    if (blocks.isEmpty()) return SPAWN_REACH
+    val span = maxOf(
+        blocks.maxOf { it.x } - blocks.minOf { it.x },
+        blocks.maxOf { it.y } - blocks.minOf { it.y },
+        blocks.maxOf { it.z } - blocks.minOf { it.z },
+    )
+    return maxOf(SPAWN_REACH, span + 1.0)
 }
 
 /**
@@ -853,7 +866,9 @@ class BlockDestructionListener(
         if (state.isAir || state.canSurvive(block.level, block.position)) return
         // The cause dictionary has no entry of its own for a block that could no longer stand where it
         // stood, and this is the one that says the world took the block away by its own rules.
-        defer(block, block.blockData, Cause.BLK_FADE, attribution.supportRemoverAt(positionOf(block)))
+        // What gives way under physics is destroyed through `Level.destroyBlock`, and its drops are
+        // expected where that raises its own event.
+        defer(block, block.blockData, Cause.BLK_FADE, attribution.supportRemoverAt(positionOf(block)), expectsDrops = false)
     }
 
     /**
@@ -870,7 +885,13 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockDestroy(event: BlockDestroyEvent) {
         val block = event.block
-        defer(block, block.blockData, Cause.BLK_FADE, attribution.supportRemoverAt(positionOf(block)))
+        val by = attribution.supportRemoverAt(positionOf(block))
+        // The drops follow this event inside the same call, so this is where they are expected, and
+        // always: a cactus breaks a tick after its support, while the read-back the physics of that
+        // support queued still holds the position, and the note that read-back left may already have
+        // been swept by then. A capture that filed the position this tick expected them itself.
+        if (!readBacks.settled(positionOf(block))) expectDrops(origins, codec, block, Cause.BLK_FADE, by?.actor)
+        defer(block, block.blockData, Cause.BLK_FADE, by, expectsDrops = false)
     }
 
     // Everything an explosion took away, plus the positions the exploding block itself vacated before
@@ -881,7 +902,7 @@ class BlockDestructionListener(
         val log = logs.get(world) ?: return
         // An explosion writes plain air over every position it clears, whatever the block was standing
         // in, so the after side is not derived from the fluid the way a break's is.
-        file(log, hit.map { Site(positionOf(it), it, it.blockData, AIR) } + extra, cause, by)
+        file(log, hit.map { Site(positionOf(it), it, it.blockData, AIR) } + extra, cause, by, dropReach = craterReach(hit))
     }
 
     // The snapshots carry the new state and the block behind each of them still holds the old one.
@@ -1024,6 +1045,7 @@ class BlockDestructionListener(
         // position is spoken for at the other end of the movement that brought it, and what leaves in
         // the hands of a falling block is spoken for where the block lands.
         carried: List<Site> = emptyList(),
+        dropReach: Double = SPAWN_REACH,
     ) {
         val real = sites.filter { unfiled(it) }
         val rows = real + carried.filter { unfiled(it) }
@@ -1034,7 +1056,7 @@ class BlockDestructionListener(
         // A block that moved carries itself to the position it arrived in and drops nothing on the way.
         for (site in gone) {
             if (site.went != null) continue
-            expectDrops(origins, codec, site.block, cause, by?.actor, packBox(site, by, timestamp))
+            expectDrops(origins, codec, site.block, cause, by?.actor, packBox(site, by, timestamp), dropReach)
         }
         by?.actor?.let { actor ->
             for (site in gone) {
@@ -1149,7 +1171,7 @@ class BlockDestructionListener(
     // The read has to happen on the region that owns the block, and this is queued rather than run
     // inline, so it lands at the start of that region's next tick with the tick that raised the event
     // already finished.
-    private fun defer(block: Block, before: BlockData, cause: Cause, by: Attributed?) {
+    private fun defer(block: Block, before: BlockData, cause: Cause, by: Attributed?, expectsDrops: Boolean = true) {
         // A task queued against a plugin already on its way down is refused outright, and an event can
         // still reach a handler while the server is taking the plugin apart.
         if (!plugin.isEnabled) return
@@ -1165,7 +1187,7 @@ class BlockDestructionListener(
         val payload = payloadAt(block)
         // Here and not in the read-back: the items are already in the world by then, and a note that
         // arrives after the spawn it explains is a note nobody can claim.
-        expectDrops(origins, codec, block, cause, by?.actor)
+        if (expectsDrops) expectDrops(origins, codec, block, cause, by?.actor)
         plugin.server.regionScheduler.execute(plugin, block.world, block.x shr 4, block.z shr 4) {
             readBacks.done(at)
             val now = block.blockData.asString
