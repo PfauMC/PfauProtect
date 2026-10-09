@@ -210,8 +210,9 @@ class Confiscations(
      * what is gone for good out of nothing.
      */
     fun restore(victim: UUID, owed: List<Owed>, actor: UUID?, sender: CommandSender, births: List<PostingRef> = emptyList()) {
-        // A pile that went between the read and the take is gone for good like a burned one, and given out
-        // of nothing the same way, so every birth marked below was given back one way or the other.
+        // What went between the read and the take — a pile no longer there, what its taker used up — is gone
+        // for good like a burned pile, and given out of nothing the same way, so every birth marked below
+        // was given back one way or the other.
         take(
             owed.filter { it.taker !is Vanished }, actor, sender,
             gone = { formId, n -> give(victim, formId, n, actor, sender) },
@@ -223,7 +224,8 @@ class Confiscations(
     }
 
     // `taken` hears of every amount actually taken, or owed by a player who will hand it over on joining;
-    // `gone`, of what was lying in the world at the read and was not there to take.
+    // `gone`, of what was there at the read and could not be taken: a pile gone since, or what a player no
+    // longer holds.
     fun take(
         owed: List<Owed>,
         actor: UUID?,
@@ -243,7 +245,7 @@ class Confiscations(
                         continue
                     }
                     // A player who leaves between the two is owed it instead.
-                    player.scheduler.run(plugin, { fromPlayer(player, all, actor, sender, taken) }) {
+                    player.scheduler.run(plugin, { fromPlayer(player, all, actor, sender, gone, taken) }) {
                         Bukkit.getAsyncScheduler().runNow(plugin) {
                             for (item in all) {
                                 ledger.owe(taker.player, item.formId, item.qty, actor)
@@ -295,12 +297,23 @@ class Confiscations(
     }
 
     // On the player's own thread.
-    private fun fromPlayer(player: Player, owed: List<Owed>, actor: UUID?, sender: CommandSender?, taken: (Long, Int) -> Unit = { _, _ -> }) {
+    private fun fromPlayer(
+        player: Player,
+        owed: List<Owed>,
+        actor: UUID?,
+        sender: CommandSender?,
+        gone: (Long, Int) -> Unit = { _, _ -> },
+        taken: (Long, Int) -> Unit = { _, _ -> },
+    ) {
         val direct = ArrayList<Transfer>()
         val now = System.currentTimeMillis()
         val enderOpen = player.openInventory.topInventory.type == InventoryType.ENDER_CHEST
         for (item in owed) {
-            val form = ledger.form(item.formId) ?: continue
+            val form = ledger.form(item.formId)
+            if (form == null) {
+                gone(item.formId, item.qty)
+                continue
+            }
             var left = item.qty
             var seen = 0
             fun drain(stack: ItemStack?, put: (ItemStack?) -> Unit): Int {
@@ -326,6 +339,7 @@ class Confiscations(
             if (seen > 0) capture.intend(player, Intent(Cause.ROLLBACK, to = Void, form = form, qty = seen, actor = actor))
             val got = item.qty - left
             if (got > 0) taken(item.formId, got)
+            if (left > 0) gone(item.formId, left)
             val message = if (left == 0) "  took back $got ${name(item.formId)} from ${player.name}."
             else "  ${player.name} held only $got of ${item.qty} ${name(item.formId)}; the rest is beyond reach."
             if (sender != null) sender.sendMessage(message) else plugin.logger.info("rollback at join:$message")
