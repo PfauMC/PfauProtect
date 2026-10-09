@@ -447,6 +447,27 @@ class BlockCaptureTest {
         assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 66, 5))?.actor)
     }
 
+    // Bob's blast took the ground from under Alice's door. The lower half gives way, and the upper half
+    // goes in the same tick, before any read-back of the lower one has run.
+    @Test
+    fun `a block giving way is noted at once so what it holds up finds its culprit`() {
+        val lower = Blocks.SPRUCE_DOOR.defaultBlockState()
+        val door = lower.asBlockData()
+        val foot = BlockPos(5, 64, 5)
+        attribution.placed(WorldBlock(world, foot.x, foot.y, foot.z), door.asString, alice)
+        val head = blockStub(
+            BlockPos(5, 65, 5),
+            lower.setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER).asBlockData(),
+        )
+
+        attribution.givingWay(blockStub(foot, door, relative = head), bob)
+
+        assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 65, 5))?.actor)
+        assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 66, 5))?.actor)
+        // The door may yet stand; who put it there still answers for it.
+        assertEquals(alice, attribution.placerAt(WorldBlock(world, foot.x, foot.y, foot.z), door.asString)?.actor)
+    }
+
     // Alice's TNT stands above a lone lower half of tall grass. The face is right and the block at the
     // end of it is not the other half of anything, so nothing may be noted there.
     @Test

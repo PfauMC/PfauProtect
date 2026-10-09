@@ -72,6 +72,7 @@ import org.bukkit.entity.Creeper
 import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.FallingBlock
+import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
 import org.bukkit.entity.Projectile
 import org.bukkit.entity.TNTPrimed
@@ -288,6 +289,11 @@ internal fun formCause(before: String): Cause =
     if (blockNameOf(before) in LIQUIDS) Cause.BLK_LIQUID_FORM else Cause.BLK_FORM
 
 private val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
+
+// A catalyst blooms within eight blocks of a death, and its sculk spreads a few blocks further on.
+private const val SCULK_REACH = 12
+
+private val LIQUID_FACES = listOf(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.DOWN)
 
 private const val FIRE = "minecraft:fire"
 
@@ -867,7 +873,11 @@ class BlockDestructionListener(
         // The other half of a bed is where the player clicked, so it is the half that carries both
         // the placement note and the form the position took over.
         val partner = otherBedHalf(data)?.let { half -> partnerFace(data)?.let { at.getRelative(it) to half } }
-        val by = placerOf(positionOf(at), standing)
+        // A bed in the Nether and a charged anchor outside it go off under a player's click, and that
+        // player set them off; who put the block down is asked only when nobody clicked (D82).
+        val by = touches.toucher(positionOf(at))
+            ?: partner?.let { (block, _) -> touches.toucher(positionOf(block)) }
+            ?: placerOf(positionOf(at), standing)
             ?: partner?.let { (block, half) -> placerOf(positionOf(block), half.asString) }
         val gone = ArrayList<Site>(2)
         for ((block, was) in listOfNotNull(at to data, partner)) {
@@ -973,7 +983,14 @@ class BlockDestructionListener(
         // carry does, so an arbitrarily long chain stays attributed while no note covers more than a step.
         val leapt = if (blockNameOf(after) in FIRES) fireStartedBy(event.source) else null
         if (leapt != null && leapt.confidence != Confidence.NEARBY) attribution.placed(at, after, leapt.actor)
-        changed(block, block.blockData, after, spreadCause(after), leapt ?: attribution.carriedTo(at, after))
+        val cause = spreadCause(after)
+        // Sculk spreads off a catalyst's bloom, and the bloom off a death somebody stands behind.
+        val bloomed = if (cause == Cause.BLK_SCULK) attribution.killerNear(at, SCULK_REACH) else null
+        changed(block, block.blockData, after, cause, leapt ?: bloomed ?: attribution.carriedTo(at, after))
+        // A bamboo shoot turns into bamboo by its shape once the stalk above it is there, with no event of
+        // its own; read back, so its row says what stands there and a rollback can take the planting away.
+        val source = event.source
+        if (source.type == Material.BAMBOO_SAPLING) defer(source, source.blockData, Cause.BLK_GROW, null, expectsDrops = false)
     }
 
     /**
@@ -1005,7 +1022,15 @@ class BlockDestructionListener(
         val before = block.blockData
         val entity = (event as? EntityBlockFormEvent)?.entity
         val cause = entity?.let { entityFormCause(it.type) } ?: formCause(before.asString)
-        val by = entity?.let { entities.summonerOf(it.uniqueId) }
+        // Frost walker freezes the water under the player wearing it, and that player is who froze it; a
+        // snow golem's trail is whoever built the golem (D83). Stone out of a liquid and concrete out of
+        // its powder are whoever let the liquid run.
+        val by = when {
+            entity is Player -> Attributed(entity.uniqueId, Confidence.FACT)
+            entity != null -> entities.summonerOf(entity.uniqueId)
+            cause == Cause.BLK_LIQUID_FORM || before.material.name.endsWith("_CONCRETE_POWDER") -> formedBy(block, before.asString)
+            else -> null
+        }
         changed(block, before, event.newState.blockData.asString, cause, by)
     }
 
@@ -1053,8 +1078,40 @@ class BlockDestructionListener(
         // the egg leaves one position and arrives in the other, and the item it stands for goes along.
         if (from.type == Material.DRAGON_EGG) return eggJumped(from, to)
         val by = attribution.carriedTo(positionOf(to), from.blockData.asString)
-        if (!liquidDestroys((to as CraftBlock).blockState)) return
+        if (!liquidDestroys((to as CraftBlock).blockState)) {
+            // Only a flow somebody let out: the world's own springs are no story to tell.
+            if (to.type.isAir && by != null && by.confidence != Confidence.NEARBY) flowed(to, by)
+            return
+        }
         defer(to, to.blockData, Cause.BLK_LIQUID_DESTROY, by ?: pouredBy(from))
+    }
+
+    /**
+     * Where a liquid somebody let out ran into air: the level it came to, a tick on, and nothing else. No
+     * read-back of the full kind — no journal seek, no removal noted, no item plane — since a pour runs
+     * into dozens of places a second and none of it is a block anybody owned.
+     */
+    private fun flowed(to: Block, by: Attributed) {
+        if (!plugin.isEnabled) return
+        val log = logs.get(to.world.uid) ?: return
+        val timestamp = System.currentTimeMillis()
+        plugin.server.regionScheduler.execute(plugin, to.world, to.x shr 4, to.z shr 4) {
+            val now = to.blockData
+            if (now.material != Material.WATER && now.material != Material.LAVA) return@execute
+            log.submit(listOf(BlockChange(to.x, to.y, to.z, "minecraft:air", now.asString, Cause.BLK_LIQUID_FLOW, timestamp, by.confidence, actor = by.actor)))
+        }
+    }
+
+    /**
+     * Who let the liquid run that turned into stone here, or hardened the concrete powder: the block put
+     * down a moment ago first, then the liquids that met, by the tracker and then by the bucket behind
+     * them. A lava cast is somebody's wall, and a rollback of them has to take it down with their lava.
+     */
+    private fun formedBy(block: Block, before: String): Attributed? {
+        attribution.placerAt(positionOf(block), before)?.let { return it }
+        val liquids = (listOf(block) + LIQUID_FACES.map(block::getRelative)).filter { it.type == Material.WATER || it.type == Material.LAVA }
+        return liquids.firstNotNullOfOrNull { attribution.placerAt(positionOf(it), it.blockData.asString) }
+            ?: liquids.firstNotNullOfOrNull { pouredBy(it) }
     }
 
     /**
@@ -1100,7 +1157,9 @@ class BlockDestructionListener(
         // A burning arrow into dynamite primes it next, and the priming files the block on the shooter.
         if (block.type == Material.TNT) return
         val cause = entityBlockCause(entity.type) ?: return
-        changed(block, block.blockData, event.blockData.asString, cause, behindChange(entity))
+        // A mob dying under weaving leaves cobwebs: whoever killed it put them there, as far as anything can say.
+        val killer = (entity as? LivingEntity)?.takeIf { it.isDead }?.killer?.let { Attributed(it.uniqueId, Confidence.INFERRED) }
+        changed(block, block.blockData, event.blockData.asString, cause, behindChange(entity) ?: killer)
     }
 
     /**
@@ -1235,7 +1294,12 @@ class BlockDestructionListener(
         val timestamp = System.currentTimeMillis()
         // A player named on the event witnessed it; nothing here was worked out.
         val by = event.player?.let { Attributed(it.uniqueId, Confidence.FACT) }
-        growing.claim(blocks) { grew(sites, Cause.BLK_GROW, by, timestamp) }
+        // Settled on the global region, a tick later; filing reads the world, so it goes to the tree's own.
+        // Run in place it failed Folia's thread check and the tree went unrecorded.
+        val at = blocks.firstOrNull()?.location
+        growing.claim(blocks) {
+            if (at != null && plugin.isEnabled) plugin.server.regionScheduler.execute(plugin, at) { grew(sites, Cause.BLK_GROW, by, timestamp) }
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -1772,6 +1836,7 @@ class BlockDestructionListener(
         // Here and not in the read-back: the items are already in the world by then, and a note that
         // arrives after the spawn it explains is a note nobody can claim.
         if (expectsDrops) dropsOf(block, cause, by)
+        by.culprit()?.let { attribution.givingWay(block, it) }
         plugin.server.regionScheduler.execute(plugin, block.world, block.x shr 4, block.z shr 4) {
             readBacks.done(at)
             val now = block.blockData.asString
@@ -1847,9 +1912,12 @@ class BlockDestructionListener(
         if (source.type == EntityType.TNT) {
             placerOf(positionOf(source.location.block), TNT)?.let { return it }
         }
-        // The last rung: a wither nobody lit was still built by somebody, and the explosion it opens
-        // with is the first thing it does.
-        return entities.summonerOf(firedBy(source).uniqueId)
+        // A wither nobody lit was still built by somebody, and the explosion it opens with is the first
+        // thing it does.
+        entities.summonerOf(firedBy(source).uniqueId)?.let { return it }
+        // The last rung: a creeper goes off at whoever it was after. Led to a wall, that is the one who led
+        // it; met by chance, the one it met. Either way only a witness, never rolled back on its own.
+        return ((source as? Creeper)?.target as? Player)?.let { Attributed(it.uniqueId, Confidence.NEARBY) }
     }
 
     // A block that no longer stands there leaves whatever it was standing in, which for anything dry

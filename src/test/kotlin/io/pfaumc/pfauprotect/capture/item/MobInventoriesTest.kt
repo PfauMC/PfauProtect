@@ -4,6 +4,8 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.storage.ItemKey
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class MobInventoriesTest {
@@ -175,5 +177,18 @@ class MobInventoriesTest {
         assertEquals(listOf(slot(1) to 10), golemSlots(previous, now, bread.form, took = true, moved = 10))
         assertEquals(emptyList<Pair<io.pfaumc.pfauprotect.model.Holder, Int>>(), golemSlots(now, now, bread.form, took = false, moved = 5))
         assertEquals(emptyList<Pair<io.pfaumc.pfauprotect.model.Holder, Int>>(), golemSlots(null, now, bread.form, took = false, moved = 5))
+    }
+
+    // A farmer sets wheat down into the air over farmland; a farmer feeding a composter changes the composter.
+    // Only the first is a planting out of its pocket.
+    @Test
+    fun `a planting is a seed set into an empty cell and a composter filling up is not`() {
+        io.pfaumc.pfauprotect.ServerRegistries.access
+        val air = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState()
+        val wheat = net.minecraft.world.level.block.Blocks.WHEAT.defaultBlockState()
+        val composter = net.minecraft.world.level.block.Blocks.COMPOSTER.defaultBlockState()
+        assertTrue(planting(air, wheat))
+        assertFalse(planting(composter, composter.setValue(net.minecraft.world.level.block.ComposterBlock.LEVEL, 4)))
+        assertFalse(planting(wheat, air))
     }
 }

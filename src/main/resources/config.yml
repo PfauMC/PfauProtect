@@ -1,0 +1,32 @@
+# PfauProtect. Every value here is what the plugin does without this file, except the language: without
+# the file the plugin speaks English, and this file asks for Russian.
+
+# Language of what the plugin says: ru or en.
+language: ru
+
+worlds:
+  # Worlds where no block or entity rows are written. Items are booked wherever they go.
+  disabled: []
+
+causes:
+  # Block- and entity-plane causes that are not written, for example BLK_LIQUID_FLOW or BLK_FADE.
+  # Item-plane causes cannot be turned off: a skipped posting is a gap in every balance after it.
+  disabled: []
+
+lookup:
+  # The largest radius a lookup or a rollback takes.
+  max-radius: 200
+
+rollback:
+  # The most positions one rollback puts back; a larger one is refused and has to be cut by time.
+  max-positions: 32768
+
+mobs:
+  # How long a change a player made around a mob answers for its death: water let in, a floor taken away.
+  fresh-minutes: 10
+  # As many mobs of one kind in one chunk as make a farm's crowd, whose deaths nobody caused are not written.
+  crowd: 8
+
+chat:
+  # Commands the chat log keeps by name only, without their arguments: they carry passwords.
+  hidden-commands: [login, l, log, register, reg, changepassword, changepass, unregister]

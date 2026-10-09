@@ -81,6 +81,18 @@ class AttributionTest {
         log.drain()
     }
 
+    // Sculk spreads off the newest death a player stood behind within reach, for a minute and no longer.
+    @Test
+    fun `sculk answers to the newest kill near it`() {
+        attribution.killed(WorldBlock(world, 0, 64, 0), alice)
+        clock += 1_000
+        attribution.killed(WorldBlock(world, 5, 64, 0), bob)
+        assertEquals(bob, attribution.killerNear(WorldBlock(world, 3, 64, 0), 12)?.actor)
+        assertEquals(null, attribution.killerNear(WorldBlock(world, 40, 64, 0), 12))
+        clock += KILL_MILLIS + 1
+        assertEquals(null, attribution.killerNear(WorldBlock(world, 3, 64, 0), 12))
+    }
+
     @Test
     fun `the tracker answers on its own and the journal only where it is asked for by name`() {
         val here = at(10, 64, 10)

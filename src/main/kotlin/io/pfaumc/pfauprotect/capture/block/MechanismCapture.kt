@@ -20,12 +20,26 @@ import org.bukkit.event.inventory.InventoryMoveItemEvent
 import org.bukkit.event.inventory.InventoryPickupItemEvent
 import org.bukkit.event.inventory.InventoryType
 import org.bukkit.inventory.Inventory
+import org.bukkit.NamespacedKey
+import org.bukkit.block.Hopper
+import org.bukkit.entity.minecart.HopperMinecart
+import org.bukkit.event.block.BlockPlaceEvent
+import org.bukkit.event.entity.EntityPlaceEvent
+import org.bukkit.persistence.PersistentDataHolder
+import org.bukkit.persistence.PersistentDataType
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import net.minecraft.world.Container as NmsContainer
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
 data class Fitting(val slot: Int, val qty: Int)
+
+/**
+ * Who put a hopper or a hopper cart down, kept on it: what it pulls out of a chest or pushes into one is
+ * that player's doing as far as anything can say, so a rollback of a griefer who set one under somebody's
+ * chest puts back what it drained. On the block or the cart itself, read on the thread already holding it.
+ */
+internal val PLACED_BY = NamespacedKey("pfauprotect", "placed_by")
 
 object Placement {
     // A mechanism event arrives before the game tries to place anything, and how much lands is
@@ -137,6 +151,19 @@ class MechanismCaptureListener(
 ) : Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPlaceHopper(event: BlockPlaceEvent) {
+        val hopper = event.blockPlaced.getState(false) as? Hopper ?: return
+        hopper.persistentDataContainer.set(PLACED_BY, PersistentDataType.STRING, event.player.uniqueId.toString())
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPlaceCart(event: EntityPlaceEvent) {
+        val cart = event.entity as? HopperMinecart ?: return
+        val player = event.player ?: return
+        cart.persistentDataContainer.set(PLACED_BY, PersistentDataType.STRING, player.uniqueId.toString())
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onMove(event: InventoryMoveItemEvent) {
         // Touching the item is what keeps the event alive: when no handler reads or writes it, the
         // region stops firing it for the rest of the hopper pass and those movements are lost.
@@ -151,7 +178,15 @@ class MechanismCaptureListener(
             source.type == InventoryType.DROPPER -> Cause.DROPPER_PUSH
             else -> Cause.HOPPER_PUSH
         }
-        record(source, destination, moved, cause)
+        record(source, destination, moved, cause, placerOf(event.initiator))
+    }
+
+    // Whoever put the hopper or the cart that moved the item down; nobody for one that was there before.
+    private fun placerOf(inventory: Inventory): UUID? {
+        val holder = inventory.getHolder(false) as? PersistentDataHolder ?: return null
+        val raw = holder.persistentDataContainer.get(PLACED_BY, PersistentDataType.STRING) ?: return null
+        // Written by us, but the container's data is anyone's to edit; a bad value must not cost the move its row.
+        return runCatching { UUID.fromString(raw) }.getOrNull()
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -164,17 +199,17 @@ class MechanismCaptureListener(
         if (stack.isEmpty) return
         val fitting = Placement.fit(container, stack, null) ?: return
         val cause = if (heldByEntity(destination)) Cause.HOPPER_MINECART_PULL else Cause.HOPPER_PULL_GROUND
-        submit(ItemEntityRef(entity.uniqueId), into(fitting.slot), cause, stack, fitting.qty)
+        submit(ItemEntityRef(entity.uniqueId), into(fitting.slot), cause, stack, fitting.qty, placerOf(destination))
     }
 
-    private fun record(source: Inventory, destination: Inventory, moved: NmsItemStack, cause: Cause) {
+    private fun record(source: Inventory, destination: Inventory, moved: NmsItemStack, cause: Cause, placer: UUID?) {
         if (moved.isEmpty) return
         val into = containerHolders(destination) ?: return
         val from = nms(source) ?: return
         val to = nms(destination) ?: return
         val fitting = Placement.fit(to, moved, faceTowards(to, from)) ?: return
         val origin = origin(source, from, to, moved, cause) ?: return
-        submit(origin, into(fitting.slot), cause, moved, fitting.qty)
+        submit(origin, into(fitting.slot), cause, moved, fitting.qty, placer)
     }
 
     // A crafter hands out what it has just made, and the result never sat in a slot to be taken from:
@@ -192,8 +227,8 @@ class MechanismCaptureListener(
         return if (slot < 0) null else out(slot)
     }
 
-    private fun submit(from: Holder, to: Holder, cause: Cause, stack: NmsItemStack, qty: Int) {
-        pending.add(from, to, cause, codec.encode(stack).key, qty)
+    private fun submit(from: Holder, to: Holder, cause: Cause, stack: NmsItemStack, qty: Int, placer: UUID? = null) {
+        pending.add(from, to, cause, codec.encode(stack).key, qty, placer, if (placer == null) Confidence.FACT else Confidence.INFERRED)
     }
 
     private fun nms(inventory: Inventory): NmsContainer? = (inventory as? CraftInventory)?.inventory

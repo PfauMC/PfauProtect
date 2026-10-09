@@ -161,6 +161,16 @@ internal fun Attribution.cleared(block: Block, actor: UUID) {
     felledBy(block, actor)
 }
 
+/**
+ * A block giving way because of what someone took away, noted the moment it is known rather than at
+ * the read-back a tick later: what it holds up goes in the same tick. The upper half of a door whose
+ * lower half lost its ground found no note under it and was filed on nobody, so a rollback of the
+ * culprit put back a lower half alone. The placement note stays, since the block may yet stand.
+ */
+internal fun Attribution.givingWay(block: Block, actor: UUID) {
+    for (standing in listOfNotNull(block, otherHalfOf(block))) removed(positionOf(standing), actor)
+}
+
 // How far a leaf reaches for a log, counted in steps through other leaves. The game's own number.
 private const val LEAF_REACH = 6
 

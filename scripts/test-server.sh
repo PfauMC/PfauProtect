@@ -28,6 +28,14 @@ start)
     [ -f run/canvas.jar ] || curl -sSfL -o run/canvas.jar \
         "https://jenkins.canvasmc.io/job/Canvas/$CANVAS_BUILD/artifact/canvas-server/build/libs/canvas-build.$CANVAS_BUILD.jar"
     cp build/libs/pfauprotect-*.jar run/plugins/
+    # Live checks read what the plugin says in English; a server of players gets Russian by default.
+    # PPT_LANG=ru starts it in Russian, to check the Russian texts.
+    mkdir -p run/plugins/PfauProtect
+    if [ -f run/plugins/PfauProtect/config.yml ]; then
+        sed -i "s/^language: .*/language: ${PPT_LANG:-en}/" run/plugins/PfauProtect/config.yml
+    else
+        echo "language: ${PPT_LANG:-en}" >run/plugins/PfauProtect/config.yml
+    fi
     [ -f run/eula.txt ] || echo "eula=true" >run/eula.txt
     [ -f run/server.properties ] || cat >run/server.properties <<'EOF'
 online-mode=false

@@ -55,6 +55,77 @@ class ConfiscationTest {
         assertEquals(mapOf(Carrier(bob) to 7), owed(returned(PlayerInv(bob, 4), 7)))
     }
 
+    // Bob put the loot into a chest of his own far away: what he no longer holds is looked for there,
+    // newest first, and a chest he only took from is no stash.
+    @Test
+    fun `the chests a carrier put the loot into are where the rest is looked for`() {
+        val his = Container(world, 500, 64, 500, 3)
+        val older = Container(world, 600, 64, 600, 0)
+        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
+        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), older, diamond, null, 2, T0 + 1))
+        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), his, diamond, null, 5, T0 + 2))
+        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 5), chest, stone, null, 1, T0 + 3))
+        ledger.drain()
+
+        val tally = returned(PlayerInv(bob, 4), 7).apply { since = T0 }
+        val owed = owedFor(ledger, tally).single()
+        assertEquals(listOf(his.copy(slot = 0), older), owed.stashes)
+    }
+
+    // Bob crafted the loot into a block: the block stands for nine diamonds, and is what is looked for once
+    // his hands and his chests have none of them.
+    @Test
+    fun `what a carrier crafted the loot into stands for it`() {
+        val block = byteArrayOf(57)
+        val table = Container(world, 9, 64, 9, 0)
+        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 9, T0))
+        ledger.submit((1..9).map { Transfer(Cause.CRAFT_CONSUME, table.copy(slot = it), Void, diamond, null, 1, T0 + 1) } +
+            Transfer(Cause.CRAFT_RESULT, Void, PlayerInv(bob, 5), block, null, 1, T0 + 1))
+        ledger.drain()
+
+        val tally = returned(PlayerInv(bob, 4), 9).apply { since = T0 }
+        val conversion = owedFor(ledger, tally).single().conversions.single()
+        assertEquals(ledger.formId(block), conversion.made)
+        assertEquals(9, conversion.inputsEach)
+    }
+
+    // Bob built steps of the loot that the same rollback takes away: those are back already, and only what he
+    // set where the rollback does not reach is still owed (O13).
+    @Test
+    fun `what a carrier set as blocks the rollback takes away is not owed again`() {
+        val steps = WorldBlock(world, 3, 64, 3)
+        val elsewhere = WorldBlock(world, 300, 64, 300)
+        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
+        ledger.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(bob, 4), steps, diamond, null, 1, T0 + 1))
+        ledger.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(bob, 4), elsewhere, diamond, null, 1, T0 + 2))
+        ledger.drain()
+
+        val tally = returned(PlayerInv(bob, 4), 7).apply { since = T0; undone += steps }
+        assertEquals(mapOf(Carrier(bob) to 6), owed(tally))
+        tally.undone += elsewhere
+        tally.traces.clear()
+        tally.traces += Trace(PlayerInv(bob, 4), ledger.formId(diamond)!!, 2)
+        assertEquals(emptyMap<Taker, Int>(), owed(tally))
+    }
+
+    // A helmet that fell off the head goes back onto it, a shield out of the off hand back into it.
+    @Test
+    fun `what fell out of a killed player is known by the slot it fell from`() {
+        val helmet = byteArrayOf(41)
+        val shield = byteArrayOf(42)
+        val head = ItemEntityRef(UUID.randomUUID())
+        val hand = ItemEntityRef(UUID.randomUUID())
+        ledger.submit(Transfer(Cause.DEATH_DROP, io.pfaumc.pfauprotect.model.PlayerEquip(alice, 39), head, helmet, null, 1, T0))
+        ledger.submit(Transfer(Cause.DEATH_DROP, io.pfaumc.pfauprotect.model.PlayerEquip(alice, 40), hand, shield, null, 1, T0))
+        ledger.drain()
+        val death = io.pfaumc.pfauprotect.storage.EntityRow(
+            0, 64, 0, T0, 1, 0, io.pfaumc.pfauprotect.model.EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
+            "minecraft:player", alice, actor = bob, drops = listOf(head.uuid, hand.uuid),
+        )
+
+        assertEquals(mapOf(ledger.formId(helmet) to listOf(39), ledger.formId(shield) to listOf(40)), fellFrom(ledger, death))
+    }
+
     // Bob carried the diamonds to a chest of his own in the same area, and the rollback took them back
     // out of it. Taking them from his hands as well would take his own diamonds.
     @Test

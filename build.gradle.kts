@@ -95,6 +95,14 @@ bukkit {
             description = "Compare what a player is carrying against the ledger"
             default = BukkitPluginDescription.Permission.Default.OP
         }
+        register("pfauprotect.purge") {
+            description = "Delete history older than an age, keeping what every balance needs"
+            default = BukkitPluginDescription.Permission.Default.OP
+        }
+        register("pfauprotect.status") {
+            description = "See how big the bases are and what waits to be written"
+            default = BukkitPluginDescription.Permission.Default.OP
+        }
         register("pfauprotect.rollback") {
             description = "Preview and apply rollbacks of what the ledger recorded"
             default = BukkitPluginDescription.Permission.Default.OP
@@ -104,6 +112,13 @@ bukkit {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+// Reads a copy of the ledger offline for the bot's scenarios; scripts/ledger-rows.sh takes the copy.
+tasks.register<JavaExec>("ledgerRows") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.pfaumc.pfauprotect.tools.LedgerRowsKt")
+    workingDir = rootDir
 }
 
 tasks.runServer {

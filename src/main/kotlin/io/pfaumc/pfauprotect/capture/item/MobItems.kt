@@ -238,7 +238,15 @@ class MobItemListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onHangingBreak(event: HangingBreakEvent) {
         val actor = ((event as? HangingBreakByEntityEvent)?.remover as? Player)?.uniqueId
-        expectOut(event.entity, listOf(0, ENTITY_ITEM_SLOT), Cause.ENTITY_BREAK_DROP, actor)
+        val entity = event.entity
+        // A frame or a painting nobody put down from an item — summoned, older than the plugin, or the world's
+        // own — books no item of itself, and its drop came out as a birth nobody explained, tied to no removal:
+        // a rollback put the frame back and left its item with whoever broke it (D81). What lands by it now is
+        // its own item.
+        if (ENTITY_ITEM_SLOT !in heldBy(entity)) {
+            origins.expectAny(Void, Cause.ENTITY_BREAK_DROP, spotOf(entity.location), actor, tag = entity.uniqueId)
+        }
+        expectOut(entity, listOf(0, ENTITY_ITEM_SLOT), Cause.ENTITY_BREAK_DROP, actor)
     }
 
     // The mark goes now, so a second hit or the removal after the break finds nothing left to book;

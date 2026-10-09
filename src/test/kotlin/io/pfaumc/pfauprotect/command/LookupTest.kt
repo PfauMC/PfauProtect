@@ -170,8 +170,8 @@ class LookupTest {
     fun `the block plane is reachable by name and every block cause is under one of the filters`() {
         val blockRange = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT +
             Cause.BLK_PLAYER_SWITCH + Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE +
-            Cause.BLK_BUCKET + Cause.BLK_SPONGE + Cause.BLK_COMMAND
-        assertEquals(39, blockRange.size)
+            Cause.BLK_BUCKET + Cause.BLK_SPONGE + Cause.BLK_COMMAND + Cause.BLK_LIQUID_FLOW + Cause.BLK_PLUGIN
+        assertEquals(41, blockRange.size)
         assertEquals(blockRange, Action.of("block")?.causes)
 
         val named = Action.entries.filter { it != Action.BLOCK }.flatMap { it.causes }.toSet()
@@ -191,6 +191,43 @@ class LookupTest {
                 "${action.keys.first()} names causes from both planes",
             )
         }
+    }
+
+    // A span runs from the far end to the near one whichever is written first; a span of nothing is no span.
+    @Test
+    fun `a time span reads both ends`() {
+        assertEquals(7200L to 3600L, spanOrNull("2h-1h"))
+        assertEquals(7200L to 3600L, spanOrNull("1h-2h"))
+        assertEquals(600L to null, spanOrNull("10m"))
+        assertEquals(null, spanOrNull("1h-1h"))
+        val query = parseLookupQuery("time:3d-1d page:2 limit:20")
+        assertEquals(259_200L, query.secondsBack)
+        assertEquals(86_400L, query.secondsUntil)
+        assertEquals(40, query.wanted)
+        assertEquals(Action.KILL.causes, parseLookupQuery("action:kill").causes)
+    }
+
+    // The filters a lookup narrows by besides place and time.
+    @Test
+    fun `amounts, undone rows, theft and a count are understood`() {
+        assertEquals(5..Int.MAX_VALUE, amountOrNull(">=5"))
+        assertEquals(6..Int.MAX_VALUE, amountOrNull(">5"))
+        assertEquals(0 until 10, amountOrNull("<10"))
+        assertEquals(5..10, amountOrNull("5-10"))
+        assertEquals(64..64, amountOrNull("64"))
+        assertEquals(null, amountOrNull("lots"))
+        val query = parseLookupQuery("#count action:steal rolledback:no amount:>=8")
+        assertTrue(query.count && query.steal)
+        assertEquals(false, query.rolledBack)
+        assertEquals(8..Int.MAX_VALUE, query.amount)
+    }
+
+    // A clicked line fills an event in with where and when, and it reads back as it was written.
+    @Test
+    fun `an event reads back as written`() {
+        val event = EventRef(4711, 10, -60, -42, 1_700_000_000_123L)
+        assertEquals(event, parseLookupQuery(event.toString()).event)
+        assertEquals(null, EventRef.parse("4711"))
     }
 
     @Test

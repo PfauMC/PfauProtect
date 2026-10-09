@@ -294,6 +294,34 @@ class BlockStoreTest {
         assertEquals(setOf(listOf(5, 64, 6)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
     }
 
+    // How it died and what dealt the blow come back as they went in; a row without them reads as before.
+    @Test
+    fun `an entity death keeps its damage type and what dealt it`() {
+        val sheep = UUID.randomUUID()
+        val axolotl = UUID.randomUUID()
+        val cow = UUID.randomUUID()
+        log.submit(
+            listOf(
+                EntityChange(1, 64, 1, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:sheep", sheep, T0,
+                    Confidence.INFERRED, alice, death = "minecraft:mob_attack", via = "minecraft:wolf"),
+                EntityChange(2, 64, 1, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:axolotl", axolotl, T0, death = "minecraft:dry_out"),
+                EntityChange(3, 64, 1, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:cow", cow, T0),
+            )
+        )
+        log.drain()
+
+        val dog = log.entitiesAt(1, 64, 1, 0, Long.MAX_VALUE, 10).rows.single()
+        assertEquals("minecraft:mob_attack", dog.death)
+        assertEquals("minecraft:wolf", dog.via)
+        assertEquals(alice, dog.actor)
+        val dried = log.entitiesAt(2, 64, 1, 0, Long.MAX_VALUE, 10).rows.single()
+        assertEquals("minecraft:dry_out", dried.death)
+        assertNull(dried.via)
+        val plain = log.entitiesAt(3, 64, 1, 0, Long.MAX_VALUE, 10).rows.single()
+        assertNull(plain.death)
+        assertNull(plain.via)
+    }
+
     // A base from before the entity plane has every block row and no entity family; it opens and gets one.
     @Test
     fun `a base from before the entity plane opens and gains it`() {

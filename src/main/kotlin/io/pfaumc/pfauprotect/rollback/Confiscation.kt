@@ -1,9 +1,16 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.say
 import io.pfaumc.pfauprotect.capture.item.ContainerCaptureListener
 import io.pfaumc.pfauprotect.capture.item.Intent
 import io.pfaumc.pfauprotect.capture.item.WorldItemListener
 import io.pfaumc.pfauprotect.capture.item.namedContents
+import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.PlayerInv
+import kotlin.jvm.optionals.getOrNull
+import io.pfaumc.pfauprotect.model.Nested
+import io.pfaumc.pfauprotect.model.PlayerCursor
+import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Holder
@@ -55,7 +62,21 @@ data class Lying(val entity: UUID) : Taker
 // player is owed of it can only be given out of nothing — it exists nowhere any more.
 data class Vanished(val entity: UUID) : Taker
 
-class Owed(val taker: Taker, val formId: Long, val qty: Int)
+/**
+ * `stashes` are the containers a carrier put this item into since the window opened, newest first: what
+ * is not in their hands any more is looked for there, so a thief who put the loot in a chest of their own
+ * does not keep it while the owner gets it back.
+ */
+class Owed(
+    val taker: Taker,
+    val formId: Long,
+    val qty: Int,
+    val stashes: List<Container> = emptyList(),
+    val conversions: List<Conversion> = emptyList(),
+)
+
+/** What a carrier made of the item: so many of it went into each one `made`. */
+class Conversion(val made: Long, val inputsEach: Int)
 
 /**
  * Where `qty` of what left through `lead` is now. A player holding it is the end; a dropped pile is
@@ -129,8 +150,76 @@ internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
             owed += trace(drop.holder, drop.itemFormId, drop.qty, rowsOf)
         }
     }
-    // What nobody has any more cannot be taken back from anybody.
-    return merged(owed).filter { it.qty > 0 && it.taker !is Vanished }
+    // What nobody has any more cannot be taken back from anybody. What a carrier set as blocks this same
+    // rollback takes away is back already (O13).
+    val undone = tally.undone.toHashSet()
+    return merged(owed).filter { it.qty > 0 && it.taker !is Vanished }.mapNotNull { item ->
+        val carrier = item.taker as? Carrier ?: return@mapNotNull item
+        val qty = item.qty - placedInto(ledger, carrier.player, item.formId, tally.since, undone)
+        if (qty <= 0) return@mapNotNull null
+        Owed(
+            carrier, item.formId, qty, stashesOf(ledger, carrier.player, item.formId, tally.since),
+            conversionsOf(ledger, carrier.player, item.formId, tally.since),
+        )
+    }
+}
+
+/** How many of the item a player set as blocks since then, at positions among `undone`. */
+internal fun placedInto(ledger: RocksItemLog, player: UUID, formId: Long, since: Long, undone: Set<WorldBlock>): Int {
+    if (since <= 0 || undone.isEmpty()) return 0
+    return listOf(PlayerInv(player, 0), PlayerEquip(player, 0)).flatMap {
+        ledger.holderPage(it, since, Long.MAX_VALUE, limit = STASH_ROWS).entries
+    }.filter { it.itemFormId == formId && it.qty < 0 && it.counterparty in undone }.sumOf { -it.qty }
+}
+
+// The ways a player makes one item out of others at a bench, whose result lands in their hands.
+private val MAKING = setOf(Cause.CRAFT_RESULT, Cause.SMELT, Cause.STONECUTTER, Cause.SMITHING_TRANSFORM, Cause.ANVIL_COMBINE)
+
+/**
+ * What a player made of this item since then: each result that reached their hands, with how many of the
+ * item went into one of it, by the result's own transaction. Nine diamonds into a block is a block that
+ * stands for nine of them.
+ */
+internal fun conversionsOf(ledger: RocksItemLog, player: UUID, formId: Long, since: Long): List<Conversion> {
+    if (since <= 0) return emptyList()
+    val gains = listOf(PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player)).flatMap {
+        ledger.holderPage(it, since, Long.MAX_VALUE, limit = STASH_ROWS).entries
+    }.filter { it.qty > 0 }
+    val made = gains.flatMap { gain ->
+        when {
+            gain.cause in MAKING -> listOf(gain)
+            // Taken out of the result slot afterwards: the making is that slot's row.
+            gain.counterparty !is PlayerHolder && gain.counterparty != Void ->
+                ledger.holderEntries(gain.counterparty, since, gain.timestamp, limit = 100)
+                    .filter { it.cause in MAKING && it.qty > 0 && it.itemFormId == gain.itemFormId }
+            else -> emptyList()
+        }
+    }.distinctBy { it.ref }
+    return made.mapNotNull { result ->
+        val used = ledger.transactionEntries(result).filter { it.qty < 0 && it.itemFormId == formId }.sumOf { -it.qty }
+        if (used == 0 || used % result.qty != 0) null else Conversion(result.itemFormId, used / result.qty)
+    }.distinctBy { it.made }
+}
+
+// Enough of a player's slot history to find where they put things in one rollback's window.
+private const val STASH_ROWS = 4096
+
+/**
+ * The containers a player put this item into since then, newest first, by their own slots' rows: what
+ * left their hands into a container. Their own chest, a barrel, a shulker box standing as a block.
+ */
+internal fun stashesOf(ledger: RocksItemLog, player: UUID, formId: Long, since: Long): List<Container> {
+    if (since <= 0) return emptyList()
+    val rows = listOf(PlayerInv(player, 0), PlayerEnder(player, 0)).flatMap {
+        ledger.holderPage(it, since, Long.MAX_VALUE, reverse = true, limit = STASH_ROWS).entries
+    }
+    return rows.asSequence()
+        .filter { it.itemFormId == formId && it.qty < 0 }
+        .sortedByDescending { it.timestamp }
+        .mapNotNull { it.counterparty as? Container }
+        .map { it.copy(slot = 0) }
+        .distinct()
+        .toList()
 }
 
 private fun wholePile(pile: UUID, rowsOf: (ItemEntityRef) -> List<LedgerEntry>): List<Owed> {
@@ -156,6 +245,16 @@ internal fun pileBirths(ledger: RocksItemLog, death: EntityRow): Map<UUID, List<
     pileRows(ledger)(ItemEntityRef(pile)).filter { it.qty > 0 && it.cause != Cause.ITEM_MERGE }.map { it.ref }
 }
 
+/**
+ * Where on the victim each item fell out of, by form: the slots its piles were born from. Armour goes back
+ * onto the body and a shield into the off hand, not into the first free pocket.
+ */
+internal fun fellFrom(ledger: RocksItemLog, death: EntityRow): Map<Long, List<Int>> =
+    death.drops.flatMap { pile -> pileRows(ledger)(ItemEntityRef(pile)) }
+        .filter { it.qty > 0 && it.cause == Cause.DEATH_DROP }
+        .mapNotNull { row -> (row.counterparty as? PlayerHolder)?.takeIf { it.uuid == death.uuid }?.let { row.itemFormId to it.slot } }
+        .groupBy({ it.first }, { it.second })
+
 // Piles an earlier rollback already gave the victim back.
 private fun restituted(ledger: RocksItemLog, death: EntityRow): Set<UUID> {
     val births = pileBirths(ledger, death)
@@ -167,7 +266,9 @@ private fun pileRows(ledger: RocksItemLog) = { pile: ItemEntityRef -> ledger.hol
 
 /** The same taker and form owed more than once, as one amount. */
 internal fun merged(owed: List<Owed>): List<Owed> =
-    owed.groupBy { it.taker to it.formId }.map { (key, all) -> Owed(key.first, key.second, all.sumOf { it.qty }) }
+    owed.groupBy { it.taker to it.formId }.map { (key, all) ->
+        Owed(key.first, key.second, all.sumOf { it.qty }, all.flatMap { it.stashes }.distinct(), all.flatMap { it.conversions }.distinctBy { it.made })
+    }
 
 /**
  * Takes back what a rollback put back from whoever carried it off (SPEC-v7 §9). A player's slots are
@@ -209,23 +310,34 @@ class Confiscations(
      * Gives a killed player back what fell out of them: taken from whoever has it, as it is taken, and
      * what is gone for good out of nothing.
      */
-    fun restore(victim: UUID, owed: List<Owed>, actor: UUID?, sender: CommandSender, births: List<PostingRef> = emptyList()) {
-        // What went between the read and the take — a pile no longer there, what its taker used up — is gone
-        // for good like a burned pile, and given out of nothing the same way, so every birth marked below
-        // was given back one way or the other.
+    fun restore(
+        victim: UUID,
+        owed: List<Owed>,
+        actor: UUID?,
+        sender: CommandSender,
+        births: List<PostingRef> = emptyList(),
+        slots: Map<Long, List<Int>> = emptyMap(),
+    ) {
+        // What went between the read and the take — a pile no longer there, what its taker used up and put
+        // nowhere to be found — is gone for good like a burned pile, and given out of nothing the same way,
+        // so every birth marked below was given back one way or the other.
         take(
             owed.filter { it.taker !is Vanished }, actor, sender,
-            gone = { formId, n -> give(victim, formId, n, actor, sender) },
-        ) { formId, n -> give(victim, formId, n, actor, sender) }
-        for (gone in owed.filter { it.taker is Vanished }) give(victim, gone.formId, gone.qty, actor, sender)
+            gone = { formId, n -> give(victim, formId, n, actor, sender, slots[formId].orEmpty()) },
+        ) { formId, n -> give(victim, formId, n, actor, sender, slots[formId].orEmpty()) }
+        for (gone in owed.filter { it.taker is Vanished }) give(victim, gone.formId, gone.qty, actor, sender, slots[gone.formId].orEmpty())
         // The piles' births marked as given back. Nothing moves, so no posting is written: only the mark.
         val form = owed.firstNotNullOfOrNull { ledger.form(it.formId) } ?: return
         if (births.isNotEmpty()) sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, form, null, 1, System.currentTimeMillis(), actor = actor, reverts = births)))
     }
 
+    /** Takes one form from a player and gives as much of another back: a bucket with a mob for the one it was. */
+    fun exchange(player: UUID, take: Long, give: Long, actor: UUID?, sender: CommandSender) =
+        take(listOf(Owed(Carrier(player), take, 1)), actor, sender) { _, n -> give(player, give, n, actor, sender) }
+
     // `taken` hears of every amount actually taken, or owed by a player who will hand it over on joining;
     // `gone`, of what was there at the read and could not be taken: a pile gone since, or what a player no
-    // longer holds.
+    // longer holds and put nowhere it could be followed.
     fun take(
         owed: List<Owed>,
         actor: UUID?,
@@ -248,8 +360,11 @@ class Confiscations(
                         continue
                     }
                     // A player who leaves between the two is owed it instead, whether they left before the
-                    // task was queued (a null task) or after.
-                    player.scheduler.run(plugin, { fromPlayer(player, all, actor, sender, gone, taken) }) {
+                    // task was queued (a null task) or after. What they hold no more is looked for in what
+                    // they put it into.
+                    player.scheduler.run(plugin, {
+                        fromPlayer(player, all, actor, sender, gone = gone, taken = taken) { item, left -> fromStashes(item, left, actor, sender, gone, taken) }
+                    }) {
                         Bukkit.getAsyncScheduler().runNow(plugin) { oweAll() }
                     } ?: Bukkit.getAsyncScheduler().runNow(plugin) { oweAll() }
                 }
@@ -259,7 +374,7 @@ class Confiscations(
                     val pile = Bukkit.getEntity(taker.entity) as? Item
                     val missing = { all.forEach { gone(it.formId, it.qty) } }
                     if (pile == null) {
-                        sender.sendMessage("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
+                        sender.say("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
                         missing()
                     } else {
                         pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender, gone, taken) } }, missing)
@@ -273,28 +388,116 @@ class Confiscations(
 
     // Out of nothing into a player's hands: what fits goes in now, through the pass as a reason for the
     // gain; what does not, at their next join.
-    private fun give(player: UUID, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?) {
+    private fun give(player: UUID, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList()) {
         val online = Bukkit.getPlayer(player)
         if (online == null) {
             Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) }
             return
         }
         val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) } }
-        online.scheduler.run(plugin, { toPlayer(online, formId, qty, actor, sender) }) { owe() } ?: owe()
+        online.scheduler.run(plugin, { toPlayer(online, formId, qty, actor, sender, slots) }) { owe() } ?: owe()
     }
 
     // On the player's own thread.
-    private fun toPlayer(player: Player, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?) {
+    private fun toPlayer(player: Player, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList()) {
         val form = ledger.form(formId) ?: return
-        val left = player.inventory.addItem(CraftItemStack.asBukkitCopy(codec.decode(form, qty, null))).values.sumOf { it.amount }
+        val inventory = player.inventory
+        var rest = qty
+        // Back where it was first, while that slot is empty.
+        for (slot in slots.distinct()) {
+            if (rest == 0) break
+            if (slot !in 0 until inventory.size || inventory.getItem(slot)?.type?.isAir == false) continue
+            val stack = CraftItemStack.asBukkitCopy(codec.decode(form, 1, null))
+            val n = minOf(rest, stack.maxStackSize)
+            inventory.setItem(slot, stack.apply { amount = n })
+            rest -= n
+        }
+        val left = if (rest == 0) 0 else inventory.addItem(CraftItemStack.asBukkitCopy(codec.decode(form, rest, null))).values.sumOf { it.amount }
         val added = qty - left
         if (added > 0) capture.intend(player, Intent(Cause.ROLLBACK, from = Void, form = form, qty = added, actor = actor))
         if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor) }
         val message = "  gave back $added ${name(formId)} to ${player.name}" + if (left > 0) "; $left more at their next join." else "."
-        if (sender != null) sender.sendMessage(message) else plugin.logger.info("rollback at join:$message")
+        if (sender != null) sender.say(message) else plugin.logger.info("rollback at join:$message")
     }
 
-    // On the player's own thread.
+    /**
+     * What a carrier no longer held, out of the containers they put it into since, newest first, each on
+     * its own region's thread. The slots are written here, as a rollback writes a container it refills.
+     */
+    private fun fromStashes(item: Owed, need: Int, actor: UUID?, sender: CommandSender?, gone: (Long, Int) -> Unit, taken: (Long, Int) -> Unit) {
+        val form = ledger.form(item.formId) ?: return gone(item.formId, need)
+        val stashes = item.stashes.toMutableList()
+        fun next(left: Int) {
+            val stash = stashes.removeFirstOrNull()
+            if (left <= 0 || stash == null) {
+                if (left > 0) fromConversions(item, left, actor, sender, gone, taken)
+                return
+            }
+            val world = Bukkit.getWorld(stash.world) ?: return next(left)
+            val at = org.bukkit.Location(world, stash.x.toDouble(), stash.y.toDouble(), stash.z.toDouble())
+            Bukkit.getRegionScheduler().execute(plugin, at) {
+                val level = (world as org.bukkit.craftbukkit.CraftWorld).handle
+                val slots = slotsOf(level.getBlockEntity(net.minecraft.core.BlockPos(stash.x, stash.y, stash.z)))
+                var got = 0
+                if (slots != null) {
+                    val rows = ArrayList<Transfer>()
+                    val now = System.currentTimeMillis()
+                    for (slot in 0 until slots.size) {
+                        if (got >= left) break
+                        val here = slots.get(slot)
+                        if (here.isEmpty || !codec.encode(here).form.contentEquals(form)) continue
+                        val damage = codec.encode(here).damage
+                        val n = minOf(left - got, here.count)
+                        slots.set(slot, if (n == here.count) net.minecraft.world.item.ItemStack.EMPTY else here.copyWithCount(here.count - n))
+                        rows += Transfer(Cause.ROLLBACK, stash.copy(slot = slot), Void, form, damage, n, now, actor = actor)
+                        got += n
+                    }
+                    if (rows.isNotEmpty()) {
+                        slots.changed()
+                        sink(rows)
+                    }
+                }
+                if (got > 0) {
+                    taken(item.formId, got)
+                    sender?.say("  took back $got ${name(item.formId)} from the container at ${stash.x} ${stash.y} ${stash.z} it was put into.")
+                }
+                next(left - got)
+            }
+        }
+        next(need)
+    }
+
+    /**
+     * What a carrier made of the item, taken in its place: as many results as cover what is still owed,
+     * and what one result stood for beyond that given back to them as the item itself.
+     */
+    private fun fromConversions(item: Owed, need: Int, actor: UUID?, sender: CommandSender?, gone: (Long, Int) -> Unit, taken: (Long, Int) -> Unit) {
+        val carrier = (item.taker as? Carrier)?.player
+        val player = carrier?.let(Bukkit::getPlayer)
+        val conversion = item.conversions.firstOrNull()
+        if (player == null || conversion == null) {
+            sender?.say("  $need ${name(item.formId)} are beyond reach.")
+            gone(item.formId, need)
+            return
+        }
+        val results = (need + conversion.inputsEach - 1) / conversion.inputsEach
+        val beyond = { gone(item.formId, need) }
+        player.scheduler.run(plugin, {
+            // On this thread the read is done when it returns, so what was found is known right after.
+            var got = 0
+            fromPlayer(player, listOf(Owed(item.taker, conversion.made, results)), actor, sender, taken = { _, n -> got = n })
+            val covered = got * conversion.inputsEach
+            if (covered > need) give(player.uniqueId, item.formId, covered - need, actor, sender)
+            if (covered > 0) taken(item.formId, minOf(covered, need))
+            val rest = need - covered
+            if (rest > 0) {
+                val others = Owed(item.taker, item.formId, rest, conversions = item.conversions.drop(1))
+                fromConversions(others, rest, actor, sender, gone, taken)
+            }
+        }, beyond) ?: beyond()
+    }
+
+    // On the player's own thread. `short` hears of what they no longer held.
     private fun fromPlayer(
         player: Player,
         owed: List<Owed>,
@@ -302,6 +505,7 @@ class Confiscations(
         sender: CommandSender?,
         gone: (Long, Int) -> Unit = { _, _ -> },
         taken: (Long, Int) -> Unit = { _, _ -> },
+        short: (Owed, Int) -> Unit = { _, _ -> },
     ) {
         val direct = ArrayList<Transfer>()
         val now = System.currentTimeMillis()
@@ -334,13 +538,44 @@ class Confiscations(
                 if (enderOpen) seen += n
                 else direct += Transfer(Cause.ROLLBACK, PlayerEnder(player.uniqueId, slot), Void, form, damage, n, now, actor = actor)
             }
+            // Put into a shulker box the thief carries: taken out of the box. Its contents are filed under the
+            // box's own name, not the slot, and its form leaves them out, so the pass sees no change here
+            // and the rows are written directly.
+            fun drainBox(stack: ItemStack?, put: (ItemStack) -> Unit) {
+                if (left == 0 || stack == null) return
+                val box = CraftItemStack.asNMSCopy(stack)
+                val owner = io.pfaumc.pfauprotect.capture.item.NestedItems.ownerOf(box) ?: return
+                val contents = box.get(net.minecraft.core.component.DataComponents.CONTAINER) ?: return
+                val items = net.minecraft.core.NonNullList.withSize(contents.items.size, net.minecraft.world.item.ItemStack.EMPTY)
+                for ((index, slot) in contents.items.withIndex()) slot.getOrNull()?.let { items[index] = it.create() }
+                var took = false
+                for (index in items.indices) {
+                    if (left == 0) break
+                    val child = items[index]
+                    if (child.isEmpty) continue
+                    val encoded = codec.encodeOrNull(CraftItemStack.asBukkitCopy(child)) ?: continue
+                    if (!encoded.form.contentEquals(form)) continue
+                    val n = minOf(left, child.count)
+                    child.shrink(n)
+                    left -= n
+                    took = true
+                    direct += Transfer(Cause.ROLLBACK, Nested(owner, index), Void, form, encoded.damage, n, now, actor = actor)
+                }
+                if (!took) return
+                box.set(net.minecraft.core.component.DataComponents.CONTAINER, net.minecraft.world.item.component.ItemContainerContents.fromItems(items))
+                put(CraftItemStack.asBukkitCopy(box))
+            }
+            for (slot in 0 until inventory.size) drainBox(inventory.getItem(slot)) { inventory.setItem(slot, it) }
+            for (slot in 0 until ender.size) drainBox(ender.getItem(slot)) { ender.setItem(slot, it) }
             if (seen > 0) capture.intend(player, Intent(Cause.ROLLBACK, to = Void, form = form, qty = seen, actor = actor))
             val got = item.qty - left
             if (got > 0) taken(item.formId, got)
-            if (left > 0) gone(item.formId, left)
+            val followed = item.stashes.isNotEmpty() || item.conversions.isNotEmpty()
+            val rest = if (followed) "the rest is looked for where they put it and what they made of it" else "the rest is beyond reach"
             val message = if (left == 0) "  took back $got ${name(item.formId)} from ${player.name}."
-            else "  ${player.name} held only $got of ${item.qty} ${name(item.formId)}; the rest is beyond reach."
-            if (sender != null) sender.sendMessage(message) else plugin.logger.info("rollback at join:$message")
+            else "  ${player.name} held only $got of ${item.qty} ${name(item.formId)}; $rest."
+            if (sender != null) sender.say(message) else plugin.logger.info("rollback at join:$message")
+            if (left > 0) if (followed) short(item, left) else gone(item.formId, left)
         }
         if (direct.isNotEmpty()) sink(direct)
     }
@@ -355,7 +590,7 @@ class Confiscations(
         taken: (Long, Int) -> Unit,
     ) {
         if (!pile.isValid) {
-            sender.sendMessage("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
+            sender.say("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
             gone(owed.formId, owed.qty)
             return
         }
@@ -377,7 +612,7 @@ class Confiscations(
         }
         sink(rows)
         taken(owed.formId, n)
-        sender.sendMessage("  took back $n ${name(owed.formId)} lying in the world.")
+        sender.say("  took back $n ${name(owed.formId)} lying in the world.")
     }
 
     /** What was owed by a player while they were offline, taken on their join. */
@@ -403,5 +638,5 @@ class Confiscations(
         }
     }
 
-    private fun name(formId: Long): String = io.pfaumc.pfauprotect.command.itemKey(ledger, formId) ?: "item form $formId"
+    fun name(formId: Long): String = io.pfaumc.pfauprotect.command.itemKey(ledger, formId) ?: "item form $formId"
 }

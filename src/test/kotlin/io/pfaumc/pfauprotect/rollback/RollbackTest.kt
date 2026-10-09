@@ -144,6 +144,54 @@ class RollbackTest {
         assertTrue(settle(STONE, stair.getValue(5).steps).conflict)
     }
 
+    // The grass under the griefer's block went to dirt a while after he put it down: taking his block away
+    // brings the grass back. Grass that died under nothing of his stays as the world left it.
+    @Test
+    fun `grass gone to dirt under a block taken away comes back`() {
+        val grass = "minecraft:grass_block[snowy=false]"
+        log.submit(listOf(BlockChange(1, 65, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, grass, DIRT, Cause.BLK_FADE, T0 + 50)))
+        log.submit(listOf(BlockChange(3, 64, 1, grass, DIRT, Cause.BLK_FADE, T0 + 50)))
+        // Rolled back once: the planks are back, and the grass that died under them since is the world's.
+        log.submit(listOf(BlockChange(1, 65, 5, "minecraft:oak_planks", AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 65, 5, AIR, "minecraft:oak_planks", Cause.ROLLBACK, T0 + 10)))
+        log.submit(listOf(BlockChange(1, 64, 5, grass, DIRT, Cause.BLK_FADE, T0 + 60)))
+        // Fire under the stone went out: a fade too, and never to be lit again.
+        log.submit(listOf(BlockChange(1, 65, 3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 3, "minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]", AIR, Cause.BLK_FADE, T0 + 50)))
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val at = planned.chunks.flatMap { it.positions }.associateBy { Triple(it.at.x, it.at.y, it.at.z) }
+        assertEquals(setOf(Triple(1, 65, 1), Triple(1, 64, 1), Triple(1, 65, 3), Triple(1, 65, 5)), at.keys)
+        assertEquals(grass, settle(DIRT, at.getValue(Triple(1, 64, 1)).steps).back?.before)
+    }
+
+    // The griefer planted a sapling and a stalk of bamboo; both grew on their own after. Taking the planting
+    // away takes the tree with it, every block of the one event, and the stalk above the shoot.
+    @Test
+    fun `what grew out of a planting goes with it`() {
+        val sapling = "minecraft:oak_sapling[stage=0]"
+        val log0 = "minecraft:oak_log[axis=y]"
+        val leaves = "minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]"
+        val bamboo = "minecraft:bamboo[age=0,leaves=none,stage=0]"
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, sapling, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(5, 64, 1, AIR, bamboo, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(
+            BlockChange(1, 64, 1, sapling, log0, Cause.BLK_GROW, T0 + 50),
+            BlockChange(1, 65, 1, AIR, log0, Cause.BLK_GROW, T0 + 50),
+            BlockChange(2, 66, 1, AIR, leaves, Cause.BLK_GROW, T0 + 50),
+        ))
+        log.submit(listOf(BlockChange(5, 65, 1, AIR, bamboo, Cause.BLK_GROW, T0 + 60)))
+        log.submit(listOf(BlockChange(5, 66, 1, AIR, bamboo, Cause.BLK_GROW, T0 + 70)))
+        log.submit(listOf(BlockChange(9, 65, 1, AIR, bamboo, Cause.BLK_GROW, T0 + 70)))
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val at = planned.chunks.flatMap { it.positions }.map { Triple(it.at.x, it.at.y, it.at.z) }.toSet()
+        assertEquals(setOf(Triple(1, 64, 1), Triple(1, 65, 1), Triple(2, 66, 1), Triple(5, 64, 1), Triple(5, 65, 1), Triple(5, 66, 1)), at)
+    }
+
     // Rolled back once, the plank that burnt and then took the griefer's lava is a plank again: the second
     // rollback finds it done. Dirt somebody else put in its place is still somebody else's.
     @Test
@@ -172,6 +220,22 @@ class RollbackTest {
         val settled = settle(AIR, steps(planned))
         assertEquals(door, settled.back?.before)
         assertFalse(settled.conflict)
+    }
+
+    // Alice's blast took the grass; the rollback put it back; the wall restored over it turned it to dirt.
+    // That last is the world's own doing after the position was already put back, so a second rollback
+    // has nothing to do here and must not dig the dirt up for grass again.
+    @Test
+    fun `nature after an earlier rollback is not walked past`() {
+        val grass = "minecraft:grass_block[snowy=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, grass, AIR, Cause.BLK_TNT, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, grass, Cause.ROLLBACK, T0 + 1)))
+        log.submit(listOf(BlockChange(1, 64, 1, grass, DIRT, Cause.BLK_FADE, T0 + 2)))
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val settled = settle(DIRT, steps(planned))
+        assertNull(settled.back)
     }
 
     // Alice put the stone down before the window and broke it inside: rolled back from the window's start, the
@@ -312,9 +376,11 @@ class RollbackTest {
     fun `an entity goes back to what its oldest row says it was`() {
         val horse = UUID.randomUUID()
         val pile = UUID.randomUUID()
+        // What her hand took off it on the way, like wool a pair of shears cut.
+        val cut = UUID.randomUUID()
         val untouched = byteArrayOf(10, 0, 0, 1)
         val renamed = byteArrayOf(10, 0, 0, 2)
-        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(3, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:horse", horse, T0, actor = alice, before = untouched, after = renamed)))
+        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(3, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:horse", horse, T0, actor = alice, before = untouched, after = renamed, drops = listOf(cut))))
         log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(4, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:horse", horse, T0 + 10, actor = alice, before = renamed, drops = listOf(pile))))
         log.drain()
         shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, io.pfaumc.pfauprotect.model.EntitySlot(horse, 400), io.pfaumc.pfauprotect.model.ItemEntityRef(UUID.randomUUID()), diamond, null, 1, T0 + 10))
@@ -325,7 +391,8 @@ class RollbackTest {
         assertEquals(io.pfaumc.pfauprotect.model.EntityKind.CHANGED, plan.oldest.kind)
         assertEquals(untouched.toList(), plan.before!!.toList())
         assertEquals(listOf(-1), plan.slots.map { it.qty })
-        assertEquals(listOf(pile), plan.drops)
+        assertEquals(setOf(cut, pile), plan.drops.toSet())
+        assertTrue(plan.removed, "it went within the window, so it is brought back rather than changed back")
         assertEquals(WorldBlock(world, 3, 64, 3), plan.at)
     }
 
@@ -385,6 +452,19 @@ class RollbackTest {
 
         assertEquals(5, putBack(chest, 0, NmsItemStack(Items.TNT), -8, isTnt))
         assertTrue(chest.get(2).isEmpty)
+    }
+
+    // Alice poured lava from forty blocks over the house. Her rollback reaches it; a rollback of nobody in
+    // particular keeps to the cube, so a build high above is not someone else's to lose.
+    @Test
+    fun `a rollback of named players reaches the whole height of its square`() {
+        log.submit(listOf(BlockChange(2, 104, 2, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.drain()
+        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
+        val named = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, 0, Long.MAX_VALUE, filter::keeps, filter::keeps, column = true) as Planned
+        assertEquals(listOf(WorldBlock(world, 2, 104, 2)), named.chunks.flatMap { it.positions }.map { it.at })
+        val cube = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, 0, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
+        assertTrue(cube.chunks.flatMap { it.positions }.isEmpty())
     }
 
     private fun around(filter: RowFilter): Planned {

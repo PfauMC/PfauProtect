@@ -51,6 +51,10 @@ data class EntityChange(
     val before: ByteArray? = null,
     val after: ByteArray? = null,
     val drops: List<UUID> = emptyList(),
+    // What killed it, by damage type, and the entity that dealt the blow when that was not the actor:
+    // a dog, an arrow. Null for a removal that was no death.
+    val death: String? = null,
+    val via: String? = null,
 ) : WorldChange
 
 // Both sides are nullable so that a capture which only learned one of them says so and is refused,
@@ -97,6 +101,9 @@ private const val BLOCK_SCHEMA_VERSION = 3L
 private const val INDEXED_FROM = 1L
 private const val WITHOUT_ENTITIES = 2L
 
+// How many deletes a purge writes at a time.
+private const val PURGE_BATCH = 10_000
+
 // How many index rows a base being indexed for the first time writes per batch.
 private const val INDEX_BATCH = 10_000
 
@@ -133,6 +140,8 @@ class BlockLog(
     private val shared: RocksItemLog,
     // Shown every list of block changes the log accepts, on the thread that submitted it.
     private val watch: (List<BlockChange>) -> Unit = {},
+    // Asked of every change before it is accepted: false drops it, as another plugin may ask.
+    private val keeps: (WorldChange) -> Boolean = { true },
 ) : AutoCloseable {
     // The ledger's cache and memtable budget, so a world loaded is not another bound of its own.
     private val dbOptions = DBOptions()
@@ -176,6 +185,9 @@ class BlockLog(
     private val queue = LinkedBlockingQueue<List<WorldChange>>()
     private val submitted = AtomicLong()
     private val written = AtomicLong()
+
+    /** Submissions handed to the writer and not written yet. */
+    val backlog: Long get() = submitted.get() - written.get()
 
     @Volatile
     private var running = true
@@ -276,6 +288,71 @@ class BlockLog(
      * Where an actor's rows in the window stand: the positions, from the index, without reading a row.
      * `budget` bounds the index rows walked, and a walk that reaches it says so.
      */
+    /**
+     * Rows older than the cutoff, deleted unless `dryRun`: every one but the newest of a position no later
+     * row stands over, which is what the attribution asks a position. The index entries of those rows and
+     * the entity rows older than the cutoff go too. Answers how many of each went.
+     */
+    fun purgeBefore(cutoff: Long, dryRun: Boolean): Pair<Int, Int> = dbLock.read {
+        if (closed) return 0 to 0
+        var rows = 0
+        var entities = 0
+        var batch = WriteBatch()
+        fun delete(cf: ColumnFamilyHandle, key: ByteArray) {
+            if (dryRun) return
+            batch.delete(cf, key)
+            if (batch.count() >= PURGE_BATCH) {
+                db.write(writeOptions, batch)
+                batch.close()
+                batch = WriteBatch()
+            }
+        }
+        fun timeOf(key: ByteArray, at: Int) = ByteReader(key.copyOfRange(at, at + 8)).longBE()
+        db.newIterator(rowsCf).use { iter ->
+            iter.seekToFirst()
+            var position: ByteArray? = null
+            var held: ByteArray? = null
+            while (iter.isValid) {
+                val key = iter.key()
+                val here = key.copyOfRange(0, Zcode.SIZE)
+                if (position == null || !here.contentEquals(position)) {
+                    position = here
+                    held = null
+                }
+                if (timeOf(key, Zcode.SIZE) < cutoff) {
+                    // The one before it is no longer the newest old row of the position.
+                    held?.let { delete(rowsCf, it); rows++ }
+                    held = key.copyOf()
+                } else if (held != null) {
+                    delete(rowsCf, held)
+                    rows++
+                    held = null
+                }
+                iter.next()
+            }
+        }
+        db.newIterator(byActorCf).use { iter ->
+            iter.seekToFirst()
+            while (iter.isValid) {
+                if (timeOf(iter.key(), 4 + Zcode.SIZE) < cutoff) delete(byActorCf, iter.key())
+                iter.next()
+            }
+        }
+        db.newIterator(entitiesCf).use { iter ->
+            iter.seekToFirst()
+            while (iter.isValid) {
+                if (timeOf(iter.key(), Zcode.SIZE) < cutoff) {
+                    delete(entitiesCf, iter.key())
+                    entities++
+                }
+                iter.next()
+            }
+        }
+        if (!dryRun && batch.count() > 0) db.write(writeOptions, batch)
+        batch.close()
+        rows to entities
+    }
+
     fun touchedBy(actor: UUID, fromTs: Long, toTs: Long, budget: Int): ActorTouches = dbLock.read {
         val number = shared.registries.lookupKey(RegistryNamespace.PLAYER, actor.toString())
         if (closed) return ActorTouches(emptySet(), false)
@@ -329,7 +406,17 @@ class BlockLog(
      * A change missing either side is refused and dropped on its own; the rest of the list is
      * written. False means the log took nothing and the caller still holds the only copy.
      */
-    fun submit(changes: List<WorldChange>): Boolean {
+    fun submit(written: List<WorldChange>): Boolean {
+        // What the owner turned off in config.yml is never written at all.
+        val off = io.pfaumc.pfauprotect.Settings.disabledCauses
+        val changes = written.filter {
+            val on = when (it) {
+                is BlockChange -> it.cause !in off
+                is EntityChange -> it.cause !in off
+                else -> true
+            }
+            on && keeps(it)
+        }
         // Not `closed`: that is only set once the writer has been joined, and from the moment the
         // writer stops there is nobody left to take the queue. A change accepted in between would be
         // counted as submitted, sit in the queue and never be written, and `drain` would not wait for
@@ -425,7 +512,9 @@ class BlockLog(
     private fun blockRow(key: ByteArray, value: ByteArray): BlockRow? = BlockCodec.decodeOrNull(key, value, shared.registries)
 
     private fun entityRow(key: ByteArray, value: ByteArray): EntityRow? =
-        EntityCodec.decodeOrNull(key, value, shared.registries) { shared.registries.keyOf(RegistryNamespace.ENTITY_TYPE, it) }
+        EntityCodec.decodeOrNull(key, value, shared.registries, { shared.registries.keyOf(RegistryNamespace.DAMAGE_TYPE, it) }) {
+            shared.registries.keyOf(RegistryNamespace.ENTITY_TYPE, it)
+        }
 
     private fun <T> window(
         cf: ColumnFamilyHandle,
@@ -640,11 +729,14 @@ class BlockLog(
             confidence = change.confidence, actor = change.actor,
             payloadBefore = change.before?.let { shared.payloads.idOf(it) },
             payloadAfter = change.after?.let { shared.payloads.idOf(it) },
-            drops = change.drops,
+            drops = change.drops, death = change.death, via = change.via,
         )
         val key = BlockCodec.key(change.x, change.y, change.z, change.timestamp, eventId, ordinal)
-        val type = shared.registries.idForKey(RegistryNamespace.ENTITY_TYPE, change.type)
-        batch.put(entitiesCf, key, EntityCodec.value(row, shared.registries, type))
+        val ids = shared.registries
+        val type = ids.idForKey(RegistryNamespace.ENTITY_TYPE, change.type)
+        val death = change.death?.let { ids.idForKey(RegistryNamespace.DAMAGE_TYPE, it) } ?: -1
+        val via = change.via?.let { ids.idForKey(RegistryNamespace.ENTITY_TYPE, it) } ?: -1
+        batch.put(entitiesCf, key, EntityCodec.value(row, ids, type, death, via))
         change.actor?.let { actor ->
             batch.put(byActorCf, actorKey(shared.registries.id(RegistryNamespace.PLAYER, actor), key), NOTHING)
         }
@@ -771,11 +863,13 @@ class BlockLogs(
     // Every accepted change, with the world it belongs to: a row that names somebody is also the
     // freshest thing that somebody did at that position.
     private val watch: (UUID, List<BlockChange>) -> Unit = { _, _ -> },
+    // Asked of every change before a world's log accepts it.
+    private val keeps: (UUID, WorldChange) -> Boolean = { _, _ -> true },
 ) : AutoCloseable {
     private val logs = ConcurrentHashMap<UUID, BlockLog>()
 
     fun open(world: UUID): BlockLog =
-        logs.computeIfAbsent(world) { BlockLog(dirOf(it), shared) { changes -> watch(it, changes) } }
+        logs.computeIfAbsent(world) { BlockLog(dirOf(it), shared, { changes -> watch(it, changes) }) { change -> keeps(it, change) } }
 
     fun get(world: UUID): BlockLog? = logs[world]
 
