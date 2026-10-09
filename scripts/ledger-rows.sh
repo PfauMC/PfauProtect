@@ -10,8 +10,9 @@
 set -eu
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1
+# Set before the stop: a stop that reached the server but not its answer must still be undone.
+trap 'docker kill --signal=CONT pfauprotect-test >/dev/null 2>&1 || :' EXIT
 docker kill --signal=STOP pfauprotect-test >/dev/null
-trap 'docker kill --signal=CONT pfauprotect-test >/dev/null' EXIT
 docker exec pfauprotect-test sh -c 'rm -rf /server/snap && cp -r /server/plugins/PfauProtect/ledger /server/snap'
 docker kill --signal=CONT pfauprotect-test >/dev/null
 trap - EXIT

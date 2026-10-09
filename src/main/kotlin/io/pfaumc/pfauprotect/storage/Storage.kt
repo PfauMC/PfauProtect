@@ -538,11 +538,14 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             WriteBatch().use { batch ->
                 val held = HashMap<Triple<Holder, Long, Int?>, Int>()
                 var deleted = 0
+                // A posting whose form cannot be read has no opening to stand for it, and deleting it would
+                // take its holder's balance with it: it stays.
+                val readable = HashMap<Long, Boolean>()
                 db.newIterator(entriesCf, wholeCfRead).use { iter ->
                     iter.seekToFirst()
                     while (iter.isValid) {
                         val entry = EntryCodec.decodeOrNull(iter.key(), iter.value(), registries)
-                        if (entry != null && entry.timestamp < cutoff) {
+                        if (entry != null && entry.timestamp < cutoff && readable.getOrPut(entry.itemFormId) { form(entry.itemFormId) != null }) {
                             held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
                             deleted++
                             if (!dryRun) {
@@ -553,8 +556,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                         iter.next()
                     }
                 }
-                val openings = held.filterValues { it != 0 }.mapNotNull { (key, qty) ->
-                    val form = form(key.second) ?: return@mapNotNull null
+                val openings = held.filterValues { it != 0 }.map { (key, qty) ->
+                    val form = form(key.second)!!
                     if (qty > 0) Transfer(Cause.PURGE_OPENING, Void, key.first, form, key.third, qty, cutoff)
                     else Transfer(Cause.PURGE_OPENING, key.first, Void, form, key.third, -qty, cutoff)
                 }
@@ -985,11 +988,20 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             try {
                 for (transaction in transactions) {
                     batch.setSavePoint()
+                    forms.recording()
+                    payloads.recording()
                     try {
                         writeTransaction(batch, transaction)
                     } catch (failure: Exception) {
                         batch.rollbackToSavePoint()
+                        // The forms this transaction named left with it; still interned, their numbers would
+                        // go to later postings with no form row behind them.
+                        forms.forgetRecorded()
+                        payloads.forgetRecorded()
                         LOGGER.log(Level.SEVERE, "a movement could not be written and was dropped", failure)
+                    } finally {
+                        forms.stopRecording()
+                        payloads.stopRecording()
                     }
                 }
             } finally {
@@ -1254,6 +1266,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             idByValue[FormKey(value)]?.let { return it }
             val id = nextId++
             remember(id, value)
+            minted.get()?.add(id)
             stage {
                 it.put(cf, longBytes(id), value)
                 it.put(metaCf, counterKey, longBytes(nextId))
@@ -1262,6 +1275,20 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         }
 
         fun valueOf(id: Long): ByteArray? = valueById[id]
+
+        // The ids this thread mints from `recording()` on, so the writer can forget the ones whose rows a
+        // rolled-back transaction took with it. Other threads stage into batches of their own.
+        private val minted = ThreadLocal<MutableList<Long>?>()
+
+        fun recording() = minted.set(ArrayList())
+
+        fun stopRecording() = minted.remove()
+
+        @Synchronized
+        fun forgetRecorded() {
+            for (id in minted.get().orEmpty()) valueById.remove(id)?.let { idByValue.remove(FormKey(it), id) }
+            minted.get()?.clear()
+        }
 
         // Asking whether a form is known must not name it: a reconciliation that walks a live
         // inventory would otherwise mint an id for every item the ledger has never recorded.
