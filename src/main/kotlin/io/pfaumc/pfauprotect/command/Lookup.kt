@@ -295,6 +295,8 @@ data class LookupQuery(
     val at: Triple<Int, Int, Int>? = null,
     // The words it was asked with, which the page buttons ask again.
     val words: String = "",
+    // Whether ⌖ may run /pp tp for the one asking: read where they asked, as the answer is written off it.
+    val teleports: Boolean = false,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
@@ -778,9 +780,10 @@ class Lookups(
     // Reading hits RocksDB through JNI, which has no business running on a region thread, and a task
     // that dies out there would otherwise leave the player staring at a command that answered nothing.
     fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+        val asked = query.copy(teleports = canTeleport(sender))
         Bukkit.getAsyncScheduler().runNow(plugin) {
             try {
-                report(sender, target, query)
+                report(sender, target, asked)
             } catch (failure: Throwable) {
                 plugin.logger.log(Level.SEVERE, "lookup at ${target.label} failed", failure)
                 sender.say("The lookup failed; the server log has the details.")
@@ -794,9 +797,9 @@ class Lookups(
      */
     fun entity(sender: CommandSender, entity: UUID, type: String, at: LookupTarget) {
         val label = "$type ${entity.toString().take(8)}"
+        val query = LookupQuery(teleports = canTeleport(sender))
         Bukkit.getAsyncScheduler().runNow(plugin) {
             try {
-                val query = LookupQuery()
                 val slots = ledger.holderPage(EntitySlot(entity, 0), 0, Long.MAX_VALUE, reverse = true, limit = MAX_FETCH)
                 val items = entryLines(wholeTransactions(ledger, slots.entries))
                 val log = blocks.get(at.world)
@@ -816,6 +819,9 @@ class Lookups(
             }
         }
     }
+
+    // A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it.
+    private fun canTeleport(sender: CommandSender) = sender is Player && sender.hasPermission(io.pfaumc.pfauprotect.TELEPORT_PERMISSION)
 
     internal fun report(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
         if (query.players.isNotEmpty()) return reportPlayers(sender, target, query)
@@ -970,7 +976,7 @@ class Lookups(
         }
         val clickable = sender is Player
         // ⌖ runs /pp tp, which a player without the permission does not have: for them it is only shown.
-        val teleports = clickable && sender.hasPermission(io.pfaumc.pfauprotect.TELEPORT_PERMISSION)
+        val teleports = clickable && query.teleports
         sender.sendMessage(header(where, target))
         for (run in lines) {
             val line = run.first

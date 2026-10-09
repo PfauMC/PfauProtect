@@ -754,6 +754,8 @@ class PfauProtectPlugin : JavaPlugin() {
             sender.sendMessage(failure.rawMessage.string)
             return 0
         }
+        // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
+        val teleports = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
         server.asyncScheduler.runNow(this) {
             val users = running.lookups.resolveAll(sender, query.users) ?: return@runNow
             val text = query.filter?.lowercase()
@@ -771,7 +773,7 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.QUIT -> Component.text().append(who).append(Ui.text(tr(" left", " · выход"), Ui.MUTED)).build()
                 }
                 val out = Component.text().append(Ui.text(" ")).append(Ui.ago(line.timestamp)).append(Ui.text("  ")).append(what)
-                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, sender is Player && sender.hasPermission(TELEPORT_PERMISSION)))
+                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, teleports))
                 sender.sendMessage(out.build())
             }
         }
