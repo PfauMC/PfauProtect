@@ -99,7 +99,7 @@ private const val VERIFY_PERMISSION = "pfauprotect.verify"
 private const val ROLLBACK_PERMISSION = "pfauprotect.rollback"
 private const val STATUS_PERMISSION = "pfauprotect.status"
 private const val PURGE_PERMISSION = "pfauprotect.purge"
-private const val TELEPORT_PERMISSION = "pfauprotect.teleport"
+internal const val TELEPORT_PERMISSION = "pfauprotect.teleport"
 
 private class Help(val permission: String, val usage: String, val typed: String, val en: String, val ru: String)
 
@@ -771,7 +771,7 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.QUIT -> Component.text().append(who).append(Ui.text(tr(" left", " · выход"), Ui.MUTED)).build()
                 }
                 val out = Component.text().append(Ui.text(" ")).append(Ui.ago(line.timestamp)).append(Ui.text("  ")).append(what)
-                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, sender is Player && sender.hasPermission("pfauprotect.teleport")))
+                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, sender is Player && sender.hasPermission(TELEPORT_PERMISSION)))
                 sender.sendMessage(out.build())
             }
         }

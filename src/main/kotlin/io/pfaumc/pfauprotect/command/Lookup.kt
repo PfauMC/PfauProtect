@@ -970,7 +970,7 @@ class Lookups(
         }
         val clickable = sender is Player
         // ⌖ runs /pp tp, which a player without the permission does not have: for them it is only shown.
-        val teleports = clickable && sender.hasPermission("pfauprotect.teleport")
+        val teleports = clickable && sender.hasPermission(io.pfaumc.pfauprotect.TELEPORT_PERMISSION)
         sender.sendMessage(header(where, target))
         for (run in lines) {
             val line = run.first
