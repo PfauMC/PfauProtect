@@ -95,6 +95,10 @@ bukkit {
             description = "Compare what a player is carrying against the ledger"
             default = BukkitPluginDescription.Permission.Default.OP
         }
+        register("pfauprotect.rollback") {
+            description = "Preview and apply rollbacks of what the ledger recorded"
+            default = BukkitPluginDescription.Permission.Default.OP
+        }
     }
 }
 

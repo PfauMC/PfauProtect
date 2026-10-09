@@ -45,16 +45,19 @@ Packages under `io.pfaumc.pfauprotect`; tests sit in the package of the code the
 | `attribution` | the culprit ladder, entity origins, redstone energy (phase 5.7) |
 | `check` | plane sync and reconciliation |
 | `command` | `/pp lookup` and inspect |
+| `rollback` | `/pp rollback`: the per-position rule, the reading of both planes, the per-chunk application |
 
 **Item plane (`Storage.kt`, `RocksItemLog`).** Single RocksDB at `ledger/`, with column families entries,
-item_forms, registry, meta, nested_owners, tx, placed_forms and block_payloads, all written by one writer thread
+item_forms, registry, meta, nested_owners, tx, placed_forms, block_payloads, compensated (which postings a
+rollback gave back) and confiscations (what offline players owe a rollback), all written by one writer thread
 (`pfauprotect-ledger-writer`). Every row is a `Transfer` of `qty > 0` from one `Holder` to another (`Model.kt`):
 player inv/equip/cursor/ender, menu slot (not addressable), container, entity slot, item entity, nested
 (shulker/bundle contents), `VOID`, world block. A row also carries a `Kind` (TRANSFER/MUTATE/CLONE) and a
 `Confidence` (FACT/INFERRED).
 
 **Block plane (`BlockStore.kt`, `BlockLogs`).** One RocksDB per world (`blocks/<uuid>`), opened and closed on
-world load and unload. Block-state ids and block-entity payloads are interned in the shared ledger, and referenced
+world load and unload, with column families rows, meta and by_actor (every row that names an actor, keyed by the
+actor). Block-state ids and block-entity payloads are interned in the shared ledger, and referenced
 data is written first so a block row never points at nothing.
 
 **Write path.**
@@ -76,8 +79,15 @@ never rewritten after the fact.
 `/pp verify` and `/pp reconcile` run them on demand.
 
 **Commands.** `/pfauprotect` (alias `/pp`) is registered through Brigadier (`LifecycleEvents.COMMANDS`), with
-subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]`. Permissions are declared in
-`build.gradle.kts` `bukkit {}`.
+subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]`, `rollback|rb`, `apply`,
+`cancel`. Permissions are declared in `build.gradle.kts` `bukkit {}`.
+
+**Rollback (`rollback/`).** `/pp rollback` takes the lookup's words and previews; `/pp apply` reads everything
+again and runs it, a chunk per region task. It writes compensating rows (`Cause.ROLLBACK`) in both planes and never
+edits old ones. A rollback's own rows are only rolled back when `action:rollback` names them, which is also how a
+rollback is undone. What it put back is then taken back from whoever carried it off (`Confiscation.kt`): from an
+online player through an `Intent`, from an offline one at their next join, from a pile still lying where it lies.
+`radius:global` with `user:` finds a player's positions through `by_actor` and their own item rows.
 
 ## Invariants
 
@@ -91,7 +101,7 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 
 ## Specs (`.planning/`)
 
-- SPEC-v1 is the foundation and long-term goals (rollback, dupe detection by balance; not built yet).
+- SPEC-v1 is the foundation and long-term goals (rollback, dupe detection by balance; the second not built yet).
 - SPEC-v2 covers item entities and player inventory. SPEC-v3 covers the block plane, attribution and plane sync.
   SPEC-v4 covers crafting and stations. Later specs override earlier ones, and SPEC-v3 supersedes BLOCKS-notes.
   PLAN-v1-iteration-1 is outdated.
@@ -106,6 +116,9 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 - SPEC-v4 §15 records how phase 4 was actually built and overrides §3–§13. Window slots are booked to
   their real owner: the crafting grid to the player (`EntitySlot`), a station to its block (`Container`).
   `MenuSlot` is left only for ownerless GUIs.
+- SPEC-v6 is rollback: 6.1 an area by the lookup's filters, 6.2 taking back what was carried off, 6.3 the
+  actor index and a player's rollback without a radius. §13 records how each phase was built.
+- TESTING-v6 is the live plan for SPEC-v6, with a player; the console-only checks are already in SPEC-v6 §13.
 - PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
 - TESTING-v5 is the live run for SPEC-v5, closed on 2026-10-03. TESTING-v5-RESULTS holds it: the D17–D50

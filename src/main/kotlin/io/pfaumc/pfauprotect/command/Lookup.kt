@@ -152,6 +152,9 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     SWITCH(setOf(Cause.BLK_PLAYER_SWITCH, Cause.BLK_ENTITY_SWITCH), "switch", "switches", "pressed"),
     INTERACT(setOf(Cause.BLK_PLAYER_USE), "interact", "clicked", "toggled"),
     COMMAND(setOf(Cause.BLK_COMMAND), "command", "commands", "worldedit"),
+
+    // What a rollback did, in both planes. Naming it is also the only way to roll a rollback back.
+    ROLLBACK(setOf(Cause.ROLLBACK), "rollback", "rollbacks", "undo"),
     ;
 
     companion object {
@@ -356,6 +359,61 @@ private fun playerOf(holder: Holder): UUID? = (holder as? PlayerHolder)?.uuid
 internal fun namesUser(entry: LedgerEntry, users: Set<UUID>): Boolean =
     playerOf(entry.holder) in users || playerOf(entry.counterparty) in users || entry.actor in users
 
+private fun normalizeItem(name: String): String =
+    if (name.contains(':')) name.lowercase() else "$VANILLA_NAMESPACE:${name.lowercase()}"
+
+internal fun itemKey(ledger: RocksItemLog, itemFormId: Long): String? {
+    val form = ledger.form(itemFormId) ?: return null
+    return ledger.registries.keyOf(RegistryNamespace.ITEM_TYPE, itemTypeIdOf(form))
+}
+
+// The full state string is what the registry keeps, properties and all, which is what makes a row
+// restorable; the properties are noise in a list, so only the block itself is shown.
+internal fun stateName(ledger: RocksItemLog, id: Int): String = stateOf(ledger, id).substringBefore('[')
+
+internal fun stateOf(ledger: RocksItemLog, id: Int): String =
+    ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, id) ?: "block state $id"
+
+/**
+ * What a query keeps of the rows it read. A lookup and a rollback are asked with the same words and
+ * have to mean the same rows by them: the lookup is how a rollback is read before it is run.
+ *
+ * A rollback holds two more rules. A player named by `user:` answers for what they did or what was
+ * worked out to be theirs, never for having stood near it. And a rollback's own rows are left alone
+ * unless asked for by name: a second, narrower rollback would otherwise undo the first one.
+ */
+internal class RowFilter(
+    private val ledger: RocksItemLog,
+    query: LookupQuery,
+    private val users: Set<UUID>,
+    private val excludedUsers: Set<UUID>,
+    private val rollback: Boolean = false,
+) {
+    private val causes = query.causes
+    private val included = query.included.map(::normalizeItem).toSet()
+    private val excluded = query.excluded.map(::normalizeItem).toSet()
+
+    fun keeps(entry: LedgerEntry): Boolean {
+        if (!caused(entry.cause)) return false
+        if (users.isNotEmpty() && !namesUser(entry, users)) return false
+        val item = itemKey(ledger, entry.itemFormId)
+        return (included.isEmpty() || item in included) && item !in excluded && !namesUser(entry, excludedUsers)
+    }
+
+    // A row names a block rather than an item, so what the filter is about is either state it ran
+    // between; naming an item that no block is made of therefore hides the whole plane, which is what
+    // a reader asking for one item wants.
+    fun keeps(row: BlockRow): Boolean {
+        if (!caused(row.cause)) return false
+        if (users.isNotEmpty() && (row.actor !in users || rollback && row.confidence == Confidence.NEARBY)) return false
+        if (row.actor != null && row.actor in excludedUsers) return false
+        val named = setOf(stateName(ledger, row.stateBefore), stateName(ledger, row.stateAfter))
+        return (included.isEmpty() || named.any { it in included }) && named.none { it in excluded }
+    }
+
+    private fun caused(cause: Cause) = causes?.contains(cause) ?: (!rollback || cause != Cause.ROLLBACK)
+}
+
 class LookupArgument : CustomArgumentType<LookupQuery, String> {
     override fun getNativeType(): ArgumentType<String> = StringArgumentType.greedyString()
 
@@ -497,7 +555,7 @@ class Lookups(
 
     // Every name has to be known: dropping the one that was misspelt would answer about the rest as
     // if it were the whole question.
-    private fun resolveAll(sender: CommandSender, names: List<String>): Set<UUID>? {
+    internal fun resolveAll(sender: CommandSender, names: List<String>): Set<UUID>? {
         val named = names.associateWith { idOf(it) }
         val unknown = named.filterValues { it == null }.keys
         if (unknown.isNotEmpty()) {
@@ -555,20 +613,9 @@ class Lookups(
                 // Each chunk came back newest first; together they have to be again.
                 .sortedByDescending { it.timestamp }
         }
-        val included = query.included.map(::normalizeItem).toSet()
-        val excluded = query.excluded.map(::normalizeItem).toSet()
-        val excludedUsers = query.excluded.mapNotNull(::resolve).toSet()
+        val keeps = rowFilter(query, users)
         return rows.asSequence()
-            .filter { query.causes == null || it.cause in query.causes }
-            .filter { users.isEmpty() || it.actor in users }
-            .filter { it.actor == null || it.actor !in excludedUsers }
-            // A row names a block rather than an item, so what the filter is about is either state it
-            // ran between; naming an item that no block is made of therefore hides the whole plane,
-            // which is what a reader asking for one item wants.
-            .filter { row ->
-                val named = setOf(stateName(row.stateBefore), stateName(row.stateAfter))
-                (included.isEmpty() || named.any { it in included }) && named.none { it in excluded }
-            }
+            .filter(keeps::keeps)
             .take(query.limit + 1)
             .map { Line(it.timestamp, describe(it)) }
             .toList()
@@ -622,25 +669,16 @@ class Lookups(
     // Keeps one row more than asked for: the caller shows `limit` of them and needs the extra one to
     // know whether saying so would be a lie.
     private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
-        val included = query.included.map(::normalizeItem).toSet()
-        val excludedItems = query.excluded.map(::normalizeItem).toSet()
-        val excludedUsers = query.excluded.mapNotNull(::resolve).toSet()
+        val keeps = rowFilter(query, users)
         return entries.asSequence()
-            .filter { query.causes == null || it.cause in query.causes }
-            .filter { users.isEmpty() || namesUser(it, users) }
-            .filter { entry ->
-                val item = itemKey(entry.itemFormId)
-                (included.isEmpty() || item in included) && item !in excludedItems
-            }
-            .filter { !namesUser(it, excludedUsers) }
+            .filter(keeps::keeps)
             .take(query.limit + 1)
             .toList()
     }
 
-    private fun resolve(name: String): UUID? = idOf(name)
-
-    private fun normalizeItem(name: String): String =
-        if (name.contains(':')) name.lowercase() else "$VANILLA_NAMESPACE:${name.lowercase()}"
+    // `exclude:` takes items and players in one list, so a name that is a player is a player excluded.
+    internal fun rowFilter(query: LookupQuery, users: Set<UUID>, rollback: Boolean = false) =
+        RowFilter(ledger, query, users, query.excluded.mapNotNull(idOf).toSet(), rollback)
 
     private fun describe(entry: LedgerEntry): String {
         val amount = if (entry.qty > 0) "+${entry.qty}" else entry.qty.toString()
@@ -714,12 +752,7 @@ class Lookups(
         return sides.takeIf { it.isNotEmpty() }?.joinToString(" / ")
     }
 
-    // The full state string is what the registry keeps, properties and all, which is what makes a row
-    // restorable; the properties are noise in a list, so only the block itself is shown.
-    private fun stateName(id: Int): String = stateOf(id).substringBefore('[')
-
-    private fun stateOf(id: Int): String =
-        ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, id) ?: "block state $id"
+    private fun stateOf(id: Int): String = stateOf(ledger, id)
 
     private fun menuName(id: Int): String =
         ledger.registries.keyOf(RegistryNamespace.MENU_TYPE, id)?.lowercase() ?: "type $id"
@@ -729,18 +762,13 @@ class Lookups(
      * type and read as the same row without it, which is exactly the difference a shulker box full of
      * somebody's things turns on.
      */
-    private fun itemLabel(itemFormId: Long): String {
-        val type = itemKey(itemFormId) ?: return "item form $itemFormId"
+    internal fun itemLabel(itemFormId: Long): String {
+        val type = itemKey(ledger, itemFormId) ?: return "item form $itemFormId"
         val decoder = codec ?: return type
         val form = ledger.form(itemFormId) ?: return type
         // A form that will not decode still names its type, which is worth more than an error.
         val named = runCatching { decoder.decode(form, 1, null).get(DataComponents.CUSTOM_NAME) }.getOrNull()
         return if (named == null) type else "$type \"${named.string}\""
-    }
-
-    private fun itemKey(itemFormId: Long): String? {
-        val form = ledger.form(itemFormId) ?: return null
-        return ledger.registries.keyOf(RegistryNamespace.ITEM_TYPE, itemTypeIdOf(form))
     }
 
     private fun describe(holder: Holder): String = when (holder) {

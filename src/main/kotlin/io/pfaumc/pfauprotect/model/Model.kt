@@ -124,7 +124,12 @@ data class LedgerEntry(
     val qty: Int,
     val damage: Int?,
     val actor: UUID?,
-)
+) {
+    val ref: PostingRef get() = PostingRef(txId, ordinal)
+}
+
+// One posting of the ledger by where it sits: its transaction and its place among the postings of it.
+data class PostingRef(val txId: Long, val ordinal: Int)
 
 class Transfer(
     val cause: Cause,
@@ -139,6 +144,9 @@ class Transfer(
     // Only worth setting when neither end is a player: an ordinary transfer already names the person
     // through its holder or its counterparty, and repeating them would cost a byte on every row.
     val actor: UUID? = null,
+    // The postings a rollback gives back by this movement. They are filed against the transaction this
+    // lands in, in the same batch, so a second rollback can tell they were already given back.
+    val reverts: List<PostingRef> = emptyList(),
 ) {
     init {
         require(qty > 0) { "transfer quantity must be positive, got $qty" }

@@ -224,6 +224,70 @@ class BlockStoreTest {
         assertEquals(stateOf(DIRT), log.standingAt(2, 64, 2).row?.stateAfter)
     }
 
+    // A rollback acts on everything it read, so a row it could not read and a walk that stopped on its
+    // budget are both said rather than left out of the answer.
+    @Test
+    fun `a rollback window counts what it could not read and says when it ran out`() {
+        log.submit(listOf(placed(2, 64, 2, before = AIR, after = STONE, ts = T0)))
+        log.submit(listOf(placed(2, 64, 2, before = STONE, after = DIRT, ts = T0 + 10)))
+        log.submit(listOf(placed(9, 64, 9, ts = T0 + 20)))
+        log.drain()
+        writeRawRow(BlockCodec.key(2, 64, 2, T0 + 5, 999, 0), ByteArray(0))
+
+        val whole = log.windowInChunk(0, 0, 0, Long.MAX_VALUE, budget = 100) { x, _, _ -> x == 2 }
+        assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), whole.rows.map { it.stateAfter })
+        assertEquals(1, whole.unreadable)
+        assertTrue(whole.complete)
+        assertFalse(log.windowInChunk(0, 0, 0, Long.MAX_VALUE, budget = 3) { _, _, _ -> true }.complete)
+        assertEquals(listOf(T0 + 10), log.windowAt(2, 64, 2, T0 + 6, Long.MAX_VALUE, 100).rows.map { it.timestamp })
+    }
+
+    // A block row has no ends to file it under, so the index is the only way to the positions a player
+    // touched without walking the world; it keeps to the window and says when its budget ran out.
+    @Test
+    fun `the actor index answers where a player changed blocks in a window`() {
+        val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
+        log.submit(listOf(placed(1, 64, 1, ts = T0)))
+        log.submit(listOf(placed(2, 64, 1, ts = T0 + 10), placed(500, 70, -500, ts = T0 + 10)))
+        log.submit(listOf(placed(3, 64, 1, ts = T0 + 20).copy(actor = bob)))
+        log.submit(listOf(placed(4, 64, 1, ts = T0 + 30)))
+        log.drain()
+
+        val window = log.touchedBy(alice, T0 + 5, T0 + 25, budget = 100)
+        assertEquals(setOf(listOf(2, 64, 1), listOf(500, 70, -500)), window.positions)
+        assertTrue(window.complete)
+        assertFalse(log.touchedBy(alice, 0, Long.MAX_VALUE, budget = 2).complete)
+        assertEquals(setOf(listOf(3, 64, 1)), log.touchedBy(bob, 0, Long.MAX_VALUE, 100).positions)
+        assertTrue(log.touchedBy(UUID.randomUUID(), 0, Long.MAX_VALUE, 100).positions.isEmpty())
+    }
+
+    // A base from before the index has every row it ever wrote and no index of them; the first open
+    // builds it, so a player's history does not start on the day of the upgrade.
+    @Test
+    fun `a base from before the index is indexed on its first open`() {
+        log.submit(listOf(placed(7, 64, 7, ts = T0)))
+        log.drain()
+        logs.close(world)
+        val path = root.resolve(world.toString()).toAbsolutePath().toString()
+        val names = Options().use { RocksDB.listColumnFamilies(it, path) }
+        val handles = ArrayList<ColumnFamilyHandle>()
+        ColumnFamilyOptions().use { cfOptions ->
+            DBOptions().use { options ->
+                RocksDB.open(options, path, names.map { ColumnFamilyDescriptor(it, cfOptions) }, handles).use { raw ->
+                    try {
+                        raw.dropColumnFamily(handles[names.indexOfFirst { it.contentEquals("by_actor".toByteArray()) }])
+                        raw.put(handles[names.indexOfFirst { it.contentEquals("meta".toByteArray()) }], "schema".toByteArray(), longBytes(1L))
+                    } finally {
+                        handles.forEach { it.close() }
+                    }
+                }
+            }
+        }
+        log = logs.open(world)
+
+        assertEquals(setOf(listOf(7, 64, 7)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
+    }
+
     @Test
     fun `a change missing either side is refused without taking the rest of the submit with it`() {
         log.submit(
