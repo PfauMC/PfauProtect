@@ -53,9 +53,12 @@ private const val ORIGIN_WALK = 64
  * window, newest first: back over their rows and past nature and earlier rollbacks, as far as somebody
  * else's row. Null where the rollback undoes rollbacks, which have no such beginning.
  */
-internal fun originOf(older: List<BlockRow>, keepsRow: (BlockRow) -> Boolean): Int? {
+internal fun originOf(older: List<BlockRow?>, keepsRow: (BlockRow) -> Boolean): Int? {
     var origin: Int? = null
     for (row in older) {
+        // A row that cannot be read may be anybody's: no beginning is known past it, and the position is
+        // rolled back as the window has it.
+        if (row == null) return null
         if (keepsRow(row)) {
             if (row.cause == Cause.ROLLBACK) return null
             origin = row.stateBefore
@@ -143,7 +146,14 @@ class Settled(val back: Step?, val conflict: Boolean)
  * burnt walls. A house an earlier rollback had put back got 153 blocks of dynamite from a later one (D108).
  */
 fun settle(standing: String, steps: List<Step>, origin: String?): Settled =
-    if (origin != null && blockOf(standing) == blockOf(origin)) Settled(null, conflict = false) else settle(standing, steps)
+    if (origin != null && sameBlock(standing, origin)) Settled(null, conflict = false) else settle(standing, steps)
+
+// The block itself, with fire and running liquid kept as what they are: air a break left is not the running
+// water the stone was put into, and taking one for the other would skip the stone's break.
+private fun sameBlock(a: String, b: String): Boolean {
+    val name = { s: String -> s.substringBefore('[').let { if (it in AIRS) "minecraft:air" else it } }
+    return name(a) == name(b)
+}
 
 /**
  * Undoes the rows of one position, newest first, from what stands there now. A row whose `after` is

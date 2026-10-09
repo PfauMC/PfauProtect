@@ -43,12 +43,14 @@ class Ghosts(private val plugin: Plugin, private val expiryMillis: Long) : Liste
     private val shown = ConcurrentHashMap<UUID, Shown>()
 
     fun show(player: Player, ghosts: List<Ghost>) {
-        hide(player)
         val at = player.location
         val kept = nearest(ghosts, at.world.uid, at.x, at.y, at.z, GHOST_LIMIT)
-        if (kept.isEmpty()) return
         val mine = Shown(kept.groupBy { it.chunk })
-        shown[player.uniqueId] = mine
+        // The old preview's blocks are told back as they are, except those the new one shows: a restore that
+        // lands after the new send would otherwise put real blocks over its ghosts.
+        val old = if (kept.isEmpty()) shown.remove(player.uniqueId) else shown.put(player.uniqueId, mine)
+        old?.let { restore(player, it, except = kept.mapTo(HashSet()) { g -> Triple(g.x, g.y, g.z) to g.world }) }
+        if (kept.isEmpty()) return
         send(player, kept.filter { it.world == at.world.uid })
         player.say(
             if (kept.size < ghosts.size) "  you see the nearest blocks (${kept.size} of ${ghosts.size}) as they would stand; nothing changes before /pp apply."
@@ -92,16 +94,22 @@ class Ghosts(private val plugin: Plugin, private val expiryMillis: Long) : Liste
         if (changes.isNotEmpty()) player.sendMultiBlockChange(changes)
     }
 
-    // The client is told again what really stands there, read on each chunk's own region.
-    private fun restore(player: Player, mine: Shown) {
-        for ((key, group) in mine.byChunk) {
+    // The client is told again what really stands there: read on each chunk's own region, sent on the
+    // player's, which may be another one by now.
+    private fun restore(player: Player, mine: Shown, except: Set<Pair<Triple<Int, Int, Int>, UUID>> = emptySet()) {
+        for ((key, all) in mine.byChunk) {
+            val group = all.filter { Triple(it.x, it.y, it.z) to it.world !in except }
+            if (group.isEmpty()) continue
             val world = Bukkit.getWorld(key.first) ?: continue
             val chunkX = group.first().x shr 4
             val chunkZ = group.first().z shr 4
             Bukkit.getRegionScheduler().execute(plugin, world, chunkX, chunkZ) {
-                // A client in another world would take these for blocks of its own.
-                if (!player.isOnline || player.world != world || !world.isChunkLoaded(chunkX, chunkZ)) return@execute
-                player.sendMultiBlockChange(group.associate { Position.block(it.x, it.y, it.z) to world.getBlockData(it.x, it.y, it.z) })
+                if (!world.isChunkLoaded(chunkX, chunkZ)) return@execute
+                val real = group.associate { Position.block(it.x, it.y, it.z) to world.getBlockData(it.x, it.y, it.z) }
+                player.scheduler.run(plugin, {
+                    // A client in another world would take these for blocks of its own.
+                    if (player.world == world) player.sendMultiBlockChange(real)
+                }, null)
             }
         }
     }

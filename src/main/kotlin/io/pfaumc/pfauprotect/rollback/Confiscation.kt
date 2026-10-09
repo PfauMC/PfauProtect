@@ -524,7 +524,7 @@ class Confiscations(
      * each on the thread of the region it lies in; then what they made of it.
      */
     private fun fromBoxes(item: Owed, need: Int, actor: UUID?, sender: CommandSender?, gone: (Long, Int) -> Unit, taken: (Long, Int) -> Unit) {
-        val form = ledger.form(item.formId) ?: return
+        val form = ledger.form(item.formId) ?: return gone(item.formId, need)
         val boxes = item.boxes.toMutableList()
         fun next(left: Int) {
             val box = boxes.removeFirstOrNull()

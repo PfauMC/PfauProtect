@@ -1423,10 +1423,10 @@ class BlockDestructionListener(
             val before = near.blockData
             if (shapeKeysOf(blockNameOf(before.asString)).isEmpty()) continue
             val there = positionOf(near)
-            val held = shapeWatches[there]
-            if (held != null && timestamp - held.timestamp <= READ_BACK_MILLIS) continue
+            // The first watch stays until its own task reads it: one replaced under a long tick would lose the
+            // first change's row, and the next would start from a state already half rewritten.
             val watch = ShapeWatch(before, by, timestamp)
-            shapeWatches[there] = watch
+            if (shapeWatches.putIfAbsent(there, watch) != null) continue
             plugin.server.regionScheduler.execute(plugin, near.world, near.x shr 4, near.z shr 4) {
                 if (!shapeWatches.remove(there, watch)) return@execute
                 val now = near.blockData.asString
