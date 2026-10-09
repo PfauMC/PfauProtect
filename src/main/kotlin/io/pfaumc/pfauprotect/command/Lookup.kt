@@ -49,6 +49,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Level
 import kotlin.jvm.optionals.getOrNull
 
@@ -530,6 +531,11 @@ class Lookups(
      * no radius reaches it, and the block plane has nothing to say about it.
      */
     private fun reportPlayers(sender: CommandSender, query: LookupQuery) {
+        // Answering anyway would read as narrowed to the area while nothing was narrowed.
+        if (query.radius != null) {
+            sender.sendMessage("player: reads what went through a player's hands, which has no position; drop the radius.")
+            return
+        }
         val players = resolveAll(sender, query.players) ?: return
         val users = resolveAll(sender, query.users) ?: return
         val fromTs = query.secondsBack?.let { System.currentTimeMillis() - it * 1000 } ?: 0
@@ -780,5 +786,10 @@ class Lookups(
         Void -> "nowhere"
     }
 
-    private fun playerName(uuid: UUID): String = nameOf(uuid) ?: uuid.toString()
+    // An offline player's name can come off disk, once per printed row and holder otherwise.
+    // ponytail: never evicted, so a rename shows after a restart; a timed cache if that matters.
+    private val names = ConcurrentHashMap<UUID, String>()
+
+    private fun playerName(uuid: UUID): String =
+        names[uuid] ?: nameOf(uuid)?.also { names[uuid] = it } ?: uuid.toString()
 }

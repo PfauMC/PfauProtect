@@ -16,7 +16,8 @@ class SpawnOriginsTest {
     private val world = UUID.randomUUID()
     private val written = ArrayList<Transfer>()
     private val coalescer = TickCoalescer(written::add)
-    private val origins = SpawnOrigins(coalescer)
+    private var clock = 0L
+    private val origins = SpawnOrigins(coalescer) { clock }
 
     private val dropper = Container(world, 4, 70, 8, 2)
     private val honeycomb = ItemKey("honeycomb".toByteArray(), null)
@@ -66,6 +67,28 @@ class SpawnOriginsTest {
         assertEquals(setOf(dropper to 1, Void to 1), rows().map { it.from to it.qty }.toSet())
         assertEquals(Cause.BLK_FADE, rows().single { it.from == Void }.cause)
         assertEquals(0, origins.claim(UUID.randomUUID(), Spot(world, 40.0, 70.0, 8.0), vine, 1))
+    }
+
+    // A command's drop is waited for until a moment; after it, a stack the player throws is their own.
+    @Test
+    fun `a thrown note takes nothing past its deadline`() {
+        val player = UUID.randomUUID()
+        origins.expectThrown(player, Void, Cause.CMD_GIVE, stone, 1, until = 100)
+
+        clock = 101
+        assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1, thrower = player))
+        clock = 100
+        assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1, thrower = player))
+    }
+
+    // Only what falls in the same tick: a stranger's item dropped by the block a tick later is not its drop.
+    @Test
+    fun `a note for any form takes nothing a tick later`() {
+        val vine = ItemKey("twisting_vines".toByteArray(), null)
+        origins.expectAny(Void, Cause.BLK_FADE, at, null)
+
+        clock += 60
+        assertEquals(0, origins.claim(UUID.randomUUID(), at, vine, 1))
     }
 
     // A cart a dispenser put on a rail takes the note the dispenser left for its item, into the slot the
