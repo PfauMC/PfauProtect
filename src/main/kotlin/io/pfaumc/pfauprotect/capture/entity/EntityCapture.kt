@@ -397,13 +397,11 @@ class EntityCapture(
         // A sculk catalyst nearby blooms off this death, and the sculk is whoever stands behind it.
         found.by.culprit()?.let { attribution.killed(positionOf(entity.location.block), it) }
         if (found.by.culprit() != null) return removed(entity, found, deathOf(event.damageSource))
-        // Somebody's change around it comes first: a floor Bob took from under Alice's mob is Bob's doing.
+        // Somebody's change around it comes first, read off the region thread in `removed`: a floor Bob took
+        // from under Alice's mob is Bob's doing. Only where none is found does the death fall to her.
         val around = aroundOf(entity, entity.lastDamageCause)
         val summoner = entities.summonerOf(entity.uniqueId)
-        if (around.isEmpty() && summoner != null) {
-            return removed(entity, Culprit(found.cause, summoner.copy(confidence = Confidence.INFERRED)), deathOf(event.damageSource))
-        }
-        val culprit = found
+        val culprit = summoner?.let { Culprit(found.cause, it.copy(confidence = Confidence.INFERRED)) } ?: found
         val touched = entity.persistentDataContainer.has(TOUCHED)
         // The crowd is only counted for a mob that might be one of it. Crammed to death is a crowd by
         // definition, however few of them the cramming has left by the time this one goes.
@@ -412,7 +410,7 @@ class EntityCapture(
             entity.lastDamageCause?.cause == DamageCause.CRAMMING -> Settings.crowd
             else -> entity.location.chunk.entities.count { it.type == entity.type }
         }
-        val worth = worthRecording(touched, keepsItsPlace((entity as CraftEntity).handle), crowd, Settings.crowd)
+        val worth = summoner != null || worthRecording(touched, keepsItsPlace((entity as CraftEntity).handle), crowd, Settings.crowd)
         if (!worth && around.isEmpty()) return
         removed(entity, culprit, deathOf(event.damageSource), around, worth)
     }
