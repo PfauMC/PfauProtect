@@ -117,7 +117,7 @@ class TextsCoverageTest {
     }
 
     // Made of parts that are sentences of their own, which a number cannot stand in for; T1 reads them live.
-    private val COMPOSED = listOf("Rollback preview for ", "Rolled back ", "  would swap back ", "  swapping back ")
+    private val COMPOSED = listOf("  would swap back ", "  swapping back ")
 
     // What is left once names, ids, causes, commands and parameters are taken out: a Latin word is English.
     private fun english(line: String): Boolean {

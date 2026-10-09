@@ -16,6 +16,9 @@ import io.papermc.paper.command.brigadier.ApiMirrorRootNode
 import io.pfaumc.pfauprotect.capture.block.CommandBrackets
 import io.pfaumc.pfauprotect.capture.entity.EntityCapture
 import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.ChatKind
+import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.event.ClickEvent
 import io.pfaumc.pfauprotect.capture.block.BlockMechanismListener
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.capture.item.CommandListener
@@ -55,6 +58,7 @@ import io.pfaumc.pfauprotect.storage.fillTypeRegistries
 import io.pfaumc.pfauprotect.check.heldForms
 import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.command.lookupTargetAt
+import io.pfaumc.pfauprotect.command.targetOr
 import io.pfaumc.pfauprotect.rollback.ChunkRollback
 import io.pfaumc.pfauprotect.rollback.Confiscations
 import io.pfaumc.pfauprotect.rollback.Rollbacks
@@ -95,9 +99,22 @@ private const val VERIFY_PERMISSION = "pfauprotect.verify"
 private const val ROLLBACK_PERMISSION = "pfauprotect.rollback"
 private const val STATUS_PERMISSION = "pfauprotect.status"
 private const val PURGE_PERMISSION = "pfauprotect.purge"
+internal const val TELEPORT_PERMISSION = "pfauprotect.teleport"
 
-private val CHAT_TIME: java.time.format.DateTimeFormatter =
-    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(java.time.ZoneId.systemDefault())
+private class Help(val permission: String, val usage: String, val typed: String, val en: String, val ru: String)
+
+private val HELP = listOf(
+    Help(LOOKUP_PERMISSION, "/pp l [user: time: radius: action: …]", "/pp l ", "what happened here, or around", "что было здесь или вокруг"),
+    Help(LOOKUP_PERMISSION, "/pp near [radius]", "/pp near ", "what happened around you", "что было вокруг тебя"),
+    Help(INSPECT_PERMISSION, "/pp i", "/pp i", "inspector: click a block or an entity", "инспектор: клик по блоку или сущности"),
+    Help(ROLLBACK_PERMISSION, "/pp rb time: radius: [user:]", "/pp rb ", "preview a rollback", "предпросмотр отката"),
+    Help(ROLLBACK_PERMISSION, "/pp apply · /pp cancel", "/pp apply", "run or drop the preview", "выполнить или сбросить предпросмотр"),
+    Help(LOOKUP_PERMISSION, "/pp chat [user: time: f:]", "/pp chat ", "chat, commands, joins and quits", "чат, команды, входы и выходы"),
+    Help(STATUS_PERMISSION, "/pp status", "/pp status", "bases, queues, what went unexplained", "базы, очереди, необъяснённое"),
+    Help(VERIFY_PERMISSION, "/pp verify [recent]", "/pp verify", "run the self-checks now", "самопроверки сейчас"),
+    Help(RECONCILE_PERMISSION, "/pp reconcile <player>", "/pp reconcile ", "a player's inventory against the ledger", "сверка инвентаря игрока с журналом"),
+    Help(PURGE_PERMISSION, "/pp purge <age> [confirm]", "/pp purge ", "delete history older than an age", "удалить историю старше возраста"),
+)
 
 // The youngest history a purge may delete: a day, so a rollback of today always has its rows.
 private const val PURGE_MIN_SECONDS = 86_400L
@@ -467,7 +484,8 @@ class PfauProtectPlugin : JavaPlugin() {
 
     private fun registerCommand(brackets: CommandBrackets) {
         lifecycleManager.registerEventHandler(LifecycleEvents.COMMANDS) { event ->
-            val root = Commands.literal("pfauprotect")
+            val root = Commands.literal("pfauprotect").executes { help(it.source) }
+            root.then(Commands.literal("help").executes { help(it.source) })
             for (alias in listOf("lookup", "l")) root.then(lookupNode(alias))
             for (alias in listOf("near", "n")) root.then(nearNode(alias))
             for (alias in listOf("inspect", "i")) root.then(inspectNode(alias))
@@ -494,6 +512,7 @@ class PfauProtectPlugin : JavaPlugin() {
                     .requires { it.sender.hasPermission(STATUS_PERMISSION) }
                     .executes { status(it.source) }
             )
+            root.then(teleportNode())
             root.then(
                 Commands.literal("apply")
                     .requires { it.sender.hasPermission(ROLLBACK_PERMISSION) }
@@ -508,6 +527,20 @@ class PfauProtectPlugin : JavaPlugin() {
             // The API hands out a mirror of the dispatcher; the nodes the server executes are behind it.
             (event.registrar().dispatcher.root as? ApiMirrorRootNode)?.dispatcher?.let(brackets::wrap)
         }
+    }
+
+    /** What each subcommand is for, only the ones the sender may run; a click types the command in. */
+    private fun help(source: CommandSourceStack): Int {
+        val sender = source.sender
+        sender.sendMessage(Ui.text("PfauProtect", Ui.WHO))
+        for (entry in HELP) {
+            if (!sender.hasPermission(entry.permission)) continue
+            val line = Component.text().append(Ui.text("  "))
+                .append(Ui.hover(Ui.text(entry.usage), tr("Click to type it", "Клик — подставить")).clickEvent(ClickEvent.suggestCommand(entry.typed)))
+                .append(Ui.text("  " + tr(entry.en, entry.ru), Ui.MUTED))
+            sender.sendMessage(line.build())
+        }
+        return Command.SINGLE_SUCCESS
     }
 
     private fun lookupNode(literal: String) = Commands.literal(literal)
@@ -553,14 +586,45 @@ class PfauProtectPlugin : JavaPlugin() {
             }
         }
         .then(
-            Commands.argument("query", LookupArgument())
+            Commands.argument("query", LookupArgument(rollback = true))
                 .executes { context ->
                     val query = context.getArgument("query", LookupQuery::class.java)
                     rollbacks(context.source) { rollbacks, sender ->
-                        rollbacks.preview(sender, lookupTargetAt(context.source.location), query)
+                        rollbacks.preview(sender, query.targetOr(lookupTargetAt(context.source.location)), query)
                     }
                 }
         )
+
+    // What the mark on a lookup line runs: to where the row happened, in the world it happened in.
+    private fun teleportNode() = Commands.literal("tp")
+        .requires { it.sender.hasPermission(TELEPORT_PERMISSION) && it.executor is Player }
+        .then(
+            Commands.argument("x", IntegerArgumentType.integer()).then(
+                Commands.argument("y", IntegerArgumentType.integer()).then(
+                    Commands.argument("z", IntegerArgumentType.integer())
+                        .executes { teleport(it, null) }
+                        .then(
+                            Commands.argument("world", StringArgumentType.word())
+                                .suggests { _, builder -> server.worlds.forEach { builder.suggest(it.name) }; builder.buildFuture() }
+                                .executes { teleport(it, StringArgumentType.getString(it, "world")) }
+                        )
+                )
+            )
+        )
+
+    private fun teleport(context: com.mojang.brigadier.context.CommandContext<CommandSourceStack>, worldName: String?): Int {
+        val player = context.source.executor as? Player ?: return 0
+        val world = if (worldName == null) player.world else server.getWorld(worldName)
+        if (world == null) {
+            context.source.sender.say("Unknown world: $worldName")
+            return 0
+        }
+        val x = IntegerArgumentType.getInteger(context, "x")
+        val y = IntegerArgumentType.getInteger(context, "y")
+        val z = IntegerArgumentType.getInteger(context, "z")
+        player.teleportAsync(org.bukkit.Location(world, x + 0.5, y.toDouble(), z + 0.5, player.location.yaw, player.location.pitch))
+        return Command.SINGLE_SUCCESS
+    }
 
     private fun rollbacks(source: CommandSourceStack, action: (Rollbacks, CommandSender) -> Unit): Int {
         val rollbacks = running?.rollbacks ?: return notReady(source)
@@ -588,13 +652,13 @@ class PfauProtectPlugin : JavaPlugin() {
         // own, and the block the player happens to look at took over from it (D79).
         val player = (source.executor as? Player)?.takeIf { it.world == source.location.world && it.location.distanceSquared(source.location) < 1e-6 }
         val aimed = player?.getTargetBlockExact(TARGET_RANGE)
-        lookups.run(source.sender, aimed?.let(::lookupTargetAt) ?: lookupTargetAt(source.location), query)
+        lookups.run(source.sender, query.targetOr(aimed?.let(::lookupTargetAt) ?: lookupTargetAt(source.location)), query)
         return Command.SINGLE_SUCCESS
     }
 
     private fun near(source: CommandSourceStack, radius: Int): Int {
         val lookups = running?.lookups ?: return notReady(source)
-        lookups.run(source.sender, lookupTargetAt(source.location), LookupQuery(radius = radius))
+        lookups.run(source.sender, lookupTargetAt(source.location), LookupQuery(radius = radius, words = "r:$radius"))
         return Command.SINGLE_SUCCESS
     }
 
@@ -606,9 +670,10 @@ class PfauProtectPlugin : JavaPlugin() {
             return 0
         }
         val now = inspector.toggle(player, desired)
-        player.say(
-            if (now) "Inspector enabled. Left-click a block to read it, right-click a face to read the place in front of it, click an entity to read the entity."
-            else "Inspector disabled."
+        // Above the hotbar rather than in chat: it is a state, not a message, and chat is where the answers go.
+        player.sendActionBar(
+            if (now) Ui.text(tr("Inspector on: left click — the block, right click — the place in front, click an entity — the entity", "Инспектор включён: ЛКМ — блок, ПКМ — место перед гранью, клик по сущности — сущность"), Ui.GAINED)
+            else Ui.text(tr("Inspector off", "Инспектор выключен"), Ui.MUTED)
         )
         return Command.SINGLE_SUCCESS
     }
@@ -685,22 +750,31 @@ class PfauProtectPlugin : JavaPlugin() {
         val query = try {
             io.pfaumc.pfauprotect.command.parseLookupQuery(words)
         } catch (failure: com.mojang.brigadier.exceptions.CommandSyntaxException) {
-            sender.say(failure.message ?: "That is not a lookup.")
+            // The message alone: the rest is Brigadier's "at position" in English, about a line not typed here.
+            sender.sendMessage(failure.rawMessage.string)
             return 0
         }
+        // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
+        val teleports = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
         server.asyncScheduler.runNow(this) {
             val users = running.lookups.resolveAll(sender, query.users) ?: return@runNow
             val text = query.filter?.lowercase()
             val lines = running.chat.read(query.fromTs(), query.toTs(), query.wanted) { line ->
                 (users.isEmpty() || line.player in users) && (text == null || text in line.text.lowercase())
-            }.drop(query.limit * (query.page - 1))
+            }.drop(query.limit * (query.page - 1)).take(query.limit)
             if (lines.isEmpty()) return@runNow sender.say("Nothing said or run matches.")
-            sender.say("Last ${lines.size} lines said and run:")
+            sender.sendMessage(Ui.text(tr("PfauProtect · chat and commands", "PfauProtect · чат и команды"), Ui.FAINT))
             for (line in lines) {
-                val who = server.getOfflinePlayer(line.player).name ?: line.player.toString()
-                val where = if (line.world.isEmpty()) "" else "  (${line.world} ${line.x} ${line.y} ${line.z})"
-                val time = CHAT_TIME.format(java.time.Instant.ofEpochMilli(line.timestamp))
-                sender.say("  $time  ${line.kind.name.lowercase()}  $who${if (line.text.isEmpty()) "" else ": ${line.text}"}$where")
+                val who = Ui.text(server.getOfflinePlayer(line.player).name ?: line.player.toString(), Ui.WHO)
+                val what = when (line.kind) {
+                    ChatKind.CHAT -> Component.text().append(who).append(Ui.text(": " + line.text)).build()
+                    ChatKind.COMMAND -> Component.text().append(who).append(Ui.text(" " + line.text, Ui.CHANGED)).build()
+                    ChatKind.JOIN -> Component.text().append(who).append(Ui.text(tr(" joined", " · вход"), Ui.GAINED)).build()
+                    ChatKind.QUIT -> Component.text().append(who).append(Ui.text(tr(" left", " · выход"), Ui.MUTED)).build()
+                }
+                val out = Component.text().append(Ui.text(" ")).append(Ui.ago(line.timestamp)).append(Ui.text("  ")).append(what)
+                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, teleports))
+                sender.sendMessage(out.build())
             }
         }
         return Command.SINGLE_SUCCESS
@@ -712,7 +786,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val sender = source.sender
         server.asyncScheduler.runNow(this) {
             val folder = dataFolder.toPath()
-            sender.say("PfauProtect:")
+            sender.sendMessage(Ui.text(tr("PfauProtect · status", "PfauProtect · состояние"), Ui.FAINT))
             sender.say("  ledger ${megabytes(folder.resolve("ledger"))}, ${running.ledger.backlog} transactions waiting to be written")
             for (world in server.worlds) {
                 val log = running.blocks.get(world.uid)

@@ -7,8 +7,9 @@ fun CommandSender.say(text: String) = sendMessage(Texts.translate(text))
 
 /**
  * What the plugin says, in Russian when config.yml asks for it. Every message is written in English where
- * it is made, and translated here as a whole line on its way out: the sentences by pattern, the rows of a
- * lookup word by word. A line no rule knows goes out in English, which is a missing rule and no error.
+ * it is made, and translated here as a whole line on its way out: the sentences by pattern, the places they
+ * name word by word. A line no rule knows goes out in English, which is a missing rule and no error. Lines
+ * made of parts — a lookup row, a rollback's counts — are put together in the language already, with tr().
  */
 object Texts {
     fun translate(text: String): String {
@@ -33,8 +34,6 @@ object Texts {
         r("player: reads what a player carries and has no place to roll back; use user:\\.") to "player: читает то, что игрок несёт, и откатывать там нечего; используй user:.",
         r("A rollback needs radius: the blocks around you it covers, or global with user:\\.") to "Откату нужен radius: сколько блоков вокруг тебя он охватывает, или 'global' вместе с user:.",
         r("radius:global undoes what named players did; give user: as well\\.") to "radius:global отменяет сделанное названными игроками; укажи и user:.",
-        r("\\[apply\\]") to "[применить]",
-        r("\\[cancel\\]") to "[отменить]",
         r("Rollback preview dropped\\.") to "Предпросмотр отката сброшен.",
         r("  you see the blocks as they would stand; nothing changes before /pp apply\\.") to "  вы видите блоки такими, какими они станут; до /pp apply в мире ничего не меняется.",
         r("No rollback preview to drop\\.") to "Нет предпросмотра отката.",
@@ -42,15 +41,17 @@ object Texts {
             "Останавливаю идущий откат: чанки, до которых он не дошёл, останутся как есть.",
         r("Nothing to apply: preview a rollback with /pp rollback first\\.") to "Нечего применять: сначала предпросмотр через /pp rollback.",
         r("Another rollback is still running; apply again once it has reported\\.") to "Другой откат ещё идёт; примени снова, когда он отчитается.",
+        r("Rollback refused: (\\d+) positions changed in that window, more than the (\\d+) one rollback may write; narrow the radius or the time\\.") to
+            "Откат отклонён: за это окно изменилось позиций: $1, а один откат записывает не больше $2; сузь радиус или время.",
+        r("Rollback refused: that window holds more history than one rollback reads; narrow the radius or the time\\.") to
+            "Откат отклонён: в этом окне больше истории, чем читает один откат; сузь радиус или время.",
+        r("Rollback refused: (\\d+) rows in that window could not be read by this build, and a rollback over part of the history would put back part of the place; nothing was done\\.") to
+            "Откат отклонён: строк в этом окне, которые эта сборка не смогла прочитать: $1; откат по части истории вернул бы место лишь отчасти, ничего не сделано.",
         r("Rollback refused: (.*)\\.") to "Откат отклонён: $1.",
         r("The rollback failed; the server log has the details\\.") to "Откат не удался; подробности в логе сервера.",
         r("Taking back what the rollback gave back failed; the server log has the details\\.") to "Изъятие возвращённого откатом не удалось; подробности в логе сервера.",
         r("Nothing to roll back: (.*)\\.") to "Откатывать нечего: $1.",
-        r("Rollback preview for (.*?): (\\d+) blocks would change, (\\d+) already as they were, (\\d+) stopped by a later change; (\\d+) slot postings to give back; (\\d+) entities to bring back, (\\d+) to take away, (\\d+) to change back, (\\d+) already as they were \\((.*)\\)\\.") to
-            "Предпросмотр отката: $1. Блоков изменится: $2, уже как были: $3, остановлено поздней переменой: $4; слотов вернуть: $5; сущностей вернуть: $6, убрать: $7, изменить обратно: $8, уже как были: $9 ($10).",
-        r("Rolled back (.*?): (\\d+) blocks put back, (\\d+) already as they were, (\\d+) stopped by a later change; (\\d+) slot postings given back; (\\d+) entities brought back, (\\d+) taken away, (\\d+) changed back, (\\d+) already as they were\\.") to
-            "Откачено: $1. Блоков возвращено: $2, уже как были: $3, остановлено поздней переменой: $4; слотов возвращено: $5; сущностей возвращено: $6, убрано: $7, изменено обратно: $8, уже как были: $9.",
-        r("  /pp apply within 5 minutes runs it, /pp cancel drops it(.*)\\.") to "  /pp apply в течение 5 минут применит, /pp cancel сбросит$1.",
+        r("  /pp apply within (\\d+) minutes runs it, /pp cancel drops it(.*)\\.") to "  /pp apply в течение $1 мин применит, /pp cancel сбросит$2.",
         r("  would take back from (.*)\\.") to "  будет изъято: $1.",
         r("  taking back from (.*):") to "  изымаю: $1:",
         r("  would give back to (\\S+) what they lost: (.*)") to "  будет возвращено игроку $1 потерянное: $2",
@@ -75,25 +76,14 @@ object Texts {
         r("  the window may be shorter than a full rollback needs: (\\d+) of these positions stood as the same player had left them when it opened, and go back to that; a longer time: reaches further\\.") to
             "  окно может быть короче, чем нужно: позиций, которые на начало окна стояли так, как их оставил тот же игрок, и вернутся к этому: $1; больший time: возьмёт дальше.",
         // Lookup
-        r("Last (\\d+) ledger entries for (.*?) \\(page (\\d+)\\):") to "Последние записи ($1) для $2, страница $3:",
-        r("Last (\\d+) ledger entries for (.*):") to "Последние записи ($1) для $2:",
-        r("No ledger entries for (.*)\\.") to "Нет записей для $1.",
-        r("Nothing matched for (.*) in what was read\\.") to "Ничего не найдено для $1 в прочитанном.",
-        r("Nothing matched for (.*), but the read stopped before the whole area was seen\\. Narrow the radius or ask for more with (.*)\\.") to
-            "Ничего не найдено для $1, но чтение остановилось раньше, чем увидело всю область. Сузь радиус или запроси больше через $2.",
-        r("Count of (\\d+) ledger entries for (.*):") to "Сводка по записям ($1) для $2:",
-        r("  \\.\\.\\. older entries are cut off; page:(\\d+) shows the next ones") to "  ... старые записи обрезаны; page:$1 покажет следующие",
-        r("  \\.\\.\\. the read stopped early; more matching entries may exist") to "  ... чтение остановилось раньше; подходящих записей может быть больше",
         r("player: reads what went through a player's hands, which has no position; drop the radius\\.") to
             "player: читает то, что прошло через руки игрока, а у этого нет места; уберите радиус.",
-        r("  \\.\\.\\. the read stopped early; these are counts of what it saw") to "  ... чтение остановилось раньше; это сводка прочитанного",
         r("The lookup failed; the server log has the details\\.") to "Поиск не удался; подробности в логе сервера.",
         r("A world-wide lookup needs a player, user:<name>, or a radius\\.") to "Поиску по всему миру нужен игрок user:<имя> или радиус.",
         r("This world's block log is not open\\.") to "Журнал блоков этого мира не открыт.",
         r("Unknown player: (.*)") to "Неизвестный игрок: $1",
+        r("Unknown world: (.*)") to "Неизвестный мир: $1",
         // Inspector, purge, status, self-checks, reconcile
-        r("Inspector enabled\\..*") to "Инспектор включён. Левый клик по блоку читает его, правый клик по грани — место перед ней, клик по сущности — саму сущность.",
-        r("Inspector disabled\\.") to "Инспектор выключен.",
         r("Only a player can use the inspector\\.") to "Инспектором может пользоваться только игрок.",
         r("Purge refused: give an age of at least a day, for example 90d\\.") to "Очистка отклонена: укажи возраст не меньше дня, например 90d.",
         r("Purge refused: a rollback is running\\.") to "Очистка отклонена: идёт откат.",
@@ -110,6 +100,9 @@ object Texts {
         r("  unexplained since the last report: nothing") to "  необъяснённое с прошлого отчёта: ничего",
         r("  unexplained since the last report: (.*)") to "  необъяснённое с прошлого отчёта: $1",
         r("  rollback: none running") to "  откат: не идёт",
+        r("  registry (\\S+) has handed out (\\d+) of its (\\d+) numbers and reuses none of them: a wider field has to be in place before the last one is gone") to
+            "  реестр $1 выдал $2 из $3 номеров и не переиспользует их: поле надо расширить до того, как кончится последний",
+        r("  gap: (.*)") to "  разрыв: $1",
         r("  rollback: one running for (\\d+) s") to "  откат: идёт уже $1 с",
         r("Running both self-checks to the end; this reads the whole journal\\.") to "Запускаю обе самопроверки до конца; это читает весь журнал.",
         r("The self-checks failed; the server log has the details\\.") to "Самопроверки не удались; подробности в логе сервера.",
@@ -128,7 +121,8 @@ object Texts {
         r("'(.*)' is neither yes nor no") to "'$1' — ни 'yes', ни 'no'",
         r("'(.*)' is not an amount, expected 5, >=5, <10 or 5-10") to "'$1' — не количество; ожидается 5, >=5, <10 или 5-10",
         r("'(.*)' is not an event, click a lookup line to fill one in") to "'$1' — не событие; нажми на строку поиска, чтобы подставить его",
-        r("unknown flag '(.*)', expected #count or #sum") to "неизвестный флаг '$1'; ожидается #count или #sum",
+        r("unknown flag '(.*)', expected #count, #sum or #all") to "неизвестный флаг '$1'; ожидается #count, #sum или #all",
+        r("'(.*)' is not a position, expected x,y,z") to "'$1' — не позиция; ожидается x,y,z",
         r("'(.*)' is not a row count between 1 and (\\d+)") to "'$1' — не число строк от 1 до $2",
         r("  \\.\\.\\. and (\\d+) more") to "  ... и ещё $1",
         r("Two planes: (\\d+) positions compared, (\\d+) gaps, (\\d+) overdrawn, (\\d+) the block plane never recorded, (\\d+) too recent to judge, (\\d+) unreadable\\.") to "Две плоскости: сравнено позиций $1, разрывов $2, перерасходов $3, не записано плоскостью блоков $4, слишком свежих $5, нечитаемых $6.",
@@ -137,55 +131,22 @@ object Texts {
         r("Anything held before the ledger was opened differs by exactly that much for ever; a difference that stays put is that constant rather than a leak\\.") to "Всё, что было до открытия журнала, навсегда расходится ровно на эту величину; неизменная разница — это она, а не утечка.",
         r("The ledger is not open\\.") to "Журнал не открыт.",
         r("Nothing said or run matches\\.") to "Ничего сказанного или выполненного не найдено.",
-        r("Last (\\d+) lines said and run:") to "Последние строки чата и команд ($1):",
     )
 
     private val WORDS: List<Pair<Regex, String>> = listOf(
-        r("  by nobody named") to "  никем",
-        r("  chat  ") to "  чат  ",
-        r("  command  ") to "  команда  ",
-        r("  join  ") to "  вход  ",
-        r("  quit  ") to "  выход  ",
-        r(" \\(worked out\\)") to " (вычислено)",
-        r("(\\S+) was nearby") to "рядом был $1",
-        r("  by ") to "  — ",
-        r("died of ") to "умер: ",
-        r("turned \\(") to "превращён (",
-        r("  via ") to "  через ",
-        r("\\((\\d+) items fell out\\)") to "(выпало предметов: $1)",
-        r("dropped (\\d+) items") to "выронено предметов: $1",
-        r("\\(rolled back\\)") to "(откачено)",
-        r("\\(changed in place\\)") to "(изменён на месте)",
-        r("\\(other half\\)") to "(вторая половина)",
-        r("\\+contents") to "+содержимое",
-        r("  text ") to "  текст ",
-        r("  gone  ") to "  исчез  ",
-        r("  brought in  ") to "  появился  ",
-        r("  changed  ") to "  изменён  ",
-        r("  led away  ") to "  уведён  ",
-        r("  died: ") to "  погиб: ",
         // Before " slot ", which would take a word out of each.
         r("block rows, ") to "строк блоков, ",
         r("slot rows read") to "строк слотов прочитано",
-        r(" equipment slot ") to " слот снаряжения ",
-        r(" ender chest slot ") to " эндер-сундук, слот ",
-        r(" cursor") to " курсор",
         r(" slot ") to " слот ",
         r("container ") to "контейнер ",
-        r("dropped item ") to "предмет на земле ",
-        r("block (-?\\d+) (-?\\d+) (-?\\d+)") to "блок $1 $2 $3",
-        r(" from nowhere") to " из ниоткуда",
-        r(" to nowhere") to " в никуда",
         r(" from ") to " из ",
         r(" to ") to " в ",
         r(" at (-?\\d+) (-?\\d+) (-?\\d+)") to " в $1 $2 $3",
         r("(\\d+) blocks around ") to "$1 блоков вокруг ",
-        r("everything (.*) did in this world") to "всё, что сделал $1 в этом мире",
         r("everything (.*) did since ") to "всё, что сделал $1, с ",
         r(" since ") to " с ",
         r(" until ") to " до ",
         r("event (\\d+) в ") to "событие $1 в ",
-        r("player (\\S+)") to "игрок $1",
         r("(\\d+) items lying in the world: ") to "предметов в мире ($1): ",
         r("gone for good: ") to "пропало насовсем: ",
         r(" \\(offline, at their next join\\)") to " (не в сети, при следующем входе)",
