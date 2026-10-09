@@ -750,10 +750,15 @@ class ContainerCaptureListener(
         // and is dispatched into this one, so a second listener would be a second callback for one
         // click and would leave the reason twice.
         // The creative inventory sets slots to whatever the client asks for, conjuring and deleting as
-        // it goes. What it made and what it threw away is named as that rather than left unexplained.
+        // it goes. What it made and what it threw away is named as that rather than left unexplained,
+        // and only in the slot it set and on the cursor: an intent with no slot would name every
+        // unexplained movement of the pass creative and hide a real duplication behind the click.
         if (event is InventoryCreativeEvent) {
-            intend(player, Intent(Cause.CREATIVE_SET, from = Void))
-            intend(player, Intent(Cause.CREATIVE_SET, to = Void))
+            val slot = (event.clickedInventory as? PlayerInventory)?.let { playerHolders(player.uniqueId, it)(event.slot) }
+            for (end in listOfNotNull(slot, PlayerCursor(player.uniqueId))) {
+                intend(player, Intent(Cause.CREATIVE_SET, from = Void, holder = end))
+                intend(player, Intent(Cause.CREATIVE_SET, to = Void, holder = end))
+            }
         }
         // A middle click in creative copies a stack out of any window onto the cursor, a chest's
         // included, and that window is no creative screen.
@@ -1040,7 +1045,7 @@ class ContainerCaptureListener(
     // What a station, a crafting grid or a beacon still held as its window closed. What does not fit
     // back into the inventory is thrown at the player's feet inside the same call, and the only end
     // that knows which slot it left is this one: the pass after it counts the window as foreign.
-    private class Leaving(val holder: Holder, val form: ByteArray)
+    private class Leaving(val holder: Holder, val form: ByteArray, val count: Int)
 
     private val closing = ConcurrentHashMap<UUID, MutableList<Leaving>>()
 
@@ -1050,16 +1055,24 @@ class ContainerCaptureListener(
         val left = (0 until top.size).mapNotNullTo(ArrayList()) { slot ->
             val holder = holders(slot)
             if (slot == preview || holder is PlayerHolder) return@mapNotNullTo null
-            encode(top.getItem(slot))?.let { Leaving(holder, it.key.form) }
+            encode(top.getItem(slot))?.let { Leaving(holder, it.key.form, it.count) }
         }
         if (left.isNotEmpty()) closing[player.uniqueId] = left
     }
 
     // The drop out of a closing window, written from the slot it left, or null where it was not one.
+    // The game gives the slots back in order and drops what does not fit, so once one stack of a form
+    // overflows every later one falls whole: a drop as big as a remembered stack is the latest such
+    // slot, and a smaller one the part of a stack that overflowed first.
+    // ponytail: with two stacks of one form the slot named can still be the wrong one of them; the
+    // holder's balance has no slot in its key, so only the slot shown in a lookup can be off.
     private fun closingDrop(player: Player, drop: UUID, encoded: EncodedItem): Transfer? {
         val left = closing[player.uniqueId] ?: return null
-        val at = left.indexOfFirst { it.form.contentEquals(encoded.form) }
-        if (at < 0) return null
+        val same = left.indices.filter { left[it].form.contentEquals(encoded.form) }
+        val at = same.lastOrNull { left[it].count == encoded.count }
+            ?: same.firstOrNull { left[it].count > encoded.count }
+            ?: same.firstOrNull()
+            ?: return null
         return Transfer(
             cause = Cause.DROP_MENU_CLOSE,
             from = left.removeAt(at).holder,

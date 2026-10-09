@@ -817,6 +817,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         if (closed) return
         val write = NoteWrite(NoteKey(family, world, x, y, z), value)
         pendingNotes[write.key] = write
+        // A stopped writer drains nothing, and the overlay above is all a read still gets.
+        if (writerFailure != null) return
         submitted.incrementAndGet()
         noteQueue.add(write)
     }
