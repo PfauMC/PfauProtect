@@ -251,52 +251,53 @@ class BlockLog(
         if (closed) return 0 to 0
         var rows = 0
         var entities = 0
-        val batch = ChunkedBatch(db, writeOptions)
-        fun delete(cf: ColumnFamilyHandle, key: ByteArray) {
-            if (!dryRun) batch.delete(cf, key)
-        }
-        fun timeOf(key: ByteArray, at: Int) = ByteReader(key.copyOfRange(at, at + 8)).longBE()
-        db.newIterator(rowsCf).use { iter ->
-            iter.seekToFirst()
-            var position: ByteArray? = null
-            var held: ByteArray? = null
-            while (iter.isValid) {
-                val key = iter.key()
-                val here = key.copyOfRange(0, Zcode.SIZE)
-                if (position == null || !here.contentEquals(position)) {
-                    position = here
-                    held = null
-                }
-                if (timeOf(key, Zcode.SIZE) < cutoff) {
-                    // The one before it is no longer the newest old row of the position.
-                    held?.let { delete(rowsCf, it); rows++ }
-                    held = key.copyOf()
-                } else if (held != null) {
-                    delete(rowsCf, held)
-                    rows++
-                    held = null
-                }
-                iter.next()
+        ChunkedBatch(db, writeOptions).use { batch ->
+            fun delete(cf: ColumnFamilyHandle, key: ByteArray) {
+                if (!dryRun) batch.delete(cf, key)
             }
-        }
-        db.newIterator(byActorCf).use { iter ->
-            iter.seekToFirst()
-            while (iter.isValid) {
-                if (timeOf(iter.key(), 4 + Zcode.SIZE) < cutoff) delete(byActorCf, iter.key())
-                iter.next()
-            }
-        }
-        db.newIterator(entitiesCf).use { iter ->
-            iter.seekToFirst()
-            while (iter.isValid) {
-                if (timeOf(iter.key(), Zcode.SIZE) < cutoff) {
-                    delete(entitiesCf, iter.key())
-                    entities++
+            fun timeOf(key: ByteArray, at: Int) = ByteReader(key.copyOfRange(at, at + 8)).longBE()
+            db.newIterator(rowsCf).use { iter ->
+                iter.seekToFirst()
+                var position: ByteArray? = null
+                var held: ByteArray? = null
+                while (iter.isValid) {
+                    val key = iter.key()
+                    val here = key.copyOfRange(0, Zcode.SIZE)
+                    if (position == null || !here.contentEquals(position)) {
+                        position = here
+                        held = null
+                    }
+                    if (timeOf(key, Zcode.SIZE) < cutoff) {
+                        // The one before it is no longer the newest old row of the position.
+                        held?.let { delete(rowsCf, it); rows++ }
+                        held = key.copyOf()
+                    } else if (held != null) {
+                        delete(rowsCf, held)
+                        rows++
+                        held = null
+                    }
+                    iter.next()
                 }
-                iter.next()
             }
+            db.newIterator(byActorCf).use { iter ->
+                iter.seekToFirst()
+                while (iter.isValid) {
+                    if (timeOf(iter.key(), 4 + Zcode.SIZE) < cutoff) delete(byActorCf, iter.key())
+                    iter.next()
+                }
+            }
+            db.newIterator(entitiesCf).use { iter ->
+                iter.seekToFirst()
+                while (iter.isValid) {
+                    if (timeOf(iter.key(), Zcode.SIZE) < cutoff) {
+                        delete(entitiesCf, iter.key())
+                        entities++
+                    }
+                    iter.next()
+                }
+            }
+            batch.flush()
         }
-        batch.use { it.flush() }
         rows to entities
     }
 

@@ -76,11 +76,11 @@ class EntityOriginListener(
     fun onStrike(event: EntityDamageByEntityEvent) {
         if (event.entity !is EnderCrystal) return
         val damager = event.damager
-        val shooter = (damager as? Projectile)?.shooter as? Player
-        when {
-            damager is Player -> origins.appeared(event.entity.uniqueId, damager.uniqueId, Confidence.FACT)
-            shooter != null -> origins.appeared(event.entity.uniqueId, shooter.uniqueId)
-            else -> origins.summonerOf(damager.uniqueId)?.let { origins.appeared(event.entity.uniqueId, it.actor) }
+        // An arrow is its shooter's, and a mob that shot it answers through whoever brought the mob in.
+        val source = (damager as? Projectile)?.shooter as? org.bukkit.entity.Entity ?: damager
+        when (source) {
+            is Player -> origins.appeared(event.entity.uniqueId, source.uniqueId, if (source === damager) Confidence.FACT else Confidence.INFERRED)
+            else -> origins.summonerOf(source.uniqueId)?.let { origins.appeared(event.entity.uniqueId, it.actor) }
         }
     }
 

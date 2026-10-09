@@ -309,7 +309,7 @@ class RedstoneListener(
     private val nudges: Nudges,
     private val attribution: Attribution? = null,
 ) : Listener {
-    private class Pressed(val at: WorldBlock, val actor: UUID, val nanos: Long)
+    private class Pressed(val at: WorldBlock, val by: Attributed, val nanos: Long)
 
     // An entity on a switch, and who stands behind it, for the redstone change it raises in the same
     // call.
@@ -333,7 +333,7 @@ class RedstoneListener(
             // moves nothing, and a press left over from it would name the player for a mob that steps
             // on the plate right after.
             isSwitch(block.type) && (event.action == Action.PHYSICAL) == Tag.PRESSURE_PLATES.isTagged(block.type) ->
-                pressing.set(Pressed(at, by.actor, System.nanoTime()))
+                pressing.set(Pressed(at, by, System.nanoTime()))
         }
     }
 
@@ -345,7 +345,11 @@ class RedstoneListener(
     private fun trapOf(block: Block, at: WorldBlock, event: PlayerInteractEvent): Attributed? {
         if (event.action != Action.PHYSICAL || attribution == null) return null
         if (!Tag.PRESSURE_PLATES.isTagged(block.type) && block.type != Material.TRIPWIRE) return null
-        val standing = block.blockData.asString
+        // A player stands on a plate for many ticks and each raises this; only the one that presses it sets
+        // anything off, and only that one is worth the journal's seek on this thread.
+        val data = block.blockData
+        if (data is Powerable && data.isPowered || data is AnaloguePowerable && data.power > 0) return null
+        val standing = data.asString
         val placer = attribution.placerAt(at, standing) ?: attribution.journalPlacerAt(at, standing, TRAP_CAUSES) ?: return null
         return placer.takeIf { it.actor != event.player.uniqueId }?.inferred()
     }
@@ -372,7 +376,7 @@ class RedstoneListener(
         val press = pressing.get()
         if (press != null && press.at == at && now - press.nanos <= PRESS_NANOS) {
             pressing.remove()
-            switched(block, after, Cause.BLK_PLAYER_SWITCH, Behind(Attributed(press.actor, Confidence.FACT)), null)
+            switched(block, after, Cause.BLK_PLAYER_SWITCH, Behind(press.by), null)
             return
         }
         val step = stepping.get()

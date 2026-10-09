@@ -566,7 +566,8 @@ class ChunkRollback(
             flow[at] = level.getBlockState(at)
             for (direction in Direction.entries) {
                 val near = at.relative(direction)
-                if (!owned(near)) continue
+                // Another region's block cannot be read here, and a source may stand there: left as fed.
+                if (!owned(near)) return flow to true
                 val state = level.getBlockState(near)
                 if (!state.fluidState.type.isSame(fluid)) continue
                 if (state.fluidState.isSource) fed = true
