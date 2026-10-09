@@ -575,10 +575,15 @@ class ContainerCaptureListener(
         // and is dispatched into this one, so a second listener would be a second callback for one
         // click and would leave the reason twice.
         // The creative inventory sets slots to whatever the client asks for, conjuring and deleting as
-        // it goes. What it made and what it threw away is named as that rather than left unexplained.
+        // it goes. What it made and what it threw away is named as that rather than left unexplained,
+        // and only in the slot it set and on the cursor: an intent with no slot would name every
+        // unexplained movement of the pass creative and hide a real duplication behind the click.
         if (event is InventoryCreativeEvent) {
-            intend(player, Intent(Cause.CREATIVE_SET, from = Void))
-            intend(player, Intent(Cause.CREATIVE_SET, to = Void))
+            val slot = (event.clickedInventory as? PlayerInventory)?.let { playerHolders(player.uniqueId, it)(event.slot) }
+            for (end in listOfNotNull(slot, PlayerCursor(player.uniqueId))) {
+                intend(player, Intent(Cause.CREATIVE_SET, from = Void, holder = end))
+                intend(player, Intent(Cause.CREATIVE_SET, to = Void, holder = end))
+            }
         }
         val top = event.view.topInventory
         val shift = if (event.rawSlot == previewSlot(top)) shiftOf(top) else null
