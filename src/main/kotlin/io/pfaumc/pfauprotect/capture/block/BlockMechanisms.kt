@@ -246,15 +246,17 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
     @Synchronized
     fun claim(entity: UUID, at: Spot, key: ItemKey, count: Int, thrower: UUID? = null): Int {
         val into = ItemEntityRef(entity)
+        val now = clock()
         // A note that names the entity is exact, so it goes first: a note left at the same block for
         // some other reason must not take the quantity out from under it.
         val named = take(into, key, count) { it.entity == entity }
-        val thrown = if (thrower == null) 0 else take(into, key, count - named) { it.thrower == thrower && it.key == key }
+        val thrown = if (thrower == null) 0 else take(into, key, count - named) {
+            it.thrower == thrower && it.key == key && now <= it.until!!
+        }
         val nearby = take(into, key, count - named - thrown) { placedFor(it, at, key) }
         val rolled = take(into, key, count - named - thrown - nearby) {
             it.rolled && it.key == key && near(it.at!!, at, it.reach)
         }
-        val now = clock()
         val anyForm = take(into, key, count - named - thrown - nearby - rolled) {
             it.rolled && it.key == null && now - it.made!! <= SAME_TICK_MILLIS && near(it.at!!, at, it.reach)
         }
@@ -295,7 +297,7 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
     // go before the spawn that follows it microseconds later.
     @Synchronized
     fun sweep() {
-        val now = System.currentTimeMillis()
+        val now = clock()
         val notes = notes.iterator()
         while (notes.hasNext()) {
             val note = notes.next()
