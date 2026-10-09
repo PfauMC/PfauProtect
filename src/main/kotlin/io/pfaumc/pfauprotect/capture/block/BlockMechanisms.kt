@@ -81,6 +81,9 @@ private const val COMPOSTER_FULL_LEVEL = 7
 // throws.
 internal const val SPAWN_REACH = 2.0
 
+// A tick, for a note that may only take what falls in the call that made it.
+private const val SAME_TICK_MILLIS = 50L
+
 data class Spot(val world: UUID, val x: Double, val y: Double, val z: Double)
 
 internal fun spotOf(at: Location) = Spot(at.world.uid, at.x, at.y, at.z)
@@ -121,7 +124,7 @@ internal fun gaveBack(remembered: ByteArray?, shell: ByteArray?): ByteArray? {
 // How long the items that came out of an event are kept for the event's row to name them.
 private const val WITNESS_MILLIS = 10_000L
 
-class SpawnOrigins(private val pending: TickCoalescer) {
+class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> Long = System::currentTimeMillis) {
     private class Note(
         // Null when the movement is written by whoever filed the note. Breaking a block already
         // names both ends in one transaction, and the birth that follows must not be booked twice.
@@ -148,6 +151,8 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         // The event the drop comes out of — a dead mob, a broken frame, a block position — under which
         // the items that take this note are remembered, so the event's own row can name them.
         val tag: Any? = null,
+        // When a note for any form was made: what falls by the block in a later tick is not its drop.
+        val made: Long? = null,
     ) {
         var swept = false
     }
@@ -237,7 +242,7 @@ class SpawnOrigins(private val pending: TickCoalescer) {
      * note, so it takes only what nothing else explains.
      */
     fun expectAny(from: Holder, cause: Cause, at: Spot, actor: UUID?, reach: Double = SPAWN_REACH, tag: Any? = null) {
-        notes += Note(from, cause, null, at, null, 0, actor, reach, rolled = true, tag = tag)
+        notes += Note(from, cause, null, at, null, 0, actor, reach, rolled = true, tag = tag, made = clock())
     }
 
     fun expectThrown(thrower: UUID, from: Holder, cause: Cause, key: ItemKey, qty: Int, until: Long) {
@@ -259,16 +264,19 @@ class SpawnOrigins(private val pending: TickCoalescer) {
     @Synchronized
     fun claim(entity: UUID, at: Spot, key: ItemKey, count: Int, thrower: UUID? = null): Int {
         val into = ItemEntityRef(entity)
+        val now = clock()
         // A note that names the entity is exact, so it goes first: a note left at the same block for
         // some other reason must not take the quantity out from under it.
         val named = take(into, key, count) { it.entity == entity }
-        val thrown = if (thrower == null) 0 else take(into, key, count - named) { it.thrower == thrower && it.key == key }
+        val thrown = if (thrower == null) 0 else take(into, key, count - named) {
+            it.thrower == thrower && it.key == key && now <= it.until!!
+        }
         val nearby = take(into, key, count - named - thrown) { placedFor(it, at, key) }
         val rolled = take(into, key, count - named - thrown - nearby) {
             it.rolled && it.key == key && near(it.at!!, at, it.reach)
         }
         val anyForm = take(into, key, count - named - thrown - nearby - rolled) {
-            it.rolled && it.key == null && near(it.at!!, at, it.reach)
+            it.rolled && it.key == null && now - it.made!! <= SAME_TICK_MILLIS && near(it.at!!, at, it.reach)
         }
         return named + thrown + nearby + rolled + anyForm
     }
@@ -296,7 +304,7 @@ class SpawnOrigins(private val pending: TickCoalescer) {
                 pending.add(note.from, into, note.cause, key, qty, note.actor, note.confidence)
             }
             if (note.tag != null && into is ItemEntityRef) {
-                witnessed.computeIfAbsent(note.tag) { Witnessed(ConcurrentHashMap.newKeySet(), System.currentTimeMillis()) }
+                witnessed.computeIfAbsent(note.tag) { Witnessed(ConcurrentHashMap.newKeySet(), clock()) }
                     .items += into.uuid
             }
             left -= qty
@@ -311,7 +319,7 @@ class SpawnOrigins(private val pending: TickCoalescer) {
     // go before the spawn that follows it microseconds later.
     @Synchronized
     fun sweep() {
-        val now = System.currentTimeMillis()
+        val now = clock()
         val notes = notes.iterator()
         while (notes.hasNext()) {
             val note = notes.next()

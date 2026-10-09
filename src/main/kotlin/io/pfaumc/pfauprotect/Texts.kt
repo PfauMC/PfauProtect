@@ -76,6 +76,8 @@ object Texts {
         r("  the window may be shorter than a full rollback needs: (\\d+) of these positions stood as the same player had left them when it opened, and go back to that; a longer time: reaches further\\.") to
             "  окно может быть короче, чем нужно: позиций, которые на начало окна стояли так, как их оставил тот же игрок, и вернутся к этому: $1; больший time: возьмёт дальше.",
         // Lookup
+        r("player: reads what went through a player's hands, which has no position; drop the radius\\.") to
+            "player: читает то, что прошло через руки игрока, а у этого нет места; уберите радиус.",
         r("The lookup failed; the server log has the details\\.") to "Поиск не удался; подробности в логе сервера.",
         r("A world-wide lookup needs a player, user:<name>, or a radius\\.") to "Поиску по всему миру нужен игрок user:<имя> или радиус.",
         r("This world's block log is not open\\.") to "Журнал блоков этого мира не открыт.",

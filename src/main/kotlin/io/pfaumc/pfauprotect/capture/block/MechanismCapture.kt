@@ -184,7 +184,9 @@ class MechanismCaptureListener(
     // Whoever put the hopper or the cart that moved the item down; nobody for one that was there before.
     private fun placerOf(inventory: Inventory): UUID? {
         val holder = inventory.getHolder(false) as? PersistentDataHolder ?: return null
-        return holder.persistentDataContainer.get(PLACED_BY, PersistentDataType.STRING)?.let(UUID::fromString)
+        val raw = holder.persistentDataContainer.get(PLACED_BY, PersistentDataType.STRING) ?: return null
+        // Written by us, but the container's data is anyone's to edit; a bad value must not cost the move its row.
+        return runCatching { UUID.fromString(raw) }.getOrNull()
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

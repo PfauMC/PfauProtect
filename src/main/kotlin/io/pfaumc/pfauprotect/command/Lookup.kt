@@ -59,6 +59,7 @@ import net.kyori.adventure.text.event.HoverEvent
 import org.bukkit.entity.Player
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Level
 import kotlin.jvm.optionals.getOrNull
 
@@ -80,6 +81,9 @@ private const val VANILLA_NAMESPACE = "minecraft"
 // rows than the caller asked for or filtering would eat into the requested count.
 private const val FETCH_FACTOR = 8
 private const val MAX_FETCH = 4096
+
+// How many rows of a container's position `action:steal` reads for who put it down.
+private const val PLACER_READ = 200
 
 // Accepted spellings and completions come from one table on purpose: when they were two lists, a
 // spelling the parser accepted still had to be repeated by hand to be suggested, and they drifted.
@@ -869,6 +873,11 @@ class Lookups(
      * no radius reaches it, and the block plane has nothing to say about it.
      */
     private fun reportPlayers(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+        // Answering anyway would read as narrowed to the area while nothing was narrowed.
+        if (query.radius != null) {
+            sender.say("player: reads what went through a player's hands, which has no position; drop the radius.")
+            return
+        }
         val players = resolveAll(sender, query.players) ?: return
         val users = resolveAll(sender, query.users) ?: return
         val fromTs = query.fromTs()
@@ -1137,7 +1146,7 @@ class Lookups(
     // know whether saying so would be a lie.
     private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
         val keeps = rowFilter(query, users)
-        val placers = HashMap<Container, UUID?>()
+        val placers = HashMap<Container, Placer>()
         return entries.asSequence()
             .filter(keeps::keeps)
             .filter { !query.steal || stolen(it, placers) }
@@ -1145,17 +1154,24 @@ class Lookups(
             .toList()
     }
 
-    // Taken out of a container somebody else put down, or one nobody did: a chest of the world's own.
-    private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, UUID?>): Boolean {
+    // Who put a container down; `known` false when the read stopped before it reached the placement.
+    private class Placer(val known: Boolean, val player: UUID?)
+
+    // Taken out of a container somebody else put down, or one nobody did: a chest of the world's own. A busy
+    // position whose placement lies past the read says nothing either way, and its withdrawals are not
+    // counted as theft: the owner's own would be.
+    private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, Placer>): Boolean {
         if (entry.cause != Cause.CONTAINER_REMOVE || entry.qty >= 0) return false
         val chest = (entry.holder as? Container)?.copy(slot = 0) ?: return false
         val placer = placers.getOrPut(chest) {
-            blocks.get(chest.world)?.at(chest.x, chest.y, chest.z, 0, Long.MAX_VALUE, limit = 200, reverse = true)
-                ?.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE }?.actor
+            val rows = blocks.get(chest.world)?.at(chest.x, chest.y, chest.z, 0, Long.MAX_VALUE, limit = PLACER_READ, reverse = true).orEmpty()
+            val placed = rows.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE }
+            Placer(placed != null || rows.size < PLACER_READ, placed?.actor)
         }
+        if (!placer.known) return false
         // A withdrawal names whoever took it as where it went rather than as its actor.
         val taker = entry.actor ?: (entry.counterparty as? PlayerHolder)?.uuid ?: return false
-        return taker != placer
+        return taker != placer.player
     }
 
     // `exclude:` takes items and players in one list, so a name that is a player is a player excluded.
@@ -1351,5 +1367,10 @@ class Lookups(
         Void -> Ui.hover(Ui.text("∅", Ui.FAINT), tr("nowhere: made or used up here", "нигде: появилось или израсходовано"))
     }
 
-    private fun playerName(uuid: UUID): String = nameOf(uuid) ?: uuid.toString()
+    // An offline player's name can come off disk, once per printed row and holder otherwise.
+    // ponytail: never evicted, so a rename shows after a restart; a timed cache if that matters.
+    private val names = ConcurrentHashMap<UUID, String>()
+
+    private fun playerName(uuid: UUID): String =
+        names[uuid] ?: nameOf(uuid)?.also { names[uuid] = it } ?: uuid.toString()
 }
