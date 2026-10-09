@@ -134,7 +134,7 @@ internal class Difference(
 
     fun add(x: Int, y: Int, z: Int, was: Standing, now: Standing, blockRow: Boolean = true) {
         val stateChanged = was.state != now.state
-        val payloadChanged = !(was.payload ?: EMPTY).contentEquals(now.payload ?: EMPTY)
+        val payloadChanged = !(was.payload contentEquals now.payload)
         if (blockRow && (stateChanged || payloadChanged)) {
             rows += BlockChange(
                 x, y, z,
@@ -338,5 +338,3 @@ class CommandBrackets(
         for (child in node.children) walk(child, seen, name)
     }
 }
-
-private val EMPTY = ByteArray(0)

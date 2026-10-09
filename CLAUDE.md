@@ -114,9 +114,10 @@ them.
 - Bump `SCHEMA_VERSION` (`Storage.kt`) or `BLOCK_SCHEMA_VERSION` (`BlockStore.kt`) when a key layout, the CF set
   or the meaning of stored numbers changes.
 - Folia threading: touch world and player state only on the owning region thread (entity/region schedulers). Do
-  RocksDB I/O off it, never on a region thread. One exception: `Attribution.journalRemoverAt` reads the
-  newest block row at a position on the region thread, once per hanging entity that falls, because who
-  emptied its wall has to be known as it falls and the tracker note is gone by then.
+  RocksDB I/O off it, never on a region thread. The exceptions read the newest block row of one position,
+  once per event, where the answer is needed in that event and the tracker note is gone by then:
+  `Attribution.journalRemoverAt` for a hanging entity that falls, and `journalPlacerAt` for what has just
+  gone off (TNT, fire, a flow) and for a trap on the step that presses it.
 - `onDisable` closes the per-world databases before the ledger.
 
 ## Specs (`.planning/`)

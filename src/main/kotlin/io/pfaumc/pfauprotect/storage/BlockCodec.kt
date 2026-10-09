@@ -70,7 +70,7 @@ object EntityCodec {
     private const val DROPS_FLAG = 0x80
 
     /** `deathId` and `viaId` are the registry numbers of [EntityRow.death] and [EntityRow.via], -1 for none. */
-    fun value(row: EntityRow, ids: IdResolver, typeId: Int, deathId: Int = -1, viaId: Int = -1): ByteArray {
+    fun value(row: EntityRow, ids: IdResolver, typeId: Int, deathId: Int, viaId: Int): ByteArray {
         val w = ByteWriter(48)
         val death = deathId >= 0 || viaId >= 0
         w.byte(
@@ -101,26 +101,15 @@ object EntityCodec {
     }
 
     /** Null for a row this build cannot read, as a block row is. */
-    fun decodeOrNull(
-        key: ByteArray,
-        value: ByteArray,
-        names: IdLookup,
-        damageOf: (Int) -> String? = { null },
-        typeOf: (Int) -> String?,
-    ): EntityRow? =
+    fun decodeOrNull(key: ByteArray, value: ByteArray, names: Registries): EntityRow? =
         try {
-            decode(key, value, names, damageOf, typeOf)
+            decode(key, value, names)
         } catch (failure: IllegalArgumentException) {
             null
         }
 
-    fun decode(
-        key: ByteArray,
-        value: ByteArray,
-        names: IdLookup,
-        damageOf: (Int) -> String? = { null },
-        typeOf: (Int) -> String?,
-    ): EntityRow {
+    private fun decode(key: ByteArray, value: ByteArray, names: Registries): EntityRow {
+        fun typeOf(id: Int) = names.keyOf(RegistryNamespace.ENTITY_TYPE, id)
         val v = ByteReader(value)
         val header = v.byte()
         val version = header and VERSION_MASK
@@ -134,7 +123,7 @@ object EntityCodec {
         val before = if (header and BEFORE_FLAG != 0) v.varLong() else null
         val after = if (header and AFTER_FLAG != 0) v.varLong() else null
         val drops = if (header and DROPS_FLAG != 0) List(v.varInt()) { v.uuid() } else emptyList()
-        val death = if (version == WITH_DEATH) v.varInt().takeIf { it > 0 }?.let { damageOf(it - 1) } else null
+        val death = if (version == WITH_DEATH) v.varInt().takeIf { it > 0 }?.let { names.keyOf(RegistryNamespace.DAMAGE_TYPE, it - 1) } else null
         val via = if (version == WITH_DEATH) v.varInt().takeIf { it > 0 }?.let { typeOf(it - 1) } else null
         val k = ByteReader(key)
         val pos = Zcode.decode(k.bytes(Zcode.SIZE))

@@ -20,7 +20,7 @@ import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.capture.item.Stack
 import org.bukkit.block.data.Directional
 import org.bukkit.Tag
-import io.pfaumc.pfauprotect.storage.NestedOwners
+import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.capture.item.NestedItems
 import io.pfaumc.pfauprotect.model.Transfer
@@ -32,8 +32,8 @@ import io.pfaumc.pfauprotect.attribution.energyAt
 import io.pfaumc.pfauprotect.attribution.culprit
 import io.pfaumc.pfauprotect.capture.item.equipmentSlotOf
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
-import io.pfaumc.pfauprotect.capture.item.mutation
 import io.pfaumc.pfauprotect.capture.item.positionOf
+import io.pfaumc.pfauprotect.capture.item.stackOf
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.block.Block
@@ -124,6 +124,9 @@ internal fun gaveBack(remembered: ByteArray?, shell: ByteArray?): ByteArray? {
 // How long the items that came out of an event are kept for the event's row to name them.
 private const val WITNESS_MILLIS = 10_000L
 
+// How long a note waits for its spawn at the least, whatever the sweeps say.
+private const val NOTE_MILLIS = 1_000L
+
 class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> Long = System::currentTimeMillis) {
     private class Note(
         // Null when the movement is written by whoever filed the note. Breaking a block already
@@ -154,7 +157,8 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
         // When a note for any form was made: what falls by the block in a later tick is not its drop.
         val made: Long? = null,
     ) {
-        var swept = false
+        // When the first sweep saw it.
+        var swept: Long? = null
     }
 
     private val notes = ConcurrentLinkedQueue<Note>()
@@ -165,8 +169,16 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
     // from whoever has them, and only these: what else lies around does not belong to it.
     private val witnessed = ConcurrentHashMap<Any, Witnessed>()
 
-    /** The items that came out of an event so far, taken once. */
-    fun droppedFor(tag: Any): List<UUID> = witnessed.remove(tag)?.items?.toList() ?: emptyList()
+    /**
+     * The items that came out of an event so far, taken once. Its notes go with it: the event is over, and a
+     * note of it left standing took the piles of the next blast along the street under a name nobody would
+     * ask about again, and they lay there after the rollback (D114).
+     */
+    @Synchronized
+    fun droppedFor(tag: Any): List<UUID> {
+        notes.removeIf { it.tag == tag }
+        return witnessed.remove(tag)?.items?.toList() ?: emptyList()
+    }
 
     // A shulker box that falls out of a block something other than a hand broke has to carry the name
     // its contents were filed under, and the only moment to give it one is before its spawn reads its
@@ -174,7 +186,7 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
     // names — and by nothing else: a box used before still carries the name it was given then, on one
     // of the two stacks or on both, and that stale name must not stop it being given the right one.
     private class Box(val stack: NmsItemStack, val owner: UUID, val at: Spot) {
-        var swept = false
+        var swept: Long? = null
     }
 
     private val boxes = ConcurrentLinkedQueue<Box>()
@@ -316,7 +328,9 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
     }
 
     // Two passes before dropping: a note written by a region thread while this runs would otherwise
-    // go before the spawn that follows it microseconds later.
+    // go before the spawn that follows it microseconds later. And NOTE_MILLIS after the first: the sweep
+    // ticks on the global region, and a crater of a few hundred blocks takes its own region longer than two
+    // of those ticks to break before the drops spawn — a griefer's dynamite left its loot to nobody (D114).
     @Synchronized
     fun sweep() {
         val now = clock()
@@ -328,12 +342,14 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
                 if (now > until) notes.remove()
                 continue
             }
-            if (note.swept) notes.remove() else note.swept = true
+            val swept = note.swept
+            if (swept == null) note.swept = now else if (now - swept >= NOTE_MILLIS) notes.remove()
         }
         val boxes = boxes.iterator()
         while (boxes.hasNext()) {
             val box = boxes.next()
-            if (box.swept) boxes.remove() else box.swept = true
+            val swept = box.swept
+            if (swept == null) box.swept = now else if (now - swept >= NOTE_MILLIS) boxes.remove()
         }
         // Asked for a tick after the event; one nobody asks about is gone well before it could matter.
         witnessed.values.removeIf { now - it.at > WITNESS_MILLIS }
@@ -422,7 +438,7 @@ class BlockMechanismListener(
     private val sink: (List<Transfer>) -> Unit,
     private val energy: Energy = Energy(),
     private val entities: EntityOrigins = EntityOrigins(),
-    private val owners: NestedOwners? = null,
+    private val owners: RocksItemLog? = null,
     // Leaves a reason for the next pass over a player's slots, which are the pass's alone to write.
     private val intend: (Player, Intent) -> Unit = { _, _ -> },
     // Runs a task on the block's own region a tick later.
@@ -612,7 +628,7 @@ class BlockMechanismListener(
     private fun contentsOf(block: Block): List<Stack?>? {
         val inventory = (block.getState(false) as? ContainerBlock)?.inventory ?: return null
         return (0 until inventory.size).map { slot ->
-            codec.encodeOrNull(inventory.getItem(slot))?.let { Stack(it.key, it.count) }
+            codec.stackOf(inventory.getItem(slot))
         }
     }
 
@@ -643,7 +659,7 @@ class BlockMechanismListener(
         // a half left alone would go on naming a block that stands nowhere.
         forget(broken.at)
         broken.partner?.let(::forget)
-        gaveBack(remembered, shellForm(state))?.let {
+        gaveBack(remembered, codec.shellOf((state.blockData as CraftBlockData).state.block))?.let {
             transaction += Transfer(
                 cause = Cause.BLOCK_DROP,
                 from = position,
@@ -847,15 +863,6 @@ class BlockMechanismListener(
     private fun rememberedAt(at: WorldBlock) = placed.formAt(at.world, at.x, at.y, at.z)
 
     private fun forget(at: WorldBlock) = placed.clearFormAt(at.world, at.x, at.y, at.z)
-
-    // What the block was made of, not what breaking it yields: a crop answers with the seed it was
-    // planted from, and a block with no item form of its own — fire, a liquid, a portal — answers
-    // with nothing and so is never written off.
-    private fun shellForm(state: BlockState): ByteArray? {
-        val data = state.blockData as CraftBlockData
-        val stack = NmsItemStack(itemOf(data.state.block))
-        return if (stack.isEmpty) null else codec.encode(stack).form
-    }
 
     private fun key(stack: BukkitItemStack?): ItemKey? = codec.encodeOrNull(stack)?.key
 }

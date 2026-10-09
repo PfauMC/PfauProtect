@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
 
+import io.pfaumc.pfauprotect.capture.block.SlotChange
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.storage.ItemKey
 import org.junit.jupiter.api.Assertions.assertArrayEquals
@@ -14,7 +15,7 @@ class MobInventoriesTest {
     private val hoe = ItemKey("hoe".toByteArray(), 12)
 
     private fun changes(before: List<Pocket>, after: List<Pocket>) =
-        pocketChanges(before, after).map { Triple(it.slot, String(it.key.form), if (it.gained) it.qty else -it.qty) }
+        pocketChanges(before, after).map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) }
 
     // Bread baked from wheat in one slot is two changes, and a stack only partly spent is one.
     @Test
@@ -29,6 +30,9 @@ class MobInventoriesTest {
             changes(listOf(Pocket(0, wheat, 3)), listOf(Pocket(0, bread, 1))),
         )
         assertEquals(emptyList<Triple<Int, String, Int>>(), changes(listOf(Pocket(2, wheat, 3)), listOf(Pocket(2, wheat, 3))))
+        // What went out of a stack went with the wear it had, as in any other slot.
+        val shrunk = pocketChanges(listOf(Pocket(0, ItemKey(hoe.form, 3), 5)), listOf(Pocket(0, ItemKey(hoe.form, 4), 3)))
+        assertEquals(3, shrunk.single().key.damage)
     }
 
     // The copy lives in the mob and has to come back exactly, wear included.
@@ -53,7 +57,7 @@ class MobInventoriesTest {
         val after = listOf(Pocket(0, wheat, 2), Pocket(1, bread, 5), Pocket(2, hoe, 1))
 
         assertEquals(listOf(Triple("bread", 2, 1), Triple("hoe", 3, 2)), moves(before, after))
-        assertEquals(emptyList<PocketChange>(), pocketShifts(before, after).second)
+        assertEquals(emptyList<SlotChange>(), pocketShifts(before, after).second)
         assertEquals(emptyList<Triple<String, Int, Int>>(), moves(after, after))
 
         val carrot = ItemKey("carrot".toByteArray(), null)
@@ -61,7 +65,7 @@ class MobInventoriesTest {
         assertEquals(listOf(Triple("wheat", 1, 0), Triple("bread", 2, 1), Triple("hoe", 3, 2)), ate.first.map { (was, now) ->
             Triple(String(was.key.form), was.slot, now.slot)
         })
-        assertEquals(listOf(Triple(0, "carrot", -12)), ate.second.map { Triple(it.slot, String(it.key.form), if (it.gained) it.qty else -it.qty) })
+        assertEquals(listOf(Triple(0, "carrot", -12)), ate.second.map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) })
     }
 
     // A villager that ate its bread and part of its carrots just before it was saved: the carrots left
@@ -70,7 +74,7 @@ class MobInventoriesTest {
     @Test
     fun `a stack partly eaten and moved down by loading is a move and a loss`() {
         val carrot = ItemKey("carrot".toByteArray(), null)
-        fun signed(changes: List<PocketChange>) = changes.map { Triple(it.slot, String(it.key.form), if (it.gained) it.qty else -it.qty) }
+        fun signed(changes: List<SlotChange>) = changes.map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) }
         val (moves, rest) = pocketShifts(
             listOf(Pocket(0, bread, 3), Pocket(1, carrot, 12), Pocket(2, wheat, 5)),
             listOf(Pocket(0, carrot, 7), Pocket(1, wheat, 5)),
@@ -110,14 +114,14 @@ class MobInventoriesTest {
         val wheatOf = { form: ByteArray -> String(form) == "wheat" }
         val breadOf = { form: ByteArray -> String(form) == "bread" }
         val foodOf = { form: ByteArray -> String(form) == "bread" || String(form) == "carrot" }
-        fun guess(vararg changes: PocketChange) = villagerGuess(changes.toList(), wheatOf, breadOf, foodOf)
+        fun guess(vararg changes: SlotChange) = villagerGuess(changes.toList(), wheatOf, breadOf, foodOf)
 
         assertEquals(
             listOf(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Cause.CONSUME_FOOD),
-            guess(PocketChange(0, wheat, 3, false), PocketChange(1, bread, 1, true), PocketChange(2, carrot, 10, false)),
+            guess(SlotChange(0, wheat, 3, false), SlotChange(1, bread, 1, true), SlotChange(2, carrot, 10, false)),
         )
-        assertEquals(listOf(Cause.INVENTORY_LOAD, Cause.INVENTORY_LOAD), guess(PocketChange(0, wheat, 2, false), PocketChange(1, bread, 1, true)))
-        assertEquals(listOf(Cause.INVENTORY_LOAD, Cause.INVENTORY_LOAD), guess(PocketChange(0, carrot, 4, false), PocketChange(1, hoe, 1, true)))
+        assertEquals(listOf(Cause.INVENTORY_LOAD, Cause.INVENTORY_LOAD), guess(SlotChange(0, wheat, 2, false), SlotChange(1, bread, 1, true)))
+        assertEquals(listOf(Cause.INVENTORY_LOAD, Cause.INVENTORY_LOAD), guess(SlotChange(0, carrot, 4, false), SlotChange(1, hoe, 1, true)))
     }
 
     // A farmer replants the carrot it picks up within one reading, and the pocket shows nothing; a
@@ -130,7 +134,7 @@ class MobInventoriesTest {
         fun pickup() = PocketLabel(carrot.form, true, item, Cause.ITEM_PICKUP_BY_MOB_INV, 1, hand = 0)
         fun read(before: List<Pocket>, after: List<Pocket>, vararg labels: PocketLabel, held: Boolean = false) =
             explainPocket(before, after, labels.toList()) { held }
-                .map { (change, label) -> Triple(change.slot, if (change.gained) change.qty else -change.qty, label?.cause) }
+                .map { (change, label) -> Triple(change.slot, if (change.gain) change.qty else -change.qty, label?.cause) }
 
         val five = listOf(Pocket(2, carrot, 5))
         assertEquals(

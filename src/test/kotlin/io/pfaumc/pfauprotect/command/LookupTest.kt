@@ -106,7 +106,7 @@ class LookupTest {
         assertTrue(parseLookupQuery("r:global").global)
         assertTrue(parseLookupQuery("r:#global").global)
         assertTrue(parseLookupQuery("r:none").global)
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("r:${MAX_RADIUS + 1}") }
+        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("r:${io.pfaumc.pfauprotect.Settings.maxRadius + 1}") }
         assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("r:-5") }
     }
 

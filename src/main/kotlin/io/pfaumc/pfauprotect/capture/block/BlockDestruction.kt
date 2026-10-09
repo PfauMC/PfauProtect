@@ -16,13 +16,16 @@ import io.pfaumc.pfauprotect.attribution.FIRING_CAUSES
 import io.pfaumc.pfauprotect.attribution.Falling
 import io.pfaumc.pfauprotect.attribution.POURING_CAUSES
 import io.pfaumc.pfauprotect.attribution.FLOWING_CAUSES
+import io.pfaumc.pfauprotect.attribution.LIQUIDS
+import io.pfaumc.pfauprotect.attribution.blockNameOf
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
+import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.capture.item.NestedItems
-import io.pfaumc.pfauprotect.storage.NestedOwners
+import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
@@ -130,8 +133,6 @@ import net.minecraft.world.level.block.state.BlockState as NmsBlockState
 // Only these two take blocks away. A wind charge raises the same event with `TRIGGER_BLOCK` and moves
 // nothing, and a plugin can turn any explosion into `KEEP`.
 private val DESTROYING = setOf(ExplosionResult.DESTROY, ExplosionResult.DESTROY_WITH_DECAY)
-
-private fun blockNameOf(state: String) = state.substringBefore('[')
 
 private const val AIR = "minecraft:air"
 
@@ -290,12 +291,10 @@ internal fun entityFormCause(entity: EntityType): Cause =
 internal fun formCause(before: String): Cause =
     if (blockNameOf(before) in LIQUIDS) Cause.BLK_LIQUID_FORM else Cause.BLK_FORM
 
-private val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
-
 // A catalyst blooms within eight blocks of a death, and its sculk spreads a few blocks further on.
 private const val SCULK_REACH = 12
 
-private val LIQUID_FACES = listOf(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.DOWN)
+private val LIQUID_FACES = POUR_FACES + BlockFace.DOWN
 
 private const val FIRE = "minecraft:fire"
 
@@ -420,13 +419,6 @@ internal fun pistonBase(facing: Direction, sticky: Boolean, extended: Boolean): 
         .setValue(BlockStateProperties.EXTENDED, extended)
         .asBlockData()
 
-/**
- * Which half of a fall an entity changing a block is. A block breaking loose leaves behind whatever it
- * was standing in; a block landing puts down the very state it has been carrying, so the two halves are
- * told apart by what the position is about to become rather than by anything about the entity.
- */
-internal fun isLanding(carried: String, becomes: String) = carried == becomes
-
 /** Whether what was read back is a different block from the one the event was about. */
 internal fun wentAway(before: String, now: String) = blockNameOf(before) != blockNameOf(now)
 
@@ -447,9 +439,14 @@ internal fun itemOf(block: NmsBlock): Item {
     return blockBehind(BuiltInRegistries.BLOCK.getKey(block).toString().removeSuffix("_plant")).asItem()
 }
 
-private fun payloadAt(block: Block): ByteArray? {
-    val level = (block as CraftBlock).level
-    return payloadOf(level.getBlockEntity(block.position), level.registryAccess())
+/**
+ * What the block was made of, not what breaking it yields: a crop answers with the seed it was planted
+ * from, and a block with no item form of its own — fire, a liquid, a portal — answers with nothing and so
+ * is never written off.
+ */
+internal fun ItemFormCodec.shellOf(block: NmsBlock): ByteArray? {
+    val stack = NmsItemStack(itemOf(block))
+    return if (stack.isEmpty) null else encode(stack).form
 }
 
 /**
@@ -492,22 +489,8 @@ internal fun lostForm(
  * buckets the cross-check keeps apart on purpose and never lets cancel, so every position that
  * settled correctly would be reported as a hole for ever.
  */
-internal fun wroteOff(
-    at: WorldBlock,
-    form: ByteArray,
-    cause: Cause,
-    by: Attributed?,
-    timestamp: Long,
-) = Transfer(
-    cause = cause,
-    from = at,
-    to = Void,
-    form = form,
-    damage = null,
-    qty = 1,
-    timestamp = timestamp,
-    actor = by.culprit(),
-)
+internal fun wroteOff(at: WorldBlock, form: ByteArray, cause: Cause, by: Attributed?, timestamp: Long) =
+    moved(at, Void, form, cause, by, timestamp)
 
 /**
  * The item side of a block that changed position rather than disappearing: one transfer naming both
@@ -517,7 +500,7 @@ internal fun wroteOff(
  */
 internal fun moved(
     from: WorldBlock,
-    to: WorldBlock,
+    to: Holder,
     form: ByteArray,
     cause: Cause,
     by: Attributed?,
@@ -622,6 +605,9 @@ internal class GrowClaims {
 // A read-back is queued in one tick and runs at the start of the next, so a claim on one has to stand
 // for a tick and no longer.
 internal const val READ_BACK_MILLIS = 50L
+
+// How recent the row a read-back takes for its own change has to be: the tick before, under a lagging region.
+private const val FILED_MILLIS = 5_000L
 
 /**
  * The positions a read-back is already queued for. Two physics events reach one position in one tick:
@@ -771,11 +757,6 @@ private const val TRAVEL_MILLIS = 30_000L
 // The largest portal the game builds is 21 by 21.
 private const val PORTAL_MAX_BLOCKS = 21 * 21
 
-// A portal's sheet and a block's shaped neighbours are both found through the six faces.
-private val SIX_FACES = listOf(
-    BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN,
-)
-
 /**
  * Positions a player or a mechanism has just touched, waiting for the read a tick later that files
  * what the touch changed. Every row any capture submits passes through [filed], so a touch whose change
@@ -819,6 +800,13 @@ class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
 }
 
 /**
+ * Who built a golem or a wither: whoever put down a block of the pattern, or else whoever set going the
+ * dispenser beside it, whose pumpkin or skull the pattern took in the same call it was put down.
+ */
+internal fun builderOf(placers: List<Attributed?>, positions: List<WorldBlock>, energy: Energy): Attributed? =
+    placers.firstNotNullOfOrNull { it } ?: energy.near(positions)?.inferred()
+
+/**
  * Every change to a block that no player signed, in both planes: what disappears, and what merely
  * moves. A block row carries the two states the position went between; the item row of a disappearance
  * is the same shape a player's break already writes — the form the position was holding goes to `Void`
@@ -840,13 +828,6 @@ class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
  * either, and a note seeded ahead of the refusal would spend its whole window offering the refused
  * player as the answer for whatever happens there next.
  */
-/**
- * Who built a golem or a wither: whoever put down a block of the pattern, or else whoever set going the
- * dispenser beside it, whose pumpkin or skull the pattern took in the same call it was put down.
- */
-internal fun builderOf(placers: List<Attributed?>, positions: List<WorldBlock>, energy: Energy): Attributed? =
-    placers.firstNotNullOfOrNull { it } ?: energy.near(positions)?.inferred()
-
 class BlockDestructionListener(
     private val plugin: Plugin,
     private val registries: Registries,
@@ -856,7 +837,7 @@ class BlockDestructionListener(
     private val origins: SpawnOrigins,
     private val entities: EntityOrigins,
     private val placed: PlacedForms,
-    private val owners: NestedOwners,
+    private val owners: RocksItemLog,
     private val sink: (List<Transfer>) -> Unit,
     private val energy: Energy = Energy(),
     private val touches: HandTouches = HandTouches(),
@@ -1143,7 +1124,7 @@ class BlockDestructionListener(
         plugin.server.regionScheduler.execute(plugin, to.world, to.x shr 4, to.z shr 4) {
             val now = to.blockData
             if (now.material != Material.WATER && now.material != Material.LAVA) return@execute
-            log.submit(listOf(BlockChange(to.x, to.y, to.z, "minecraft:air", now.asString, Cause.BLK_LIQUID_FLOW, timestamp, by.confidence, actor = by.actor)))
+            log.submit(BlockChange(to.x, to.y, to.z, "minecraft:air", now.asString, Cause.BLK_LIQUID_FLOW, timestamp, by.confidence, actor = by.actor))
         }
     }
 
@@ -1417,11 +1398,16 @@ class BlockDestructionListener(
         if (!plugin.isEnabled || commanded(block)) return
         val log = logs.get(block.world.uid) ?: return
         val timestamp = System.currentTimeMillis()
-        for (face in SIX_FACES) {
-            val near = block.getRelative(face)
-            if (!Bukkit.isOwnedByCurrentRegion(near)) continue
+        // And the shaped blocks beside those: the wall under a wall that lost its neighbour grows low with it,
+        // a change of a change with no event of its own, and was put back tall under a wall put back low (D117).
+        val shaped = SIX_FACES.map { block.getRelative(it) }.filter { Bukkit.isOwnedByCurrentRegion(it) && shapedNow(it) }
+        val watched = LinkedHashSet<Block>(shaped)
+        for (near in shaped) for (face in SIX_FACES) {
+            val next = near.getRelative(face)
+            if (next != block && Bukkit.isOwnedByCurrentRegion(next) && shapedNow(next)) watched += next
+        }
+        for (near in watched) {
             val before = near.blockData
-            if (shapeKeysOf(blockNameOf(before.asString)).isEmpty()) continue
             val there = positionOf(near)
             // The first watch stays until its own task reads it: one replaced under a long tick would lose the
             // first change's row, and the next would start from a state already half rewritten.
@@ -1431,10 +1417,12 @@ class BlockDestructionListener(
                 if (!shapeWatches.remove(there, watch)) return@execute
                 val now = near.blockData.asString
                 if (!reshaped(before.asString, now) || readBacks.settled(there)) return@execute
-                log.submit(listOf(row(Site(there, near, before, now, payload = null), Cause.BLK_SHAPE, by, timestamp)))
+                log.submit(row(Site(there, near, before, now, payload = null), Cause.BLK_SHAPE, by, timestamp))
             }
         }
     }
+
+    private fun shapedNow(block: Block) = shapeKeysOf(blockNameOf(block.blockData.asString)).isNotEmpty()
 
     /**
      * A shaped block filed by a capture while what a change beside it made of it still waits for its read:
@@ -1444,29 +1432,17 @@ class BlockDestructionListener(
     private fun shapeFirst(log: BlockLog, at: WorldBlock, block: Block, found: BlockData) {
         val watch = shapeWatches.remove(at) ?: return
         if (!reshaped(watch.before.asString, found.asString)) return
-        log.submit(listOf(row(Site(at, block, watch.before, found.asString, payload = null), Cause.BLK_SHAPE, watch.by, watch.timestamp)))
+        log.submit(row(Site(at, block, watch.before, found.asString, payload = null), Cause.BLK_SHAPE, watch.by, watch.timestamp))
     }
+
+    private fun commanded(block: Block) = CommandBirths.writing(block.world.uid, block.x, block.y, block.z)
 
     // Every portal block joined to this one, read back: those the broken frame took with it are filed
     // on whoever broke the frame. The walk stays on the region that owns this block.
-    private fun commanded(block: Block) = CommandBirths.writing(block.world.uid, block.x, block.y, block.z)
-
     private fun portalShaken(block: Block) {
         val by = attribution.supportRemoverAt(positionOf(block))
-        val sheet = LinkedHashSet<Block>()
-        var edge = listOf(block)
-        sheet += block
-        while (edge.isNotEmpty() && sheet.size < PORTAL_MAX_BLOCKS) {
-            val next = ArrayList<Block>()
-            for (at in edge) {
-                for (face in SIX_FACES) {
-                    val near = at.getRelative(face)
-                    if (near in sheet || near.type != Material.NETHER_PORTAL || !Bukkit.isOwnedByCurrentRegion(near)) continue
-                    sheet += near
-                    next += near
-                }
-            }
-            edge = next
+        val sheet = flood(block, cap = PORTAL_MAX_BLOCKS, withStart = true) {
+            it.type == Material.NETHER_PORTAL && Bukkit.isOwnedByCurrentRegion(it)
         }
         for (part in sheet) defer(part, part.blockData, Cause.BLK_PORTAL_DESTROY, by, expectsDrops = false)
     }
@@ -1716,7 +1692,10 @@ class BlockDestructionListener(
         val carried = entity.blockData.asString
         val becomes = event.blockData.asString
         val timestamp = System.currentTimeMillis()
-        if (!isLanding(carried, becomes)) {
+        // Which half of the fall this is. A block breaking loose leaves behind whatever it was standing in;
+        // a block landing puts down the very state it has been carrying, so the two halves are told apart
+        // by what the position is about to become rather than by anything about the entity.
+        if (carried != becomes) {
             // Who took away what was holding it up, worked out here and kept under the entity: by the
             // time it lands, the position it left holds whatever has moved in behind it.
             // A block put down in the air falls the moment it is placed, with no support taken away:
@@ -1916,9 +1895,6 @@ class BlockDestructionListener(
         attribution.placed(at, after, actor)
     }
 
-    // The read has to happen on the region that owns the block, and this is queued rather than run
-    // inline, so it lands at the start of that region's next tick with the tick that raised the event
-    // already finished.
     /**
      * The drops of a block broken by something other than a hand, expected under its position; a couple of
      * ticks on, once they have spawned, the position says which items they were (SPEC-v6 §2.5). A rollback
@@ -1932,16 +1908,17 @@ class BlockDestructionListener(
             val drops = origins.droppedFor(at)
             if (drops.isEmpty()) return@runDelayed
             logs.get(block.world.uid)?.submit(
-                listOf(
-                    EntityChange(
-                        at.x, at.y, at.z, EntityKind.DROPPED, cause, "minecraft:item", drops.first(),
-                        confidence = by?.confidence ?: Confidence.FACT, actor = by.culprit(), drops = drops,
-                    )
+                EntityChange(
+                    at.x, at.y, at.z, EntityKind.DROPPED, cause, "minecraft:item", drops.first(),
+                    confidence = by?.confidence ?: Confidence.FACT, actor = by.culprit(), drops = drops,
                 )
             )
         }, DROPS_SETTLE_TICKS)
     }
 
+    // The read has to happen on the region that owns the block, and this is queued rather than run
+    // inline, so it lands at the start of that region's next tick with the tick that raised the event
+    // already finished.
     private fun defer(block: Block, before: BlockData, cause: Cause, by: Attributed?, expectsDrops: Boolean = true) {
         // A task queued against a plugin already on its way down is refused outright, and an event can
         // still reach a handler while the server is taking the plugin apart.
@@ -1970,7 +1947,7 @@ class BlockDestructionListener(
             val log = logs.get(block.world.uid) ?: return@execute
             if (alreadyFiled(log, at, before.asString, now)) return@execute
             val site = Site(at, block, before, now, payload)
-            log.submit(listOf(row(site, cause, by, timestamp)))
+            log.submit(row(site, cause, by, timestamp))
             by.culprit()?.let { noteRemoval(at, now, it) }
             // A tick has passed, and a position something has since been put into is no longer this
             // read's to speak for: the note standing there was written by whoever filled it, and
@@ -2000,6 +1977,10 @@ class BlockDestructionListener(
         // Asked here first because a row filed in this same tick is still on its way to the journal.
         if (readBacks.settled(at)) return true
         val row = log.standingAt(at.x, at.y, at.z).row ?: return false
+        // That same change, filed a moment ago: one filed an hour before is another change, after which
+        // something that writes no row put the block back. A lantern CoreProtect had hung up again fell
+        // under the next blast with no row, and the rollback left it down (D122).
+        if (System.currentTimeMillis() - row.timestamp > FILED_MILLIS) return false
         return registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore) == before &&
             registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) == after
     }
@@ -2046,21 +2027,9 @@ class BlockDestructionListener(
         return ((source as? Creeper)?.target as? Player)?.let { Attributed(it.uniqueId, Confidence.NEARBY) }
     }
 
-    // A block that no longer stands there leaves whatever it was standing in, which for anything dry
-    // is air. This is `Level.removeBlock`'s own rule, the same one a break follows.
-    private fun leftBehind(data: BlockData): BlockData =
-        (data as CraftBlockData).state.fluidState.createLegacyBlock().asBlockData()
+    private fun shellForm(data: BlockData) = codec.shellOf((data as CraftBlockData).state.block)
 
-    // What the block was made of, which a block with no item form of its own — fire, a liquid, a
-    // portal — answers with nothing at all.
-    private fun shellForm(block: NmsBlock): ByteArray? {
-        val stack = NmsItemStack(itemOf(block))
-        return if (stack.isEmpty) null else codec.encode(stack).form
-    }
-
-    private fun shellForm(data: BlockData) = shellForm((data as CraftBlockData).state.block)
-
-    private fun shellForm(state: String) = shellForm(blockBehind(state))
+    private fun shellForm(state: String) = codec.shellOf(blockBehind(state))
 
     // A change the server is capturing rather than applying is one it will report again, in full, in
     // the event that closes the capture. Written twice, the second row would declare as old what the

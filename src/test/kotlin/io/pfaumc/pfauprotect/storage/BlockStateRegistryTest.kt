@@ -71,7 +71,7 @@ class BlockStateRegistryTest {
         RocksItemLog(dir).use { log ->
             for ((index, key) in states.withIndex()) assertEquals(index, log.registries.lookupKey(state, key))
             assertArrayEquals(signText, log.payload(payloadId))
-            assertEquals(payloadId, log.payloadId(signText))
+            assertEquals(payloadId, log.payloads.lookup(signText))
             assertNotEquals(payloadId, log.payloads.idOf("""{"messages":["other","","",""]}""".toByteArray()))
         }
     }

@@ -97,18 +97,13 @@ class Energy(private val now: () -> Long = System::currentTimeMillis) {
         val now = now()
         var best: Note? = null
         for (centre in centres) {
-            for (dx in -reach..reach) {
-                for (dy in -reach..reach) {
-                    for (dz in -reach..reach) {
-                        val here = centre.copy(x = centre.x + dx, y = centre.y + dy, z = centre.z + dz)
-                        val note = notes[here] ?: continue
-                        if (now - note.at > ENERGY_MILLIS) continue
-                        if (best == null || note.at > best.at ||
-                            (note.at == best.at && note.by.confidence.id < best.by.confidence.id)
-                        ) {
-                            best = note
-                        }
-                    }
+            for (here in cube(centre, reach)) {
+                val note = notes[here] ?: continue
+                if (now - note.at > ENERGY_MILLIS) continue
+                if (best == null || note.at > best.at ||
+                    (note.at == best.at && note.by.confidence.id < best.by.confidence.id)
+                ) {
+                    best = note
                 }
             }
         }
@@ -199,6 +194,9 @@ internal fun powered(data: BlockData, current: Int): BlockData = data.clone().al
 private fun isSwitch(type: Material) =
     Tag.BUTTONS.isTagged(type) || Tag.PRESSURE_PLATES.isTagged(type) || type == Material.LEVER
 
+// What lays a trap: a hand, or a command a player ran.
+private val TRAP_CAUSES = PLACING_CAUSES + Cause.BLK_COMMAND
+
 // How long a push, a pull or a knock stays behind the entity it moved: a mob stops within seconds, a
 // cart or a boat coasts on for a while.
 private const val NUDGE_MILLIS = 10_000L
@@ -233,8 +231,6 @@ class Nudges(private val now: () -> Long = System::currentTimeMillis) {
     private class Note(val by: Attributed, val until: Long)
 
     private val notes = ConcurrentHashMap<UUID, Note>()
-
-    val size: Int get() = notes.size
 
     fun nudged(entity: Entity, by: Attributed) {
         val window = if (entity is Minecart || entity is Boat) VEHICLE_NUDGE_MILLIS else NUDGE_MILLIS
@@ -311,8 +307,9 @@ class RedstoneListener(
     private val logs: BlockLogs,
     private val entities: EntityOrigins,
     private val nudges: Nudges,
+    private val attribution: Attribution? = null,
 ) : Listener {
-    private class Pressed(val at: WorldBlock, val actor: UUID, val nanos: Long)
+    private class Pressed(val at: WorldBlock, val by: Attributed, val nanos: Long)
 
     // An entity on a switch, and who stands behind it, for the redstone change it raises in the same
     // call.
@@ -327,7 +324,7 @@ class RedstoneListener(
         if (event.action != Action.RIGHT_CLICK_BLOCK && event.action != Action.PHYSICAL) return
         val block = event.clickedBlock ?: return
         val at = positionOf(block)
-        val by = Attributed(event.player.uniqueId, Confidence.FACT)
+        val by = trapOf(block, at, event) ?: Attributed(event.player.uniqueId, Confidence.FACT)
         energy.note(at, by)
         when {
             // A tripwire raises nothing of its own: the change is on the hook, however far along.
@@ -336,8 +333,25 @@ class RedstoneListener(
             // moves nothing, and a press left over from it would name the player for a mob that steps
             // on the plate right after.
             isSwitch(block.type) && (event.action == Action.PHYSICAL) == Tag.PRESSURE_PLATES.isTagged(block.type) ->
-                pressing.set(Pressed(at, by.actor, System.nanoTime()))
+                pressing.set(Pressed(at, by, System.nanoTime()))
         }
+    }
+
+    /**
+     * A plate or a tripwire somebody else put down, stepped on: a trap, and what it sets off is the one who
+     * laid it. The griefer's mines under the street went off as the owner's, who walked over the plate,
+     * and the griefer's rollback left the crater (D118). A switch pressed by hand stays the presser's.
+     */
+    private fun trapOf(block: Block, at: WorldBlock, event: PlayerInteractEvent): Attributed? {
+        if (event.action != Action.PHYSICAL || attribution == null) return null
+        if (!Tag.PRESSURE_PLATES.isTagged(block.type) && block.type != Material.TRIPWIRE) return null
+        // A player stands on a plate for many ticks and each raises this; only the one that presses it sets
+        // anything off, and only that one is worth the journal's seek on this thread.
+        val data = block.blockData
+        if (data is Powerable && data.isPowered || data is AnaloguePowerable && data.power > 0) return null
+        val standing = data.asString
+        val placer = attribution.placerAt(at, standing) ?: attribution.journalPlacerAt(at, standing, TRAP_CAUSES) ?: return null
+        return placer.takeIf { it.actor != event.player.uniqueId }?.inferred()
     }
 
     // Pressure plates, tripwire and a button an arrow hits raise this for anything but a player.
@@ -362,7 +376,7 @@ class RedstoneListener(
         val press = pressing.get()
         if (press != null && press.at == at && now - press.nanos <= PRESS_NANOS) {
             pressing.remove()
-            switched(block, after, Cause.BLK_PLAYER_SWITCH, Behind(Attributed(press.actor, Confidence.FACT)), null)
+            switched(block, after, Cause.BLK_PLAYER_SWITCH, Behind(press.by), null)
             return
         }
         val step = stepping.get()
@@ -514,18 +528,16 @@ class RedstoneListener(
         val by = behind.by
         val distance = behind.distance?.let { " " + String.format(Locale.ROOT, "%.1f", it) } ?: ""
         log.submit(
-            listOf(
-                BlockChange(
-                    x = block.x,
-                    y = block.y,
-                    z = block.z,
-                    before = block.blockData.asString,
-                    after = after.asString,
-                    cause = cause,
-                    confidence = by?.confidence ?: Confidence.FACT,
-                    actor = by?.actor,
-                    payloadAfter = type?.let { (it + distance).toByteArray(Charsets.UTF_8) },
-                )
+            BlockChange(
+                x = block.x,
+                y = block.y,
+                z = block.z,
+                before = block.blockData.asString,
+                after = after.asString,
+                cause = cause,
+                confidence = by?.confidence ?: Confidence.FACT,
+                actor = by?.actor,
+                payloadAfter = type?.let { (it + distance).toByteArray(Charsets.UTF_8) },
             )
         )
     }

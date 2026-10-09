@@ -54,6 +54,7 @@ import io.pfaumc.pfauprotect.Ui
 import io.pfaumc.pfauprotect.tr
 import net.kyori.adventure.key.Key
 import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.JoinConfiguration
 import net.kyori.adventure.text.format.TextDecoration
 import net.kyori.adventure.text.event.ClickEvent
 import net.kyori.adventure.text.event.HoverEvent
@@ -70,7 +71,6 @@ const val MAX_LIMIT = 200
 // How many postings a transaction may hold before it stops being about the position that was asked
 // after. A break of a double block with its drops sits well under this.
 private const val NEIGHBOURLY_TRANSACTION = 8
-const val MAX_RADIUS = 200
 
 // How many entity rows of one chunk a lookup steps over. Entities die far less often than blocks change.
 private const val MAX_ENTITY_WALK = 100_000
@@ -310,6 +310,9 @@ data class LookupQuery(
     // into one line each eat rows, so a folded page reads further.
     // The factor is fixed: a page of one huge run still comes out short, and says there is more.
     val wanted: Int get() = limit * page * if (all || count) 1 else GROUPED_READ
+
+    // How far a read goes so that the filters applied after it still leave `wanted` rows.
+    internal val fetch: Int get() = minOf(wanted * FETCH_FACTOR, MAX_FETCH)
 
     /** The same question about the same place, at another page. */
     fun pageCommand(target: LookupTarget, page: Int): String {
@@ -742,17 +745,8 @@ private fun sign(text: String) = Ui.text(text, when (text) {
 private fun times(n: Int): Component = if (n > 1) Ui.text(" ×$n", Ui.MUTED) else Component.empty()
 
 // The parts of a line, two spaces apart, which is what keeps a line readable without columns.
-private fun row(vararg parts: Component?): Component {
-    val out = Component.text()
-    var first = true
-    for (part in parts) {
-        if (part == null || part == Component.empty()) continue
-        if (!first) out.append(Component.text("  "))
-        out.append(part)
-        first = false
-    }
-    return out.build()
-}
+private fun row(vararg parts: Component?): Component =
+    Component.join(JoinConfiguration.separator(Component.text("  ")), parts.filterNotNull().filter { it != Component.empty() })
 
 // A break says two things at once: the position gave up what it was made of, and an item came out of
 // it. Only the position end carries coordinates, so a reader standing there sees the debit and
@@ -779,6 +773,21 @@ internal fun wholeTransactions(ledger: RocksItemLog, entries: List<LedgerEntry>)
     return shown.toList()
 }
 
+/**
+ * Runs [task] off the region threads, where RocksDB may be read. A task that dies out there would leave
+ * the sender staring at a command that answered nothing, so a failure is logged and told to them.
+ */
+fun Plugin.offThread(sender: CommandSender, logged: String, told: String, task: () -> Unit) {
+    Bukkit.getAsyncScheduler().runNow(this) {
+        try {
+            task()
+        } catch (failure: Throwable) {
+            logger.log(Level.SEVERE, logged, failure)
+            sender.say(told)
+        }
+    }
+}
+
 class Lookups(
     private val plugin: Plugin,
     private val ledger: RocksItemLog,
@@ -790,18 +799,9 @@ class Lookups(
     private val nameOf: (UUID) -> String? = { Bukkit.getOfflinePlayer(it).name },
 ) {
 
-    // Reading hits RocksDB through JNI, which has no business running on a region thread, and a task
-    // that dies out there would otherwise leave the player staring at a command that answered nothing.
     fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
         val asked = query.copy(teleports = canTeleport(sender))
-        Bukkit.getAsyncScheduler().runNow(plugin) {
-            try {
-                report(sender, target, asked)
-            } catch (failure: Throwable) {
-                plugin.logger.log(Level.SEVERE, "lookup at ${target.label} failed", failure)
-                sender.say("The lookup failed; the server log has the details.")
-            }
-        }
+        plugin.offThread(sender, "lookup at ${target.label} failed", "The lookup failed; the server log has the details.") { report(sender, target, asked) }
     }
 
     /**
@@ -811,25 +811,17 @@ class Lookups(
     fun entity(sender: CommandSender, entity: UUID, type: String, at: LookupTarget) {
         val label = "$type ${entity.toString().take(8)}"
         val query = LookupQuery(teleports = canTeleport(sender))
-        Bukkit.getAsyncScheduler().runNow(plugin) {
-            try {
-                val slots = ledger.holderPage(EntitySlot(entity, 0), 0, Long.MAX_VALUE, reverse = true, limit = MAX_FETCH)
-                val items = entryLines(wholeTransactions(ledger, slots.entries))
-                val log = blocks.get(at.world)
-                val rows = if (log == null) emptyList() else {
-                    ((at.x shr 4) - 1..(at.x shr 4) + 1).flatMap { cx ->
-                        ((at.z shr 4) - 1..(at.z shr 4) + 1).flatMap { cz ->
-                            log.entitiesInChunk(cx, cz, 0, Long.MAX_VALUE, MAX_ENTITY_WALK) { _, _, _ -> true }.rows.filter { it.uuid == entity }
-                        }
-                    }
-                }
-                val lines = items + markedEntities(rows).map { (row, back) -> lineOf(at.world, row, back) }
-                val where = Component.text().append(Ui.entity(type)).append(Ui.text(" ${entity.toString().take(8)}", Ui.MUTED)).build()
-                answer(sender, lines, slots.complete, where, query, at, pages = false)
-            } catch (failure: Throwable) {
-                plugin.logger.log(Level.SEVERE, "lookup of $label failed", failure)
-                sender.say("The lookup failed; the server log has the details.")
+        plugin.offThread(sender, "lookup of $label failed", "The lookup failed; the server log has the details.") {
+            val slots = ledger.holderPage(EntitySlot(entity, 0), 0, Long.MAX_VALUE, reverse = true, limit = MAX_FETCH)
+            val items = entryLines(wholeTransactions(ledger, slots.entries))
+            val log = blocks.get(at.world)
+            // The chunk it stands in and the eight around it.
+            val rows = if (log == null) emptyList() else chunksAround(at, 16).flatMap { (cx, cz) ->
+                log.entitiesInChunk(cx, cz, 0, Long.MAX_VALUE, MAX_ENTITY_WALK) { _, _, _ -> true }.rows.filter { it.uuid == entity }
             }
+            val lines = items + markedEntities(rows).map { (row, back) -> lineOf(at.world, row, back) }
+            val where = Component.text().append(Ui.entity(type)).append(Ui.text(" ${entity.toString().take(8)}", Ui.MUTED)).build()
+            answer(sender, lines, slots.complete, where, query, at, pages = false)
         }
     }
 
@@ -871,12 +863,11 @@ class Lookups(
         val touches = users.map { log.touchedBy(it, fromTs, toTs, GLOBAL_POSITIONS) }
         val positions = touches.flatMap { it.positions }.toSet()
         val keeps = rowFilter(query, users)
-        val fetch = minOf(query.wanted * FETCH_FACTOR, MAX_FETCH)
-        val rows = positions.flatMap { (x, y, z) -> log.at(x, y, z, fromTs, toTs, limit = fetch, reverse = true) }
+        val rows = positions.flatMap { (x, y, z) -> log.at(x, y, z, fromTs, toTs, limit = query.fetch, reverse = true) }
         val entities = positions.flatMap { (x, y, z) -> log.entitiesAt(x, y, z, fromTs, toTs, MAX_ENTITY_WALK).rows }
         val entries = positions.flatMap { (x, y, z) ->
             listOf(Container(target.world, x, y, z, 0), WorldBlock(target.world, x, y, z)).flatMap {
-                ledger.holderPage(it, fromTs, toTs, reverse = true, limit = fetch).entries
+                ledger.holderPage(it, fromTs, toTs, reverse = true, limit = query.fetch).entries
             }
         }.sortedByDescending { it.timestamp }
         val lines = entryLines(wholeTransactions(ledger, filter(entries, query, users))) +
@@ -900,14 +891,13 @@ class Lookups(
         val players = resolveAll(sender, query.players) ?: return
         val users = resolveAll(sender, query.users) ?: return
         val fromTs = query.fromTs()
-        val fetch = minOf(query.wanted * FETCH_FACTOR, MAX_FETCH)
         // The slot never enters the key, so slot 0 stands for every slot of its kind.
         val pages = players.flatMap { player ->
             listOf(
                 PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player),
                 PlayerEnder(player, 0), EntitySlot(player, 0),
             )
-        }.map { ledger.holderPage(it, fromTs, query.toTs(), reverse = true, limit = fetch) }
+        }.map { ledger.holderPage(it, fromTs, query.toTs(), reverse = true, limit = query.fetch) }
         val entries = pages.flatMap { it.entries }.sortedByDescending { it.timestamp }
         val items = entryLines(wholeTransactions(ledger, filter(entries, query, users)))
         val who = query.players.joinToString(", ")
@@ -1062,17 +1052,14 @@ class Lookups(
         val log = blocks.get(target.world) ?: return emptyList()
         val fromTs = query.fromTs()
         val toTs = query.toTs()
-        val fetch = minOf(query.wanted * FETCH_FACTOR, MAX_FETCH)
         val radius = query.radius
         val rows = if (radius == null) {
-            log.at(target.x, target.y, target.z, fromTs, toTs, limit = fetch, reverse = true)
+            log.at(target.x, target.y, target.z, fromTs, toTs, limit = query.fetch, reverse = true)
         } else {
-            val chunkX = ((target.x - radius) shr 4)..((target.x + radius) shr 4)
-            val chunkZ = ((target.z - radius) shr 4)..((target.z + radius) shr 4)
             val inBox = boxAround(target, radius)
-            chunkX.flatMap { cx -> chunkZ.map { cz -> cx to cz } }
+            chunksAround(target, radius)
                 .flatMap { (cx, cz) ->
-                    log.inChunk(cx, cz, fromTs, toTs, limit = fetch, reverse = true) { inBox(it.x, it.y, it.z) }
+                    log.inChunk(cx, cz, fromTs, toTs, limit = query.fetch, reverse = true) { inBox(it.x, it.y, it.z) }
                 }
                 // Each chunk came back newest first; together they have to be again.
                 .sortedByDescending { it.timestamp }
@@ -1116,11 +1103,7 @@ class Lookups(
             log.entitiesAt(target.x, target.y, target.z, fromTs, toTs, MAX_ENTITY_WALK).rows
         } else {
             val inBox = boxAround(target, radius)
-            (((target.x - radius) shr 4)..((target.x + radius) shr 4)).flatMap { cx ->
-                (((target.z - radius) shr 4)..((target.z + radius) shr 4)).flatMap { cz ->
-                    log.entitiesInChunk(cx, cz, fromTs, toTs, MAX_ENTITY_WALK, inBox).rows
-                }
-            }
+            chunksAround(target, radius).flatMap { (cx, cz) -> log.entitiesInChunk(cx, cz, fromTs, toTs, MAX_ENTITY_WALK, inBox).rows }
         }
         val kept = markedEntities(rows).filter { keeps.keeps(it.first) }.sortedByDescending { it.first.timestamp }
         return kept.map { (row, back) -> lineOf(target.world, row, back) }
@@ -1129,13 +1112,12 @@ class Lookups(
     private fun read(target: LookupTarget, query: LookupQuery): EntryPage {
         val fromTs = query.fromTs()
         val toTs = query.toTs()
-        val fetch = minOf(query.wanted * FETCH_FACTOR, MAX_FETCH)
         val radius = query.radius ?: run {
             val pages = listOf(
                 Container(target.world, target.x, target.y, target.z, 0),
                 WorldBlock(target.world, target.x, target.y, target.z),
             ).map { holder ->
-                ledger.holderPage(holder, fromTs, toTs, reverse = true, limit = fetch)
+                ledger.holderPage(holder, fromTs, toTs, reverse = true, limit = query.fetch)
             }
             return EntryPage(
                 pages.flatMap { it.entries }.sortedByDescending { it.timestamp },
@@ -1152,7 +1134,7 @@ class Lookups(
             fromTs = fromTs,
             toTs = toTs,
             reverse = true,
-            limit = fetch,
+            limit = query.fetch,
             // The scan reads whole chunks, so it comes back with rows the radius does not cover. The
             // block plane keeps to the box, and two planes disagreeing about what one radius means
             // inside one answer reads as rows appearing and vanishing for no reason.
@@ -1165,6 +1147,12 @@ class Lookups(
             },
         )
     }
+
+    // The chunks a box of that radius around the target reaches into.
+    private fun chunksAround(target: LookupTarget, radius: Int): List<Pair<Int, Int>> =
+        (((target.x - radius) shr 4)..((target.x + radius) shr 4)).flatMap { cx ->
+            (((target.z - radius) shr 4)..((target.z + radius) shr 4)).map { cz -> cx to cz }
+        }
 
     private fun boxAround(target: LookupTarget, radius: Int) = { x: Int, y: Int, z: Int ->
         x in (target.x - radius)..(target.x + radius) &&

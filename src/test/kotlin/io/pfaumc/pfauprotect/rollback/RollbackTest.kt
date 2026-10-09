@@ -278,6 +278,16 @@ class RollbackTest {
         assertEquals(tnt, settle(STONE, position.steps.map { Step(it.before, STONE, null) }, position.origin).back?.before)
     }
 
+    // A wall the same block as before Alice first touched it, in another shape, is not as it was (D120).
+    @Test
+    fun `a wall joined otherwise than at the origin is not as it was`() {
+        val joined = "minecraft:diorite_wall[east=low,north=none,south=none,up=false,waterlogged=false,west=low]"
+        val loose = "minecraft:diorite_wall[east=low,north=none,south=none,up=true,waterlogged=false,west=none]"
+        val steps = listOf(Step(joined, loose, null))
+        assertEquals(joined, settle(loose, steps, joined).back?.before)
+        assertNull(settle(joined, steps, joined).back)
+    }
+
     // Alice put stone into running water before the window and broke it inside. The air the break left is
     // not the running water it was put into: the stone is what the window opens on, and it goes back.
     @Test

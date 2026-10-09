@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.model
+import io.pfaumc.pfauprotect.storage.ItemKey
 import java.util.UUID
 
 // TRANSFER and FACT must stay 0: the header byte of an ordinary entry is required to be 0x00.
@@ -171,6 +172,18 @@ class Transfer(
     // lands in, in the same batch, so a second rollback can tell they were already given back.
     val reverts: List<PostingRef> = emptyList(),
 ) {
+    constructor(
+        cause: Cause,
+        from: Holder,
+        to: Holder,
+        key: ItemKey,
+        qty: Int,
+        timestamp: Long,
+        kind: Kind = Kind.TRANSFER,
+        confidence: Confidence = Confidence.FACT,
+        actor: UUID? = null,
+    ) : this(cause, from, to, key.form, key.damage, qty, timestamp, kind, confidence, actor)
+
     init {
         require(qty > 0) { "transfer quantity must be positive, got $qty" }
     }

@@ -5,6 +5,7 @@ import com.mojang.brigadier.arguments.StringArgumentType
 import io.papermc.paper.command.brigadier.CommandSourceStack
 import io.papermc.paper.command.brigadier.Commands
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes
+import io.papermc.paper.command.brigadier.argument.resolvers.BlockPositionResolver
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents
 import io.pfaumc.pfauprotect.attribution.Attributed
@@ -58,6 +59,7 @@ import io.pfaumc.pfauprotect.storage.fillTypeRegistries
 import io.pfaumc.pfauprotect.check.heldForms
 import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.command.lookupTargetAt
+import io.pfaumc.pfauprotect.command.offThread
 import io.pfaumc.pfauprotect.command.targetOr
 import io.pfaumc.pfauprotect.rollback.ChunkRollback
 import io.pfaumc.pfauprotect.rollback.Confiscations
@@ -141,18 +143,17 @@ private class Uncovered(private val ledger: RocksItemLog) {
     }
 
     /** The tally as it stands, left for the next report. */
-    fun peek(): String? = counts.entries.map { (cause, count) -> cause to count.sum() }.filter { it.second > 0 }
-        .sortedByDescending { it.second }.joinToString(" ") { "${it.first.name.lowercase()}=${it.second}" }.takeIf { it.isNotEmpty() }
+    fun peek(): String? = format(LongAdder::sum)
 
     /** Takes the tally rather than reading it: what has been reported once must not be reported again. */
-    fun takeTally(): String? {
-        val named = counts.entries
-            .map { (cause, count) -> cause to count.sumThenReset() }
-            .filter { it.second > 0 }
-            .sortedByDescending { it.second }
-            .joinToString(" ") { "${it.first.name.lowercase()}=${it.second}" }
-        return named.takeIf { it.isNotEmpty() }
-    }
+    fun takeTally(): String? = format(LongAdder::sumThenReset)
+
+    private fun format(read: (LongAdder) -> Long): String? = counts.entries
+        .map { (cause, count) -> cause to read(count) }
+        .filter { it.second > 0 }
+        .sortedByDescending { it.second }
+        .joinToString(" ") { "${it.first.name.lowercase()}=${it.second}" }
+        .takeIf { it.isNotEmpty() }
 
     private fun tally(transfer: Transfer) {
         if (transfer.confidence != Confidence.INFERRED) return
@@ -185,11 +186,9 @@ private class WorldBaseListener(private val blocks: BlockLogs) : Listener {
 private class Running(
     val ledger: RocksItemLog,
     val blocks: BlockLogs,
-    val attribution: Attribution,
     val uncovered: Uncovered,
     val codec: ItemFormCodec,
     val capture: ContainerCaptureListener,
-    val destruction: BlockDestructionListener,
     val mechanisms: TickCoalescer,
     val origins: SpawnOrigins,
     val lookups: Lookups,
@@ -253,7 +252,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val rollbacks = Rollbacks(this, ledger, blocks, lookups, chunkRollback, confiscations)
         val chat = io.pfaumc.pfauprotect.storage.ChatLog(dataFolder.toPath().resolve("chat"))
         val running = Running(
-            ledger, blocks, attribution, uncovered, codec, capture, destruction, mechanisms, origins,
+            ledger, blocks, uncovered, codec, capture, mechanisms, origins,
             lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks), rollbacks, chat,
         )
         this.running = running
@@ -271,7 +270,7 @@ class PfauProtectPlugin : JavaPlugin() {
         )
         server.pluginManager.registerEvents(destruction, this)
         server.pluginManager.registerEvents(EntityOriginListener(attribution, entities), this)
-        server.pluginManager.registerEvents(RedstoneListener(energy, blocks, entities, nudges), this)
+        server.pluginManager.registerEvents(RedstoneListener(energy, blocks, entities, nudges, attribution), this)
         // After the attribution of entities, whose notes it reads for who brought a mob in, and before the
         // item capture, which takes the marks off a dying mob's slots that its snapshot has to keep.
         server.pluginManager.registerEvents(entityCapture, this)
@@ -328,39 +327,16 @@ class PfauProtectPlugin : JavaPlugin() {
             mechanisms.flush()
             destruction.settleGrowth()
         }, 1, 1)
-        server.asyncScheduler.runAtFixedRate(
-            this,
-            {
-                attribution.sweep()
-                entities.sweep()
-                energy.sweep()
-                nudges.sweep()
-            },
-            NOTE_MINUTES,
-            NOTE_MINUTES,
-            TimeUnit.MINUTES,
-        )
-        server.asyncScheduler.runAtFixedRate(
-            this,
-            { sweepLedger(ledger) },
-            SWEEP_MINUTES,
-            SWEEP_MINUTES,
-            TimeUnit.MINUTES,
-        )
-        server.asyncScheduler.runAtFixedRate(
-            this,
-            { syncPlanes(running.planes) },
-            PLANE_MINUTES,
-            PLANE_MINUTES,
-            TimeUnit.MINUTES,
-        )
-        server.asyncScheduler.runAtFixedRate(
-            this,
-            { reconcileEveryone(running.reconciliation, codec) },
-            RECONCILE_MINUTES,
-            RECONCILE_MINUTES,
-            TimeUnit.MINUTES,
-        )
+        fun every(minutes: Long, task: () -> Unit) = server.asyncScheduler.runAtFixedRate(this, { task() }, minutes, minutes, TimeUnit.MINUTES)
+        every(NOTE_MINUTES) {
+            attribution.sweep()
+            entities.sweep()
+            energy.sweep()
+            nudges.sweep()
+        }
+        every(SWEEP_MINUTES) { logPass { checkLedger(ledger, 1, it) } }
+        every(PLANE_MINUTES) { if (isEnabled) logPass { checkPlanes(running.planes, 1, false, it) } }
+        every(RECONCILE_MINUTES) { reconcileEveryone(running.reconciliation, codec) }
         server.asyncScheduler.runAtFixedRate(this, { reportUncovered(uncovered) }, 1, 1, TimeUnit.DAYS)
         warnAboutSilencedHoppers()
         registerCommand(CommandBrackets(this, blocks, codec, ledger, uncovered::submit))
@@ -412,64 +388,95 @@ class PfauProtectPlugin : JavaPlugin() {
         logger.info("movements the capture could not explain: $tally")
     }
 
+    // A periodic pass that found something is a warning; a clean one is only the news that it came round.
+    private fun logPass(pass: ((String) -> Unit) -> Boolean) {
+        val lines = ArrayList<String>()
+        val level = if (pass { lines += it }) Level.WARNING else Level.INFO
+        for (line in lines) logger.log(level, line)
+    }
+
     // A gap means one end of a movement was written and the other was not, which is a hole in the
-    // capture rather than anything a player did. Reported as it is found, not once the ledger is
-    // already being read in anger.
-    private fun sweepLedger(ledger: RocksItemLog) {
-        val report = ledger.sweep(SWEEP_ENTRIES)
-        for (gap in report.gaps.take(SWEEP_GAPS_LOGGED)) logger.warning("ledger gap: $gap")
-        val unlisted = report.gaps.size - SWEEP_GAPS_LOGGED
-        if (unlisted > 0) logger.warning("and $unlisted more ledger gaps in this pass")
+    // capture rather than anything a player did. The periodic pass is one round, reported as it is found
+    // rather than once the ledger is already being read in anger; /pp verify runs rounds to the end.
+    // Says whether it found anything.
+    private fun checkLedger(ledger: RocksItemLog, rounds: Int, say: (String) -> Unit): Boolean {
+        var checked = 0
+        var unreadable = 0
+        val gaps = ArrayList<String>()
+        var round = 0
+        var reachedEnd = false
+        while (round < rounds && !reachedEnd) {
+            val report = ledger.sweep(SWEEP_ENTRIES)
+            checked += report.checked
+            unreadable += report.unreadable
+            gaps += report.gaps
+            reachedEnd = report.reachedEnd
+            round++
+        }
         // Rows this build cannot decode are not rows without gaps. Left unsaid, a ledger that has
         // become unreadable would keep reporting clean passes.
-        if (report.unreadable > 0) {
-            logger.warning("${report.unreadable} ledger rows in this pass could not be read by this build")
-        }
-        if (report.reachedEnd && report.checked > 0) {
-            logger.info("ledger swept to the end, ${report.checked} entries in this pass, ${report.gaps.size} gaps")
-        }
+        val found = gaps.isNotEmpty() || unreadable > 0
+        val whole = rounds > 1
+        if (!whole && !found && !(reachedEnd && checked > 0)) return false
+        say("Transaction invariant: $checked entries, ${gaps.size} gaps, $unreadable unreadable.")
+        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) say("  gap: $gap")
+        if (gaps.size > SWEEP_GAPS_LOGGED) say("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
+        if (whole && !reachedEnd) say("  stopped on the round limit; run it again to cover the rest.")
+        return found
     }
 
     // A position where the two planes disagree is a change that reached one of them and not the other,
     // which from inside either plane on its own reads as perfectly consistent. That is a hole in the
-    // capture rather than anything a player did.
-    private fun syncPlanes(planes: PlaneSync) {
-        if (!isEnabled) return
-        val report = planes.pass(PLANE_POSTINGS)
-        for (gap in report.gaps.take(SWEEP_GAPS_LOGGED)) {
-            val world = server.getWorld(gap.at.world)?.name ?: gap.at.world.toString()
-            logger.warning(
-                "plane gap in $world at ${gap.at.x} ${gap.at.y} ${gap.at.z}: the block plane says " +
-                    "${gap.standing} stands there, the item plane still holds ${gap.fact} confirmed " +
-                    "and ${gap.inferred} inferred"
-            )
+    // capture rather than anything a player did. Says whether it found anything.
+    private fun checkPlanes(planes: PlaneSync, rounds: Int, judgeRecent: Boolean, say: (String) -> Unit): Boolean {
+        // Reading as though a settle window's worth of time had already passed is what lets a position
+        // touched a moment ago be judged at all.
+        val now = System.currentTimeMillis() + if (judgeRecent) SETTLE_MILLIS else 0
+        var checked = 0
+        var unrecorded = 0
+        var settling = 0
+        var unreadable = 0
+        var overdrawn = 0
+        val gaps = ArrayList<PlaneGap>()
+        var round = 0
+        var reachedEnd = false
+        while (round < rounds && !reachedEnd) {
+            val report = planes.pass(PLANE_POSTINGS, now)
+            checked += report.checked
+            unrecorded += report.unrecorded
+            settling += report.settling
+            unreadable += report.unreadable
+            overdrawn += report.overdrawn
+            gaps += report.gaps
+            reachedEnd = report.reachedEnd
+            round++
         }
-        val unlisted = report.gaps.size - SWEEP_GAPS_LOGGED
-        if (unlisted > 0) logger.warning("and $unlisted more plane gaps in this pass")
-        // Positions this build cannot read are not positions that agree. Left unsaid, a base that has
-        // become unreadable would keep reporting clean passes.
-        if (report.unreadable > 0) {
-            logger.warning("${report.unreadable} positions in this pass could not be compared by this build")
-        }
-        // The opposite of a standing debt and just as much a hole in the capture: the item plane took
-        // items out of a position it was never told held any.
-        if (report.overdrawn > 0) {
-            logger.warning(
-                "${report.overdrawn} positions in this pass gave up more than the item plane " +
-                    "ever booked to them"
-            )
-        }
+        // Positions this build cannot read are not positions that agree, and overdrawn ones — the item
+        // plane took items out of a position it was never told held any — are as much a hole as a gap.
+        val found = gaps.isNotEmpty() || unreadable > 0 || overdrawn > 0
+        val whole = rounds > 1
         // A last page of nothing but positions too fresh to judge is still the end of the cycle; a
         // busy piston clock keeps its own positions fresh for ever, and staying quiet then read as a
         // cursor that never came round.
-        if (report.reachedEnd && (report.checked > 0 || report.unrecorded > 0 || report.settling > 0)) {
-            logger.info(
-                "planes compared to the end of the item plane, ${report.checked} positions in this pass, " +
-                    "${report.unrecorded} the block plane never recorded, ${report.settling} too recent " +
-                    "to judge, ${report.gaps.size} gaps, " +
-                    "${report.gaps.count { it.fact == 0 }} of them with nothing confirmed standing"
+        if (!whole && !found && !(reachedEnd && (checked > 0 || unrecorded > 0 || settling > 0))) return false
+        say(
+            "Two planes: $checked positions compared, ${gaps.size} gaps, $overdrawn overdrawn, " +
+                "$unrecorded the block plane never recorded, $settling too recent to judge, " +
+                "$unreadable unreadable."
+        )
+        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) {
+            val world = server.getWorld(gap.at.world)?.name ?: gap.at.world.toString()
+            say(
+                "  gap in $world at ${gap.at.x} ${gap.at.y} ${gap.at.z}: ${gap.standing} stands there, " +
+                    "the item plane holds ${gap.fact} confirmed and ${gap.inferred} inferred"
             )
         }
+        if (gaps.size > SWEEP_GAPS_LOGGED) say("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
+        if (whole && settling > 0 && !judgeRecent) {
+            say("  $settling positions were touched too recently; 'verify recent' judges them too.")
+        }
+        if (whole && !reachedEnd) say("  stopped on the round limit; run it again to cover the rest.")
+        return found
     }
 
     // With the move event switched off the server stops telling anyone that a hopper moved anything,
@@ -600,17 +607,13 @@ class PfauProtectPlugin : JavaPlugin() {
     private fun teleportNode() = Commands.literal("tp")
         .requires { it.sender.hasPermission(TELEPORT_PERMISSION) && it.executor is Player }
         .then(
-            Commands.argument("x", IntegerArgumentType.integer()).then(
-                Commands.argument("y", IntegerArgumentType.integer()).then(
-                    Commands.argument("z", IntegerArgumentType.integer())
-                        .executes { teleport(it, null) }
-                        .then(
-                            Commands.argument("world", StringArgumentType.word())
-                                .suggests { _, builder -> server.worlds.forEach { builder.suggest(it.name) }; builder.buildFuture() }
-                                .executes { teleport(it, StringArgumentType.getString(it, "world")) }
-                        )
+            Commands.argument("position", ArgumentTypes.blockPosition())
+                .executes { teleport(it, null) }
+                .then(
+                    Commands.argument("world", StringArgumentType.word())
+                        .suggests { _, builder -> server.worlds.forEach { builder.suggest(it.name) }; builder.buildFuture() }
+                        .executes { teleport(it, StringArgumentType.getString(it, "world")) }
                 )
-            )
         )
 
     private fun teleport(context: com.mojang.brigadier.context.CommandContext<CommandSourceStack>, worldName: String?): Int {
@@ -620,10 +623,8 @@ class PfauProtectPlugin : JavaPlugin() {
             context.source.sender.say("Unknown world: $worldName")
             return 0
         }
-        val x = IntegerArgumentType.getInteger(context, "x")
-        val y = IntegerArgumentType.getInteger(context, "y")
-        val z = IntegerArgumentType.getInteger(context, "z")
-        player.teleportAsync(org.bukkit.Location(world, x + 0.5, y.toDouble(), z + 0.5, player.location.yaw, player.location.pitch))
+        val at = context.getArgument("position", BlockPositionResolver::class.java).resolve(context.source)
+        player.teleportAsync(org.bukkit.Location(world, at.blockX() + 0.5, at.blockY().toDouble(), at.blockZ() + 0.5, player.location.yaw, player.location.pitch))
         return Command.SINGLE_SUCCESS
     }
 
@@ -680,17 +681,6 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     /**
-     * Both store-side self-checks, run to the end rather than on their own schedules. The writer runs
-     * on a thread of its own, so anything it has not written yet is missing from what a check would
-     * read, which on a hand-run check is the difference between a real finding and the last thing the
-     * tester did.
-     *
-     * `judgeRecent` gives up the settle window the periodic pass keeps. The window is there because
-     * the two planes are written by two threads and a position read between them disagrees with itself
-     * for a moment; giving it up is what makes a check worth running straight after an action, at the
-     * price of the odd race reported as a finding.
-     */
-    /**
      * Deletes history older than the age given, in both planes, after a preview that counts it. What each
      * holder held at the cutoff is written as an opening balance, so the self-checks still add up; the
      * newest row of each position stays, so the attribution can still ask who put a block there.
@@ -708,25 +698,20 @@ class PfauProtectPlugin : JavaPlugin() {
             return 0
         }
         sender.say(if (confirm) "Purging everything older than $age; this walks the whole journal." else "Counting what a purge of everything older than $age would delete.")
-        server.asyncScheduler.runNow(this) {
-            try {
-                val cutoff = System.currentTimeMillis() - seconds * 1000
-                running.ledger.drain()
-                for (world in running.blocks.worlds) running.blocks.get(world)?.drain()
-                val (entries, openings) = running.ledger.purgeBefore(cutoff, dryRun = !confirm)
-                var rows = 0
-                var entities = 0
-                for (world in running.blocks.worlds) {
-                    val (r, e) = running.blocks.get(world)?.purgeBefore(cutoff, dryRun = !confirm) ?: continue
-                    rows += r
-                    entities += e
-                }
-                val counts = "$entries item rows, $rows block rows, $entities entity rows; $openings opening balances"
-                sender.say(if (confirm) "Purged $counts written." else "A purge would delete $counts to write. /pp purge $age confirm runs it.")
-            } catch (failure: Throwable) {
-                logger.log(Level.SEVERE, "the purge failed", failure)
-                sender.say("The purge failed; the server log has the details.")
+        offThread(sender, "the purge failed", "The purge failed; the server log has the details.") {
+            val cutoff = System.currentTimeMillis() - seconds * 1000
+            running.ledger.drain()
+            for (world in running.blocks.worlds) running.blocks.get(world)?.drain()
+            val (entries, openings) = running.ledger.purgeBefore(cutoff, dryRun = !confirm)
+            var rows = 0
+            var entities = 0
+            for (world in running.blocks.worlds) {
+                val (r, e) = running.blocks.get(world)?.purgeBefore(cutoff, dryRun = !confirm) ?: continue
+                rows += r
+                entities += e
             }
+            val counts = "$entries item rows, $rows block rows, $entities entity rows; $openings opening balances"
+            sender.say(if (confirm) "Purged $counts written." else "A purge would delete $counts to write. /pp purge $age confirm runs it.")
         }
         return Command.SINGLE_SUCCESS
     }
@@ -810,83 +795,27 @@ class PfauProtectPlugin : JavaPlugin() {
         return "%.1f MB".format(java.util.Locale.ROOT, bytes / 1_048_576.0)
     }
 
+    /**
+     * Both store-side self-checks, run to the end rather than on their own schedules. The writer runs
+     * on a thread of its own, so anything it has not written yet is missing from what a check would
+     * read, which on a hand-run check is the difference between a real finding and the last thing the
+     * tester did.
+     *
+     * `judgeRecent` gives up the settle window the periodic pass keeps. The window is there because
+     * the two planes are written by two threads and a position read between them disagrees with itself
+     * for a moment; giving it up is what makes a check worth running straight after an action, at the
+     * price of the odd race reported as a finding.
+     */
     private fun verify(source: CommandSourceStack, judgeRecent: Boolean): Int {
         val running = this.running ?: return notReady(source)
         val sender = source.sender
         sender.say("Running both self-checks to the end; this reads the whole journal.")
-        server.asyncScheduler.runNow(this) {
-            try {
-                running.ledger.drain()
-                reportSweep(sender, running.ledger)
-                reportPlanes(sender, running.planes, judgeRecent)
-            } catch (failure: Throwable) {
-                logger.log(Level.SEVERE, "the self-checks failed", failure)
-                sender.say("The self-checks failed; the server log has the details.")
-            }
+        offThread(sender, "the self-checks failed", "The self-checks failed; the server log has the details.") {
+            running.ledger.drain()
+            checkLedger(running.ledger, VERIFY_ROUNDS, sender::say)
+            checkPlanes(running.planes, VERIFY_ROUNDS, judgeRecent, sender::say)
         }
         return Command.SINGLE_SUCCESS
-    }
-
-    private fun reportSweep(sender: CommandSender, ledger: RocksItemLog) {
-        var checked = 0
-        var unreadable = 0
-        val gaps = ArrayList<String>()
-        var rounds = 0
-        var reachedEnd = false
-        while (rounds < VERIFY_ROUNDS && !reachedEnd) {
-            val report = ledger.sweep(SWEEP_ENTRIES)
-            checked += report.checked
-            unreadable += report.unreadable
-            gaps += report.gaps
-            reachedEnd = report.reachedEnd
-            rounds++
-        }
-        sender.say("Transaction invariant: $checked entries, ${gaps.size} gaps, $unreadable unreadable.")
-        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) sender.say("  gap: $gap")
-        if (gaps.size > SWEEP_GAPS_LOGGED) sender.say("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
-        if (!reachedEnd) sender.say("  stopped on the round limit; run it again to cover the rest.")
-    }
-
-    private fun reportPlanes(sender: CommandSender, planes: PlaneSync, judgeRecent: Boolean) {
-        // Reading as though a settle window's worth of time had already passed is what lets a position
-        // touched a moment ago be judged at all.
-        val now = System.currentTimeMillis() + if (judgeRecent) SETTLE_MILLIS else 0
-        var checked = 0
-        var unrecorded = 0
-        var settling = 0
-        var unreadable = 0
-        var overdrawn = 0
-        val gaps = ArrayList<PlaneGap>()
-        var rounds = 0
-        var reachedEnd = false
-        while (rounds < VERIFY_ROUNDS && !reachedEnd) {
-            val report = planes.pass(PLANE_POSTINGS, now)
-            checked += report.checked
-            unrecorded += report.unrecorded
-            settling += report.settling
-            unreadable += report.unreadable
-            overdrawn += report.overdrawn
-            gaps += report.gaps
-            reachedEnd = report.reachedEnd
-            rounds++
-        }
-        sender.say(
-            "Two planes: $checked positions compared, ${gaps.size} gaps, $overdrawn overdrawn, " +
-                "$unrecorded the block plane never recorded, $settling too recent to judge, " +
-                "$unreadable unreadable."
-        )
-        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) {
-            val world = server.getWorld(gap.at.world)?.name ?: gap.at.world.toString()
-            sender.say(
-                "  gap in $world at ${gap.at.x} ${gap.at.y} ${gap.at.z}: ${gap.standing} stands there, " +
-                    "the item plane holds ${gap.fact} confirmed and ${gap.inferred} inferred"
-            )
-        }
-        if (gaps.size > SWEEP_GAPS_LOGGED) sender.say("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
-        if (settling > 0 && !judgeRecent) {
-            sender.say("  $settling positions were touched too recently; 'verify recent' judges them too.")
-        }
-        if (!reachedEnd) sender.say("  stopped on the round limit; run it again to cover the rest.")
     }
 
     private fun reconcile(source: CommandSourceStack, target: Player?): Int {

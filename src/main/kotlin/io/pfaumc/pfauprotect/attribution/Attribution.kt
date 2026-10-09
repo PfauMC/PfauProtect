@@ -53,7 +53,7 @@ private val DIAGONALS = (-1..1).flatMap { dx ->
 // a block that was already standing there — a break writes a row at the position it emptied, and the
 // surviving half of a double chest is rewritten to `type=single` when its partner goes — and the
 // actor of such a row put nothing down.
-private val PLACING_CAUSES = setOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_BONEMEAL)
+internal val PLACING_CAUSES = setOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_BONEMEAL)
 
 // The same for a liquid source: a bucket emptied by hand or by a dispenser.
 internal val POURING_CAUSES = setOf(Cause.BLK_BUCKET, Cause.BLK_DISPENSER)
@@ -64,7 +64,19 @@ internal val FLOWING_CAUSES = POURING_CAUSES + Cause.BLK_LIQUID_FLOW
 // And for a fire: lit by hand or by lava, leapt from another fire, or left by a block that burnt.
 internal val FIRING_CAUSES = setOf(Cause.BLK_PLAYER_USE, Cause.BLK_FIRE_SPREAD, Cause.BLK_FIRE_BURN)
 
-private val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
+internal val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
+
+// A block state as its block alone, without the properties in brackets.
+internal fun blockNameOf(state: String) = state.substringBefore('[')
+
+// Every position within `reach` of the centre along each axis, x outermost and z innermost.
+internal fun cube(at: WorldBlock, reach: Int): Sequence<WorldBlock> = sequence {
+    for (dx in -reach..reach) {
+        for (dy in -reach..reach) {
+            for (dz in -reach..reach) yield(at.copy(x = at.x + dx, y = at.y + dy, z = at.z + dz))
+        }
+    }
+}
 
 /**
  * Liquid that ran somewhere rather than was poured there. Its arrival writes no row, so it is the
@@ -152,7 +164,7 @@ class Attribution(
      * state, so a re-oriented or waterlogged variant still matches itself.
      */
     fun placerAt(at: WorldBlock, standing: String): Attributed? =
-        noted(placements, at, NOTE_MILLIS, blockOf(standing))?.let { Attributed(it.actor) }
+        noted(placements, at, NOTE_MILLIS, blockNameOf(standing))?.let { Attributed(it.actor) }
 
     /**
      * The same question of the journal, which costs a seek into RocksDB through JNI and so has no
@@ -171,8 +183,8 @@ class Attribution(
         if (row.cause !in causes) return null
         val after = registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) ?: return null
         val before = registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore) ?: return null
-        val block = blockOf(standing)
-        if (blockOf(after) != block || blockOf(before) == block && !flowing(before)) return null
+        val block = blockNameOf(standing)
+        if (blockNameOf(after) != block || blockNameOf(before) == block && !flowing(before)) return null
         val confidence = if (row.confidence == Confidence.NEARBY) Confidence.NEARBY else Confidence.INFERRED
         return row.actor?.let { Attributed(it, confidence) }
     }
@@ -186,7 +198,7 @@ class Attribution(
      */
     fun carriedTo(at: WorldBlock, standing: String): Attributed? {
         placerAt(at, standing)?.let { return it }
-        val found = around(placements, at, FACES, NOTE_MILLIS, blockOf(standing)) ?: return null
+        val found = around(placements, at, FACES, NOTE_MILLIS, blockNameOf(standing)) ?: return null
         placed(at, standing, found.actor)
         return Attributed(found.actor)
     }
@@ -259,19 +271,8 @@ class Attribution(
      * the golems are built out of blocks and appear when the last of them is placed, so the answer is
      * the most recent placement around the shape rather than one at a position the event names.
      */
-    fun builderNear(at: WorldBlock, reach: Int): Attributed? {
-        var best: Note? = null
-        for (dx in -reach..reach) {
-            for (dy in -reach..reach) {
-                for (dz in -reach..reach) {
-                    val here = at.copy(x = at.x + dx, y = at.y + dy, z = at.z + dz)
-                    val note = noted(placements, here, NOTE_MILLIS) ?: continue
-                    if (best == null || note.at > best.at) best = note
-                }
-            }
-        }
-        return best?.let { Attributed(it.actor) }
-    }
+    fun builderNear(at: WorldBlock, reach: Int): Attributed? =
+        cube(at, reach).mapNotNull { noted(placements, it, NOTE_MILLIS) }.maxByOrNull { it.at }?.let { Attributed(it.actor) }
 
     // A falling block is attributed in two halves and positional state does not survive the flight:
     // what stands in the source position by the time the block lands is whatever took its place.
@@ -313,7 +314,7 @@ class Attribution(
     private fun noted(notes: Map<WorldBlock, Note>, at: WorldBlock, window: Long, block: String? = null): Note? {
         val note = notes[at] ?: return null
         if (now() - note.at > window) return null
-        if (block != null && blockOf(note.state ?: return null) != block) return null
+        if (block != null && blockNameOf(note.state ?: return null) != block) return null
         return note
     }
 
@@ -328,8 +329,6 @@ class Attribution(
             noted(notes, at.copy(x = at.x + dx, y = at.y + dy, z = at.z + dz), window, block)
         }
         .maxByOrNull { it.at }
-
-    private fun blockOf(state: String) = state.substringBefore('[')
 }
 
 // How long an origin stands for. An entity outlives every other note in this file: a wither built in

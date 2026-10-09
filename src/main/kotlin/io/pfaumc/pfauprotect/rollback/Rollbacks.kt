@@ -15,6 +15,7 @@ import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.LookupTarget
 import io.pfaumc.pfauprotect.command.Lookups
 import io.pfaumc.pfauprotect.command.RowFilter
+import io.pfaumc.pfauprotect.command.offThread
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.PostingRef
@@ -38,6 +39,8 @@ import io.pfaumc.pfauprotect.capture.entity.snapshotOf
 import io.pfaumc.pfauprotect.capture.entity.changedBetween
 import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.ItemEntityRef
+import io.pfaumc.pfauprotect.model.PlayerHolder
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.storage.EntityChange
 import io.pfaumc.pfauprotect.storage.EntityRow
@@ -115,6 +118,13 @@ private const val HOLD_LINGER_TICKS = 200L
 
 // How far from a block it put back a rollback puts fire out.
 private const val DOUSE_REACH = 2
+
+// How far above and below the plan's positions running liquid is looked for once the rollback is done: a
+// cast's lava falls from the roofs to the street.
+private const val DRAIN_SPAN = 40
+
+// A running liquid bigger than this is a river someone feeds, not what is left of a griefer's bucket.
+private const val FLOW_LIMIT = 8192
 
 // Canvas loads an unloaded chunk for `canvas$loadOrRunAtChunksAsync` and then never calls back when no
 // player keeps it loaded: the rollback waited for good and answered nothing. So a rollback holds its
@@ -358,9 +368,9 @@ class ChunkRollback(
     private val placed: PlacedForms,
     private val sink: (List<Transfer>) -> Unit,
     // The ledger's forms, from memory: nothing here may read the database.
-    private val formOf: (Long) -> ByteArray? = { null },
+    private val formOf: (Long) -> ByteArray?,
     // Tells the entity capture that a removal is the rollback's own and written by it.
-    private val forget: (UUID) -> Unit = {},
+    private val forget: (UUID) -> Unit,
 ) {
     fun run(level: ServerLevel, chunk: ChunkPlan, actor: UUID?, apply: Boolean): Tally {
         val tally = Tally()
@@ -374,12 +384,17 @@ class ChunkRollback(
         // What a source being taken away had run into goes with it, before anything is put back: a plank
         // put back in the middle of the flow would cut the walk off, and lava left running sets fire to
         // the house the rollback is putting back.
+        // So does a flow the players' rows stand in whose source is no more: the lava of a cast whose sources the
+        // water turned to stone ran on down the restored roofs for minutes, read as air and left to drain (NX1).
         val drained = if (!apply) emptyList() else positions.indices.flatMap { i ->
             val was = before[i].state
             val removed = was.block is LiquidBlock && was.fluidState.isSource &&
                 targets[i].let { it != null && it != was.asBlockData().asString }
-            if (!removed) emptyList()
-            else ranFrom(spots[i], level::getBlockState) { Bukkit.isOwnedByCurrentRegion(level.world, it.x shr 4, it.z shr 4) }
+            when {
+                was.block is LiquidBlock && !was.fluidState.isSource && positions[i].steps.isNotEmpty() -> listOf(spots[i] to was)
+                !removed -> emptyList()
+                else -> ranFrom(spots[i], level::getBlockState) { Bukkit.isOwnedByCurrentRegion(level.world, it.x shr 4, it.z shr 4) }
+            }
         }
         for ((pos, _) in drained) level.setBlock(pos, Blocks.AIR.defaultBlockState(), PLACE_FLAGS)
         positions.forEachIndexed { i, plan ->
@@ -443,6 +458,8 @@ class ChunkRollback(
         val doused = if (!apply) emptyList() else douse(level, spots)
         // After the blocks, so a chest that came back is there to take its contents.
         val givenBack = ArrayList<PostingRef>()
+        // The form a bare mark of the given-back postings is written under when no slot moves to carry it.
+        var marker: ByteArray? = null
         positions.forEachIndexed { i, plan ->
             for (refill in plan.refills) {
                 tally.slots++
@@ -457,14 +474,24 @@ class ChunkRollback(
                 // griefer set under a chest is a stop on the way, and both ends of the stop are done.
                 if (container == null && touched[i]) {
                     givenBack += refill.posting
-                    if (refill.qty < 0) tally.traces += Trace(refill.lead, refill.formId, refill.qty)
+                    marker = marker ?: refill.form
+                    // What a player or a pile carried out of it is in their hands, not at another stop: the
+                    // griefer who emptied his own hopper kept the owner's diamonds (D115).
+                    if (refill.qty < 0 || refill.lead is PlayerHolder || refill.lead is ItemEntityRef) {
+                        tally.traces += Trace(refill.lead, refill.formId, refill.qty)
+                    }
                     continue
                 }
                 val moved = if (container == null) 0 else putBack(
                     container, refill.at.slot, codec.decode(refill.form, 1, refill.damage), refill.qty,
                 ) { codec.encode(it).form.contentEquals(refill.form) }
                 if (moved < abs(refill.qty)) tally.missed++
-                if (moved > 0) givenBack += refill.posting
+                if (moved > 0) {
+                    givenBack += refill.posting
+                    // What went in and came out again leaves the container as it was: nothing moves to carry
+                    // the mark on.
+                    marker = marker ?: refill.form
+                }
                 if (moved > 0) tally.traces += Trace(refill.lead, refill.formId, if (refill.qty > 0) moved else -moved)
             }
         }
@@ -482,13 +509,73 @@ class ChunkRollback(
         val planned = spots.toHashSet()
         for ((pos, was) in doused) if (pos !in planned) difference.add(pos.x, pos.y, pos.z, was, standingAt(level, pos, codec), blockRow = true)
         if (difference.rows.isNotEmpty()) logs.get(world)?.submit(difference.rows)
-        if (difference.moved) sink(difference.transfers(givenBack))
+        if (difference.moved) {
+            sink(difference.transfers(givenBack))
+        } else if (givenBack.isNotEmpty()) {
+            // Containers taken away empty, the griefer's dispensers fired out (D116): nothing moves, but the
+            // postings are given back all the same, or every rollback after this one counts them again.
+            sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, marker!!, null, 1, difference.timestamp, actor = actor, reverts = givenBack)))
+        }
         difference.writeOff(plugin, placed, sink)
         // Last, and after the rows: what the neighbours do now is theirs, and the capture files it.
         for (i in positions.indices) if (touched[i]) level.updateNeighboursOnBlockSet(spots[i], before[i].state)
         for ((pos, was) in drained) level.updateNeighboursOnBlockSet(pos, was)
         for ((pos, was) in doused) level.updateNeighboursOnBlockSet(pos, was.state)
         return tally
+    }
+
+    /**
+     * Once every chunk is done, the running liquid in the chunk that no source feeds any more: a chunk put back
+     * first was flowed into again from its neighbour's sources, not yet taken, and the lava of a cast lay on the
+     * street long after the rollback, flows whose way down from the cast no row had followed (NX1). The game
+     * takes such a flow away by itself, tick by tick; a flow any source still feeds is left to it.
+     */
+    fun drainLeft(level: ServerLevel, chunk: ChunkPlan) {
+        if (chunk.positions.isEmpty()) return
+        val owned = { pos: BlockPos -> Bukkit.isOwnedByCurrentRegion(level.world, pos.x shr 4, pos.z shr 4) }
+        val low = maxOf(level.minY, chunk.positions.minOf { it.at.y } - DRAIN_SPAN)
+        val high = minOf(level.maxY - 1, chunk.positions.maxOf { it.at.y } + DRAIN_SPAN)
+        val seen = HashSet<BlockPos>()
+        val orphaned = LinkedHashMap<BlockPos, net.minecraft.world.level.block.state.BlockState>()
+        for (x in chunk.chunkX * 16 until chunk.chunkX * 16 + 16) for (z in chunk.chunkZ * 16 until chunk.chunkZ * 16 + 16) {
+            for (y in low..high) {
+                val pos = BlockPos(x, y, z)
+                if (pos in seen || !running(level.getBlockState(pos))) continue
+                val (flow, fed) = flowFrom(pos, level, owned, seen)
+                if (!fed) orphaned.putAll(flow)
+            }
+        }
+        for (pos in orphaned.keys) level.setBlock(pos, Blocks.AIR.defaultBlockState(), PLACE_FLAGS)
+        for ((pos, was) in orphaned) level.updateNeighboursOnBlockSet(pos, was)
+    }
+
+    private fun running(state: net.minecraft.world.level.block.state.BlockState) = state.block is LiquidBlock && !state.fluidState.isSource
+
+    // The running liquid joined to `start`, and whether a source of it touches any of it. One too big to walk is
+    // taken as fed.
+    private fun flowFrom(
+        start: BlockPos, level: ServerLevel, owned: (BlockPos) -> Boolean, seen: MutableSet<BlockPos>,
+    ): Pair<Map<BlockPos, net.minecraft.world.level.block.state.BlockState>, Boolean> {
+        val fluid = level.getBlockState(start).fluidState.type
+        val flow = LinkedHashMap<BlockPos, net.minecraft.world.level.block.state.BlockState>()
+        val queue = ArrayDeque(listOf(start))
+        seen += start
+        var fed = false
+        while (queue.isNotEmpty()) {
+            val at = queue.removeFirst()
+            flow[at] = level.getBlockState(at)
+            for (direction in Direction.entries) {
+                val near = at.relative(direction)
+                // Another region's block cannot be read here, and a source may stand there: left as fed.
+                if (!owned(near)) return flow to true
+                val state = level.getBlockState(near)
+                if (!state.fluidState.type.isSame(fluid)) continue
+                if (state.fluidState.isSource) fed = true
+                else if (state.block is LiquidBlock && seen.add(near)) queue += near
+            }
+            if (flow.size > FLOW_LIMIT) return flow to true
+        }
+        return flow to fed
     }
 
     /**
@@ -526,7 +613,12 @@ class ChunkRollback(
         val alive = Bukkit.getEntity(plan.uuid)?.takeIf { it.isValid }
         when (plan.oldest.kind) {
             EntityKind.CREATED -> {
-                if (alive == null) return run { tally.entitiesAlready++ }
+                // Gone already, but what fell out of it lies there: wool and mutton of a sheep the griefer let
+                // loose on a roof, which fell off it and died (D123).
+                if (alive == null) return run {
+                    tally.entitiesAlready++
+                    tally.piles += plan.drops
+                }
                 tally.entitiesTaken++
                 if (apply) tally.jobs += EntityJob(alive) { taken -> takeAway(alive, plan, actor, taken) }
             }
@@ -664,8 +756,9 @@ class ChunkRollback(
     /**
      * The neighbours outside the plan told of what came back beside them, the way the game tells them of any
      * block set: leaves count their way to a log again. One that takes its shape from what is beside it is
-     * left as it stands, since what a griefer made of it is a row of its own and in the plan (D104). Before
-     * the observers are quietened, which this would set off.
+     * left as it stands, since what a griefer made of it is a row of its own and in the plan (D104): worked out
+     * again it would lose a shape no rule of the game gives, which a builder's tool put there. Before the
+     * observers are quietened, which this would set off.
      */
     private fun reshapeAround(level: ServerLevel, put: List<BlockPos>) {
         val planned = put.toHashSet()
@@ -871,8 +964,8 @@ class Rollbacks(
         apply: Boolean,
         release: () -> Unit,
         rows: String?,
-        leftBefore: Int = 0,
-        since: Long = 0,
+        leftBefore: Int,
+        since: Long,
     ) {
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
@@ -927,7 +1020,11 @@ class Rollbacks(
         }
         val left = AtomicInteger(work.size)
         val progress = Progress(sender as? Player, work.size, apply)
-        val done = { val n = left.decrementAndGet(); progress.step(work.size - n); if (n == 0) entityJobs(total) { finishing(sender, total, read, where, apply, actor, rows, freed) } }
+        val done = {
+            val n = left.decrementAndGet()
+            progress.step(work.size - n)
+            if (n == 0) drainAll(work, apply) { entityJobs(total) { finishing(sender, total, read, where, apply, actor, rows, freed) } }
+        }
         // A few chunks at a time, each starting the next as it ends: a /pp cancel then reaches the chunks not
         // begun yet, and a big rollback does not land on every region in the same tick.
         val queue = java.util.concurrent.ConcurrentLinkedQueue(work)
@@ -959,6 +1056,23 @@ class Rollbacks(
         repeat(minOf(CONCURRENT_CHUNKS, work.size)) { next() }
     }
 
+    // The liquid left running, every chunk on its own region, once all of them are put back.
+    private fun drainAll(work: List<Pair<ServerLevel, ChunkPlan>>, apply: Boolean, then: () -> Unit) {
+        if (!apply) return then()
+        val left = AtomicInteger(work.size)
+        for ((level, chunk) in work) {
+            level.`canvas$loadOrRunAtChunksAsync`(chunk.chunkX, chunk.chunkX, chunk.chunkZ, chunk.chunkZ, Priority.NORMAL) {
+                try {
+                    chunks.drainLeft(level, chunk)
+                } catch (failure: Throwable) {
+                    plugin.logger.log(Level.WARNING, "a rollback could not drain the chunk at ${chunk.chunkX} ${chunk.chunkZ}", failure)
+                } finally {
+                    if (left.decrementAndGet() == 0) then()
+                }
+            }
+        }
+    }
+
     // Live entities are worked on their own threads once every chunk is done; the rest waits for them.
     private fun entityJobs(total: Tally, then: () -> Unit) {
         val jobs = synchronized(total) { total.jobs.toList() }
@@ -981,12 +1095,13 @@ class Rollbacks(
 
     // Following what was given back to whoever holds it reads the ledger, which a region thread may not.
     private fun finishing(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, rows: String?, release: () -> Unit) {
-        Bukkit.getAsyncScheduler().runNow(plugin) {
+        plugin.offThread(
+            sender,
+            "taking back what the rollback at $where gave back failed",
+            "Taking back what the rollback gave back failed; the server log has the details.",
+        ) {
             try {
                 finish(sender, total, read, where, apply, actor, rows)
-            } catch (failure: Throwable) {
-                plugin.logger.log(Level.SEVERE, "taking back what the rollback at $where gave back failed", failure)
-                sender.say("Taking back what the rollback gave back failed; the server log has the details.")
             } finally {
                 release()
             }
@@ -994,7 +1109,7 @@ class Rollbacks(
     }
 
     private fun finish(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, rows: String?) {
-        val owed = confiscations.owedFor(total)
+        val owed = owedFor(ledger, total)
         report(sender, total, read, where, apply, rows)
         if (!apply) (sender as? Player)?.let { ghosts.show(it, total.ghosts) }
         // A killed player gets back what fell out of them, wherever it went.

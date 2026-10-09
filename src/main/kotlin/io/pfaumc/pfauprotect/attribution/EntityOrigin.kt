@@ -1,11 +1,16 @@
 package io.pfaumc.pfauprotect.attribution
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.capture.item.positionOf
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.event.entity.CreatureSpawnEvent
 import org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason
+import org.bukkit.entity.EnderCrystal
+import org.bukkit.entity.Player
+import org.bukkit.entity.Projectile
+import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.player.PlayerInteractEvent
 import java.util.UUID
@@ -18,7 +23,7 @@ private const val BUILD_REACH = 3
 // The reasons that name a player if anything does. Everything else — a raid, a natural spawn, a
 // breeding pair, a spawner — has no person behind it, and asking after one would put a name on the
 // nearest builder for something they had nothing to do with.
-private val BUILT = setOf(
+internal val BUILT = setOf(
     SpawnReason.BUILD_WITHER,
     SpawnReason.BUILD_SNOWMAN,
     SpawnReason.BUILD_IRONGOLEM,
@@ -62,12 +67,31 @@ class EntityOriginListener(
         origins.appeared(event.entity.uniqueId, actor)
     }
 
+    /**
+     * An end crystal goes off at the first blow, and the blast is whoever struck it: by hand, with an arrow,
+     * or with another crystal's blast that somebody set off. The griefer's crystal on the roof went off as
+     * nobody's, and his rollback left the hole (NG19).
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onStrike(event: EntityDamageByEntityEvent) {
+        if (event.entity !is EnderCrystal) return
+        val damager = event.damager
+        // An arrow is its shooter's, and a mob that shot it answers through whoever brought the mob in.
+        val source = (damager as? Projectile)?.shooter as? org.bukkit.entity.Entity ?: damager
+        when (source) {
+            is Player -> origins.appeared(event.entity.uniqueId, source.uniqueId, if (source === damager) Confidence.FACT else Confidence.INFERRED)
+            else -> origins.summonerOf(source.uniqueId)?.let { origins.appeared(event.entity.uniqueId, it.actor) }
+        }
+    }
+
     // An origin is about one entity and outlives it by nothing. An unload is not an end: the entity
     // goes into the region file and comes back out of it holding the same id, and forgetting where it
     // came from would cost the answer to every chunk that has been walked away from.
     @EventHandler(priority = EventPriority.MONITOR)
     fun onRemove(event: EntityRemoveEvent) {
         if (event.cause == EntityRemoveEvent.Cause.UNLOAD) return
+        // A crystal is taken out of the world before its blast, which still has to find who struck it.
+        if (event.entity is EnderCrystal) return
         origins.gone(event.entity.uniqueId)
     }
 }

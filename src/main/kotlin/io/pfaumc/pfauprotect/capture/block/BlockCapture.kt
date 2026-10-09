@@ -5,10 +5,10 @@ import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.capture.item.placesBlock
 import io.pfaumc.pfauprotect.capture.item.positionOf
+import io.pfaumc.pfauprotect.capture.entity.bytesOf
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.core.HolderLookup
-import net.minecraft.nbt.NbtIo
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.tags.BlockTags
 import net.minecraft.tags.EnchantmentTags
@@ -46,8 +46,6 @@ import org.bukkit.event.block.BlockBreakEvent
 import org.bukkit.event.block.BlockMultiPlaceEvent
 import org.bukkit.event.block.BlockPlaceEvent
 import org.bukkit.event.block.SignChangeEvent
-import java.io.ByteArrayOutputStream
-import java.io.DataOutputStream
 import java.util.UUID
 
 // The other position a block stands in. Only the position that was clicked is announced, and the
@@ -95,7 +93,7 @@ internal fun brokenAfter(
     dropsBlock: Boolean,
     waterEvaporates: Boolean,
 ): NmsBlockState {
-    val removed = state.fluidState.createLegacyBlock()
+    val removed = leftBehind(state)
     if (state.block !is IceBlock || !dropsBlock || waterEvaporates) return removed
     if (EnchantmentHelper.hasTag(tool, EnchantmentTags.PREVENTS_ICE_MELTING)) return removed
     return if (below.`is`(BlockTags.ICE_MELTS_WHEN_DESTROYED_ABOVE) || below.liquid()) IceBlock.meltsInto() else removed
@@ -124,23 +122,19 @@ private fun brokenRefused(player: ServerPlayer, pos: BlockPos, state: NmsBlockSt
 // The whole tag, byte for byte. An edit to a sign has to be reproducible from what was kept, and a
 // display serialisation keeps the letters while losing the styling, the dye, the glow and everything
 // a plugin left in the container underneath them.
-internal fun payloadOf(entity: BlockEntity?, registries: HolderLookup.Provider): ByteArray? {
-    val tag = entity?.saveWithFullMetadata(registries) ?: return null
-    val bytes = ByteArrayOutputStream()
-    DataOutputStream(bytes).use { NbtIo.write(tag, it) }
-    return bytes.toByteArray()
-}
+internal fun payloadOf(entity: BlockEntity?, registries: HolderLookup.Provider): ByteArray? =
+    entity?.saveWithFullMetadata(registries)?.let(::bytesOf)
 
-private fun payloadAt(block: Block): ByteArray? {
+internal fun payloadAt(block: Block): ByteArray? {
     val level = (block as CraftBlock).level
     return payloadOf(level.getBlockEntity(block.position), level.registryAccess())
 }
 
-// What the removal writes back over the position, by the fluid rule `brokenAfter` states in full. The
-// ice melt that rule also carries is left out: a note naming air where water ends up answers nobody,
-// which is the direction to be wrong in.
-private fun leftBy(data: BlockData) =
-    (data as CraftBlockData).state.fluidState.createLegacyBlock().asBlockData().asString
+// A block that no longer stands there leaves whatever it was standing in, which for anything dry
+// is air. This is `Level.removeBlock`'s own rule, the same one a break follows.
+internal fun leftBehind(state: NmsBlockState): NmsBlockState = state.fluidState.createLegacyBlock()
+
+internal fun leftBehind(data: BlockData): BlockData = leftBehind((data as CraftBlockData).state).asBlockData()
 
 /**
  * What every capture that takes a block away seeds, a hand as much as an explosion, a piston or water.
@@ -156,7 +150,10 @@ internal fun Attribution.cleared(block: Block, actor: UUID) {
     for (standing in listOfNotNull(block, otherHalfOf(block))) {
         val at = positionOf(standing)
         removed(at, actor)
-        placed(at, leftBy(standing.blockData), actor)
+        // What the removal writes back over the position, by the fluid rule `brokenAfter` states in full.
+        // The ice melt that rule also carries is left out: a note naming air where water ends up answers
+        // nobody, which is the direction to be wrong in.
+        placed(at, leftBehind(standing.blockData).asString, actor)
     }
     felledBy(block, actor)
 }
@@ -182,29 +179,45 @@ private const val LEAF_REACH = 6
  * `owned` keeps the walk inside the region ticking this block. A leaf over the border belongs to
  * another thread, and it is left without a note rather than read from the wrong one.
  */
-internal fun leavesHeldBy(log: Block, owned: (Block) -> Boolean = Bukkit::isOwnedByCurrentRegion): List<Block> {
+internal fun leavesHeldBy(log: Block, owned: (Block) -> Boolean = Bukkit::isOwnedByCurrentRegion): List<Block> =
+    flood(log, depth = LEAF_REACH, withStart = false) { owned(it) && (it.blockData as? Leaves)?.isPersistent == false }
+        .toList()
+
+// A portal's sheet, a log's leaves and a block's shaped neighbours are all found through the six faces.
+internal val SIX_FACES = listOf(
+    BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN,
+)
+
+/**
+ * A walk out from `start` through the six faces, one layer at a time, into whatever `accept` takes. It
+ * stops after `depth` layers, or once `cap` blocks are found, which is only asked between layers. Without
+ * `withStart` the start is not among the found, so a walk from a leaf comes back to it through the next.
+ */
+internal fun flood(
+    start: Block,
+    depth: Int = Int.MAX_VALUE,
+    cap: Int = Int.MAX_VALUE,
+    withStart: Boolean,
+    accept: (Block) -> Boolean,
+): Set<Block> {
     val found = LinkedHashSet<Block>()
-    var edge = listOf(log)
-    repeat(LEAF_REACH) {
+    if (withStart) found += start
+    var edge = listOf(start)
+    var layers = 0
+    while (edge.isNotEmpty() && layers++ < depth && found.size < cap) {
         val next = ArrayList<Block>()
         for (block in edge) {
-            for (face in LEAF_FACES) {
+            for (face in SIX_FACES) {
                 val near = block.getRelative(face)
-                if (near in found || !owned(near)) continue
-                val leaves = near.blockData as? Leaves ?: continue
-                if (leaves.isPersistent) continue
+                if (near in found || !accept(near)) continue
                 found += near
                 next += near
             }
         }
         edge = next
     }
-    return found.toList()
+    return found
 }
-
-private val LEAF_FACES = listOf(
-    BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN,
-)
 
 // How far a walk through a liquid goes looking for where it was poured, and how many sources it hands
 // on: a griefer's bucket is a few steps away, and an ocean is not worth a seek per source.
@@ -235,7 +248,7 @@ internal fun sourcesOf(liquid: Block, owned: (Block) -> Boolean = Bukkit::isOwne
     return sources
 }
 
-private val POUR_FACES = listOf(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
+internal val POUR_FACES =listOf(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
 
 // A column poured from the build limit and a wide spread of water at its foot, and no further: what is
 // left beyond runs dry by itself, its source being gone.
@@ -319,18 +332,16 @@ class BlockCaptureListener(
             if (after == null || after.contentEquals(before)) return@later
             val state = block.blockData.asString
             log.submit(
-                listOf(
-                    BlockChange(
-                        x = block.x,
-                        y = block.y,
-                        z = block.z,
-                        before = state,
-                        after = state,
-                        cause = Cause.BLK_SIGN_EDIT,
-                        actor = actor,
-                        payloadBefore = before,
-                        payloadAfter = after,
-                    )
+                BlockChange(
+                    x = block.x,
+                    y = block.y,
+                    z = block.z,
+                    before = state,
+                    after = state,
+                    cause = Cause.BLK_SIGN_EDIT,
+                    actor = actor,
+                    payloadBefore = before,
+                    payloadAfter = after,
                 )
             )
         }

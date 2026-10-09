@@ -143,11 +143,12 @@ class PreviewSlotTest {
     // of three, and what has no durability never wears through.
     @Test
     fun `gear breaks on the wear that takes its last point`() {
+        fun mirror(stack: net.minecraft.world.item.ItemStack) = org.bukkit.craftbukkit.inventory.CraftItemStack.asBukkitMirror(stack)
         val armor = net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.WOLF_ARMOR)
-        assertEquals(false, wornThrough(armor, 3))
+        assertEquals(false, wornThrough(mirror(armor), 3))
         armor.damageValue = armor.maxDamage - 1
-        assertEquals(true, wornThrough(armor, 1))
-        assertEquals(false, wornThrough(net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.SADDLE), 100))
+        assertEquals(true, wornThrough(mirror(armor), 1))
+        assertEquals(false, wornThrough(mirror(net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.SADDLE)), 100))
     }
 
     // A boat is removed before it drops: its drop still finds the slot, once, and the rest is left to

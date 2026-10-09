@@ -128,7 +128,7 @@ internal fun trace(
  * anyone to all of it. Off the region thread: it reads the ledger.
  */
 internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
-    val rowsOf = { pile: ItemEntityRef -> ledger.holderEntries(pile, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
+    val rowsOf = pileRows(ledger)
     val owed = ArrayList<Owed>()
     for (given in tally.traces) {
         if (given.qty > 0) {
@@ -337,8 +337,6 @@ class Confiscations(
     private val sink: (List<Transfer>) -> Unit,
 ) : Listener {
 
-    fun owedFor(tally: Tally): List<Owed> = owedFor(ledger, tally)
-
     // Players one by one; piles together, since there can be dozens of them and none has a name.
     fun describe(owed: List<Owed>): String {
         val players = owed.filter { it.taker is Carrier }.groupBy { it.taker as Carrier }.map { (taker, all) ->
@@ -367,8 +365,8 @@ class Confiscations(
         owed: List<Owed>,
         actor: UUID?,
         sender: CommandSender,
-        births: List<PostingRef> = emptyList(),
-        slots: Map<Long, List<Int>> = emptyMap(),
+        births: List<PostingRef>,
+        slots: Map<Long, List<Int>>,
     ) {
         // What went between the read and the take — a pile no longer there, what its taker used up and put
         // nowhere to be found — is gone for good like a burned pile, and given out of nothing the same way,

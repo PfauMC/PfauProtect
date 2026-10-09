@@ -91,21 +91,12 @@ class PlaneSync(private val ledger: RocksItemLog, private val blocks: BlockLogs)
     fun pass(limit: Int, now: Long = System.currentTimeMillis()): PlaneReport {
         val page = ledger.blockPostings(limit)
         val gaps = ArrayList<PlaneGap>()
-        var checked = 0
-        var settling = 0
-        var unreadable = 0
-        var unrecorded = 0
-        var overdrawn = 0
-        for (position in page.positions) {
-            when (settle(position, now, gaps)) {
-                Outcome.CHECKED -> checked++
-                Outcome.SETTLING -> settling++
-                Outcome.UNREADABLE -> unreadable++
-                Outcome.UNRECORDED -> unrecorded++
-                Outcome.OVERDRAWN -> overdrawn++
-            }
-        }
-        return PlaneReport(checked, settling, unreadable, unrecorded, overdrawn, gaps, page.reachedEnd)
+        val counts = page.positions.groupingBy { settle(it, now, gaps) }.eachCount()
+        fun count(outcome: Outcome) = counts[outcome] ?: 0
+        return PlaneReport(
+            count(Outcome.CHECKED), count(Outcome.SETTLING), count(Outcome.UNREADABLE),
+            count(Outcome.UNRECORDED), count(Outcome.OVERDRAWN), gaps, page.reachedEnd,
+        )
     }
 
     private fun settle(position: BlockPostings, now: Long, gaps: MutableList<PlaneGap>): Outcome {

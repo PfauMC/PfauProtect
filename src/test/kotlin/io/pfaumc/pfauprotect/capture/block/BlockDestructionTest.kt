@@ -120,7 +120,8 @@ class BlockDestructionTest {
 
     private val spawned = ArrayList<Transfer>()
     private val coalescer = TickCoalescer(spawned::add)
-    private val origins = SpawnOrigins(coalescer)
+    private var clock = 0L
+    private val origins = SpawnOrigins(coalescer) { clock }
     private val entityOrigins = EntityOrigins()
 
     // A getter and not a field: touching `Blocks` before the bootstrap in `open` throws out of the
@@ -1084,9 +1085,9 @@ class BlockDestructionTest {
     // very state it has been carrying all the way down.
     @Test
     fun `the two halves of a fall are told apart by what the position becomes`() {
-        assertFalse(isLanding(SAND, AIR))
-        assertFalse(isLanding(SAND, SOURCE_WATER))
-        assertTrue(isLanding(SAND, SAND))
+        assertFalse(SAND == AIR)
+        assertFalse(SAND == SOURCE_WATER)
+        assertTrue(SAND == SAND)
     }
 
     /**
@@ -1572,6 +1573,7 @@ class BlockDestructionTest {
 
         expectDrops(origins, ItemFormCodec(shared.registries, ServerRegistries.access), block, Cause.BLK_FADE, null)
         origins.sweep()
+        clock += 1_000
         origins.sweep()
 
         assertTrue(origins.isEmpty)

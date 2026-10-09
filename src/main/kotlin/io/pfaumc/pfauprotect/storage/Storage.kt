@@ -43,15 +43,6 @@ import kotlin.concurrent.read
 import kotlin.concurrent.withLock
 import kotlin.concurrent.write
 
-// A shulker's loot table copies a handful of components onto the dropped item and the owner mark is
-// not among them, so a box loses its name every time it is broken. This remembers the name for as
-// long as the box stands, and hands it back at the break so the chain of custody survives the cycle.
-interface NestedOwners {
-    fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID?
-    fun setOwnerAt(world: UUID, x: Int, y: Int, z: Int, owner: UUID)
-    fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int)
-}
-
 // A position takes over the item it was built from, and breaking it has to give back the same thing.
 // The block alone cannot say what that was: a named box, an enchanted head and a plain one all answer
 // with the bare item, so the position would give back something it never received and its history
@@ -201,8 +192,152 @@ internal fun tableIn(cache: Cache, filter: Filter? = null): BlockBasedTableConfi
         .setPinL0FilterAndIndexBlocksInCache(true)
         .also { table -> filter?.let { table.setFilterPolicy(it) } }
 
+// Refusing a database that is already open, or failing to open it, has to hand the natives back with
+// the refusal. Nothing outside reaches a constructor that threw, so the file lock and the native memory
+// would be held until the process ends, and the next attempt to open — a retry, a reload — could never
+// succeed.
+internal inline fun <T> cleaningUpOnFailure(cleanup: () -> Unit, body: () -> T): T =
+    try {
+        body()
+    } catch (failure: Throwable) {
+        runCatching { cleanup() }
+        throw failure
+    }
 
-class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, PlacedForms {
+// Read-only and with exactly the families already on disk, so a database this build refuses is handed
+// back untouched. Null means there is nothing to refuse: no database, or one from before the schema was
+// stamped.
+internal fun storedSchema(path: String, metaCf: ByteArray, key: ByteArray): Long? = Options().use { probe ->
+    val existing = RocksDB.listColumnFamilies(probe, path)
+    val metaIndex = existing.indexOfFirst { it.contentEquals(metaCf) }
+    if (metaIndex < 0) return null
+    val handles = ArrayList<ColumnFamilyHandle>()
+    ColumnFamilyOptions().use { cfOptions ->
+        DBOptions().use { options ->
+            RocksDB.openReadOnly(options, path, existing.map { ColumnFamilyDescriptor(it, cfOptions) }, handles)
+                .use { probed ->
+                    try {
+                        probed.get(handles[metaIndex], key)?.let { ByteReader(it).longBE() }
+                    } finally {
+                        handles.forEach { it.close() }
+                    }
+                }
+        }
+    }
+}
+
+// Padded rather than the upper bound: seeking backwards has to start from a key that still belongs
+// to this prefix, or the prefix filter is asked about the wrong one and finds nothing.
+internal fun lastUnder(prefix: ByteArray): ByteArray =
+    ByteWriter(prefix.size + KEY_TAIL_PAD)
+        .bytes(prefix)
+        .bytes(ByteArray(KEY_TAIL_PAD) { 0xFF.toByte() })
+        .toByteArray()
+
+// The bounds keep the walk inside the prefix, which under a prefix extractor is the only way to do it:
+// an iterator in prefix mode may not be carried past the prefix it was seeked into, and a seek to the
+// key just after the prefix lands in the next prefix, where the filter answers with nothing at all.
+// The slices have to outlive the iterator. `action` returns false to stop.
+internal inline fun RocksDB.forEachUnder(
+    cf: ColumnFamilyHandle,
+    prefix: ByteArray,
+    extractorSize: Int,
+    reverse: Boolean,
+    from: ByteArray? = null,
+    action: (ByteArray, ByteArray) -> Boolean,
+) {
+    val lower = Slice(prefix)
+    val upper = Slice(afterPrefix(prefix))
+    try {
+        ReadOptions()
+            .setIterateLowerBound(lower)
+            .setIterateUpperBound(upper)
+            // A prefix shorter than the extractor spreads its rows over many extractor prefixes, so no
+            // seek key can stand for all of them. A prefix exactly as long as the extractor is no better
+            // off: its upper bound is the first key of the next extractor prefix, and an upper bound
+            // outside the prefix seeked into leaves what an iterator in prefix mode returns undefined.
+            // Either way the walk has to leave prefix mode. A longer prefix keeps the extractor bytes it
+            // shares with its own bound and stays in it.
+            .setTotalOrderSeek(prefix.size <= extractorSize)
+            .use { options ->
+                newIterator(cf, options).use { iter ->
+                    when {
+                        reverse -> iter.seekForPrev(lastUnder(prefix))
+                        from != null -> iter.seek(from)
+                        else -> iter.seekToFirst()
+                    }
+                    while (iter.isValid) {
+                        if (!action(iter.key(), iter.value())) return
+                        if (reverse) iter.prev() else iter.next()
+                    }
+                }
+            }
+    } finally {
+        lower.close()
+        upper.close()
+    }
+}
+
+// How many rows a walk over a whole family writes per batch: a purge, a base being indexed.
+private const val WALK_BATCH_ROWS = 10_000
+
+// A batch written and started afresh every so many rows, so a walk over a whole family never holds
+// all of its writes in memory at once. `flush` writes what is left.
+internal class ChunkedBatch(private val db: RocksDB, private val options: WriteOptions) : AutoCloseable {
+    private var batch = WriteBatch()
+
+    fun put(cf: ColumnFamilyHandle, key: ByteArray, value: ByteArray) {
+        batch.put(cf, key, value)
+        if (batch.count() >= WALK_BATCH_ROWS) flush()
+    }
+
+    fun delete(cf: ColumnFamilyHandle, key: ByteArray) {
+        batch.delete(cf, key)
+        if (batch.count() >= WALK_BATCH_ROWS) flush()
+    }
+
+    fun flush() {
+        if (batch.count() == 0) return
+        db.write(options, batch)
+        batch.close()
+        batch = WriteBatch()
+    }
+
+    override fun close() = batch.close()
+}
+
+// What the writer of either base has been handed, what it has written, and why it stopped if it did.
+// `writer` and `unit` name them in the errors: the ledger writer and its transfers, a block writer and
+// its submissions.
+internal class WriterProgress(private val writer: String, private val unit: String, private val queue: Collection<*>) {
+    val submitted = AtomicLong()
+    val written = AtomicLong()
+
+    @Volatile
+    var failure: Throwable? = null
+
+    val backlog: Long get() = submitted.get() - written.get()
+
+    fun drain() {
+        val target = submitted.get()
+        val deadline = System.nanoTime() + DRAIN_TIMEOUT_NANOS
+        while (written.get() < target) {
+            failIfStopped()
+            check(System.nanoTime() < deadline) {
+                "$writer writer did not catch up in ${DRAIN_TIMEOUT_NANOS / 1_000_000} ms, " +
+                    "${target - written.get()} $unit are unwritten"
+            }
+            Thread.sleep(1)
+        }
+        failIfStopped()
+    }
+
+    private fun failIfStopped() {
+        failure?.let { throw IllegalStateException("$writer writer stopped and ${queue.size} $unit are unwritten", it) }
+    }
+}
+
+class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     // Before any native object: a cache, unlike the option classes, does not load the library itself.
     init {
         RocksDB.loadLibrary()
@@ -280,28 +415,20 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     // seconds at a time. So a note goes into this overlay at once, where every read looks first, and on
     // to the writer, which takes it off the overlay once it is in the database. A null value is a note
     // cleared.
-    private class NoteKey(val family: Int, val world: UUID, val x: Int, val y: Int, val z: Int) {
-        override fun equals(other: Any?) = other is NoteKey && family == other.family && world == other.world &&
-            x == other.x && y == other.y && z == other.z
+    private data class NoteKey(val family: Int, val world: UUID, val x: Int, val y: Int, val z: Int)
 
-        override fun hashCode() = ((((family * 31 + world.hashCode()) * 31 + x) * 31 + y) * 31) + z
-    }
-
+    // Compared by identity: the writer takes a note off the overlay only if it is still this very write.
     private class NoteWrite(val key: NoteKey, val value: ByteArray?)
 
     private val pendingNotes = ConcurrentHashMap<NoteKey, NoteWrite>()
     private val noteQueue = LinkedBlockingQueue<NoteWrite>()
-    private val submitted = AtomicLong()
-    private val written = AtomicLong()
+    private val progress = WriterProgress("ledger", "transfers", queue)
 
     /** Transactions handed to the writer and not written yet. */
-    val backlog: Long get() = submitted.get() - written.get()
+    val backlog: Long get() = progress.backlog
 
     @Volatile
     private var running = true
-
-    @Volatile
-    private var writerFailure: Throwable? = null
 
     @Volatile
     private var closed = false
@@ -321,24 +448,20 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private val registryCounters = ConcurrentHashMap<RegistryNamespace, Long>()
 
     init {
-        RocksDB.loadLibrary()
         Files.createDirectories(dir)
         val path = dir.toAbsolutePath().toString()
         // Opening writes every missing column family into the manifest before anything can look at
         // the schema, and a build that does not know those families can no longer open the database
         // at all. A database refused for its schema has to be left exactly as it was found, or one
         // failed start of a newer build makes going back impossible.
-        val stored = try {
-            storedSchema(path)?.also {
+        val stored = cleaningUpOnFailure({ closeOptions() }) {
+            storedSchema(path, META_CF, META_SCHEMA)?.also {
                 require(it == SCHEMA_VERSION || it in WIDENS_FROM) {
                     "database schema $it cannot be read by this build (schema $SCHEMA_VERSION); " +
                         "the ledger and blocks directories have to be removed together, because a " +
                         "block journal cites state, payload and player numbers minted in the ledger"
                 }
             }
-        } catch (failure: Throwable) {
-            runCatching { closeOptions() }
-            throw failure
         }
         val descriptors = listOf(
             RocksDB.DEFAULT_COLUMN_FAMILY to unfilteredOptions,
@@ -353,7 +476,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             COMPENSATED_CF to pointReadOptions,
             CONFISCATIONS_CF to unfilteredOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
-        db = RocksDB.open(dbOptions, path, descriptors, cfHandles)
+        db = cleaningUpOnFailure({ closeOptions() }) { RocksDB.open(dbOptions, path, descriptors, cfHandles) }
         entriesCf = cfHandles[1]
         itemFormsCf = cfHandles[2]
         registryCf = cfHandles[3]
@@ -399,39 +522,18 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         writerThread.start()
     }
 
-    // Refusing a database that is already open has to hand the handle back with the refusal. Nothing
-    // outside reaches a constructor that threw, so the file lock and the native memory would be held
-    // until the process ends, and the next attempt to open — a retry, a reload — could never succeed.
-    private inline fun <T> failClosed(body: () -> T): T =
-        try {
-            body()
-        } catch (failure: Throwable) {
-            runCatching { closeNatives() }
-            throw failure
-        }
+    private inline fun <T> failClosed(body: () -> T): T = cleaningUpOnFailure({ closeNatives() }, body)
 
     fun submit(transfer: Transfer) = submit(listOf(transfer))
 
     /** Every movement in the list shares one `tx_id`, which is what carries a graph walk across `Void`. */
     fun submit(transaction: List<Transfer>) {
-        if (writerFailure != null || transaction.isEmpty()) return
-        submitted.incrementAndGet()
+        if (progress.failure != null || transaction.isEmpty()) return
+        progress.submitted.incrementAndGet()
         queue.add(transaction)
     }
 
-    fun drain() {
-        val target = submitted.get()
-        val deadline = System.nanoTime() + DRAIN_TIMEOUT_NANOS
-        while (written.get() < target) {
-            failIfWriterStopped()
-            check(System.nanoTime() < deadline) {
-                "ledger writer did not catch up in ${DRAIN_TIMEOUT_NANOS / 1_000_000} ms, " +
-                    "${target - written.get()} transfers are unwritten"
-            }
-            Thread.sleep(1)
-        }
-        failIfWriterStopped()
-    }
+    fun drain() = progress.drain()
 
     fun holderEntries(
         holder: Holder,
@@ -451,18 +553,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         if (closed) return EntryPage(emptyList(), false)
         scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit)
     }
-
-    fun regionEntries(
-        world: UUID,
-        minX: Int,
-        minZ: Int,
-        maxX: Int,
-        maxZ: Int,
-        fromTs: Long,
-        toTs: Long,
-        reverse: Boolean = false,
-        limit: Int = 100,
-    ): List<LedgerEntry> = regionPage(world, minX, minZ, maxX, maxZ, fromTs, toTs, reverse, limit).entries
 
     fun regionPage(
         world: UUID,
@@ -520,15 +610,11 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     }
 
     /**
-     * Every posting older than the cutoff, deleted unless `dryRun`, with what each holder held of each item
-     * at the cutoff: the opening balances that keep every later balance whole, to be submitted by the
-     * caller. Unreadable rows are left where they are. One walk of the whole family, off any region thread.
-     */
-    /**
      * Deletes every posting older than the cutoff and writes, dated at the cutoff, what each holder held by
      * then. Both go in one write: a purge cut short between them would leave every balance short of what it
      * deleted, or holding it twice. The writer waits meanwhile, as the openings take its transaction ids.
-     * Returns how many postings went and how many openings stand for them.
+     * Unreadable rows are left where they are. One walk of the whole family, off any region thread. Returns
+     * how many postings went and how many openings stand for them.
      */
     // ponytail: the whole purge is one batch in memory, a few dozen bytes a posting; delete by holder ranges
     // if a purge ever outgrows that.
@@ -601,8 +687,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     fun formId(form: ByteArray): Long? = forms.lookup(form)
 
     fun payload(payloadId: Long): ByteArray? = payloads.valueOf(payloadId)
-
-    fun payloadId(payload: ByteArray): Long? = payloads.lookup(payload)
 
     // The slot never enters the key, so one prefix per holder type already covers every slot a player
     // owns and the whole balance is four scans rather than a read per row.
@@ -786,13 +870,16 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         }
     }
 
-    override fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID? =
+    // A shulker's loot table copies a handful of components onto the dropped item and the owner mark is
+    // not among them, so a box loses its name every time it is broken. This remembers the name for as
+    // long as the box stands, and hands it back at the break so the chain of custody survives the cycle.
+    fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID? =
         note(OWNERS, world, x, y, z)?.let { ByteReader(it).uuid() }
 
-    override fun setOwnerAt(world: UUID, x: Int, y: Int, z: Int, owner: UUID) =
+    fun setOwnerAt(world: UUID, x: Int, y: Int, z: Int, owner: UUID) =
         putNote(OWNERS, world, x, y, z, ByteWriter(16).uuid(owner).toByteArray())
 
-    override fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int) = putNote(OWNERS, world, x, y, z, null)
+    fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int) = putNote(OWNERS, world, x, y, z, null)
 
     override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = note(FORMS, world, x, y, z)
 
@@ -836,8 +923,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         val write = NoteWrite(NoteKey(family, world, x, y, z), value)
         pendingNotes[write.key] = write
         // A stopped writer drains nothing, and the overlay above is all a read still gets.
-        if (writerFailure != null) return
-        submitted.incrementAndGet()
+        if (progress.failure != null) return
+        progress.submitted.incrementAndGet()
         noteQueue.add(write)
     }
 
@@ -870,28 +957,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
             closed = true
             runCatching { db.flushWal(true) }
             closeNatives()
-        }
-    }
-
-    // Read-only and with exactly the families already on disk, so a database this build refuses is
-    // handed back untouched. Null means there is nothing to refuse: no database, or one from before
-    // the schema was stamped.
-    private fun storedSchema(path: String): Long? = Options().use { probe ->
-        val existing = RocksDB.listColumnFamilies(probe, path)
-        val metaIndex = existing.indexOfFirst { it.contentEquals(META_CF) }
-        if (metaIndex < 0) return null
-        val handles = ArrayList<ColumnFamilyHandle>()
-        ColumnFamilyOptions().use { cfOptions ->
-            DBOptions().use { options ->
-                RocksDB.openReadOnly(options, path, existing.map { ColumnFamilyDescriptor(it, cfOptions) }, handles)
-                    .use { probed ->
-                        try {
-                            probed.get(handles[metaIndex], META_SCHEMA)?.let { ByteReader(it).longBE() }
-                        } finally {
-                            handles.forEach { it.close() }
-                        }
-                    }
-            }
         }
     }
 
@@ -951,7 +1016,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                 noteQueue.drainTo(notes)
                 if (notes.isNotEmpty()) {
                     writeNotes(notes)
-                    written.addAndGet(notes.size.toLong())
+                    progress.written.addAndGet(notes.size.toLong())
                 }
                 if (first == null && !running && noteQueue.isEmpty()) return
                 if (first != null) {
@@ -959,7 +1024,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                     batched += first
                     queue.drainTo(batched, MAX_BATCH - 1)
                     writing.withLock { writeAll(batched) }
-                    written.addAndGet(batched.size.toLong())
+                    progress.written.addAndGet(batched.size.toLong())
                 }
                 if (System.nanoTime() - lastFlush >= WAL_FLUSH_INTERVAL_NANOS) {
                     db.flushWal(true)
@@ -967,7 +1032,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                 }
             }
         } catch (failure: Throwable) {
-            writerFailure = failure
+            progress.failure = failure
             running = false
             LOGGER.log(
                 Level.SEVERE,
@@ -1111,54 +1176,12 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         actor = transfer.actor,
     )
 
-    // The bounds keep the walk inside the prefix, which under a prefix extractor is the only way to
-    // do it: an iterator in prefix mode may not be carried past the prefix it was seeked into, and a
-    // seek to the key just after the prefix lands in the next prefix, where the filter answers with
-    // nothing at all. `action` returns false to stop.
     private inline fun forEachUnder(
         prefix: ByteArray,
         reverse: Boolean,
         from: ByteArray? = null,
         action: (ByteArray, ByteArray) -> Boolean,
-    ) {
-        val lower = Slice(prefix)
-        val upper = Slice(afterPrefix(prefix))
-        try {
-            ReadOptions()
-                .setIterateLowerBound(lower)
-                .setIterateUpperBound(upper)
-                // A prefix shorter than the extractor spreads its rows over many extractor prefixes,
-                // so no seek key can stand for all of them. A prefix exactly as long as the extractor
-                // is the case that matters here: a chunk prefix is that length, and the key just
-                // after it belongs to the next extractor prefix, which is an upper bound prefix mode
-                // does not define a walk against. Either way the walk has to leave prefix mode.
-                .setTotalOrderSeek(prefix.size <= EntryCodec.CHUNK_PREFIX_SIZE)
-                .use { options ->
-                    db.newIterator(entriesCf, options).use { iter ->
-                        when {
-                            reverse -> iter.seekForPrev(lastUnder(prefix))
-                            from != null -> iter.seek(from)
-                            else -> iter.seekToFirst()
-                        }
-                        while (iter.isValid) {
-                            if (!action(iter.key(), iter.value())) return
-                            if (reverse) iter.prev() else iter.next()
-                        }
-                    }
-                }
-        } finally {
-            lower.close()
-            upper.close()
-        }
-    }
-
-    // Padded rather than the upper bound: seeking backwards has to start from a key that still
-    // belongs to this prefix, or the prefix filter is asked about the wrong one and finds nothing.
-    private fun lastUnder(prefix: ByteArray): ByteArray =
-        ByteWriter(prefix.size + KEY_TAIL_PAD)
-            .bytes(prefix)
-            .bytes(ByteArray(KEY_TAIL_PAD) { 0xFF.toByte() })
-            .toByteArray()
+    ) = db.forEachUnder(entriesCf, prefix, EntryCodec.CHUNK_PREFIX_SIZE, reverse, from, action)
 
     // Each call brings back at most `limit` entries under its own prefix, so a region scan gives every
     // chunk the same allowance rather than letting the first one it walks spend the whole budget.
@@ -1235,10 +1258,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private fun readCounter(key: ByteArray): Long = db.get(metaCf, key)?.let { ByteReader(it).longBE() } ?: 0L
 
     private fun registryCounterKey(ns: RegistryNamespace): ByteArray = "reg:${ns.id}".toByteArray()
-
-    private fun failIfWriterStopped() {
-        writerFailure?.let { throw IllegalStateException("ledger writer stopped and ${queue.size} transfers are unwritten", it) }
-    }
 
     // Interning, lossless and whole: what goes in comes back out byte for byte, because an edit to a
     // sign has to be reproducible from what was kept of it.

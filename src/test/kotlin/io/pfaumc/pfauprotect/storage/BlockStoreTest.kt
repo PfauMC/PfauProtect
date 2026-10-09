@@ -19,7 +19,6 @@ import org.rocksdb.ColumnFamilyOptions
 import org.rocksdb.DBOptions
 import org.rocksdb.Options
 import org.rocksdb.RocksDB
-import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
 
@@ -582,19 +581,5 @@ class BlockStoreTest {
 
         assertFalse(log.submit(listOf(placed(9, 64, 9))))
         assertTrue(logs.open(world).at(9, 64, 9).isEmpty())
-    }
-
-    @Test
-    fun `deleting a world takes its directory and leaves the next open empty`() {
-        log.submit(listOf(placed(5, 64, 5)))
-        log.drain()
-        val dir = root.resolve(world.toString())
-        assertTrue(Files.isDirectory(dir))
-
-        logs.delete(world)
-        assertFalse(Files.exists(dir))
-        assertNull(logs.get(world))
-
-        assertTrue(logs.open(world).at(5, 64, 5).isEmpty())
     }
 }
