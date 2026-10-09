@@ -116,6 +116,19 @@ class LookupReadTest {
         arrayOf(org.bukkit.plugin.Plugin::class.java),
     ) { _, _, _ -> null } as org.bukkit.plugin.Plugin
 
+    // Pages count folded runs, so the rows are folded before they are cut: ten blasts are one run on page
+    // one, and the placement before them is page two rather than lost between the pages.
+    @Test
+    fun `a page after a folded run shows the next run`() {
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
+        repeat(10) { log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + 1000 + it))) }
+        log.drain()
+
+        assertTrue(said(LookupQuery(limit = 1)).any { it.contains("block.minecraft.tnt") })
+        val second = said(LookupQuery(limit = 1, page = 2))
+        assertTrue(second.any { it.contains("+ placed") }, "$second")
+    }
+
     @Test
     fun `a position answers with both planes in the order things happened`() {
         val at = WorldBlock(world, 10, 64, -3)

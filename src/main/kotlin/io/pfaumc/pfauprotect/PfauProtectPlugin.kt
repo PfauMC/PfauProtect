@@ -771,7 +771,7 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.QUIT -> Component.text().append(who).append(Ui.text(tr(" left", " · выход"), Ui.MUTED)).build()
                 }
                 val out = Component.text().append(Ui.text(" ")).append(Ui.ago(line.timestamp)).append(Ui.text("  ")).append(what)
-                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, sender is Player))
+                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, sender is Player && sender.hasPermission("pfauprotect.teleport")))
                 sender.sendMessage(out.build())
             }
         }

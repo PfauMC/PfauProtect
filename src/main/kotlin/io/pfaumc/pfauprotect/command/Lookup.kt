@@ -954,19 +954,27 @@ class Lookups(
         // that stopped early inside a busy chunk hands back rows from one corner of it, and answering
         // that with silence would clear a position the reader is standing in the crater of.
         if (lines.isEmpty()) {
+            // Only a limit the parser takes is worth suggesting; at the top already, only a smaller area helps.
+            val wider = minOf(query.limit * 4, MAX_LIMIT)
             val why = if (complete) tr("nothing recorded", "ничего не записано")
+            else if (wider == query.limit) tr(
+                "nothing matched, but the read stopped before the whole area was seen; narrow the radius",
+                "ничего не найдено, но чтение остановилось раньше, чем увидело всю область; сузь радиус",
+            )
             else tr(
-                "nothing matched, but the read stopped before the whole area was seen; narrow the radius or ask for more with limit:${query.limit * 4}",
-                "ничего не найдено, но чтение остановилось раньше, чем увидело всю область; сузь радиус или запроси больше через limit:${query.limit * 4}",
+                "nothing matched, but the read stopped before the whole area was seen; narrow the radius or ask for more with limit:$wider",
+                "ничего не найдено, но чтение остановилось раньше, чем увидело всю область; сузь радиус или запроси больше через limit:$wider",
             )
             sender.sendMessage(header(where, target).append(Ui.text(" — $why", Ui.MUTED)))
             return
         }
         val clickable = sender is Player
+        // ⌖ runs /pp tp, which a player without the permission does not have: for them it is only shown.
+        val teleports = clickable && sender.hasPermission("pfauprotect.teleport")
         sender.sendMessage(header(where, target))
         for (run in lines) {
             val line = run.first
-            var out = line.draw(run.amount, run.rows, clickable)
+            var out = line.draw(run.amount, run.rows, teleports)
             val event = line.event?.takeIf { run.rows == 1 }
             // Struck through for the eye, said in words for whoever cannot see the line drawn.
             val back = if (line.undone) arrayOf(tr("rolled back", "откачено")) else emptyArray()
@@ -1050,7 +1058,8 @@ class Lookups(
                 .sortedByDescending { it.timestamp }
         }
         val keeps = rowFilter(query, users)
-        val kept = rows.asSequence().filter(keeps::keeps).take(query.wanted + 1).toList()
+        // Not cut to the page: runs fold only afterwards, and a cut before them shifts every later page.
+        val kept = rows.filter(keeps::keeps)
         val blockLines = marked(kept).map { (row, back) -> lineOf(target.world, row, back) }
         return blockLines + entityLines(log, target, query, keeps, fromTs, toTs)
     }
@@ -1092,7 +1101,7 @@ class Lookups(
                 }
             }
         }
-        val kept = rows.filter(keeps::keeps).sortedByDescending { it.timestamp }.take(query.wanted + 1)
+        val kept = rows.filter(keeps::keeps).sortedByDescending { it.timestamp }
         return markedEntities(kept).map { (row, back) -> lineOf(target.world, row, back) }
     }
 
@@ -1150,7 +1159,6 @@ class Lookups(
         return entries.asSequence()
             .filter(keeps::keeps)
             .filter { !query.steal || stolen(it, placers) }
-            .take(query.wanted + 1)
             .toList()
     }
 
