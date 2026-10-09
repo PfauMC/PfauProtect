@@ -138,6 +138,16 @@ class AttributionTest {
         assertEquals(Confidence.NEARBY, attribution.journalPlacerAt(there, "minecraft:lava[level=0]", POURING_CAUSES)?.confidence)
     }
 
+    // Lava that ran far from its bucket sets fire where no walk back to the source reaches, and the flow row
+    // of the lava block itself names who let it run: 6595 ignitions on a real map were nobody's (D110).
+    @Test
+    fun `the journal names who let a flow run`() {
+        val here = at(10, 64, 10)
+        journalled(here, AIR, "minecraft:lava[level=6]", bob, cause = Cause.BLK_LIQUID_FLOW)
+        assertEquals(bob, attribution.journalPlacerAt(here, "minecraft:lava[level=6]", FLOWING_CAUSES)?.actor)
+        assertNull(attribution.journalPlacerAt(here, "minecraft:lava[level=6]", POURING_CAUSES))
+    }
+
     // A fire outlives its note; the row that set it there, by spreading or by a plank burning into it,
     // still names whose fire it is. A break of the fire puts nothing down.
     @Test
@@ -286,6 +296,16 @@ class AttributionTest {
 
         clock += SUPPORT_MILLIS + 1
         assertNull(attribution.supportRemoverAt(at(6, 65, 6)))
+    }
+
+    // Concrete powder under a griefer's TNT came down 206 ms after the planks under it, the server
+    // running behind on the very blast, and was filed on nobody while the window was 100 ms.
+    @Test
+    fun `a fall late behind a lagging blast still finds who took its support`() {
+        attribution.removed(at(5, 64, 5), alice)
+
+        clock += 206
+        assertEquals(alice, attribution.supportRemoverAt(at(5, 65, 5))?.actor)
     }
 
     // Two players mining shoulder to shoulder in one tick: the cell under the column is the one that

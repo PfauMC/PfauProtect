@@ -271,9 +271,14 @@ internal fun ranFrom(
     return found
 }
 
-/** Notes the leaves a log was holding up, when the block going is a log. */
+/**
+ * Notes the leaves a log was holding up, when the block going is a log, and the leaves a leaf was the way
+ * to the log for, when it is a leaf: fire took the leaves between a trunk and the far crown, and the crown
+ * decayed on nobody before the log beside it burnt (D111).
+ */
 internal fun Attribution.felledBy(block: Block, actor: UUID) {
-    if ((block.blockData as CraftBlockData).state.`is`(BlockTags.LOGS)) {
+    val state = (block.blockData as CraftBlockData).state
+    if (state.`is`(BlockTags.LOGS) || state.`is`(BlockTags.LEAVES)) {
         felled(leavesHeldBy(block).map(::positionOf), actor)
     }
 }

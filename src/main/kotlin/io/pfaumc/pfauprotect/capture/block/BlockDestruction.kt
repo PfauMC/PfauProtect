@@ -15,6 +15,7 @@ import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.attribution.FIRING_CAUSES
 import io.pfaumc.pfauprotect.attribution.Falling
 import io.pfaumc.pfauprotect.attribution.POURING_CAUSES
+import io.pfaumc.pfauprotect.attribution.FLOWING_CAUSES
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
@@ -110,6 +111,7 @@ import org.bukkit.event.block.EntityBlockFormEvent
 import org.bukkit.event.block.LeavesDecayEvent
 import org.bukkit.event.entity.EntityChangeBlockEvent
 import org.bukkit.event.entity.EntityExplodeEvent
+import org.bukkit.event.entity.EntitySpawnEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.player.PlayerBucketEmptyEvent
 import org.bukkit.event.player.PlayerBucketFillEvent
@@ -692,19 +694,37 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
 
 // Properties that carry the signal rather than the block, which the switch rows of phase 5.7 already
 // cover; ones a block takes from its neighbours — grass under snow, a stair's corner, which sides a
-// fence or a pane joins — which change with the neighbour that was filed; and ones that a hand flips
-// and the block flips back by itself. None of them is something a rollback would have to put back.
+// fence or a pane joins — which change with the neighbour and are filed by [Cause.BLK_SHAPE], not as the
+// hand's; and ones that a hand flips and the block flips back by itself.
 private val SIGNAL_PROPERTIES = setOf("powered", "power")
 
 private val SIDES = setOf("north", "south", "east", "west", "up")
 
-private fun selfRevertingOf(name: String): Set<String> = when {
-    // Taken from the neighbours. A vine's or a lichen's sides are what it clings to, and are not.
-    name.endsWith("_fence") || name.endsWith("_pane") || name.endsWith("_wall") || name == "minecraft:iron_bars" ||
+/**
+ * The properties a block takes from its neighbours alone. A hand never sets them, and the server rewrites
+ * them as a neighbour changes without raising anything: they get rows of their own, [Cause.BLK_SHAPE].
+ * A vine's or a lichen's sides are what it clings to, and are not.
+ */
+internal fun shapeKeysOf(name: String): Set<String> = when {
+    name.endsWith("_fence") || name.endsWith("_pane") || name.endsWith("_wall") || name.endsWith("_bars") ||
         name == "minecraft:redstone_wire" || name == "minecraft:tripwire" -> SIDES + "attached"
     name.endsWith("_stairs") -> setOf("shape")
     name.endsWith("_fence_gate") -> setOf("in_wall")
     name == "minecraft:grass_block" || name == "minecraft:podzol" || name == "minecraft:mycelium" -> setOf("snowy")
+    else -> emptySet()
+}
+
+/** Whether a block went from one state to the other by what it takes from its neighbours and nothing else. */
+internal fun reshaped(before: String, after: String): Boolean {
+    val name = blockNameOf(before)
+    if (before == after || name != blockNameOf(after)) return false
+    val was = propertiesOf(before)
+    val now = propertiesOf(after)
+    val keys = shapeKeysOf(name)
+    return (was.keys + now.keys).filter { was[it] != now[it] }.all { it in keys }
+}
+
+private fun selfRevertingOf(name: String): Set<String> = shapeKeysOf(name) + when {
     name == "minecraft:barrel" -> setOf("open")
     name.endsWith("_bed") -> setOf("occupied")
     name.endsWith("redstone_ore") -> setOf("lit")
@@ -740,6 +760,10 @@ private val PRIMED_ELSEWHERE = setOf(
     TNTPrimeEvent.PrimeCause.EXPLOSION, TNTPrimeEvent.PrimeCause.FIRE, TNTPrimeEvent.PrimeCause.BLOCK_BREAK,
 )
 
+// Between dynamite primed and the entity it becomes there is one call; a note older than this was for an
+// entity that never came.
+private const val PRIMING_MILLIS = 1_000L
+
 // How long after stepping through a portal a player can still be who the far side was built for: the
 // journey loads the chunks there first.
 private const val TRAVEL_MILLIS = 30_000L
@@ -747,7 +771,8 @@ private const val TRAVEL_MILLIS = 30_000L
 // The largest portal the game builds is 21 by 21.
 private const val PORTAL_MAX_BLOCKS = 21 * 21
 
-private val PORTAL_FACES = listOf(
+// A portal's sheet and a block's shaped neighbours are both found through the six faces.
+private val SIX_FACES = listOf(
     BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN,
 )
 
@@ -841,6 +866,13 @@ class BlockDestructionListener(
 
     private val growing = GrowClaims()
     private val readBacks = ReadBacks()
+    // The shaped neighbours waiting for their read, one per position and tick: the first look is the
+    // state the tick found, and the next change beside it in that tick would only see it half rewritten.
+    // A capture that files the position before the read takes the look over (D107).
+    private class ShapeWatch(val before: BlockData, val by: Attributed, val timestamp: Long)
+    private val shapeWatches = ConcurrentHashMap<WorldBlock, ShapeWatch>()
+    // Who stands behind dynamite just primed, on its position until the entity appears there.
+    private val priming = ConcurrentHashMap<WorldBlock, Pair<Attributed, Long>>()
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onEntityExplode(event: EntityExplodeEvent) {
@@ -898,6 +930,15 @@ class BlockDestructionListener(
         // fire answers nothing and the whole chain off it burns unattributed.
         val lit = BaseFireBlock.getState(block.level, block.position).asBlockData().asString
         val player = event.player
+        // A fire charge out of a dispenser somebody pressed, a burning arrow, a channeling trident's bolt: the
+        // fire answers to whoever stands behind what lit it, and the whole chain off it with it.
+        val entity = event.ignitingEntity
+        if (player == null && entity != null) {
+            val by = behindChange(entity) ?: return
+            if (by.confidence != Confidence.NEARBY) attribution.placed(positionOf(block), lit, by.actor)
+            readBack(listOf(block), by.inferred(), Cause.BLK_FIRE_SPREAD)
+            return
+        }
         if (player == null) {
             // Lava sets fire on a random tick, and nothing else announces the fire it puts down.
             if (event.cause != BlockIgniteEvent.IgniteCause.LAVA) return
@@ -983,6 +1024,10 @@ class BlockDestructionListener(
         // carry does, so an arbitrarily long chain stays attributed while no note covers more than a step.
         val leapt = if (blockNameOf(after) in FIRES) fireStartedBy(event.source) else null
         if (leapt != null && leapt.confidence != Confidence.NEARBY) attribution.placed(at, after, leapt.actor)
+        // A block burnt away in this very tick, with fire leaping straight into the air it left: the burn's
+        // read-back files the block to fire. A row of the spread's own here would settle the position and
+        // the read-back would drop the block, which a rollback then never puts back.
+        if (blockNameOf(after) in FIRES && readBacks.pending(at)) return
         val cause = spreadCause(after)
         // Sculk spreads off a catalyst's bloom, and the bloom off a death somebody stands behind.
         val bloomed = if (cause == Cause.BLK_SCULK) attribution.killerNear(at, SCULK_REACH) else null
@@ -1124,9 +1169,12 @@ class BlockDestructionListener(
         val at = positionOf(liquid)
         val standing = liquid.blockData.asString
         attribution.placerAt(at, standing)?.let { return it }
-        val found = sourcesOf(liquid).firstNotNullOfOrNull {
-            attribution.journalPlacerAt(positionOf(it), it.blockData.asString, POURING_CAUSES)
-        } ?: return null
+        // Its own flow row first: lava that ran far from its bucket is past any walk back to the source, and
+        // 6595 fires it set on a real map were nobody's (D110).
+        val found = attribution.journalPlacerAt(at, standing, FLOWING_CAUSES)
+            ?: sourcesOf(liquid).firstNotNullOfOrNull {
+                attribution.journalPlacerAt(positionOf(it), it.blockData.asString, POURING_CAUSES)
+            } ?: return null
         if (found.confidence != Confidence.NEARBY) attribution.placed(at, standing, found.actor)
         return found
     }
@@ -1317,6 +1365,11 @@ class BlockDestructionListener(
     fun settleGrowth() {
         growing.settle()
         readBacks.sweep()
+        // A read whose task never ran, its chunk gone first.
+        val unread = System.currentTimeMillis() - TOUCH_STALE_MILLIS
+        shapeWatches.values.removeIf { it.timestamp < unread }
+        val stale = System.currentTimeMillis() - PRIMING_MILLIS
+        priming.values.removeIf { it.second < stale }
     }
 
     /**
@@ -1329,6 +1382,9 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPhysics(event: BlockPhysicsEvent) {
         val block = event.block as CraftBlock
+        // Raised about the block itself once it is set and before its neighbours are told, which is the last
+        // moment they still stand as they were.
+        if (event.sourceBlock == block) watchShapes(block)
         // Every retract passes through here too, and the ones that did raise their event have filed
         // this same change already; the read-back refuses the second row.
         retractingBase(block)?.let { base ->
@@ -1347,6 +1403,50 @@ class BlockDestructionListener(
         defer(block, block.blockData, Cause.BLK_FADE, attribution.supportRemoverAt(positionOf(block)), expectsDrops = false)
     }
 
+    /**
+     * What a change here does to the blocks beside it: the sides bars or a fence join, a stair's corner, a
+     * wall's height. The server rewrites them with no event, so the neighbours are read now and again a tick
+     * later, and each that changed gets a row on whoever changed this block. Without it bars beside a plank
+     * that burnt were filed as joining air when the TNT took them, and the rollback put them back so (D104).
+     */
+    private fun watchShapes(block: CraftBlock) {
+        val at = positionOf(block)
+        // Only a change somebody is noted for. A world changing by itself is nobody's to roll back, and grass
+        // under every snowfall would fill the journal; a radius rollback that needs more widens this.
+        val by = attribution.removerAt(at) ?: attribution.placerAt(at, block.blockData.asString) ?: return
+        if (!plugin.isEnabled || commanded(block)) return
+        val log = logs.get(block.world.uid) ?: return
+        val timestamp = System.currentTimeMillis()
+        for (face in SIX_FACES) {
+            val near = block.getRelative(face)
+            if (!Bukkit.isOwnedByCurrentRegion(near)) continue
+            val before = near.blockData
+            if (shapeKeysOf(blockNameOf(before.asString)).isEmpty()) continue
+            val there = positionOf(near)
+            // The first watch stays until its own task reads it: one replaced under a long tick would lose the
+            // first change's row, and the next would start from a state already half rewritten.
+            val watch = ShapeWatch(before, by, timestamp)
+            if (shapeWatches.putIfAbsent(there, watch) != null) continue
+            plugin.server.regionScheduler.execute(plugin, near.world, near.x shr 4, near.z shr 4) {
+                if (!shapeWatches.remove(there, watch)) return@execute
+                val now = near.blockData.asString
+                if (!reshaped(before.asString, now) || readBacks.settled(there)) return@execute
+                log.submit(listOf(row(Site(there, near, before, now, payload = null), Cause.BLK_SHAPE, by, timestamp)))
+            }
+        }
+    }
+
+    /**
+     * A shaped block filed by a capture while what a change beside it made of it still waits for its read:
+     * that goes first, up to the state the capture found. A fence let go by a plank that burnt and blown up
+     * by TNT in the same tick was read back as air, and its blast row named it already let go (D107).
+     */
+    private fun shapeFirst(log: BlockLog, at: WorldBlock, block: Block, found: BlockData) {
+        val watch = shapeWatches.remove(at) ?: return
+        if (!reshaped(watch.before.asString, found.asString)) return
+        log.submit(listOf(row(Site(at, block, watch.before, found.asString, payload = null), Cause.BLK_SHAPE, watch.by, watch.timestamp)))
+    }
+
     // Every portal block joined to this one, read back: those the broken frame took with it are filed
     // on whoever broke the frame. The walk stays on the region that owns this block.
     private fun commanded(block: Block) = CommandBirths.writing(block.world.uid, block.x, block.y, block.z)
@@ -1359,7 +1459,7 @@ class BlockDestructionListener(
         while (edge.isNotEmpty() && sheet.size < PORTAL_MAX_BLOCKS) {
             val next = ArrayList<Block>()
             for (at in edge) {
-                for (face in PORTAL_FACES) {
+                for (face in SIX_FACES) {
                     val near = at.getRelative(face)
                     if (near in sheet || near.type != Material.NETHER_PORTAL || !Bukkit.isOwnedByCurrentRegion(near)) continue
                     sheet += near
@@ -1383,10 +1483,21 @@ class BlockDestructionListener(
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPrime(event: TNTPrimeEvent) {
-        if (event.cause in PRIMED_ELSEWHERE) return
         val block = event.block
-        val log = logs.get(block.world.uid) ?: return
         val at = positionOf(block)
+        if (event.cause in PRIMED_ELSEWHERE) {
+            // Primed by a fire or a blast, the entity gets no owner from the server, and where it goes off,
+            // thrown about by the blasts beside it, nobody put dynamite down: a whole chain lit from one fire
+            // went off as nobody's. Who set off what primed it is known now, and goes to the entity.
+            val by = when (event.cause) {
+                TNTPrimeEvent.PrimeCause.EXPLOSION -> event.primingEntity?.let(::whoSetOff)
+                TNTPrimeEvent.PrimeCause.FIRE -> event.primingBlock?.let(::fireStartedBy)
+                else -> null
+            } ?: placerOf(at, TNT)
+            if (by != null) priming[at] = by.inferred() to System.currentTimeMillis()
+            return
+        }
+        val log = logs.get(block.world.uid) ?: return
         val lit = event.primingEntity.let { it as? Player ?: (it as? Projectile)?.shooter as? Player }
         val by = lit?.let { Attributed(it.uniqueId, Confidence.FACT) }
             ?: event.primingBlock?.let { energyAt(it, energy) }
@@ -1395,6 +1506,17 @@ class BlockDestructionListener(
         val standing = block.blockData
         file(log, listOf(Site(at, block, standing, AIR)), Cause.BLK_TNT, by ?: placer, expectsDrops = false)
         (by ?: placer)?.culprit()?.let { attribution.placed(at, standing.asString, it) }
+        // The entity carries it too: dynamite lit by a redstone block in the air fell and went off where
+        // nobody had put any, and the whole crater was nobody's (D106).
+        (by ?: placer)?.let { priming[at] = it to System.currentTimeMillis() }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onTntSpawn(event: EntitySpawnEvent) {
+        val tnt = event.entity as? TNTPrimed ?: return
+        val (by, at) = priming.remove(positionOf(tnt.location.block)) ?: return
+        if (tnt.source is Player || System.currentTimeMillis() - at > PRIMING_MILLIS) return
+        entities.appeared(tnt.uniqueId, by.actor, by.confidence)
     }
 
     // A sponge drinking the water around it: the water and the plants in it go, and the sponge turns
@@ -1662,6 +1784,7 @@ class BlockDestructionListener(
     ) {
         val real = sites.filter { unfiled(it) && !commanded(it.block) }
         val rows = real + carried.filter { unfiled(it) && !commanded(it.block) }
+        for (site in rows) shapeFirst(log, site.at, site.block, site.before)
         log.submit(rows.map { row(it, cause, by, timestamp) })
         for (site in rows) readBacks.filed(site.at, site.before.asString, site.after)
         val gone = real.filter { wentAway(it.before.asString, it.after) }
@@ -1827,6 +1950,7 @@ class BlockDestructionListener(
         // One position raises two physics events in one tick, and a second read-back of it would find
         // the same air the first did and file the disappearance again, in both planes.
         if (!readBacks.claim(at)) return
+        logs.get(block.world.uid)?.let { shapeFirst(it, at, block, before) }
         // The time of the event, not of the read: the change happened in the tick that raised it, and
         // a position whose rows are out of order stops answering what stands in it.
         val timestamp = System.currentTimeMillis()
@@ -1836,7 +1960,9 @@ class BlockDestructionListener(
         // Here and not in the read-back: the items are already in the world by then, and a note that
         // arrives after the spawn it explains is a note nobody can claim.
         if (expectsDrops) dropsOf(block, cause, by)
-        by.culprit()?.let { attribution.givingWay(block, it) }
+        // The log is still standing here, and by the read-back it is not: a wall of stripped wood burnt
+        // away read as air there, and the leaves it held decayed on nobody.
+        by.culprit()?.let { attribution.givingWay(block, it); attribution.felledBy(block, it) }
         plugin.server.regionScheduler.execute(plugin, block.world, block.x shr 4, block.z shr 4) {
             readBacks.done(at)
             val now = block.blockData.asString
@@ -1907,14 +2033,14 @@ class BlockDestructionListener(
 
     private fun whoSetOff(source: Entity): Attributed? {
         litBy(source)?.let { return Attributed(it.uniqueId, Confidence.FACT) }
+        // Where the dynamite came from, noted when it was primed; a wither nobody lit was still built by
+        // somebody, and the explosion it opens with is the first thing it does.
+        entities.summonerOf(firedBy(source).uniqueId)?.let { return it }
         // Only a block that stood somewhere can be asked about, and of the entities that explode only
-        // dynamite was one.
+        // dynamite was one. A guess by where it went off, which a blast beside it may have thrown it from.
         if (source.type == EntityType.TNT) {
             placerOf(positionOf(source.location.block), TNT)?.let { return it }
         }
-        // A wither nobody lit was still built by somebody, and the explosion it opens with is the first
-        // thing it does.
-        entities.summonerOf(firedBy(source).uniqueId)?.let { return it }
         // The last rung: a creeper goes off at whoever it was after. Led to a wall, that is the one who led
         // it; met by chance, the one it met. Either way only a witness, never rolled back on its own.
         return ((source as? Creeper)?.target as? Player)?.let { Attributed(it.uniqueId, Confidence.NEARBY) }

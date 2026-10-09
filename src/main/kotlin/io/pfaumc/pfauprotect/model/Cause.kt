@@ -252,6 +252,9 @@ enum class Cause(val id: Int) {
     BLK_SPONGE(0xCB),
     // A block a command wrote: /setblock, /fill, /clone, /place. The actor is the player who ran it.
     BLK_COMMAND(0xCA),
+    // What a neighbour's change made of a block beside it, which the server rewrites with no event: the
+    // sides bars or a fence join, a stair's corner, a wall's height. On whoever changed the neighbour.
+    BLK_SHAPE(0xBF),
 
     CMD_GIVE(0xF0),
     CMD_ITEM_REPLACE(0xF1),

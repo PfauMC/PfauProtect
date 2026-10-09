@@ -1,6 +1,6 @@
 package io.pfaumc.pfauprotect.rollback
 
-import io.pfaumc.pfauprotect.say
+import io.pfaumc.pfauprotect.sayNamed
 import io.pfaumc.pfauprotect.capture.item.ContainerCaptureListener
 import io.pfaumc.pfauprotect.capture.item.Intent
 import io.pfaumc.pfauprotect.capture.item.WorldItemListener
@@ -51,6 +51,9 @@ private const val JOIN_DELAY_TICKS = 2L
 // times, not thousands.
 private const val ENTITY_ROWS = 1000
 
+// The packing of a broken box's contents is written at the end of the tick, the break itself at once.
+private const val PACK_LAG_MILLIS = 1_000L
+
 /** Who holds what a rollback put back: a player, or a pile still lying in the world. */
 sealed interface Taker
 
@@ -65,7 +68,8 @@ data class Vanished(val entity: UUID) : Taker
 /**
  * `stashes` are the containers a carrier put this item into since the window opened, newest first: what
  * is not in their hands any more is looked for there, so a thief who put the loot in a chest of their own
- * does not keep it while the owner gets it back.
+ * does not keep it while the owner gets it back. `boxes` are the piles of the shulker boxes among them
+ * that were broken and left lying, the loot still inside.
  */
 class Owed(
     val taker: Taker,
@@ -73,6 +77,7 @@ class Owed(
     val qty: Int,
     val stashes: List<Container> = emptyList(),
     val conversions: List<Conversion> = emptyList(),
+    val boxes: List<UUID> = emptyList(),
 )
 
 /** What a carrier made of the item: so many of it went into each one `made`. */
@@ -157,10 +162,9 @@ internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
         val carrier = item.taker as? Carrier ?: return@mapNotNull item
         val qty = item.qty - placedInto(ledger, carrier.player, item.formId, tally.since, undone)
         if (qty <= 0) return@mapNotNull null
-        Owed(
-            carrier, item.formId, qty, stashesOf(ledger, carrier.player, item.formId, tally.since),
-            conversionsOf(ledger, carrier.player, item.formId, tally.since),
-        )
+        val stashes = stashesOf(ledger, carrier.player, item.formId, tally.since)
+        val (setDown, boxes) = boxesOf(ledger, stashes, item.formId, tally.since, rowsOf)
+        Owed(carrier, item.formId, qty, stashes + setDown, conversionsOf(ledger, carrier.player, item.formId, tally.since), boxes)
     }
 }
 
@@ -222,6 +226,51 @@ internal fun stashesOf(ledger: RocksItemLog, player: UUID, formId: Long, since: 
         .toList()
 }
 
+/**
+ * Where the loot went from the shulker boxes among `stashes` that were broken since (D102): a box set down
+ * again is a container like any other, and a box left lying is a pile to take the loot out of. A box back
+ * in the carrier's own hands is emptied there. Off the region thread: it reads the ledger.
+ */
+internal fun boxesOf(
+    ledger: RocksItemLog,
+    stashes: List<Container>,
+    formId: Long,
+    since: Long,
+    rowsOf: (ItemEntityRef) -> List<LedgerEntry>,
+): Pair<List<Container>, List<UUID>> {
+    val setDown = ArrayList<Container>()
+    val piles = ArrayList<UUID>()
+    val queue = ArrayDeque(stashes)
+    val seen = HashSet(stashes)
+    while (queue.isNotEmpty() && seen.size <= stashes.size + MAX_HOPS) {
+        val stash = queue.removeFirst()
+        val packs = ledger.holderEntries(stash, since, Long.MAX_VALUE, limit = STASH_ROWS)
+            .filter { it.cause == Cause.CONTAINER_BREAK_PACK && it.qty < 0 && it.itemFormId == formId && it.counterparty is Nested }
+        for (pack in packs.distinctBy { (it.counterparty as Nested).ownerId }) {
+            val owner = (pack.counterparty as Nested).ownerId
+            val again = ledger.holderEntries(Nested(owner, 0), pack.timestamp, Long.MAX_VALUE, limit = STASH_ROWS)
+                .filter { it.cause == Cause.CONTAINER_PLACE_UNPACK && it.qty < 0 && it.itemFormId == formId }
+                .mapNotNull { (it.counterparty as? Container)?.copy(slot = 0) }
+            if (again.isEmpty()) piles += lyingBox(ledger, stash, pack.timestamp, rowsOf)
+            for (box in again) if (seen.add(box)) {
+                setDown += box
+                queue += box
+            }
+        }
+    }
+    return setDown to piles.distinct()
+}
+
+// The box a break dropped is born in the transaction its position gave it up in, and followed from there
+// to where it lies.
+private fun lyingBox(ledger: RocksItemLog, at: Container, packed: Long, rowsOf: (ItemEntityRef) -> List<LedgerEntry>): List<UUID> {
+    val shell = ledger.holderEntries(WorldBlock(at.world, at.x, at.y, at.z), packed - PACK_LAG_MILLIS, packed, limit = 10)
+        .lastOrNull { it.cause == Cause.BLOCK_DROP && it.qty < 0 } ?: return emptyList()
+    return ledger.transactionEntries(shell).filter { it.holder is ItemEntityRef && it.qty > 0 }
+        .flatMap { trace(it.holder, it.itemFormId, it.qty, rowsOf) }
+        .mapNotNull { (it.taker as? Lying)?.entity }
+}
+
 private fun wholePile(pile: UUID, rowsOf: (ItemEntityRef) -> List<LedgerEntry>): List<Owed> {
     val births = rowsOf(ItemEntityRef(pile)).filter { it.qty > 0 && it.cause != Cause.ITEM_MERGE }
     val formId = births.firstOrNull()?.itemFormId ?: return emptyList()
@@ -267,7 +316,10 @@ private fun pileRows(ledger: RocksItemLog) = { pile: ItemEntityRef -> ledger.hol
 /** The same taker and form owed more than once, as one amount. */
 internal fun merged(owed: List<Owed>): List<Owed> =
     owed.groupBy { it.taker to it.formId }.map { (key, all) ->
-        Owed(key.first, key.second, all.sumOf { it.qty }, all.flatMap { it.stashes }.distinct(), all.flatMap { it.conversions }.distinctBy { it.made })
+        Owed(
+            key.first, key.second, all.sumOf { it.qty }, all.flatMap { it.stashes }.distinct(),
+            all.flatMap { it.conversions }.distinctBy { it.made }, all.flatMap { it.boxes }.distinct(),
+        )
     }
 
 /**
@@ -374,7 +426,7 @@ class Confiscations(
                     val pile = Bukkit.getEntity(taker.entity) as? Item
                     val missing = { all.forEach { gone(it.formId, it.qty) } }
                     if (pile == null) {
-                        sender.say("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
+                        sender.sayNamed("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
                         missing()
                     } else {
                         pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender, gone, taken) } }, missing)
@@ -417,7 +469,7 @@ class Confiscations(
         if (added > 0) capture.intend(player, Intent(Cause.ROLLBACK, from = Void, form = form, qty = added, actor = actor))
         if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor) }
         val message = "  gave back $added ${name(formId)} to ${player.name}" + if (left > 0) "; $left more at their next join." else "."
-        if (sender != null) sender.say(message) else plugin.logger.info("rollback at join:$message")
+        if (sender != null) sender.sayNamed(message) else plugin.logger.info("rollback at join:$message")
     }
 
     /**
@@ -430,7 +482,7 @@ class Confiscations(
         fun next(left: Int) {
             val stash = stashes.removeFirstOrNull()
             if (left <= 0 || stash == null) {
-                if (left > 0) fromConversions(item, left, actor, sender, gone, taken)
+                if (left > 0) fromBoxes(item, left, actor, sender, gone, taken)
                 return
             }
             val world = Bukkit.getWorld(stash.world) ?: return next(left)
@@ -459,12 +511,72 @@ class Confiscations(
                 }
                 if (got > 0) {
                     taken(item.formId, got)
-                    sender?.say("  took back $got ${name(item.formId)} from the container at ${stash.x} ${stash.y} ${stash.z} it was put into.")
+                    sender?.sayNamed("  took back $got ${name(item.formId)} from the container at ${stash.x} ${stash.y} ${stash.z} it was put into.")
                 }
                 next(left - got)
             }
         }
         next(need)
+    }
+
+    /**
+     * What a carrier no longer held, out of the shulker boxes they packed it into and left lying (D102),
+     * each on the thread of the region it lies in; then what they made of it.
+     */
+    private fun fromBoxes(item: Owed, need: Int, actor: UUID?, sender: CommandSender?, gone: (Long, Int) -> Unit, taken: (Long, Int) -> Unit) {
+        val form = ledger.form(item.formId) ?: return gone(item.formId, need)
+        val boxes = item.boxes.toMutableList()
+        fun next(left: Int) {
+            val box = boxes.removeFirstOrNull()
+            if (left <= 0 || box == null) {
+                if (left > 0) fromConversions(item, left, actor, sender, gone, taken)
+                return
+            }
+            Bukkit.getGlobalRegionScheduler().execute(plugin) {
+                val pile = Bukkit.getEntity(box) as? Item ?: return@execute next(left)
+                pile.scheduler.run(plugin, {
+                    val rows = ArrayList<Transfer>()
+                    val got = drainBox(pile.itemStack, form, left, System.currentTimeMillis(), actor, rows) { pile.itemStack = it }
+                    if (rows.isNotEmpty()) sink(rows)
+                    if (got > 0) {
+                        taken(item.formId, got)
+                        val at = pile.location
+                        sender?.sayNamed("  took back $got ${name(item.formId)} out of a shulker box lying at ${at.blockX} ${at.blockY} ${at.blockZ}.")
+                    }
+                    next(left - got)
+                }) { next(left) } ?: next(left)
+            }
+        }
+        next(need)
+    }
+
+    /**
+     * Out of a shulker box as an item: up to `want` of the form taken out of its contents, filed under the
+     * box's own name, and the box handed to `put` without them. How many it took.
+     */
+    private fun drainBox(stack: ItemStack?, form: ByteArray, want: Int, now: Long, actor: UUID?, rows: MutableList<Transfer>, put: (ItemStack) -> Unit): Int {
+        if (want == 0 || stack == null) return 0
+        val box = CraftItemStack.asNMSCopy(stack)
+        val owner = io.pfaumc.pfauprotect.capture.item.NestedItems.ownerOf(box) ?: return 0
+        val contents = box.get(net.minecraft.core.component.DataComponents.CONTAINER) ?: return 0
+        val items = net.minecraft.core.NonNullList.withSize(contents.items.size, net.minecraft.world.item.ItemStack.EMPTY)
+        for ((index, slot) in contents.items.withIndex()) slot.getOrNull()?.let { items[index] = it.create() }
+        var took = 0
+        for (index in items.indices) {
+            if (took == want) break
+            val child = items[index]
+            if (child.isEmpty) continue
+            val encoded = codec.encodeOrNull(CraftItemStack.asBukkitCopy(child)) ?: continue
+            if (!encoded.form.contentEquals(form)) continue
+            val n = minOf(want - took, child.count)
+            child.shrink(n)
+            took += n
+            rows += Transfer(Cause.ROLLBACK, Nested(owner, index), Void, form, encoded.damage, n, now, actor = actor)
+        }
+        if (took == 0) return 0
+        box.set(net.minecraft.core.component.DataComponents.CONTAINER, net.minecraft.world.item.component.ItemContainerContents.fromItems(items))
+        put(CraftItemStack.asBukkitCopy(box))
+        return took
     }
 
     /**
@@ -476,7 +588,7 @@ class Confiscations(
         val player = carrier?.let(Bukkit::getPlayer)
         val conversion = item.conversions.firstOrNull()
         if (player == null || conversion == null) {
-            sender?.say("  $need ${name(item.formId)} are beyond reach.")
+            sender?.sayNamed("  $need ${name(item.formId)} are beyond reach.")
             gone(item.formId, need)
             return
         }
@@ -541,41 +653,17 @@ class Confiscations(
             // Put into a shulker box the thief carries: taken out of the box. Its contents are filed under the
             // box's own name, not the slot, and its form leaves them out, so the pass sees no change here
             // and the rows are written directly.
-            fun drainBox(stack: ItemStack?, put: (ItemStack) -> Unit) {
-                if (left == 0 || stack == null) return
-                val box = CraftItemStack.asNMSCopy(stack)
-                val owner = io.pfaumc.pfauprotect.capture.item.NestedItems.ownerOf(box) ?: return
-                val contents = box.get(net.minecraft.core.component.DataComponents.CONTAINER) ?: return
-                val items = net.minecraft.core.NonNullList.withSize(contents.items.size, net.minecraft.world.item.ItemStack.EMPTY)
-                for ((index, slot) in contents.items.withIndex()) slot.getOrNull()?.let { items[index] = it.create() }
-                var took = false
-                for (index in items.indices) {
-                    if (left == 0) break
-                    val child = items[index]
-                    if (child.isEmpty) continue
-                    val encoded = codec.encodeOrNull(CraftItemStack.asBukkitCopy(child)) ?: continue
-                    if (!encoded.form.contentEquals(form)) continue
-                    val n = minOf(left, child.count)
-                    child.shrink(n)
-                    left -= n
-                    took = true
-                    direct += Transfer(Cause.ROLLBACK, Nested(owner, index), Void, form, encoded.damage, n, now, actor = actor)
-                }
-                if (!took) return
-                box.set(net.minecraft.core.component.DataComponents.CONTAINER, net.minecraft.world.item.component.ItemContainerContents.fromItems(items))
-                put(CraftItemStack.asBukkitCopy(box))
-            }
-            for (slot in 0 until inventory.size) drainBox(inventory.getItem(slot)) { inventory.setItem(slot, it) }
-            for (slot in 0 until ender.size) drainBox(ender.getItem(slot)) { ender.setItem(slot, it) }
+            for (slot in 0 until inventory.size) left -= drainBox(inventory.getItem(slot), form, left, now, actor, direct) { inventory.setItem(slot, it) }
+            for (slot in 0 until ender.size) left -= drainBox(ender.getItem(slot), form, left, now, actor, direct) { ender.setItem(slot, it) }
             if (seen > 0) capture.intend(player, Intent(Cause.ROLLBACK, to = Void, form = form, qty = seen, actor = actor))
             val got = item.qty - left
             if (got > 0) taken(item.formId, got)
-            val followed = item.stashes.isNotEmpty() || item.conversions.isNotEmpty()
+            val followed = item.stashes.isNotEmpty() || item.boxes.isNotEmpty() || item.conversions.isNotEmpty()
             val rest = if (followed) "the rest is looked for where they put it and what they made of it" else "the rest is beyond reach"
             val message = if (left == 0) "  took back $got ${name(item.formId)} from ${player.name}."
             else "  ${player.name} held only $got of ${item.qty} ${name(item.formId)}; $rest."
-            if (sender != null) sender.say(message) else plugin.logger.info("rollback at join:$message")
-            if (left > 0) if (followed) short(item, left) else gone(item.formId, left)
+            if (sender != null) sender.sayNamed(message) else plugin.logger.info("rollback at join:$message")
+            if (left > 0 && followed) short(item, left)
         }
         if (direct.isNotEmpty()) sink(direct)
     }
@@ -590,7 +678,7 @@ class Confiscations(
         taken: (Long, Int) -> Unit,
     ) {
         if (!pile.isValid) {
-            sender.say("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
+            sender.sayNamed("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
             gone(owed.formId, owed.qty)
             return
         }
@@ -612,7 +700,7 @@ class Confiscations(
         }
         sink(rows)
         taken(owed.formId, n)
-        sender.say("  took back $n ${name(owed.formId)} lying in the world.")
+        sender.sayNamed("  took back $n ${name(owed.formId)} lying in the world.")
     }
 
     /** What was owed by a player while they were offline, taken on their join. */

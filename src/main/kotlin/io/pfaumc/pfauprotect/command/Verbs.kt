@@ -159,6 +159,7 @@ internal fun verb(cause: Cause): Component = when (cause) {
     BLK_SPONGE -> b("sponge")
     BLK_COMMAND -> w("command", "команда")
     BLK_SIGN_EDIT -> w("sign edited", "правка таблички")
+    BLK_SHAPE -> w("joined anew", "примыкание")
     CMD_GIVE -> c("/give")
     CMD_ITEM_REPLACE, CMD_ITEM_MODIFY, CMD_ITEM_COPY -> c("/item")
     CMD_LOOT -> c("/loot")

@@ -11,6 +11,7 @@ import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockChange
+import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.RocksItemLog
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import io.pfaumc.pfauprotect.ServerRegistries
 import net.minecraft.world.SimpleContainer
+import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.item.Items
 import java.nio.file.Path
 import java.util.UUID
@@ -258,6 +260,70 @@ class RollbackTest {
         assertEquals(1, reader.leftByThemBefore(listOf(planned), setOf(alice), T0 + 50))
     }
 
+    // Alice put dynamite down before the window and blew it up inside; an earlier rollback had already put the
+    // air back. From the window's start the position would get her dynamite again (D108); it stands as before
+    // her, so there is nothing to do. Where it does not, the window's start is still what it goes back to.
+    @Test
+    fun `a position standing as before the player first touched it is left alone`() {
+        val tnt = "minecraft:tnt[unstable=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, tnt, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, tnt, AIR, Cause.BLK_TNT, T0 + 100, actor = alice)))
+        log.drain()
+
+        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
+        val planned = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, T0 + 50, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
+        val position = planned.chunks.flatMap { it.positions }.single()
+        assertEquals(AIR, position.origin)
+        assertNull(settle(AIR, position.steps, position.origin).back)
+        assertEquals(tnt, settle(STONE, position.steps.map { Step(it.before, STONE, null) }, position.origin).back?.before)
+    }
+
+    // Alice put stone into running water before the window and broke it inside. The air the break left is
+    // not the running water it was put into: the stone is what the window opens on, and it goes back.
+    @Test
+    fun `air left by a break is not the running water the block was put into`() {
+        val flow = "minecraft:water[level=3]"
+        assertEquals(STONE, settle(AIR, listOf(Step(STONE, AIR, null)), flow).back?.before)
+        assertNull(settle(AIR, listOf(Step(STONE, AIR, null)), AIR).back)
+    }
+
+    // A row this build cannot read may be anybody's change, so no beginning is known past it.
+    @Test
+    fun `an unreadable row ends the walk back to the origin`() {
+        val placed = BlockRow(1, 64, 1, T0, 1, 0, Cause.BLK_PLAYER_PLACE, 0, 1, actor = alice)
+        assertEquals(0, originOf(listOf(placed)) { it.actor == alice })
+        assertNull(originOf(listOf(null, placed)) { it.actor == alice })
+    }
+
+    // Alice burnt a leaf before the window; a command put it back inside it, and she burnt it again. Air stands
+    // as before her first burning, but the window opens on the command's leaf, and that is what goes back.
+    @Test
+    fun `a position somebody else changed inside the window goes back to the window's start`() {
+        val leaf = "minecraft:oak_leaves[distance=2,persistent=false,waterlogged=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, leaf, AIR, Cause.BLK_FIRE_BURN, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, leaf, Cause.BLK_COMMAND, T0 + 100)))
+        log.submit(listOf(BlockChange(1, 64, 1, leaf, AIR, Cause.BLK_FIRE_BURN, T0 + 200, actor = alice)))
+        log.drain()
+
+        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
+        val planned = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, T0 + 50, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
+        val position = planned.chunks.flatMap { it.positions }.single()
+        assertNull(position.origin)
+        assertEquals(leaf, settle(AIR, position.steps, position.origin).back?.before)
+    }
+
+    // Alice's water ran in, became a source by itself between two others, and her sponge drank it twice
+    // over. The walk met a source where her row had left a flow, stopped, and put the source back (D109).
+    @Test
+    fun `a flow that became a source by itself is the same water`() {
+        val source = "minecraft:water[level=0]"
+        val flow = "minecraft:water[level=3]"
+        val steps = listOf(step(source, AIR), step(source, AIR), step(AIR, flow))
+        val settled = settle(AIR, steps)
+        assertEquals(AIR, settled.back?.before)
+        assertFalse(settled.conflict)
+    }
+
     @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)
@@ -465,6 +531,37 @@ class RollbackTest {
         assertEquals(listOf(WorldBlock(world, 2, 104, 2)), named.chunks.flatMap { it.positions }.map { it.at })
         val cube = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, 0, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
         assertTrue(cube.chunks.flatMap { it.positions }.isEmpty())
+    }
+
+    // A machine is put back with no signal in it, or it fires before it settles; a switch keeps its own state.
+    @Test
+    fun `a rollback puts redstone back with no signal in it`() {
+        assertEquals("minecraft:comparator[facing=west,mode=subtract,powered=false]", quiet("minecraft:comparator[facing=west,mode=subtract,powered=true]"))
+        assertEquals("minecraft:redstone_wire[east=side,north=none,power=0,south=side,west=none]", quiet("minecraft:redstone_wire[east=side,north=none,power=15,south=side,west=none]"))
+        assertEquals("minecraft:observer[facing=north,powered=false]", quiet("minecraft:observer[facing=north,powered=true]"))
+        assertEquals("minecraft:redstone_torch[lit=true]", quiet("minecraft:redstone_torch[lit=false]"))
+        assertEquals("minecraft:lever[face=floor,facing=east,powered=true]", quiet("minecraft:lever[face=floor,facing=east,powered=true]"))
+        assertEquals("minecraft:light_weighted_pressure_plate[power=4]", quiet("minecraft:light_weighted_pressure_plate[power=4]"))
+        assertEquals("minecraft:dispenser[facing=east,triggered=true]", quiet("minecraft:dispenser[facing=east,triggered=true]"))
+        // A leaf's distance is its neighbours' (D112); one a player placed keeps it, never decaying anyway.
+        assertEquals("minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]", quiet("minecraft:oak_leaves[distance=7,persistent=false,waterlogged=false]"))
+        assertEquals("minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]", quiet("minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]"))
+        assertEquals("minecraft:stone", quiet("minecraft:stone"))
+    }
+
+    // A preview bigger than what a player is shown shows the part around them, then other worlds.
+    @Test
+    fun `a preview shows the nearest ghosts first`() {
+        ServerRegistries.access
+        val stone = Blocks.STONE.defaultBlockState().asBlockData()
+        val nether = UUID.fromString("00000000-0000-4000-8000-000000000007")
+        val ghosts = listOf(
+            Ghost(world, 150, 64, 0, stone), Ghost(nether, 1, 64, 0, stone), Ghost(world, 3, 64, 0, stone),
+            Ghost(world, -40, 64, 0, stone), Ghost(world, 0, 70, 0, stone),
+        )
+        val shown = nearest(ghosts, world, 0.5, 64.0, 0.5, 4).map { Triple(it.world == world, it.x, it.y) }
+        assertEquals(listOf(Triple(true, 3, 64), Triple(true, 0, 70), Triple(true, -40, 64), Triple(true, 150, 64)), shown)
+        assertEquals(nether, nearest(ghosts, world, 0.5, 64.0, 0.5, 5).last().world)
     }
 
     private fun around(filter: RowFilter): Planned {

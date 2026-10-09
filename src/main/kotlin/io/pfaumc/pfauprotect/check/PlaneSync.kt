@@ -122,10 +122,17 @@ class PlaneSync(private val ledger: RocksItemLog, private val blocks: BlockLogs)
         // as settled, which is a fact written off by a guess: each total has to stand or fall on its own.
         if (fact == 0 && inferred == 0) return Outcome.CHECKED
         if (newest > now - SETTLE_MILLIS) return Outcome.SETTLING
-        // A holding stands above zero. Below it the position gave up what it was never given — the debit
-        // was booked here and the credit somewhere else or nowhere — and that is the opposite fault.
-        if (fact <= 0 && inferred <= 0) return Outcome.OVERDRAWN
         val log = blocks.get(at.world) ?: return Outcome.UNREADABLE
+        // A holding stands above zero. Below it the position gave up what it was never given — the debit
+        // was booked here and the credit somewhere else or nowhere — and that is the opposite fault. Unless
+        // a block already stood there when the block plane first saw the position: a house built before the
+        // plugin gives up its planks to the first blast with no credit to set them against, and a map put
+        // under it read as thousands of faults a pass (O24).
+        if (fact <= 0 && inferred <= 0) {
+            val first = log.oldestAt(at.x, at.y, at.z) ?: return Outcome.OVERDRAWN
+            val before = ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, first.stateBefore) ?: return Outcome.UNREADABLE
+            return if (emptied(before)) Outcome.OVERDRAWN else Outcome.UNRECORDED
+        }
         val standing = log.standingAt(at.x, at.y, at.z)
         if (standing.torn) return Outcome.UNREADABLE
         // A block placed before this plane existed, or by a path the block capture does not cover, is

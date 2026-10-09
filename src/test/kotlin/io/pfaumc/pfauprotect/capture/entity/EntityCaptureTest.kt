@@ -4,6 +4,7 @@ import net.minecraft.nbt.CompoundTag
 import net.minecraft.nbt.DoubleTag
 import net.minecraft.nbt.ListTag
 import net.minecraft.nbt.NbtIo
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -36,6 +37,22 @@ class EntityCaptureTest {
         assertTrue(changedBetween(before, cow(1.0, 5f, "Burenka", 100)))
         // The plugin's own mark of a hand is not the hand's change.
         assertFalse(changedBetween(before, cow(1.0, 5f, null, 100, touched = true)))
+    }
+
+    // CoreProtect marks an entity on every click: its bookkeeping, not the player's change (O23), and left
+    // as it is by a rollback. The slots this plugin booked on the entity still count.
+    @Test
+    fun `what other plugins keep on an entity is theirs`() {
+        fun marked(vararg keys: String) = CompoundTag().apply {
+            put("BukkitValues", CompoundTag().apply { for (key in keys) putByte(key, 1) })
+        }
+        fun bytes(tag: CompoundTag) = ByteArrayOutputStream().also { out -> DataOutputStream(out).use { NbtIo.write(tag, it) } }.toByteArray()
+        val before = marked("pfauprotect:held_16")
+        assertFalse(changedBetween(bytes(before), bytes(marked("pfauprotect:held_16", "coreprotect:pending_entity_identity"))))
+        assertTrue(changedBetween(bytes(before), bytes(marked("coreprotect:pending_entity_identity"))))
+
+        val back = keepingOthersMarks(marked("pfauprotect:held_3", "coreprotect:old"), marked("pfauprotect:held_16", "coreprotect:pending_entity_identity"))
+        assertEquals(setOf("pfauprotect:held_3", "coreprotect:pending_entity_identity"), back.getCompoundOrEmpty("BukkitValues").keySet())
     }
 
     // A death nobody stands behind: a mob somebody had a hand in always, the place's own mob unless it is

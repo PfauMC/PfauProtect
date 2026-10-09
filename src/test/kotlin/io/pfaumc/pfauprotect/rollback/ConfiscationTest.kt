@@ -72,6 +72,38 @@ class ConfiscationTest {
         assertEquals(listOf(his.copy(slot = 0), older), owed.stashes)
     }
 
+    // Bob packed the loot into a shulker box and broke it (D102). Left lying, the box is the pile the loot is
+    // taken out of; picked up and set down again far away, it is a container like the chests.
+    @Test
+    fun `the loot packed into a box is followed to where the box is now`() {
+        val box = byteArrayOf(41)
+        val stood = Container(world, 20, 64, 20, 0)
+        val owner = UUID.randomUUID()
+        val pile = ItemEntityRef(UUID.randomUUID())
+        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 16, T0))
+        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), stood, diamond, null, 16, T0 + 1))
+        ledger.submit(
+            listOf(
+                Transfer(Cause.BLOCK_DROP, WorldBlock(world, 20, 64, 20), Void, box, null, 1, T0 + 100, actor = bob),
+                Transfer(Cause.BLOCK_DROP, Void, pile, box, null, 1, T0 + 100, actor = bob),
+            )
+        )
+        ledger.submit(Transfer(Cause.CONTAINER_BREAK_PACK, stood, io.pfaumc.pfauprotect.model.Nested(owner, 0), diamond, null, 16, T0 + 140))
+        ledger.drain()
+        val tally = returned(PlayerInv(bob, 4), 16).apply { since = T0 }
+
+        val lying = owedFor(ledger, tally).single()
+        assertEquals(listOf(pile.uuid), lying.boxes)
+
+        val far = Container(world, 900, 64, 900, 5)
+        ledger.submit(Transfer(Cause.PICKUP, pile, PlayerInv(bob, 7), box, null, 1, T0 + 200))
+        ledger.submit(Transfer(Cause.CONTAINER_PLACE_UNPACK, io.pfaumc.pfauprotect.model.Nested(owner, 0), far, diamond, null, 16, T0 + 300))
+        ledger.drain()
+        val setDown = owedFor(ledger, tally).single()
+        assertEquals(listOf(stood, far.copy(slot = 0)), setDown.stashes)
+        assertTrue(setDown.boxes.isEmpty())
+    }
+
     // Bob crafted the loot into a block: the block stands for nine diamonds, and is what is looked for once
     // his hands and his chests have none of them.
     @Test

@@ -5,6 +5,9 @@ import org.bukkit.command.CommandSender
 /** Says a line in the language config.yml names. */
 fun CommandSender.say(text: String) = sendMessage(Texts.translate(text))
 
+/** The same, with the item ids it names drawn as the game's names of the items, in the reader's language. */
+fun CommandSender.sayNamed(text: String) = sendMessage(Ui.named(Texts.translate(text)))
+
 /**
  * What the plugin says, in Russian when config.yml asks for it. Every message is written in English where
  * it is made, and translated here as a whole line on its way out: the sentences by pattern, the places they
@@ -36,6 +39,8 @@ object Texts {
         r("radius:global undoes what named players did; give user: as well\\.") to "radius:global отменяет сделанное названными игроками; укажи и user:.",
         r("Rollback preview dropped\\.") to "Предпросмотр отката сброшен.",
         r("  you see the blocks as they would stand; nothing changes before /pp apply\\.") to "  вы видите блоки такими, какими они станут; до /pp apply в мире ничего не меняется.",
+        r("  you see the nearest blocks \\((\\d+) of (\\d+)\\) as they would stand; nothing changes before /pp apply\\.") to
+            "  вы видите ближайшие блоки ($1 из $2) такими, какими они станут; до /pp apply в мире ничего не меняется.",
         r("No rollback preview to drop\\.") to "Нет предпросмотра отката.",
         r("Stopping the rollback that runs now: the chunks it has not reached yet stay as they are\\.") to
             "Останавливаю идущий откат: чанки, до которых он не дошёл, останутся как есть.",
@@ -43,6 +48,8 @@ object Texts {
         r("Another rollback is still running; apply again once it has reported\\.") to "Другой откат ещё идёт; примени снова, когда он отчитается.",
         r("Rollback refused: (\\d+) positions changed in that window, more than the (\\d+) one rollback may write; narrow the radius or the time\\.") to
             "Откат отклонён: за это окно изменилось позиций: $1, а один откат записывает не больше $2; сузь радиус или время.",
+        r("  cut it into (\\d+)×(\\d+) squares: radius:(\\d+) around points (\\d+) apart\\.") to
+            "  раздели на квадраты $1×$2: radius:$3, центры шагом $4.",
         r("Rollback refused: that window holds more history than one rollback reads; narrow the radius or the time\\.") to
             "Откат отклонён: в этом окне больше истории, чем читает один откат; сузь радиус или время.",
         r("Rollback refused: (\\d+) rows in that window could not be read by this build, and a rollback over part of the history would put back part of the place; nothing was done\\.") to
@@ -59,6 +66,7 @@ object Texts {
         r("  would swap back (.*) from (\\S+) for (.*)\\.") to "  будет обменено обратно у $2: $1 на $3.",
         r("  swapping back (.*) from (\\S+) for (.*):") to "  обмениваю обратно у $2: $1 на $3:",
         r("  took back (\\d+) (\\S+) from the container at (.*) it was put into\\.") to "  изъято $1 $2 из контейнера $3, куда их положили.",
+        r("  took back (\\d+) (\\S+) out of a shulker box lying at (.*)\\.") to "  изъято $1 $2 из шалкерового ящика, лежащего на $3.",
         r("  took back (\\d+) (\\S+) lying in the world\\.") to "  изъято $1 $2, лежавших в мире.",
         r("  took back (\\d+) (\\S+) from (\\S+)\\.") to "  изъято $1 $2 у $3.",
         r("  (\\S+) held only (\\d+) of (\\d+) (\\S+); the rest is beyond reach\\.") to "  у $1 было только $2 из $3 $4; остальное недосягаемо.",
@@ -134,9 +142,6 @@ object Texts {
     )
 
     private val WORDS: List<Pair<Regex, String>> = listOf(
-        // Before " slot ", which would take a word out of each.
-        r("block rows, ") to "строк блоков, ",
-        r("slot rows read") to "строк слотов прочитано",
         r(" slot ") to " слот ",
         r("container ") to "контейнер ",
         r(" from ") to " из ",

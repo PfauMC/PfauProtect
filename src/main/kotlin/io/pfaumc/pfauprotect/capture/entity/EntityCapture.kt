@@ -163,11 +163,27 @@ internal fun nbtOf(bytes: ByteArray): CompoundTag = NbtIo.read(DataInputStream(B
 
 internal fun significant(tag: CompoundTag): CompoundTag = tag.copy().also { copy ->
     for (key in VOLATILE) copy.remove(key)
-    // The plugin's own mark is no hand of a player's.
+    // The plugin's own mark is no hand of a player's, and neither is what other plugins keep on the entity:
+    // CoreProtect marks one on every click (O23). The slots this plugin booked go with what it carries.
     (copy.get("BukkitValues") as? CompoundTag)?.let { values ->
-        values.remove(TOUCHED_TAG)
+        for (key in values.keySet().toList()) if (key == TOUCHED_TAG || !key.startsWith(OWN_KEYS)) values.remove(key)
         if (values.isEmpty) copy.remove("BukkitValues")
     }
+}
+
+private const val OWN_KEYS = "pfauprotect:"
+
+/**
+ * The entity as it was, but with the marks other plugins keep on it as they are now: their bookkeeping is
+ * not the player's to undo, and taking it back would only lead them astray.
+ */
+internal fun keepingOthersMarks(before: CompoundTag, now: CompoundTag): CompoundTag {
+    val ours = (before.get("BukkitValues") as? CompoundTag)?.copy() ?: CompoundTag()
+    for (key in ours.keySet().toList()) if (!key.startsWith(OWN_KEYS)) ours.remove(key)
+    (now.get("BukkitValues") as? CompoundTag)?.let { theirs ->
+        for (key in theirs.keySet()) if (!key.startsWith(OWN_KEYS)) ours.put(key, theirs.get(key)!!.copy())
+    }
+    return before.copy().also { if (ours.isEmpty) it.remove("BukkitValues") else it.put("BukkitValues", ours) }
 }
 
 /** Whether a player's hand changed anything about the entity between two snapshots of it. */

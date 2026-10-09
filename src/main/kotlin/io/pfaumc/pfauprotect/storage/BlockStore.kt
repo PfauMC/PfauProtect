@@ -581,6 +581,33 @@ class BlockLog(
         found
     }
 
+    /** The first row the position has, or null for none; what stood there before it is what the plane never saw. */
+    fun oldestAt(x: Int, y: Int, z: Int): BlockRow? = dbLock.read {
+        if (closed) return null
+        var row: BlockRow? = null
+        forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = false) { key, value ->
+            row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            row == null
+        }
+        row
+    }
+
+    /**
+     * The rows of a position older than `ts`, newest first, at most `limit` of them. One this build cannot
+     * read comes back as null, where it stood, so a walk back over them stops there rather than past it.
+     */
+    fun rowsBefore(x: Int, y: Int, z: Int, ts: Long, limit: Int): List<BlockRow?> = dbLock.read {
+        if (closed) return emptyList()
+        val found = ArrayList<BlockRow?>()
+        forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = true) { key, value ->
+            val row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            // Its time is in the key, which decodes when the rest does not.
+            if (row == null) found += null else if (row.timestamp < ts) found += row
+            found.size < limit
+        }
+        found
+    }
+
     // Reads run on any thread, so the native handles may only be freed once every reader has left,
     // and a write arriving from a region thread during shutdown would dereference a freed handle and
     // take the JVM down. Hence: writers first, handles after.

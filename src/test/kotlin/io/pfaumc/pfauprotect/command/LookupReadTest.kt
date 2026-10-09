@@ -297,6 +297,53 @@ class LookupReadTest {
         assertTrue(lines.none { it.contains("nothing recorded") }, "$lines")
     }
 
+    // A filter by action drops the rollback rows themselves, and a mark read among what the filter kept
+    // never saw that the kill and the burn were rolled back.
+    @Test
+    fun `a rolled back row keeps its mark under a filter that leaves the rollback out`() {
+        val cat = UUID.randomUUID()
+        log.submit(
+            listOf(
+                io.pfaumc.pfauprotect.storage.EntityChange(
+                    10, 64, -3, io.pfaumc.pfauprotect.model.EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:cat",
+                    cat, T0, before = byteArrayOf(10, 0, 0, 0),
+                )
+            )
+        )
+        log.submit(listOf(BlockChange(10, 65, -3, STONE, AIR, Cause.BLK_FIRE_BURN, T0)))
+        log.submit(
+            listOf(
+                io.pfaumc.pfauprotect.storage.EntityChange(
+                    10, 64, -3, io.pfaumc.pfauprotect.model.EntityKind.CREATED, Cause.ROLLBACK, "minecraft:cat",
+                    cat, T0 + 1000, after = byteArrayOf(10, 0, 0, 0),
+                )
+            )
+        )
+        log.submit(listOf(BlockChange(10, 65, -3, AIR, STONE, Cause.ROLLBACK, T0 + 1000)))
+        log.drain()
+
+        val kills = said(LookupQuery(radius = 2, causes = Action.KILL.causes))
+        assertTrue(kills.any { it.contains("entity.minecraft.cat") && it.contains("rolled back") }, "$kills")
+        val burns = said(LookupQuery(radius = 2, causes = Action.FIRE.causes))
+        assertTrue(burns.any { it.contains("minecraft:stone") && it.contains("rolled back") }, "$burns")
+        assertTrue(said(LookupQuery(radius = 2, causes = Action.KILL.causes, rolledBack = false)).none { it.contains("entity.minecraft.cat") })
+    }
+
+    // A read cut short with every matched row on the page has no next page to offer: page 2 starts past
+    // them and is empty. It says the read stopped and how to see further instead.
+    @Test
+    fun `a read cut short with nothing more matched offers no next page`() {
+        val nextDoor = WorldBlock(world, 11, 64, -3)
+        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, WorldBlock(world, 10, 64, -3), stone, null, 1, T0 + 100))
+        repeat(40) { i -> shared.submit(Transfer(Cause.BLK_TNT, nextDoor, Void, stone, null, 1, T0 + i)) }
+        shared.drain()
+
+        val lines = said(LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE)))
+        assertTrue(lines.any { it.contains("+ placed") }, "$lines")
+        assertTrue(lines.none { it.contains("page:2") }, "$lines")
+        assertTrue(lines.any { it.contains("stopped before the whole area") }, "$lines")
+    }
+
     // What a player carried has no position, and a crafting grid is booked to them as an entity. Both
     // are read by whose they are, and only theirs.
     @Test

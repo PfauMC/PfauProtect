@@ -21,7 +21,7 @@ object Settings {
     @Volatile var disabledCauses: Set<Cause> = emptySet()
 
     @Volatile var maxRadius = 200
-    @Volatile var maxRollbackPositions = 32_768
+    @Volatile var maxRollbackPositions = 131_072
     @Volatile var freshMillis = 10 * 60 * 1000L
     @Volatile var crowd = 8
 
@@ -51,7 +51,7 @@ object Settings {
     // The causes rows of the block and entity planes are written with: the 0xC0..0xEF block range, the
     // entity plane's own, and the rest a block row can carry.
     private val BLOCK_PLANE: Set<Cause> = Cause.entries.filter { it.id in 0xCA..0xEF }.toSet() + setOf(
-        Cause.BLK_SIGN_EDIT, Cause.BLK_LIQUID_FLOW, Cause.BLK_PLUGIN, Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.ENTITY_CHANGED,
+        Cause.BLK_SIGN_EDIT, Cause.BLK_SHAPE, Cause.BLK_LIQUID_FLOW, Cause.BLK_PLUGIN, Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.ENTITY_CHANGED,
         Cause.ENTITY_LED, Cause.MOB_BRED, Cause.PLAYER_KILLED, Cause.MOB_TRANSFORM,
     )
 }

@@ -97,7 +97,7 @@ is written and is raised only while someone listens.
 
 **Rollback (`rollback/`).** `/pp rollback` takes the lookup's words and previews; `/pp apply` reads everything
 again and runs it, a chunk per region task, eight at a time; `/pp cancel` stops the chunks not begun yet.
-The previewing player is shown the blocks as they would stand (client-side only) until apply, cancel or expiry.
+The previewing player is shown the blocks as they would stand (client-side only, `Ghosts.kt`: the nearest first, sent again when the client gets their chunk or clicks one) until apply, cancel or expiry.
 `event:<token>` from a lookup line rolls back that one event. It writes compensating rows (`Cause.ROLLBACK`) in both planes and never
 edits old ones. A rollback's own rows are only rolled back when `action:rollback` names them, which is also how a
 rollback is undone. What it put back is then taken back from whoever carried it off (`Confiscation.kt`): from an
