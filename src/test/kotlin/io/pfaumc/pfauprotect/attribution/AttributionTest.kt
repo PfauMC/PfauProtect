@@ -61,6 +61,7 @@ class AttributionTest {
         actor: UUID?,
         ts: Long = START,
         cause: Cause = Cause.BLK_PLAYER_PLACE,
+        confidence: Confidence = Confidence.FACT,
     ) {
         log.submit(
             listOf(
@@ -72,6 +73,7 @@ class AttributionTest {
                     after = after,
                     cause = cause,
                     timestamp = ts,
+                    confidence = confidence,
                     actor = actor,
                 )
             )
@@ -107,6 +109,37 @@ class AttributionTest {
         assertEquals(Confidence.INFERRED, attribution.journalRemoverAt(wall)?.confidence)
         clock = START + HANGING_MILLIS + 1
         assertNull(attribution.journalRemoverAt(wall))
+    }
+
+    // Lava sets fire minutes after its bucket, and the source still has the bucket's row, even where the
+    // bucket was emptied into lava running there. A dispenser's row that only knew who stood near says
+    // no more than that.
+    @Test
+    fun `the journal names who poured a source`() {
+        val here = at(10, 64, 10)
+        journalled(here, "minecraft:lava[level=2]", "minecraft:lava[level=0]", bob, cause = Cause.BLK_BUCKET)
+        assertEquals(bob, attribution.journalPlacerAt(here, "minecraft:lava[level=0]", POURING_CAUSES)?.actor)
+        assertNull(attribution.journalPlacerAt(here, "minecraft:lava[level=0]"))
+
+        val there = at(12, 64, 10)
+        journalled(there, AIR, "minecraft:lava[level=0]", alice, cause = Cause.BLK_DISPENSER, confidence = Confidence.NEARBY)
+        assertEquals(Confidence.NEARBY, attribution.journalPlacerAt(there, "minecraft:lava[level=0]", POURING_CAUSES)?.confidence)
+    }
+
+    // A fire outlives its note; the row that set it there, by spreading or by a plank burning into it,
+    // still names whose fire it is. A break of the fire puts nothing down.
+    @Test
+    fun `the journal names whose fire is burning`() {
+        val fire = "minecraft:fire[age=7]"
+        val leapt = at(10, 64, 10)
+        journalled(leapt, AIR, fire, bob, cause = Cause.BLK_FIRE_SPREAD)
+        assertEquals(bob, attribution.journalPlacerAt(leapt, fire, FIRING_CAUSES)?.actor)
+
+        val burnt = at(11, 64, 10)
+        journalled(burnt, "minecraft:oak_planks", fire, bob, cause = Cause.BLK_FIRE_BURN)
+        assertEquals(bob, attribution.journalPlacerAt(burnt, fire, FIRING_CAUSES)?.actor)
+        journalled(burnt, fire, AIR, alice, START + 1, Cause.BLK_PLAYER_BREAK)
+        assertNull(attribution.journalPlacerAt(burnt, fire, FIRING_CAUSES))
     }
 
     @Test

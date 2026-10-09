@@ -2,6 +2,7 @@ package io.pfaumc.pfauprotect.rollback
 
 import ca.spottedleaf.concurrentutil.util.Priority
 import io.pfaumc.pfauprotect.capture.block.Difference
+import io.pfaumc.pfauprotect.capture.block.ranFrom
 import io.pfaumc.pfauprotect.capture.block.standingAt
 import io.pfaumc.pfauprotect.check.emptied
 import io.pfaumc.pfauprotect.model.LedgerEntry
@@ -36,6 +37,8 @@ import net.minecraft.world.entity.EntitySpawnReason
 import net.minecraft.world.entity.EntitySpawnRequest
 import net.minecraft.world.entity.EntityType
 import net.minecraft.world.level.block.Block
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.LiquidBlock
 import org.bukkit.Location
 import org.bukkit.craftbukkit.entity.CraftEntity
 import org.bukkit.entity.Entity
@@ -46,6 +49,9 @@ import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.entity.CampfireBlockEntity
 import net.minecraft.world.level.block.entity.LecternBlockEntity
 import net.minecraft.world.level.storage.TagValueInput
+import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.event.ClickEvent
+import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.CraftWorld
@@ -70,6 +76,7 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 // held with it instead of spilling it on the ground. The neighbours are told once everything is in.
 private const val PLACE_FLAGS = Block.UPDATE_CLIENTS or Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS
 
+
 // How long a preview waits for `apply`. The world goes on changing under it, so apply reads it all
 // again; this only bounds how stale the question can be.
 private const val PENDING_MILLIS = 5 * 60_000L
@@ -93,6 +100,8 @@ class EntityJob(val entity: Entity, val run: (Tally) -> Unit)
 
 /** What a rollback did, or in a preview would do, counted over every chunk it touched. */
 class Tally {
+    // Positions that stood as the rolled-back players left them when the window opened; set on the total.
+    var leftBefore = 0
     var changed = 0
     var unchanged = 0
     var conflicts = 0
@@ -255,13 +264,26 @@ class ChunkRollback(
         val spots = positions.map { BlockPos(it.at.x, it.at.y, it.at.z) }
         val before = spots.map { standingAt(level, it, codec) }
         val touched = BooleanArray(positions.size)
+        val settles = positions.mapIndexed { i, plan -> settle(before[i].state.asBlockData().asString, plan.steps) }
+        val targets = settles.map { settled -> settled.back?.before?.let { if (passing(it)) "minecraft:air" else it } }
+        // What a source being taken away had run into goes with it, before anything is put back: a plank
+        // put back in the middle of the flow would cut the walk off, and lava left running sets fire to
+        // the house the rollback is putting back.
+        val drained = if (!apply) emptyList() else positions.indices.flatMap { i ->
+            val was = before[i].state
+            val removed = was.block is LiquidBlock && was.fluidState.isSource &&
+                targets[i].let { it != null && it != was.asBlockData().asString }
+            if (!removed) emptyList()
+            else ranFrom(spots[i], level::getBlockState) { Bukkit.isOwnedByCurrentRegion(level.world, it.x shr 4, it.z shr 4) }
+        }
+        for ((pos, _) in drained) level.setBlock(pos, Blocks.AIR.defaultBlockState(), PLACE_FLAGS)
         positions.forEachIndexed { i, plan ->
             val was = before[i]
             val standing = was.state.asBlockData().asString
-            val settled = settle(standing, plan.steps)
+            val settled = settles[i]
             if (settled.conflict) tally.conflicts++
             val back = settled.back
-            val target = back?.before
+            val target = targets[i]
             val reshaped = target != null && target != standing
             // A container standing where it stood keeps what it holds: its contents are the slot
             // postings' business, and its tag would hand back what they already give back.
@@ -326,6 +348,7 @@ class ChunkRollback(
         difference.writeOff(plugin, placed, sink)
         // Last, and after the rows: what the neighbours do now is theirs, and the capture files it.
         for (i in positions.indices) if (touched[i]) level.updateNeighboursOnBlockSet(spots[i], before[i].state)
+        for ((pos, was) in drained) level.updateNeighboursOnBlockSet(pos, was)
         return tally
     }
 
@@ -545,7 +568,10 @@ class Rollbacks(
                         sender.sendMessage("Rollback refused: ${reader.tooMany(positions).reason}.")
                         release()
                     }
-                    else -> dispatch(sender, plans, where, apply, release, global = query.global)
+                    else -> {
+                        val leftBefore = if (apply || users.isEmpty()) 0 else reader.leftByThemBefore(plans, users, from)
+                        dispatch(sender, plans, where, apply, release, global = query.global, leftBefore = leftBefore)
+                    }
                 }
             } catch (failure: Throwable) {
                 plugin.logger.log(Level.SEVERE, "the rollback at ${target.label} failed", failure)
@@ -569,6 +595,7 @@ class Rollbacks(
         apply: Boolean,
         release: () -> Unit,
         global: Boolean,
+        leftBefore: Int = 0,
     ) {
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
@@ -580,6 +607,7 @@ class Rollbacks(
         }
         val actor = (sender as? Player)?.uniqueId
         val total = Tally()
+        total.leftBefore = leftBefore
         total.deaths += plans.flatMap { it.deaths }
         // Only deaths to give back for, and no place to touch: straight on to them.
         if (work.isEmpty()) return finishing(sender, total, read, where, apply, actor, global, release)
@@ -668,7 +696,17 @@ class Rollbacks(
             sender.sendMessage("Rollback preview for $where: $blocks; $slots; $entities ($read).")
             // A world-wide lookup has no index to read by, so it cannot show the rows of a global one.
             val rows = if (global) "" else "; /pp lookup with the same words shows the rows"
+            if (total.leftBefore > 0) sender.sendMessage(
+                "  the window may be shorter than a full rollback needs: ${total.leftBefore} of these positions stood " +
+                    "as the same player had left them when it opened, and go back to that; a longer time: reaches further.",
+            )
             sender.sendMessage("  /pp apply within 5 minutes runs it, /pp cancel drops it$rows.")
+            if (sender is Player) sender.sendMessage(
+                Component.text("  ")
+                    .append(Component.text("[apply]", NamedTextColor.GREEN).clickEvent(ClickEvent.runCommand("/pp apply")))
+                    .append(Component.text(" "))
+                    .append(Component.text("[cancel]", NamedTextColor.RED).clickEvent(ClickEvent.runCommand("/pp cancel"))),
+            )
             return
         }
         sender.sendMessage("Rolled back $where: $blocks; $slots; $entities.")

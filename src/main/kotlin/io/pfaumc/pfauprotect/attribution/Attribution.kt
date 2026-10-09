@@ -50,6 +50,21 @@ private val DIAGONALS = (-1..1).flatMap { dx ->
 // actor of such a row put nothing down.
 private val PLACING_CAUSES = setOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_BONEMEAL)
 
+// The same for a liquid source: a bucket emptied by hand or by a dispenser.
+internal val POURING_CAUSES = setOf(Cause.BLK_BUCKET, Cause.BLK_DISPENSER)
+
+// And for a fire: lit by hand or by lava, leapt from another fire, or left by a block that burnt.
+internal val FIRING_CAUSES = setOf(Cause.BLK_PLAYER_USE, Cause.BLK_FIRE_SPREAD, Cause.BLK_FIRE_BURN)
+
+private val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
+
+/**
+ * Liquid that ran somewhere rather than was poured there. Its arrival writes no row, so it is the
+ * air it ran into to anything that reads a position back, and a source poured into it was put down.
+ */
+internal fun flowing(state: String): Boolean =
+    state.substringBefore('[') in LIQUIDS && "level=" in state && "level=0]" !in state
+
 /**
  * Somebody worked out rather than somebody witnessed. Everything this file answers with is
  * `INFERRED`; the direct source on the event — a TNT entity whose source is a player — is the
@@ -139,15 +154,18 @@ class Attribution(
      * says: its cause, and that the position did not already hold this block before it. The newest
      * row of a position is what stands in it today, so a row that fails either test answers with
      * nobody rather than with the row behind it.
+     *
+     * A dispenser's row may name a player who was only near it, and the answer stays that and no more.
      */
-    fun journalPlacerAt(at: WorldBlock, standing: String): Attributed? {
+    fun journalPlacerAt(at: WorldBlock, standing: String, causes: Set<Cause> = PLACING_CAUSES): Attributed? {
         val row = blocks.get(at.world)?.standingAt(at.x, at.y, at.z)?.row ?: return null
-        if (row.cause !in PLACING_CAUSES) return null
+        if (row.cause !in causes) return null
         val after = registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) ?: return null
         val before = registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore) ?: return null
         val block = blockOf(standing)
-        if (blockOf(after) != block || blockOf(before) == block) return null
-        return row.actor?.let { Attributed(it) }
+        if (blockOf(after) != block || blockOf(before) == block && !flowing(before)) return null
+        val confidence = if (row.confidence == Confidence.NEARBY) Confidence.NEARBY else Confidence.INFERRED
+        return row.actor?.let { Attributed(it, confidence) }
     }
 
     /**

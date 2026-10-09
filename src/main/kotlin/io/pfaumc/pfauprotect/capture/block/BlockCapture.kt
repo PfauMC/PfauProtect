@@ -6,6 +6,7 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.capture.item.placesBlock
 import io.pfaumc.pfauprotect.capture.item.positionOf
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.core.HolderLookup
 import net.minecraft.nbt.NbtIo
 import net.minecraft.server.level.ServerPlayer
@@ -18,14 +19,17 @@ import net.minecraft.world.level.block.ChestBlock
 import net.minecraft.world.level.block.CommandBlock
 import net.minecraft.world.level.block.GameMasterBlock
 import net.minecraft.world.level.block.IceBlock
+import net.minecraft.world.level.block.LiquidBlock
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.state.BlockState as NmsBlockState
 import net.minecraft.world.level.block.state.properties.ChestType
 import org.bukkit.Bukkit
+import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.data.Bisected
 import org.bukkit.block.data.BlockData
+import org.bukkit.block.data.Levelled
 import org.bukkit.block.data.type.Bed
 import org.bukkit.block.data.type.Leaves
 import org.bukkit.block.data.type.Piston
@@ -191,6 +195,71 @@ internal fun leavesHeldBy(log: Block, owned: (Block) -> Boolean = Bukkit::isOwne
 private val LEAF_FACES = listOf(
     BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN,
 )
+
+// How far a walk through a liquid goes looking for where it was poured, and how many sources it hands
+// on: a griefer's bucket is a few steps away, and an ocean is not worth a seek per source.
+private const val POUR_WALK = 64
+private const val POUR_SOURCES = 4
+
+/**
+ * The sources a liquid may be running from, nearest first. The walk steps through the same liquid,
+ * up and sideways only: a liquid never runs upwards to where it stands.
+ *
+ * `owned` keeps the walk inside the region ticking this block, as for leaves.
+ */
+internal fun sourcesOf(liquid: Block, owned: (Block) -> Boolean = Bukkit::isOwnedByCurrentRegion): List<Block> {
+    val kind = liquid.blockData.material.takeIf { it == Material.LAVA || it == Material.WATER } ?: return emptyList()
+    val seen = hashSetOf(liquid)
+    val queue = ArrayDeque(listOf(liquid))
+    val sources = ArrayList<Block>()
+    while (queue.isNotEmpty() && sources.size < POUR_SOURCES) {
+        val block = queue.removeFirst()
+        if ((block.blockData as Levelled).level == 0) sources += block
+        for (face in POUR_FACES) {
+            val near = block.getRelative(face)
+            if (seen.size >= POUR_WALK || near in seen || !owned(near) || near.blockData.material != kind) continue
+            seen += near
+            queue += near
+        }
+    }
+    return sources
+}
+
+private val POUR_FACES = listOf(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
+
+// A column poured from the build limit and a wide spread of water at its foot, and no further: what is
+// left beyond runs dry by itself, its source being gone.
+private const val DRAIN_LIMIT = 4096
+
+private val DRAIN_DIRECTIONS = listOf(Direction.DOWN, Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST)
+
+/**
+ * The running liquid a source fed: everything of the same liquid reachable from it down and sideways
+ * through liquid that is not a source itself. Sources stop the walk, so an ocean beside a griefer's bucket
+ * loses no more than the edge his water ran into, and that runs back in from the ocean.
+ */
+internal fun ranFrom(
+    source: BlockPos,
+    stateAt: (BlockPos) -> NmsBlockState,
+    owned: (BlockPos) -> Boolean,
+): List<Pair<BlockPos, NmsBlockState>> {
+    val fluid = stateAt(source).fluidState.type
+    val seen = hashSetOf(source)
+    val queue = ArrayDeque(listOf(source))
+    val found = ArrayList<Pair<BlockPos, NmsBlockState>>()
+    while (queue.isNotEmpty()) {
+        val at = queue.removeFirst()
+        for (direction in DRAIN_DIRECTIONS) {
+            val near = at.relative(direction)
+            if (found.size >= DRAIN_LIMIT || !seen.add(near) || !owned(near)) continue
+            val state = stateAt(near)
+            if (state.block !is LiquidBlock || state.fluidState.isSource || !state.fluidState.type.isSame(fluid)) continue
+            found += near to state
+            queue += near
+        }
+    }
+    return found
+}
 
 /** Notes the leaves a log was holding up, when the block going is a log. */
 internal fun Attribution.felledBy(block: Block, actor: UUID) {

@@ -12,7 +12,9 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.attribution.Energy
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
+import io.pfaumc.pfauprotect.attribution.FIRING_CAUSES
 import io.pfaumc.pfauprotect.attribution.Falling
+import io.pfaumc.pfauprotect.attribution.POURING_CAUSES
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
@@ -43,6 +45,7 @@ import net.minecraft.world.level.block.AbstractCauldronBlock
 import net.minecraft.world.level.block.BaseFireBlock
 import net.minecraft.world.level.block.GrowingPlantBodyBlock
 import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.LiquidBlock
 import net.minecraft.world.level.block.LiquidBlockContainer
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import net.minecraft.world.level.block.state.properties.PistonType
@@ -286,7 +289,9 @@ internal fun formCause(before: String): Cause =
 
 private val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
 
-private val FIRES = setOf("minecraft:fire", "minecraft:soul_fire")
+private const val FIRE = "minecraft:fire"
+
+private val FIRES = setOf(FIRE, "minecraft:soul_fire")
 
 private val SCULK = setOf("minecraft:sculk", "minecraft:sculk_vein")
 
@@ -646,6 +651,9 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
         queued.remove(at)
     }
 
+    /** Whether a read-back is on its way here: what changes at the position meanwhile is what it will find. */
+    fun pending(at: WorldBlock): Boolean = queued[at]?.let { now() - it <= READ_BACK_MILLIS } == true
+
     fun filed(at: WorldBlock, before: String, after: String) {
         recent[at] = "$before>$after" to now()
     }
@@ -874,12 +882,20 @@ class BlockDestructionListener(
     // like any other touch; a dispenser's flint is the dispenser's read.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onIgnite(event: BlockIgniteEvent) {
-        val player = event.player ?: return
         val block = event.block as CraftBlock
         // Over soul sand and soul soil the fire that goes down is soul fire, and a note has to name
         // what is standing there: every reader of one compares by block, so a note calling it plain
         // fire answers nothing and the whole chain off it burns unattributed.
         val lit = BaseFireBlock.getState(block.level, block.position).asBlockData().asString
+        val player = event.player
+        if (player == null) {
+            // Lava sets fire on a random tick, and nothing else announces the fire it puts down.
+            if (event.cause != BlockIgniteEvent.IgniteCause.LAVA) return
+            val by = event.ignitingBlock?.let(::pouredBy)
+            if (by != null && by.confidence != Confidence.NEARBY) attribution.placed(positionOf(block), lit, by.actor)
+            changed(block, block.blockData, lit, Cause.BLK_FIRE_SPREAD, by)
+            return
+        }
         attribution.placed(positionOf(block), lit, player.uniqueId)
         readBack(listOf(block), Attributed(player.uniqueId, Confidence.FACT))
     }
@@ -896,8 +912,24 @@ class BlockDestructionListener(
 
     // A source taken up, a waterlogged block drained, powder snow scooped.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    fun onBucketFill(event: PlayerBucketFillEvent) =
+    fun onBucketFill(event: PlayerBucketFillEvent) {
+        takenUp(event.block as CraftBlock)
         readBack(listOf(event.block), Attributed(event.player.uniqueId, Confidence.FACT), Cause.BLK_BUCKET)
+    }
+
+    /**
+     * A source taken up leaves what it fed running down for seconds, and lava running down sets fire. Who
+     * poured it answers for that, not who took it up: an owner scooping up a griefer's lava does not take
+     * the fire on. The run is noted as it stands, while the source is still there to name the pourer.
+     */
+    private fun takenUp(source: CraftBlock) {
+        val state = source.blockState
+        if (state.block !is LiquidBlock || !state.fluidState.isSource) return
+        val by = pouredBy(source)?.takeIf { it.confidence != Confidence.NEARBY } ?: return
+        val world = source.world
+        val run = ranFrom(source.position, source.level::getBlockState) { Bukkit.isOwnedByCurrentRegion(world, it.x shr 4, it.z shr 4) }
+        for ((at, ran) in run) attribution.placed(WorldBlock(world.uid, at.x, at.y, at.z), ran.asBlockData().asString, by.actor)
+    }
 
     /**
      * Whatever a dispenser does to the block in front of it: a liquid put down or taken up, a shulker
@@ -919,9 +951,14 @@ class BlockDestructionListener(
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBurn(event: BlockBurnEvent) {
-        val block = event.block
-        val igniting = event.ignitingBlock
-        val by = igniting?.let { attribution.placerAt(positionOf(it), it.blockData.asString) }
+        val block = event.block as CraftBlock
+        val by = event.ignitingBlock?.let(::fireStartedBy)
+        // What the block leaves may be fire, and that fire may leap on before its row reaches the journal:
+        // it is noted at once, as a fire that spread is. Left as air, the position never matches the note.
+        if (by != null && by.confidence != Confidence.NEARBY) {
+            val fire = BaseFireBlock.getState(block.level, block.position).asBlockData().asString
+            attribution.placed(positionOf(block), fire, by.actor)
+        }
         defer(block, block.blockData, Cause.BLK_FIRE_BURN, by)
     }
 
@@ -929,10 +966,31 @@ class BlockDestructionListener(
     fun onSpread(event: BlockSpreadEvent) {
         val block = event.block
         if (capturing(block)) return
+        val at = positionOf(block)
         val after = event.newState.blockData.asString
-        // The find is written forward onto this position by the carry itself, so an arbitrarily long
-        // chain of fire stays attributed while no note ever has to cover more than one step of it.
-        changed(block, block.blockData, after, spreadCause(after), attribution.carriedTo(positionOf(block), after))
+        // Fire leaps up to four blocks up and across the diagonal, past every neighbour's note, and the
+        // fire it leapt from is on the event. The find is written forward onto this position, as the
+        // carry does, so an arbitrarily long chain stays attributed while no note covers more than a step.
+        val leapt = if (blockNameOf(after) in FIRES) fireStartedBy(event.source) else null
+        if (leapt != null && leapt.confidence != Confidence.NEARBY) attribution.placed(at, after, leapt.actor)
+        changed(block, block.blockData, after, spreadCause(after), leapt ?: attribution.carriedTo(at, after))
+    }
+
+    /**
+     * Who set the fire burning at this position. A fire burns a minute and more, longer than its note,
+     * and the journal has the row that set it there. A find is noted again, so what this fire sets
+     * alight next carries on from it. A seek, only where the note has run out.
+     *
+     * The fire on the event may be out already: one that lost its footing goes out at the top of its tick
+     * and still leaps and burns in the rest of it. It was plain fire either way, since soul fire does
+     * neither, so that is what is asked about rather than what stands there now.
+     */
+    private fun fireStartedBy(fire: Block): Attributed? {
+        val at = positionOf(fire)
+        attribution.placerAt(at, FIRE)?.let { return it }
+        val found = attribution.journalPlacerAt(at, FIRE, FIRING_CAUSES) ?: return null
+        if (found.confidence != Confidence.NEARBY) attribution.placed(at, FIRE, found.actor)
+        return found
     }
 
     /**
@@ -955,6 +1013,10 @@ class BlockDestructionListener(
     fun onFade(event: BlockFadeEvent) {
         val block = event.block
         if (capturing(block)) return
+        // Fire a burning block left where it cannot stand goes out the moment it is set, before the burn's
+        // read-back comes round. That read-back files the burn, plank to air, on whoever lit it; a row of
+        // the fade's own here would make it take the change as filed and leave the plank unaccounted for.
+        if (blockNameOf(block.blockData.asString) in FIRES && readBacks.pending(positionOf(block))) return
         changed(block, block.blockData, event.newState.blockData.asString, Cause.BLK_FADE, by = null)
     }
 
@@ -992,7 +1054,24 @@ class BlockDestructionListener(
         if (from.type == Material.DRAGON_EGG) return eggJumped(from, to)
         val by = attribution.carriedTo(positionOf(to), from.blockData.asString)
         if (!liquidDestroys((to as CraftBlock).blockState)) return
-        defer(to, to.blockData, Cause.BLK_LIQUID_DESTROY, by)
+        defer(to, to.blockData, Cause.BLK_LIQUID_DESTROY, by ?: pouredBy(from))
+    }
+
+    /**
+     * Who poured the liquid acting now. Lava sets fire minutes after its bucket and runs on into what
+     * the fire left, long after the note of the pour ran out; the source it runs from still has the
+     * bucket's row. A find is noted here again, so the chain off it carries on as from a fresh pour.
+     * A seek per source asked, and only where a row is about to be written anyway.
+     */
+    private fun pouredBy(liquid: Block): Attributed? {
+        val at = positionOf(liquid)
+        val standing = liquid.blockData.asString
+        attribution.placerAt(at, standing)?.let { return it }
+        val found = sourcesOf(liquid).firstNotNullOfOrNull {
+            attribution.journalPlacerAt(positionOf(it), it.blockData.asString, POURING_CAUSES)
+        } ?: return null
+        if (found.confidence != Confidence.NEARBY) attribution.placed(at, standing, found.actor)
+        return found
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

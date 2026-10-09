@@ -98,6 +98,102 @@ class RollbackTest {
         assertSame(opened, settle("minecraft:oak_door[open=true]", listOf(opened)).back)
     }
 
+    // A plank burnt out and lava ran into the hole: the lava wrote no row and goes when its source does,
+    // so the plank goes back. A source standing there is somebody's bucket, and that is a later change.
+    @Test
+    fun `liquid that ran in is the air it ran into`() {
+        val burnt = step("minecraft:oak_planks", AIR)
+        val settled = settle("minecraft:lava[level=3]", listOf(burnt))
+        assertSame(burnt, settled.back)
+        assertFalse(settled.conflict)
+        assertTrue(settle(LAVA, listOf(burnt)).conflict)
+    }
+
+    // The griefer's fire took the plank and went out by itself, which is nobody's row; the plank goes back.
+    @Test
+    fun `a fire that went out is no later change`() {
+        val burnt = step("minecraft:oak_planks", "minecraft:fire[age=3]")
+        val settled = settle(AIR, listOf(burnt))
+        assertSame(burnt, settled.back)
+        assertFalse(settled.conflict)
+        // Nor is a fire ever put back: lit again it would burn down what the rollback put back.
+        assertTrue(passing("minecraft:soul_fire[age=13]"))
+        assertFalse(passing(LAVA))
+    }
+
+    // Alice's dirt stair grew grass, which nobody answers for: the walk passes it and the dirt goes. Grass
+    // that grew there before her, or where she never was, is no part of her rollback; Bob's stone on her
+    // dirt still stops it.
+    @Test
+    fun `nature on a position being undone is walked past and a player still stops the walk`() {
+        val grass = "minecraft:grass_block[snowy=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, DIRT, grass, Cause.BLK_GROW, T0)))
+        log.submit(listOf(BlockChange(1, 64, 1, grass, AIR, Cause.BLK_PLAYER_BREAK, T0 + 1, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 2, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, DIRT, grass, Cause.BLK_GROW, T0 + 3)))
+        log.submit(listOf(BlockChange(3, 64, 1, DIRT, grass, Cause.BLK_GROW, T0 + 3)))
+        log.submit(listOf(BlockChange(5, 64, 1, AIR, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 2, actor = alice)))
+        log.submit(listOf(BlockChange(5, 64, 1, DIRT, STONE, Cause.BLK_PLAYER_PLACE, T0 + 3, actor = bob)))
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val stair = planned.chunks.flatMap { it.positions }.associateBy { it.at.x }
+        assertEquals(setOf(1, 5), stair.keys)
+        assertEquals(listOf(DIRT to grass, AIR to DIRT, grass to AIR), stair.getValue(1).steps.map { it.before to it.after })
+        assertEquals(grass, settle(grass, stair.getValue(1).steps).back?.before)
+        assertTrue(settle(STONE, stair.getValue(5).steps).conflict)
+    }
+
+    // Rolled back once, the plank that burnt and then took the griefer's lava is a plank again: the second
+    // rollback finds it done. Dirt somebody else put in its place is still somebody else's.
+    @Test
+    fun `a chain undone before is done and no conflict`() {
+        val chain = listOf(step("minecraft:fire[age=13]", "minecraft:lava[level=8]"), step("minecraft:oak_planks", "minecraft:fire[age=13]"))
+        val again = settle("minecraft:oak_planks", chain)
+        assertNull(again.back)
+        assertFalse(again.conflict)
+        assertTrue(settle(DIRT, chain).conflict)
+    }
+
+    // Alice broke the door and put dirt in its place, grass grew on it, and a rollback cut short took the
+    // grass away. Rolled back again, the door's lower half comes back: the earlier rollback's row is walked
+    // past like nature, not taken for somebody's later change.
+    @Test
+    fun `an earlier rollback on a position being undone is walked past`() {
+        val door = "minecraft:oak_door[half=lower]"
+        val grass = "minecraft:grass_block[snowy=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, door, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 1, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, DIRT, grass, Cause.BLK_GROW, T0 + 2)))
+        log.submit(listOf(BlockChange(1, 64, 1, grass, AIR, Cause.ROLLBACK, T0 + 3)))
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val settled = settle(AIR, steps(planned))
+        assertEquals(door, settled.back?.before)
+        assertFalse(settled.conflict)
+    }
+
+    // Alice put the stone down before the window and broke it inside: rolled back from the window's start, the
+    // position goes back to her own stone, and the preview has to say so. Bob's stone before the window, and
+    // an earlier rollback's, are nobody's grief to warn about.
+    @Test
+    fun `a window opening on what the player left is counted for the warning`() {
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
+        log.submit(listOf(BlockChange(2, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.submit(listOf(BlockChange(2, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
+        log.submit(listOf(BlockChange(3, 64, 1, AIR, STONE, Cause.ROLLBACK, T0, actor = alice)))
+        log.submit(listOf(BlockChange(3, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
+        log.drain()
+
+        val reader = RollbackReader(shared, logs)
+        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
+        val planned = reader.around(world, 0, 64, 0, 15, T0 + 50, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
+        assertEquals(3, planned.positions)
+        assertEquals(1, reader.leftByThemBefore(listOf(planned), setOf(alice), T0 + 50))
+    }
+
     @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)
@@ -127,7 +223,9 @@ class RollbackTest {
         log.drain()
 
         val plain = around(RowFilter(shared, LookupQuery(), emptySet(), emptySet(), rollback = true))
-        assertEquals(listOf(AIR), steps(plain).map { it.after }, "only the break")
+        // Walked past on the way back to before the break, the rollback's stone is where the walk ends anyway.
+        assertEquals(listOf(STONE, AIR), steps(plain).map { it.after })
+        assertEquals(STONE, settle(STONE, steps(plain)).back?.before)
         val undo = around(RowFilter(shared, LookupQuery(causes = Action.ROLLBACK.causes), emptySet(), emptySet(), rollback = true))
         assertEquals(listOf(STONE), steps(undo).map { it.after }, "only the rollback")
         // A lookup is not a rollback and shows them like any other row.

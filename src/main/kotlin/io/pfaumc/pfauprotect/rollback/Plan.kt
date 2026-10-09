@@ -1,5 +1,7 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.attribution.flowing
+import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.EntitySlot
@@ -32,12 +34,48 @@ internal const val MAX_ROLLBACK_POSITIONS = 32_768
 // The entity rows that say what an entity was before: the rest only mark an event at a place.
 private val STORIES = setOf(EntityKind.REMOVED, EntityKind.CREATED, EntityKind.CHANGED, EntityKind.MOVED)
 
+// What the world does by itself, under rows nobody answers for: grass taking the dirt a griefer put down,
+// his fire going out, his lava running on. A rollback walks past them on a position it undoes, and past
+// what an earlier rollback did there, which is no later change either; a player's row and a command's
+// still stop it.
+private val NATURE = setOf(
+    Cause.BLK_GROW, Cause.BLK_FADE, Cause.BLK_FORM, Cause.BLK_LEAF_DECAY, Cause.BLK_SCULK,
+    Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD, Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM,
+)
+
+private fun passable(row: BlockRow) = row.cause == Cause.ROLLBACK || row.actor == null && row.cause in NATURE
+
+private val ROW_ORDER = compareBy<BlockRow> { it.eventId }.thenBy { it.ordinal }
+
+/**
+ * The rows of nature and of earlier rollbacks a rollback walks past: at a position it undoes, and after
+ * the first of its rows there. What grew before that is part of what the position goes back to.
+ */
+internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>): List<BlockRow> {
+    val first = kept.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, rows) -> rows.minWith(ROW_ORDER) }
+    return nature.filter { row -> first[Triple(row.x, row.y, row.z)]?.let { ROW_ORDER.compare(row, it) > 0 } == true }
+}
+
 // The three airs are one block to a rollback: a cave keeps its own kind of air, and a break inside it
 // leaves the plain one behind.
 private val AIRS = setOf("minecraft:air", "minecraft:cave_air", "minecraft:void_air")
 
-/** The block a state string is of, with the properties dropped and every air read as one. */
-internal fun blockOf(state: String): String = state.substringBefore('[').let { if (it in AIRS) "minecraft:air" else it }
+// Fire goes out by itself, under a row nobody answers for, or under the hand of whoever puts it out.
+private val FIRES = setOf("minecraft:fire", "minecraft:soul_fire")
+
+/**
+ * The block a state string is of, with the properties dropped and every air read as one. Liquid that
+ * ran in is air too: its arrival has no row, and lava that filled a burnt-out house is no later change.
+ * So is fire: a plank that burnt to fire and then to nothing goes back all the same.
+ */
+internal fun blockOf(state: String): String =
+    state.substringBefore('[').let { if (it in AIRS || passing(state)) "minecraft:air" else it }
+
+/**
+ * Fire and running liquid: what a rollback reads as air and puts back as air. A fire lit again would burn
+ * down what the rollback has just put back.
+ */
+internal fun passing(state: String): Boolean = state.substringBefore('[') in FIRES || flowing(state)
 
 /** One row of a position read backwards: the position went from `before` to `after`. */
 class Step(val before: String, val after: String, val payloadBefore: ByteArray?)
@@ -50,6 +88,10 @@ class Settled(val back: Step?, val conflict: Boolean)
  * what stands is undone; one whose `before` already stands was undone before and is stepped over; any
  * other means something this rollback does not touch changed the position since, and the walk stops
  * there with whatever it had undone.
+ *
+ * A chain an earlier rollback undid stands on the `before` of its oldest row, which no newer row of it
+ * starts from: a plank that burnt into fire that lava ran into is a plank again. Standing on that
+ * `before`, the rest of the walk is done already, and that is not a conflict either.
  *
  * Blocks are compared, not whole states: a fence, a wire and a leaf change their properties with
  * their neighbours and never get a row for it, and comparing strings would make every one of them a
@@ -65,6 +107,7 @@ fun settle(standing: String, steps: List<Step>): Settled {
                 back = step
             }
             blockOf(step.before) -> continue
+            blockOf(steps.last().before) -> break
             else -> return Settled(back, conflict = true)
         }
     }
@@ -160,6 +203,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             bx in (x - radius)..(x + radius) && by in (y - radius)..(y + radius) && bz in (z - radius)..(z + radius)
         }
         val rows = ArrayList<BlockRow>()
+        val nature = ArrayList<BlockRow>()
         val entityRows = ArrayList<EntityRow>()
         var unreadable = 0
         var budget = BLOCK_WALK_BUDGET
@@ -170,6 +214,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                 budget -= window.walked
                 unreadable += window.unreadable
                 window.rows.filterTo(rows, keepsRow)
+                window.rows.filterTo(nature) { passable(it) && !keepsRow(it) }
                 val entities = log.entitiesInChunk(cx, cz, fromTs, toTs, budget, inBox)
                 if (!entities.complete) return tooMuch()
                 budget -= entities.walked
@@ -191,7 +236,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         )
         if (!page.complete) return tooMuch()
         val (slots, positions) = page.entries.filter(keepsEntry).partition { it.holder is Container }
-        return plan(world, rows, slots, positions.filter { it.qty < 0 }, entityRows, toTs, unreadable + page.unreadable)
+        return plan(world, rows + passedBy(rows, nature), slots, positions.filter { it.qty < 0 }, entityRows, toTs, unreadable + page.unreadable)
     }
 
     /**
@@ -227,6 +272,20 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         return touched
     }
 
+    /**
+     * How many of the positions a rollback of these players would undo already stood as one of them had
+     * left it when the window opened. Each goes back to that, which may be their own lava or their own
+     * dirt: the window starts in the middle of what they did there, and only the admin can say whether a
+     * longer one is what was meant.
+     */
+    fun leftByThemBefore(plans: List<Planned>, users: Set<UUID>, fromTs: Long): Int = plans.sumOf { plan ->
+        val log = blocks.get(plan.world) ?: return@sumOf 0
+        plan.chunks.flatMap { it.positions }.filter { it.steps.isNotEmpty() }.count { position ->
+            val row = log.standingBefore(position.at.x, position.at.y, position.at.z, fromTs)
+            row != null && row.cause != Cause.ROLLBACK && row.actor?.let { it in users } == true
+        }
+    }
+
     /** What a rollback would undo at these positions of one world, read position by position. */
     fun at(
         world: UUID,
@@ -240,6 +299,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
         if (positions.size > MAX_ROLLBACK_POSITIONS) return tooMany(positions.size)
         val rows = ArrayList<BlockRow>()
+        val nature = ArrayList<BlockRow>()
         val entityRows = ArrayList<EntityRow>()
         val slots = ArrayList<LedgerEntry>()
         val losses = ArrayList<LedgerEntry>()
@@ -251,6 +311,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             budget -= window.walked
             unreadable += window.unreadable
             window.rows.filterTo(rows, keepsRow)
+            window.rows.filterTo(nature) { passable(it) && !keepsRow(it) }
             val entities = log.entitiesAt(at.x, at.y, at.z, fromTs, toTs, budget)
             if (!entities.complete) return tooMuch()
             budget -= entities.walked
@@ -266,7 +327,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             }
             if (rows.size + slots.size > MAX_ROLLBACK_ROWS) return tooMuch()
         }
-        return plan(world, rows, slots, losses, entityRows, toTs, unreadable)
+        return plan(world, rows + passedBy(rows, nature), slots, losses, entityRows, toTs, unreadable)
     }
 
     private fun plan(
