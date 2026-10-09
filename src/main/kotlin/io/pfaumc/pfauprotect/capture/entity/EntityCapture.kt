@@ -204,8 +204,9 @@ class EntityCapture(
     private val entities: EntityOrigins,
     // Runs a task on the region of the location a tick later.
     private val later: (Location, () -> Unit) -> Unit,
-    // Runs a task on the entity's own scheduler a tick later.
-    private val laterOn: (Entity, () -> Unit) -> Unit = { _, _ -> },
+    // Runs a task on the entity's own scheduler a tick later, or the second one if the entity is gone by
+    // then and the first never runs.
+    private val laterOn: (Entity, () -> Unit, () -> Unit) -> Unit = { _, _, _ -> },
     // Runs a task off the region threads, where the journal may be read.
     private val offThread: (() -> Unit) -> Unit = { it() },
 ) : Listener {
@@ -246,7 +247,7 @@ class EntityCapture(
         }
         val block = entity.location.block
         val (x, y, z) = Triple(block.x, block.y, block.z)
-        laterOn(entity) {
+        laterOn(entity, {
             handling.remove(entity.uniqueId)
             // Killed by the hand, it is a removal and the death writes it.
             if (!entity.isValid) return@laterOn
@@ -262,12 +263,16 @@ class EntityCapture(
                     )
                 )
             )
-        }
+        }) { handling.remove(entity.uniqueId) }
     }
 
     // An entity's own inventory a player has open, as the entity was when it opened: a chest boat, a cart,
     // a donkey's chest, a horse's saddle and armour.
-    private val opened = ConcurrentHashMap<UUID, Pair<ByteArray, Long>>()
+    // Keyed by the player, and holding which entity it was: a close can be missed when another window opens
+    // over this one, and the next close must not compare one entity with another.
+    private class Opened(val entity: UUID, val before: ByteArray, val since: Long)
+
+    private val opened = ConcurrentHashMap<UUID, Opened>()
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onOpen(event: InventoryOpenEvent) {
@@ -275,7 +280,7 @@ class EntityCapture(
         // A villager's window trades, and what trading changes is the item plane's and its own.
         if (entity is Player || entity is AbstractVillager || logs.get(entity.world.uid) == null) return
         touch(entity)
-        opened[event.player.uniqueId] = (snapshotOf((entity as CraftEntity).handle) ?: return) to System.currentTimeMillis()
+        opened[event.player.uniqueId] = Opened(entity.uniqueId, snapshotOf((entity as CraftEntity).handle) ?: return, System.currentTimeMillis())
     }
 
     /**
@@ -285,8 +290,11 @@ class EntityCapture(
      */
     @EventHandler(priority = EventPriority.MONITOR)
     fun onClose(event: InventoryCloseEvent) {
-        val (before, since) = opened.remove(event.player.uniqueId) ?: return
+        val window = opened.remove(event.player.uniqueId) ?: return
         val entity = event.inventory.holder as? Entity ?: return
+        if (entity.uniqueId != window.entity) return
+        val before = window.before
+        val since = window.since
         val player = event.player.uniqueId
         val log = logs.get(entity.world.uid) ?: return
         val block = entity.location.block
@@ -304,7 +312,7 @@ class EntityCapture(
                 )
             )
         }
-        if (Bukkit.isOwnedByCurrentRegion(entity)) read() else laterOn(entity, read)
+        if (Bukkit.isOwnedByCurrentRegion(entity)) read() else laterOn(entity, read) {}
     }
 
     /**
@@ -320,7 +328,7 @@ class EntityCapture(
         val log = logs.get(entity.world.uid) ?: return
         val before = snapshotOf((entity as CraftEntity).handle) ?: return
         val block = entity.location.block
-        laterOn(entity) {
+        laterOn(entity, {
             val after = snapshotOf((entity as CraftEntity).handle) ?: return@laterOn
             log.submit(
                 listOf(
@@ -330,7 +338,7 @@ class EntityCapture(
                     )
                 )
             )
-        }
+        }) {}
     }
 
     /**

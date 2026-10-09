@@ -1,4 +1,5 @@
-# PfauProtect. Every value here is what the plugin does without this file.
+# PfauProtect. Every value here is what the plugin does without this file, except the language: without
+# the file the plugin speaks English, and this file asks for Russian.
 
 # Language of what the plugin says: ru or en.
 language: ru
@@ -25,3 +26,7 @@ mobs:
   fresh-minutes: 10
   # As many mobs of one kind in one chunk as make a farm's crowd, whose deaths nobody caused are not written.
   crowd: 8
+
+chat:
+  # Commands the chat log keeps by name only, without their arguments: they carry passwords.
+  hidden-commands: [login, l, log, register, reg, changepassword, changepass, unregister]

@@ -136,10 +136,16 @@ private class ChunkHold(private val work: List<Pair<ServerLevel, ChunkPlan>>) {
 
     /** False when the chunks did not load in time; the hold is released then. */
     fun take(): Boolean {
-        for ((world, chunk) in work) {
-            val holders = world.`moonrise$getChunkTaskScheduler`().chunkHolderManager
-            holders.addTicketAtLevel(ROLLBACK_HOLD, chunk.chunkX, chunk.chunkZ, level, id)
-            holders.processTicketUpdates(chunk.chunkX, chunk.chunkZ)
+        try {
+            for ((world, chunk) in work) {
+                val holders = world.`moonrise$getChunkTaskScheduler`().chunkHolderManager
+                holders.addTicketAtLevel(ROLLBACK_HOLD, chunk.chunkX, chunk.chunkZ, level, id)
+                holders.processTicketUpdates(chunk.chunkX, chunk.chunkZ)
+            }
+        } catch (failure: Throwable) {
+            // Never timed out: a ticket left behind keeps its chunks loaded until the server stops.
+            release()
+            throw failure
         }
         val until = System.currentTimeMillis() + LOAD_MILLIS
         while (!work.all { (world, c) -> world.`moonrise$areChunksLoaded`(c.chunkX - 1, c.chunkZ - 1, c.chunkX + 1, c.chunkZ + 1) }) {
@@ -535,6 +541,7 @@ class ChunkRollback(
                 // was before the first change.
                 if (alive == null && plan.removed) {
                     tally.entitiesBack++
+                    plan.bucket?.let { tally.buckets += it }
                     if (apply) bringBack(level, plan, actor, tally)
                     return
                 }
@@ -890,6 +897,26 @@ class Rollbacks(
             release()
             return
         }
+        try {
+            start(sender, work, total, read, where, apply, actor, rows, release, hold)
+        } catch (failure: Throwable) {
+            hold.release()
+            throw failure
+        }
+    }
+
+    private fun start(
+        sender: CommandSender,
+        work: List<Pair<ServerLevel, ChunkPlan>>,
+        total: Tally,
+        read: String,
+        where: String,
+        apply: Boolean,
+        actor: UUID?,
+        rows: String?,
+        release: () -> Unit,
+        hold: ChunkHold,
+    ) {
         // Held through the taking back too: the piles it takes back lie in these chunks, and taking them is
         // queued on the global region and then on the pile's own, after this returns. Let go at once, the
         // chunks unloaded under it and the piles read as gone while they still lay there.
@@ -948,7 +975,7 @@ class Rollbacks(
                 } finally {
                     done()
                 }
-            }, done)
+            }, done) ?: done()
         }
     }
 

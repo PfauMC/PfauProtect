@@ -60,6 +60,7 @@ import net.kyori.adventure.text.event.HoverEvent
 import org.bukkit.entity.Player
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Level
 import kotlin.jvm.optionals.getOrNull
 
@@ -81,6 +82,9 @@ private const val VANILLA_NAMESPACE = "minecraft"
 // rows than the caller asked for or filtering would eat into the requested count.
 private const val FETCH_FACTOR = 8
 private const val MAX_FETCH = 4096
+
+// How many rows of a container's position `action:steal` reads for who put it down.
+private const val PLACER_READ = 200
 
 // Accepted spellings and completions come from one table on purpose: when they were two lists, a
 // spelling the parser accepted still had to be repeated by hand to be suggested, and they drifted.
@@ -293,6 +297,8 @@ data class LookupQuery(
     val at: Triple<Int, Int, Int>? = null,
     // The words it was asked with, which the page buttons ask again.
     val words: String = "",
+    // Whether ⌖ may run /pp tp for the one asking: read where they asked, as the answer is written off it.
+    val teleports: Boolean = false,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
@@ -787,9 +793,10 @@ class Lookups(
     // Reading hits RocksDB through JNI, which has no business running on a region thread, and a task
     // that dies out there would otherwise leave the player staring at a command that answered nothing.
     fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+        val asked = query.copy(teleports = canTeleport(sender))
         Bukkit.getAsyncScheduler().runNow(plugin) {
             try {
-                report(sender, target, query)
+                report(sender, target, asked)
             } catch (failure: Throwable) {
                 plugin.logger.log(Level.SEVERE, "lookup at ${target.label} failed", failure)
                 sender.say("The lookup failed; the server log has the details.")
@@ -803,9 +810,9 @@ class Lookups(
      */
     fun entity(sender: CommandSender, entity: UUID, type: String, at: LookupTarget) {
         val label = "$type ${entity.toString().take(8)}"
+        val query = LookupQuery(teleports = canTeleport(sender))
         Bukkit.getAsyncScheduler().runNow(plugin) {
             try {
-                val query = LookupQuery()
                 val slots = ledger.holderPage(EntitySlot(entity, 0), 0, Long.MAX_VALUE, reverse = true, limit = MAX_FETCH)
                 val items = entryLines(wholeTransactions(ledger, slots.entries))
                 val log = blocks.get(at.world)
@@ -825,6 +832,9 @@ class Lookups(
             }
         }
     }
+
+    // A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it.
+    private fun canTeleport(sender: CommandSender) = sender is Player && sender.hasPermission(io.pfaumc.pfauprotect.TELEPORT_PERMISSION)
 
     internal fun report(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
         if (query.players.isNotEmpty()) return reportPlayers(sender, target, query)
@@ -882,6 +892,11 @@ class Lookups(
      * no radius reaches it, and the block plane has nothing to say about it.
      */
     private fun reportPlayers(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+        // Answering anyway would read as narrowed to the area while nothing was narrowed.
+        if (query.radius != null) {
+            sender.say("player: reads what went through a player's hands, which has no position; drop the radius.")
+            return
+        }
         val players = resolveAll(sender, query.players) ?: return
         val users = resolveAll(sender, query.users) ?: return
         val fromTs = query.fromTs()
@@ -957,9 +972,14 @@ class Lookups(
         // difference between "nothing happened here" and "I did not get far enough to see". A read
         // that stopped early inside a busy chunk hands back rows from one corner of it, and answering
         // that with silence would clear a position the reader is standing in the crater of.
-        val stopped = tr(
-            "the read stopped before the whole area was seen; narrow the radius or ask for more with limit:${query.limit * 4}",
-            "чтение остановилось раньше, чем увидело всю область; сузь радиус или запроси больше через limit:${query.limit * 4}",
+        // Only a limit the parser takes is worth suggesting; at the top already, only a smaller area helps.
+        val wider = minOf(query.limit * 4, MAX_LIMIT)
+        val stopped = if (wider == query.limit) tr(
+            "the read stopped before the whole area was seen; narrow the radius",
+            "чтение остановилось раньше, чем увидело всю область; сузь радиус",
+        ) else tr(
+            "the read stopped before the whole area was seen; narrow the radius or ask for more with limit:$wider",
+            "чтение остановилось раньше, чем увидело всю область; сузь радиус или запроси больше через limit:$wider",
         )
         if (lines.isEmpty()) {
             val why = if (complete) tr("nothing recorded", "ничего не записано") else tr("nothing matched, but ", "ничего не найдено, но ") + stopped
@@ -967,7 +987,7 @@ class Lookups(
             return
         }
         // The mark runs /pp tp: shown to whoever may go, the coordinates to anyone else.
-        val clickable = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
+        val clickable = query.teleports
         sender.sendMessage(header(where, target))
         for (run in lines) {
             val line = run.first
@@ -1058,7 +1078,9 @@ class Lookups(
                 .sortedByDescending { it.timestamp }
         }
         val keeps = rowFilter(query, users)
-        val kept = marked(rows).asSequence().filter { keeps.keeps(it.first) }.take(query.wanted + 1).toList()
+        // Marked before the filter, which may leave the rollback that undid a row out; and not cut to the
+        // page: runs fold only afterwards, and a cut before them shifts every later page.
+        val kept = marked(rows).filter { keeps.keeps(it.first) }
         val blockLines = kept.map { (row, back) -> lineOf(target.world, row, back) }
         return blockLines + entityLines(log, target, query, keeps, fromTs, toTs)
     }
@@ -1100,7 +1122,7 @@ class Lookups(
                 }
             }
         }
-        val kept = markedEntities(rows).filter { keeps.keeps(it.first) }.sortedByDescending { it.first.timestamp }.take(query.wanted + 1)
+        val kept = markedEntities(rows).filter { keeps.keeps(it.first) }.sortedByDescending { it.first.timestamp }
         return kept.map { (row, back) -> lineOf(target.world, row, back) }
     }
 
@@ -1154,25 +1176,31 @@ class Lookups(
     // know whether saying so would be a lie.
     private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
         val keeps = rowFilter(query, users)
-        val placers = HashMap<Container, UUID?>()
+        val placers = HashMap<Container, Placer>()
         return entries.asSequence()
             .filter(keeps::keeps)
             .filter { !query.steal || stolen(it, placers) }
-            .take(query.wanted + 1)
             .toList()
     }
 
-    // Taken out of a container somebody else put down, or one nobody did: a chest of the world's own.
-    private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, UUID?>): Boolean {
+    // Who put a container down; `known` false when the read stopped before it reached the placement.
+    private class Placer(val known: Boolean, val player: UUID?)
+
+    // Taken out of a container somebody else put down, or one nobody did: a chest of the world's own. A busy
+    // position whose placement lies past the read says nothing either way, and its withdrawals are not
+    // counted as theft: the owner's own would be.
+    private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, Placer>): Boolean {
         if (entry.cause != Cause.CONTAINER_REMOVE || entry.qty >= 0) return false
         val chest = (entry.holder as? Container)?.copy(slot = 0) ?: return false
         val placer = placers.getOrPut(chest) {
-            blocks.get(chest.world)?.at(chest.x, chest.y, chest.z, 0, Long.MAX_VALUE, limit = 200, reverse = true)
-                ?.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE }?.actor
+            val rows = blocks.get(chest.world)?.at(chest.x, chest.y, chest.z, 0, Long.MAX_VALUE, limit = PLACER_READ, reverse = true).orEmpty()
+            val placed = rows.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE }
+            Placer(placed != null || rows.size < PLACER_READ, placed?.actor)
         }
+        if (!placer.known) return false
         // A withdrawal names whoever took it as where it went rather than as its actor.
         val taker = entry.actor ?: (entry.counterparty as? PlayerHolder)?.uuid ?: return false
-        return taker != placer
+        return taker != placer.player
     }
 
     // `exclude:` takes items and players in one list, so a name that is a player is a player excluded.
@@ -1368,5 +1396,10 @@ class Lookups(
         Void -> Ui.hover(Ui.text("∅", Ui.FAINT), tr("nowhere: made or used up here", "нигде: появилось или израсходовано"))
     }
 
-    private fun playerName(uuid: UUID): String = nameOf(uuid) ?: uuid.toString()
+    // An offline player's name can come off disk, once per printed row and holder otherwise.
+    // ponytail: never evicted, so a rename shows after a restart; a timed cache if that matters.
+    private val names = ConcurrentHashMap<UUID, String>()
+
+    private fun playerName(uuid: UUID): String =
+        names[uuid] ?: nameOf(uuid)?.also { names[uuid] = it } ?: uuid.toString()
 }

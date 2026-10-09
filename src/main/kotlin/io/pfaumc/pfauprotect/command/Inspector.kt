@@ -66,6 +66,8 @@ class Inspector(private val lookups: Lookups) : Listener {
     fun onHit(event: EntityDamageByEntityEvent) {
         val player = event.damager as? Player ?: return
         if (player.uniqueId !in enabled) return
+        // A mob or a player is fought as usual: an inspector who could not hit back would be defenceless.
+        if (event.entity !is org.bukkit.entity.Hanging && event.entity !is org.bukkit.entity.ArmorStand) return
         event.isCancelled = true
         inspect(player, event.entity)
     }

@@ -20,6 +20,7 @@ import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import java.util.UUID
+import kotlin.math.abs
 
 // Rows one rollback may hold, per plane. A place with more history than this in the window is more than
 // one rollback should undo, and it is refused rather than cut.
@@ -234,17 +235,15 @@ private const val BUCKETING_MILLIS = 5_000L
 internal fun bucketOf(ledger: RocksItemLog, row: EntityRow): Bucketed? {
     if (row.kind != EntityKind.REMOVED || row.cause != Cause.BUCKET_CAPTURE_MOB) return null
     val player = row.actor ?: return null
-    // The slot never enters the key: slot 0 reads every slot of its kind.
-    for (slot in listOf(PlayerInv(player, 0), PlayerEquip(player, 0))) {
-        val rows = ledger.holderEntries(slot, row.timestamp - BUCKETING_MILLIS, row.timestamp + BUCKETING_MILLIS, limit = 100)
-            .filter { it.cause == Cause.BUCKET_CAPTURE_MOB }
-        for ((_, change) in rows.groupBy { it.txId }) {
-            val gained = change.firstOrNull { it.qty > 0 } ?: continue
-            val lost = change.firstOrNull { it.qty < 0 } ?: continue
-            return Bucketed(player, gained.itemFormId, lost.itemFormId)
-        }
-    }
-    return null
+    // The slot never enters the key: slot 0 reads every slot of its kind. Two mobs bucketed within the window
+    // are told apart by time: the change nearest the row is the one that took this one.
+    val rows = listOf(PlayerInv(player, 0), PlayerEquip(player, 0)).flatMap {
+        ledger.holderEntries(it, row.timestamp - BUCKETING_MILLIS, row.timestamp + BUCKETING_MILLIS, limit = 100)
+    }.filter { it.cause == Cause.BUCKET_CAPTURE_MOB }
+    val change = rows.groupBy { it.txId }.values
+        .filter { tx -> tx.any { it.qty > 0 } && tx.any { it.qty < 0 } }
+        .minByOrNull { tx -> abs(tx.first().timestamp - row.timestamp) } ?: return null
+    return Bucketed(player, change.first { it.qty > 0 }.itemFormId, change.first { it.qty < 0 }.itemFormId)
 }
 
 /**
@@ -423,7 +422,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             if (!window.complete) return tooMuch()
             budget -= window.walked
             unreadable += window.unreadable
-            window.rows.filterTo(rows, keepsRow)
+            window.rows.filterTo(rows) { keepsRow(it) && it.cause != Cause.BLK_LIQUID_FLOW }
             window.rows.filterTo(nature) { passable(it) && !keepsRow(it) }
             window.rows.filterTo(foreign) { !keepsRow(it) && !passable(it) }
             val entities = log.entitiesAt(at.x, at.y, at.z, fromTs, toTs, budget)
@@ -529,7 +528,11 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             val removals = story.filter { it.kind == EntityKind.REMOVED }
             // What fell out of it when it went, and what a hand took off it in passing: shorn wool.
             entities.getOrPut(at) { ArrayList() } +=
-                EntityPlan(at, uuid, oldest.type, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty(), bucketOf(ledger, oldest))
+                EntityPlan(
+                    at, uuid, oldest.type, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty(),
+                    // Changed or led first and bucketed after: the bucket is the removal's, not the first row's.
+                    bucketOf(ledger, removals.maxByOrNull { it.eventId } ?: oldest),
+                )
         }
         if (unnamed > 0) return unreadable(unnamed)
         val positions = steps.keys + refills.keys + entities.keys
