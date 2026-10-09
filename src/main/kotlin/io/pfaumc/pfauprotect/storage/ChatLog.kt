@@ -39,7 +39,9 @@ class ChatLog(dir: Path) : AutoCloseable {
     private val options = Options().setCreateIfMissing(true)
     private val db: RocksDB
     private val writer = Executors.newSingleThreadExecutor { Thread(it, "pfauprotect-chat-writer").apply { isDaemon = true } }
-    private val sequence = AtomicInteger()
+    // Seeded from the clock, so a restart in the same millisecond, or a clock stepped back, does not start
+    // over at the numbers a line already has. Kept positive: the read seeks below Int.MAX_VALUE.
+    private val sequence = AtomicInteger((System.nanoTime() and 0x3FFF_FFFF).toInt())
 
     init {
         RocksDB.loadLibrary()
@@ -49,7 +51,9 @@ class ChatLog(dir: Path) : AutoCloseable {
 
     fun submit(line: ChatLine) {
         val key = ByteBuffer.allocate(12).putLong(line.timestamp).putInt(sequence.getAndIncrement()).array()
-        writer.execute { db.put(key, encode(line)) }
+        // A line raised while the plugin shuts down has no writer left.
+        if (writer.isShutdown) return
+        runCatching { writer.execute { db.put(key, encode(line)) } }
     }
 
     /** Lines from `fromTs` to `toTs`, newest first, those the filter keeps, at most `limit`. */

@@ -252,7 +252,11 @@ class EntityCapture(
 
     // An entity's own inventory a player has open, as the entity was when it opened: a chest boat, a cart,
     // a donkey's chest, a horse's saddle and armour.
-    private val opened = ConcurrentHashMap<UUID, Pair<ByteArray, Long>>()
+    // Keyed by the player, and holding which entity it was: a close can be missed when another window opens
+    // over this one, and the next close must not compare one entity with another.
+    private class Opened(val entity: UUID, val before: ByteArray, val since: Long)
+
+    private val opened = ConcurrentHashMap<UUID, Opened>()
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onOpen(event: InventoryOpenEvent) {
@@ -260,7 +264,7 @@ class EntityCapture(
         // A villager's window trades, and what trading changes is the item plane's and its own.
         if (entity is Player || entity is AbstractVillager || logs.get(entity.world.uid) == null) return
         touch(entity)
-        opened[event.player.uniqueId] = (snapshotOf((entity as CraftEntity).handle) ?: return) to System.currentTimeMillis()
+        opened[event.player.uniqueId] = Opened(entity.uniqueId, snapshotOf((entity as CraftEntity).handle) ?: return, System.currentTimeMillis())
     }
 
     /**
@@ -270,8 +274,11 @@ class EntityCapture(
      */
     @EventHandler(priority = EventPriority.MONITOR)
     fun onClose(event: InventoryCloseEvent) {
-        val (before, since) = opened.remove(event.player.uniqueId) ?: return
+        val window = opened.remove(event.player.uniqueId) ?: return
         val entity = event.inventory.holder as? Entity ?: return
+        if (entity.uniqueId != window.entity) return
+        val before = window.before
+        val since = window.since
         val player = event.player.uniqueId
         val log = logs.get(entity.world.uid) ?: return
         val block = entity.location.block

@@ -40,6 +40,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock
 import java.util.logging.Level
 import java.util.logging.Logger
 import kotlin.concurrent.read
+import kotlin.concurrent.withLock
 import kotlin.concurrent.write
 
 // A shulker's loot table copies a handful of components onto the dropped item and the owner mark is
@@ -201,9 +202,6 @@ internal fun tableIn(cache: Cache, filter: Filter? = null): BlockBasedTableConfi
         .also { table -> filter?.let { table.setFilterPolicy(it) } }
 
 
-// How many deletes a purge writes at a time.
-private const val PURGE_BATCH = 10_000
-
 class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, PlacedForms {
     // Before any native object: a cache, unlike the option classes, does not load the library itself.
     init {
@@ -311,6 +309,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
     private val dbLock = ReentrantReadWriteLock()
 
     private var pendingBatch: WriteBatch? = null
+
+    // Held by the writer around each batch and by a purge around its single write: both take transaction
+    // ids, and the counter is not shared otherwise.
+    private val writing = java.util.concurrent.locks.ReentrantLock()
 
     // A staging session belongs to the thread that opened it: two threads sharing one batch would be
     // writing into the same native object, and a bulk fill is the only caller that opens one.
@@ -522,39 +524,52 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
      * at the cutoff: the opening balances that keep every later balance whole, to be submitted by the
      * caller. Unreadable rows are left where they are. One walk of the whole family, off any region thread.
      */
-    fun purgeBefore(cutoff: Long, dryRun: Boolean): Pair<Int, List<Transfer>> = dbLock.read {
-        if (closed) return 0 to emptyList()
-        val held = HashMap<Triple<Holder, Long, Int?>, Int>()
-        var deleted = 0
-        var batch = WriteBatch()
-        db.newIterator(entriesCf, wholeCfRead).use { iter ->
-            iter.seekToFirst()
-            while (iter.isValid) {
-                val entry = EntryCodec.decodeOrNull(iter.key(), iter.value(), registries)
-                if (entry != null && entry.timestamp < cutoff) {
-                    held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
-                    deleted++
-                    if (!dryRun) {
-                        batch.delete(entriesCf, iter.key())
-                        batch.delete(txCf, longBytes(entry.txId))
-                        if (batch.count() >= PURGE_BATCH) {
-                            db.write(writeOptions, batch)
-                            batch.close()
-                            batch = WriteBatch()
+    /**
+     * Deletes every posting older than the cutoff and writes, dated at the cutoff, what each holder held by
+     * then. Both go in one write: a purge cut short between them would leave every balance short of what it
+     * deleted, or holding it twice. The writer waits meanwhile, as the openings take its transaction ids.
+     * Returns how many postings went and how many openings stand for them.
+     */
+    // ponytail: the whole purge is one batch in memory, a few dozen bytes a posting; delete by holder ranges
+    // if a purge ever outgrows that.
+    fun purgeBefore(cutoff: Long, dryRun: Boolean): Pair<Int, Int> = dbLock.read {
+        if (closed) return 0 to 0
+        writing.withLock {
+            WriteBatch().use { batch ->
+                val held = HashMap<Triple<Holder, Long, Int?>, Int>()
+                var deleted = 0
+                db.newIterator(entriesCf, wholeCfRead).use { iter ->
+                    iter.seekToFirst()
+                    while (iter.isValid) {
+                        val entry = EntryCodec.decodeOrNull(iter.key(), iter.value(), registries)
+                        if (entry != null && entry.timestamp < cutoff) {
+                            held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
+                            deleted++
+                            if (!dryRun) {
+                                batch.delete(entriesCf, iter.key())
+                                batch.delete(txCf, longBytes(entry.txId))
+                            }
                         }
+                        iter.next()
                     }
                 }
-                iter.next()
+                val openings = held.filterValues { it != 0 }.mapNotNull { (key, qty) ->
+                    val form = form(key.second) ?: return@mapNotNull null
+                    if (qty > 0) Transfer(Cause.PURGE_OPENING, Void, key.first, form, key.third, qty, cutoff)
+                    else Transfer(Cause.PURGE_OPENING, key.first, Void, form, key.third, -qty, cutoff)
+                }
+                if (!dryRun) {
+                    pendingBatch = batch
+                    try {
+                        for (opening in openings) writeTransaction(batch, listOf(opening))
+                    } finally {
+                        pendingBatch = null
+                    }
+                    db.write(writeOptions, batch)
+                }
+                return deleted to openings.size
             }
         }
-        if (!dryRun && batch.count() > 0) db.write(writeOptions, batch)
-        batch.close()
-        val openings = held.filterValues { it != 0 }.mapNotNull { (key, qty) ->
-            val form = form(key.second) ?: return@mapNotNull null
-            if (qty > 0) Transfer(Cause.PURGE_OPENING, Void, key.first, form, key.third, qty, cutoff)
-            else Transfer(Cause.PURGE_OPENING, key.first, Void, form, key.third, -qty, cutoff)
-        }
-        deleted to openings
     }
 
     fun transactionEntries(entry: LedgerEntry): List<LedgerEntry> = dbLock.read {
@@ -940,7 +955,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
                     val batched = ArrayList<List<Transfer>>(MAX_BATCH)
                     batched += first
                     queue.drainTo(batched, MAX_BATCH - 1)
-                    writeAll(batched)
+                    writing.withLock { writeAll(batched) }
                     written.addAndGet(batched.size.toLong())
                 }
                 if (System.nanoTime() - lastFlush >= WAL_FLUSH_INTERVAL_NANOS) {

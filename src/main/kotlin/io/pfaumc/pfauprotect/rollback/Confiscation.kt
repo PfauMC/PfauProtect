@@ -447,12 +447,13 @@ class Confiscations(
                         val here = slots.get(slot)
                         if (here.isEmpty || !codec.encode(here).form.contentEquals(form)) continue
                         val damage = codec.encode(here).damage
-                        val n = putBack(slots, slot, here.copy(), -(left - got)) { codec.encode(it).form.contentEquals(form) }
-                        if (n > 0) rows += Transfer(Cause.ROLLBACK, stash.copy(slot = slot), Void, form, damage, n, now, actor = actor)
+                        val n = minOf(left - got, here.count)
+                        slots.set(slot, if (n == here.count) net.minecraft.world.item.ItemStack.EMPTY else here.copyWithCount(here.count - n))
+                        rows += Transfer(Cause.ROLLBACK, stash.copy(slot = slot), Void, form, damage, n, now, actor = actor)
                         got += n
                     }
                     if (rows.isNotEmpty()) {
-                        level.getBlockEntity(net.minecraft.core.BlockPos(stash.x, stash.y, stash.z))?.setChanged()
+                        slots.changed()
                         sink(rows)
                     }
                 }

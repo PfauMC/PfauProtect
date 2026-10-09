@@ -81,6 +81,9 @@ private const val VANILLA_NAMESPACE = "minecraft"
 private const val FETCH_FACTOR = 8
 private const val MAX_FETCH = 4096
 
+// How many rows of a container's position `action:steal` reads for who put it down.
+private const val PLACER_READ = 200
+
 private val TIME_FORMAT: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
 
@@ -750,7 +753,7 @@ class Lookups(
     private fun reportPlayers(sender: CommandSender, query: LookupQuery) {
         // Answering anyway would read as narrowed to the area while nothing was narrowed.
         if (query.radius != null) {
-            sender.sendMessage("player: reads what went through a player's hands, which has no position; drop the radius.")
+            sender.say("player: reads what went through a player's hands, which has no position; drop the radius.")
             return
         }
         val players = resolveAll(sender, query.players) ?: return
@@ -833,8 +836,10 @@ class Lookups(
         // A truncated view that says nothing about being truncated reads as the whole history, and an
         // investigator would conclude the item came from nowhere. The read itself stops early too, and
         // it stops before the filter runs, so a page cut short says so even when few rows matched.
-        if (matched.size > query.wanted || !complete) {
+        if (matched.size > query.wanted) {
             sender.say("  ... older entries are cut off; page:${query.page + 1} shows the next ones")
+        } else if (!complete) {
+            sender.say("  ... the read stopped early; more matching entries may exist")
         }
     }
 
@@ -967,7 +972,7 @@ class Lookups(
     // know whether saying so would be a lie.
     private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
         val keeps = rowFilter(query, users)
-        val placers = HashMap<Container, UUID?>()
+        val placers = HashMap<Container, Placer>()
         return entries.asSequence()
             .filter(keeps::keeps)
             .filter { !query.steal || stolen(it, placers) }
@@ -975,17 +980,24 @@ class Lookups(
             .toList()
     }
 
-    // Taken out of a container somebody else put down, or one nobody did: a chest of the world's own.
-    private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, UUID?>): Boolean {
+    // Who put a container down; `known` false when the read stopped before it reached the placement.
+    private class Placer(val known: Boolean, val player: UUID?)
+
+    // Taken out of a container somebody else put down, or one nobody did: a chest of the world's own. A busy
+    // position whose placement lies past the read says nothing either way, and its withdrawals are not
+    // counted as theft: the owner's own would be.
+    private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, Placer>): Boolean {
         if (entry.cause != Cause.CONTAINER_REMOVE || entry.qty >= 0) return false
         val chest = (entry.holder as? Container)?.copy(slot = 0) ?: return false
         val placer = placers.getOrPut(chest) {
-            blocks.get(chest.world)?.at(chest.x, chest.y, chest.z, 0, Long.MAX_VALUE, limit = 200, reverse = true)
-                ?.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE }?.actor
+            val rows = blocks.get(chest.world)?.at(chest.x, chest.y, chest.z, 0, Long.MAX_VALUE, limit = PLACER_READ, reverse = true).orEmpty()
+            val placed = rows.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE }
+            Placer(placed != null || rows.size < PLACER_READ, placed?.actor)
         }
+        if (!placer.known) return false
         // A withdrawal names whoever took it as where it went rather than as its actor.
         val taker = entry.actor ?: (entry.counterparty as? PlayerHolder)?.uuid ?: return false
-        return taker != placer
+        return taker != placer.player
     }
 
     // `exclude:` takes items and players in one list, so a name that is a player is a player excluded.

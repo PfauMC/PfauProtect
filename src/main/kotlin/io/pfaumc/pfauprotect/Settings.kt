@@ -25,6 +25,9 @@ object Settings {
     @Volatile var freshMillis = 10 * 60 * 1000L
     @Volatile var crowd = 8
 
+    // Commands the chat log keeps by name only: their arguments are passwords.
+    @Volatile var hiddenCommands = setOf("login", "l", "log", "register", "reg", "changepassword", "changepass", "unregister")
+
     fun load(config: FileConfiguration, log: Logger) {
         language = config.getString("language", language)!!.lowercase().takeIf { it in LANGUAGES } ?: run {
             log.warning("config.yml: language must be one of $LANGUAGES; using ru")
@@ -40,6 +43,7 @@ object Settings {
         maxRollbackPositions = config.getInt("rollback.max-positions", maxRollbackPositions).coerceIn(1, 1_000_000)
         freshMillis = config.getLong("mobs.fresh-minutes", freshMillis / 60_000).coerceIn(0, 24 * 60) * 60_000
         crowd = config.getInt("mobs.crowd", crowd).coerceIn(2, 1_000)
+        if (config.contains("chat.hidden-commands")) hiddenCommands = config.getStringList("chat.hidden-commands").map { it.lowercase() }.toSet()
     }
 
     private val LANGUAGES = setOf("ru", "en")

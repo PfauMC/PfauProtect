@@ -655,11 +655,7 @@ class PfauProtectPlugin : JavaPlugin() {
                     rows += r
                     entities += e
                 }
-                if (confirm) {
-                    for (opening in openings) running.ledger.submit(opening)
-                    running.ledger.drain()
-                }
-                val counts = "$entries item rows, $rows block rows, $entities entity rows; ${openings.size} opening balances"
+                val counts = "$entries item rows, $rows block rows, $entities entity rows; $openings opening balances"
                 sender.say(if (confirm) "Purged $counts written." else "A purge would delete $counts to write. /pp purge $age confirm runs it.")
             } catch (failure: Throwable) {
                 logger.log(Level.SEVERE, "the purge failed", failure)
@@ -906,8 +902,8 @@ private class Api(private val running: Running) : io.pfaumc.pfauprotect.api.Pfau
     override fun lookup(at: org.bukkit.Location, words: String): java.util.concurrent.CompletableFuture<List<String>> {
         val lines = java.util.Collections.synchronizedList(ArrayList<String>())
         val sender = org.bukkit.Bukkit.createCommandSender { lines += net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(it) }
-        val query = io.pfaumc.pfauprotect.command.parseLookupQuery(words)
         return java.util.concurrent.CompletableFuture.supplyAsync {
+            val query = io.pfaumc.pfauprotect.command.parseLookupQuery(words)
             running.lookups.report(sender, io.pfaumc.pfauprotect.command.lookupTargetAt(at), query)
             lines.toList()
         }

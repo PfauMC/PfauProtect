@@ -83,6 +83,9 @@ object Texts {
             "Ничего не найдено для $1, но чтение остановилось раньше, чем увидело всю область. Сузь радиус или запроси больше через $2.",
         r("Count of (\\d+) ledger entries for (.*):") to "Сводка по записям ($1) для $2:",
         r("  \\.\\.\\. older entries are cut off; page:(\\d+) shows the next ones") to "  ... старые записи обрезаны; page:$1 покажет следующие",
+        r("  \\.\\.\\. the read stopped early; more matching entries may exist") to "  ... чтение остановилось раньше; подходящих записей может быть больше",
+        r("player: reads what went through a player's hands, which has no position; drop the radius\\.") to
+            "player: читает то, что прошло через руки игрока, а у этого нет места; уберите радиус.",
         r("  \\.\\.\\. the read stopped early; these are counts of what it saw") to "  ... чтение остановилось раньше; это сводка прочитанного",
         r("The lookup failed; the server log has the details\\.") to "Поиск не удался; подробности в логе сервера.",
         r("A world-wide lookup needs a player, user:<name>, or a radius\\.") to "Поиску по всему миру нужен игрок user:<имя> или радиус.",
