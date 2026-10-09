@@ -323,7 +323,11 @@ class RedstoneListener(
         when {
             // A tripwire raises nothing of its own: the change is on the hook, however far along.
             block.type == Material.TRIPWIRE -> tripped(block, Cause.BLK_PLAYER_SWITCH, Behind(by), null)
-            isSwitch(block.type) -> pressing.set(Pressed(at, by.actor, System.nanoTime()))
+            // A plate is pressed by standing on it and a button or lever by a click. The other pairing
+            // moves nothing, and a press left over from it would name the player for a mob that steps
+            // on the plate right after.
+            isSwitch(block.type) && (event.action == Action.PHYSICAL) == Tag.PRESSURE_PLATES.isTagged(block.type) ->
+                pressing.set(Pressed(at, by.actor, System.nanoTime()))
         }
     }
 
