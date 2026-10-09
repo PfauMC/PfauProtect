@@ -7,6 +7,9 @@ import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.model.Kind
+import io.pfaumc.pfauprotect.model.PlayerCursor
+import io.pfaumc.pfauprotect.model.PlayerEnder
+import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.ServerRegistries
@@ -270,13 +273,23 @@ class LookupReadTest {
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 3), stone, null, 5, T0))
         shared.submit(Transfer(Cause.CRAFT_CONSUME, EntitySlot(alice, 1), Void, stone, null, 8, T0 + 1))
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), stone, null, 2, T0 + 2))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerEquip(alice, 5), stone, null, 1, T0 + 3))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerCursor(alice), stone, null, 1, T0 + 4))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerEnder(alice, 7), stone, null, 1, T0 + 5))
         shared.drain()
 
         val lines = said(LookupQuery(players = listOf("Alice")), players = mapOf("Alice" to alice, "Bob" to bob))
 
         assertTrue(lines.any { it.contains("Alice slot 3") }, "$lines")
         assertTrue(lines.any { it.contains("craft_consume") && it.contains("entity Alice slot 1") }, "$lines")
+        assertTrue(lines.any { it.contains("Alice equipment slot 5") }, "$lines")
+        assertTrue(lines.any { it.contains("Alice cursor") }, "$lines")
+        assertTrue(lines.any { it.contains("Alice ender chest slot 7") }, "$lines")
         assertTrue(lines.none { it.contains("Bob") }, "$lines")
+        assertTrue(
+            said(LookupQuery(players = listOf("Alice"), radius = 5), players = mapOf("Alice" to alice))
+                .single().contains("drop the radius"),
+        )
         assertEquals(
             listOf("Unknown player: Carol"),
             said(LookupQuery(players = listOf("Carol")), players = mapOf("Alice" to alice)),

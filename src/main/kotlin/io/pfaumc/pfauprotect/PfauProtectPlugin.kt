@@ -208,7 +208,8 @@ class PfauProtectPlugin : JavaPlugin() {
         val entityCapture = EntityCapture(
             blocks, origins, attribution, entities,
             later = { at, task -> server.regionScheduler.run(this, at) { task() } },
-            laterOn = { entity, task -> entity.scheduler.run(this, { task() }, null) },
+            // A null task means the entity was gone before it could be scheduled, and neither ever runs.
+            laterOn = { entity, task, retired -> entity.scheduler.run(this, { task() }, retired) ?: retired() },
         )
         val confiscations = Confiscations(this, ledger, codec, capture, worldItems, uncovered::submit)
         val chunkRollback = ChunkRollback(

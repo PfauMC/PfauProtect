@@ -5,6 +5,7 @@ import io.pfaumc.pfauprotect.capture.item.Intent
 import io.pfaumc.pfauprotect.capture.item.WorldItemListener
 import io.pfaumc.pfauprotect.capture.item.namedContents
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.LedgerEntry
@@ -143,10 +144,26 @@ private fun wholePile(pile: UUID, rowsOf: (ItemEntityRef) -> List<LedgerEntry>):
  * lies there, what is gone for good. The victim's own hands are left out: what they picked up again they
  * have.
  */
-internal fun restitutionFor(ledger: RocksItemLog, death: EntityRow): List<Owed> {
-    val rowsOf = { pile: ItemEntityRef -> ledger.holderEntries(pile, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
-    return merged(death.drops.flatMap { wholePile(it, rowsOf) }).filter { it.qty > 0 && it.taker != Carrier(death.uuid) }
+internal fun restitutionFor(ledger: RocksItemLog, death: EntityRow): List<Owed> =
+    merged(death.drops.filter { it !in restituted(ledger, death) }.flatMap { wholePile(it, pileRows(ledger)) })
+        .filter { it.qty > 0 && it.taker != Carrier(death.uuid) }
+
+/**
+ * The births of the piles that fell out of a killed player, by pile: what a rollback that gave the
+ * victim back their loss marks as given back, so a second rollback gives nothing twice.
+ */
+internal fun pileBirths(ledger: RocksItemLog, death: EntityRow): Map<UUID, List<PostingRef>> = death.drops.associateWith { pile ->
+    pileRows(ledger)(ItemEntityRef(pile)).filter { it.qty > 0 && it.cause != Cause.ITEM_MERGE }.map { it.ref }
 }
+
+// Piles an earlier rollback already gave the victim back.
+private fun restituted(ledger: RocksItemLog, death: EntityRow): Set<UUID> {
+    val births = pileBirths(ledger, death)
+    val given = ledger.compensated(births.values.flatten()).keys
+    return births.filterValues { refs -> refs.any { it in given } }.keys
+}
+
+private fun pileRows(ledger: RocksItemLog) = { pile: ItemEntityRef -> ledger.holderEntries(pile, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
 
 /** The same taker and form owed more than once, as one amount. */
 internal fun merged(owed: List<Owed>): List<Owed> =
@@ -192,42 +209,61 @@ class Confiscations(
      * Gives a killed player back what fell out of them: taken from whoever has it, as it is taken, and
      * what is gone for good out of nothing.
      */
-    fun restore(victim: UUID, owed: List<Owed>, actor: UUID?, sender: CommandSender) {
-        take(owed.filter { it.taker !is Vanished }, actor, sender) { formId, n -> give(victim, formId, n, actor, sender) }
+    fun restore(victim: UUID, owed: List<Owed>, actor: UUID?, sender: CommandSender, births: List<PostingRef> = emptyList()) {
+        // What went between the read and the take — a pile no longer there, what its taker used up — is gone
+        // for good like a burned pile, and given out of nothing the same way, so every birth marked below
+        // was given back one way or the other.
+        take(
+            owed.filter { it.taker !is Vanished }, actor, sender,
+            gone = { formId, n -> give(victim, formId, n, actor, sender) },
+        ) { formId, n -> give(victim, formId, n, actor, sender) }
         for (gone in owed.filter { it.taker is Vanished }) give(victim, gone.formId, gone.qty, actor, sender)
+        // The piles' births marked as given back. Nothing moves, so no posting is written: only the mark.
+        val form = owed.firstNotNullOfOrNull { ledger.form(it.formId) } ?: return
+        if (births.isNotEmpty()) sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, form, null, 1, System.currentTimeMillis(), actor = actor, reverts = births)))
     }
 
-    // `taken` hears of every amount actually taken, or owed by a player who will hand it over on joining.
-    fun take(owed: List<Owed>, actor: UUID?, sender: CommandSender, taken: (Long, Int) -> Unit = { _, _ -> }) {
+    // `taken` hears of every amount actually taken, or owed by a player who will hand it over on joining;
+    // `gone`, of what was there at the read and could not be taken: a pile gone since, or what a player no
+    // longer holds.
+    fun take(
+        owed: List<Owed>,
+        actor: UUID?,
+        sender: CommandSender,
+        gone: (Long, Int) -> Unit = { _, _ -> },
+        taken: (Long, Int) -> Unit = { _, _ -> },
+    ) {
         for ((taker, all) in owed.groupBy { it.taker }) {
             when (taker) {
                 is Carrier -> {
-                    val player = Bukkit.getPlayer(taker.player)
-                    if (player == null) {
+                    fun oweAll() {
                         for (item in all) {
                             ledger.owe(taker.player, item.formId, item.qty, actor)
                             taken(item.formId, item.qty)
                         }
+                    }
+                    val player = Bukkit.getPlayer(taker.player)
+                    if (player == null) {
+                        oweAll()
                         continue
                     }
-                    // A player who leaves between the two is owed it instead.
-                    player.scheduler.run(plugin, { fromPlayer(player, all, actor, sender, taken) }) {
-                        Bukkit.getAsyncScheduler().runNow(plugin) {
-                            for (item in all) {
-                                ledger.owe(taker.player, item.formId, item.qty, actor)
-                                taken(item.formId, item.qty)
-                            }
-                        }
-                    }
+                    // A player who leaves between the two is owed it instead, whether they left before the
+                    // task was queued (a null task) or after.
+                    player.scheduler.run(plugin, { fromPlayer(player, all, actor, sender, gone, taken) }) {
+                        Bukkit.getAsyncScheduler().runNow(plugin) { oweAll() }
+                    } ?: Bukkit.getAsyncScheduler().runNow(plugin) { oweAll() }
                 }
                 // Looking an entity up by its uuid is a tick thread's business, and the pile may lie in any
                 // region; the global one may ask, and the pile's own scheduler does the rest.
                 is Lying -> Bukkit.getGlobalRegionScheduler().execute(plugin) {
                     val pile = Bukkit.getEntity(taker.entity) as? Item
+                    val missing = { all.forEach { gone(it.formId, it.qty) } }
                     if (pile == null) {
                         sender.sendMessage("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
+                        missing()
                     } else {
-                        pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender, taken) } }, null)
+                        pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender, gone, taken) } }, missing)
+                            ?: missing()
                     }
                 }
                 is Vanished -> Unit
@@ -243,9 +279,8 @@ class Confiscations(
             Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) }
             return
         }
-        online.scheduler.run(plugin, { toPlayer(online, formId, qty, actor, sender) }) {
-            Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) }
-        }
+        val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) } }
+        online.scheduler.run(plugin, { toPlayer(online, formId, qty, actor, sender) }) { owe() } ?: owe()
     }
 
     // On the player's own thread.
@@ -260,12 +295,23 @@ class Confiscations(
     }
 
     // On the player's own thread.
-    private fun fromPlayer(player: Player, owed: List<Owed>, actor: UUID?, sender: CommandSender?, taken: (Long, Int) -> Unit = { _, _ -> }) {
+    private fun fromPlayer(
+        player: Player,
+        owed: List<Owed>,
+        actor: UUID?,
+        sender: CommandSender?,
+        gone: (Long, Int) -> Unit = { _, _ -> },
+        taken: (Long, Int) -> Unit = { _, _ -> },
+    ) {
         val direct = ArrayList<Transfer>()
         val now = System.currentTimeMillis()
         val enderOpen = player.openInventory.topInventory.type == InventoryType.ENDER_CHEST
         for (item in owed) {
-            val form = ledger.form(item.formId) ?: continue
+            val form = ledger.form(item.formId)
+            if (form == null) {
+                gone(item.formId, item.qty)
+                continue
+            }
             var left = item.qty
             var seen = 0
             fun drain(stack: ItemStack?, put: (ItemStack?) -> Unit): Int {
@@ -291,6 +337,7 @@ class Confiscations(
             if (seen > 0) capture.intend(player, Intent(Cause.ROLLBACK, to = Void, form = form, qty = seen, actor = actor))
             val got = item.qty - left
             if (got > 0) taken(item.formId, got)
+            if (left > 0) gone(item.formId, left)
             val message = if (left == 0) "  took back $got ${name(item.formId)} from ${player.name}."
             else "  ${player.name} held only $got of ${item.qty} ${name(item.formId)}; the rest is beyond reach."
             if (sender != null) sender.sendMessage(message) else plugin.logger.info("rollback at join:$message")
@@ -299,14 +346,23 @@ class Confiscations(
     }
 
     // On the thread of the region the pile lies in.
-    private fun fromPile(pile: Item, owed: Owed, actor: UUID?, sender: CommandSender, taken: (Long, Int) -> Unit = { _, _ -> }) {
+    private fun fromPile(
+        pile: Item,
+        owed: Owed,
+        actor: UUID?,
+        sender: CommandSender,
+        gone: (Long, Int) -> Unit,
+        taken: (Long, Int) -> Unit,
+    ) {
         if (!pile.isValid) {
             sender.sendMessage("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
+            gone(owed.formId, owed.qty)
             return
         }
         val stack = pile.itemStack
-        val encoded = codec.encodeOrNull(stack) ?: return
+        val encoded = codec.encodeOrNull(stack) ?: return gone(owed.formId, owed.qty)
         val n = minOf(owed.qty, stack.amount)
+        if (n < owed.qty) gone(owed.formId, owed.qty - n)
         val now = System.currentTimeMillis()
         val rows = arrayListOf(Transfer(Cause.ROLLBACK, ItemEntityRef(pile.uniqueId), Void, encoded.form, encoded.damage, n, now, actor = actor))
         if (n == stack.amount) {

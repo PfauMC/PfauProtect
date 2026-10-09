@@ -136,8 +136,9 @@ class EntityCapture(
     private val entities: EntityOrigins,
     // Runs a task on the region of the location a tick later.
     private val later: (Location, () -> Unit) -> Unit,
-    // Runs a task on the entity's own scheduler a tick later.
-    private val laterOn: (Entity, () -> Unit) -> Unit = { _, _ -> },
+    // Runs a task on the entity's own scheduler a tick later, or the second one if the entity is gone by
+    // then and the first never runs.
+    private val laterOn: (Entity, () -> Unit, () -> Unit) -> Unit = { _, _, _ -> },
 ) : Listener {
     private val seen = ConcurrentHashMap<UUID, Long>()
 
@@ -174,7 +175,7 @@ class EntityCapture(
         }
         val block = entity.location.block
         val (x, y, z) = Triple(block.x, block.y, block.z)
-        laterOn(entity) {
+        laterOn(entity, {
             handling.remove(entity.uniqueId)
             // Killed by the hand, it is a removal and the death writes it.
             if (!entity.isValid) return@laterOn
@@ -188,7 +189,7 @@ class EntityCapture(
                     )
                 )
             )
-        }
+        }) { handling.remove(entity.uniqueId) }
     }
 
     /**
@@ -204,7 +205,7 @@ class EntityCapture(
         val log = logs.get(entity.world.uid) ?: return
         val before = snapshotOf((entity as CraftEntity).handle) ?: return
         val block = entity.location.block
-        laterOn(entity) {
+        laterOn(entity, {
             val after = snapshotOf((entity as CraftEntity).handle) ?: return@laterOn
             log.submit(
                 listOf(
@@ -214,7 +215,7 @@ class EntityCapture(
                     )
                 )
             )
-        }
+        }) {}
     }
 
     /**
