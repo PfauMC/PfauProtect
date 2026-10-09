@@ -31,6 +31,18 @@ enum class Cause(val id: Int) {
     // slot refilled or emptied, an item taken back from whoever carried it off. The actor is whoever
     // ran the rollback.
     ROLLBACK(0x96),
+    // The entity plane's agents where no block cause fits: a mob, a pet or a stand killed, a frame, a
+    // painting, a boat or a cart broken, by a hit, an arrow, fire or a command.
+    ENTITY_KILLED(0x97),
+    ENTITY_BROKEN(0x98),
+    // A young animal two parents had because a player fed them.
+    MOB_BRED(0x99),
+    // A player changed an entity by hand — named, sheared, dyed, turned a frame — or led it away on a
+    // lead, a saddle or a boat.
+    ENTITY_CHANGED(0x9A),
+    ENTITY_LED(0x9B),
+    // A player killed by another, directly or by what the other set going.
+    PLAYER_KILLED(0x9C),
 
     CONTAINER_ADD(0x10),
     CONTAINER_REMOVE(0x11),

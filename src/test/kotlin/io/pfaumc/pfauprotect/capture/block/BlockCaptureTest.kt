@@ -424,4 +424,19 @@ class BlockCaptureTest {
         assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 63, 5))?.actor)
     }
 
+    // The item plane books a lectern's book and a campfire's food to the block as slots, so the reading
+    // a command or a rollback takes before and after has to see them, though neither block is a
+    // container.
+    @Test
+    fun `a lectern's book and a campfire's food are read as the block's slots`() {
+        ServerRegistries.access
+        val lectern = net.minecraft.world.level.block.entity.LecternBlockEntity(BlockPos(1, 64, 1), Blocks.LECTERN.defaultBlockState())
+        lectern.setBook(NmsItemStack(Items.WRITABLE_BOOK))
+        val campfire = net.minecraft.world.level.block.entity.CampfireBlockEntity(BlockPos(2, 64, 1), Blocks.CAMPFIRE.defaultBlockState())
+        campfire.items[2] = NmsItemStack(Items.BEEF)
+
+        assertEquals(listOf(Items.WRITABLE_BOOK), heldStacks(lectern)!!.map { it.item })
+        assertEquals(listOf(true, true, false, true), heldStacks(campfire)!!.map { it.isEmpty })
+        assertNull(heldStacks(SignBlockEntity(BlockPos(3, 64, 1), Blocks.OAK_SIGN.defaultBlockState())))
+    }
 }

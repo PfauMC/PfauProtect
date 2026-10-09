@@ -207,6 +207,30 @@ class RollbackTest {
         assertEquals(3, positions.getValue(WorldBlock(world, 5000, 64, -5000)).refills.single().qty)
     }
 
+    // Alice renamed Bob's horse and then killed it, and its saddle fell out. Rolled back, the horse goes
+    // back to what it was before she touched it at all, its saddle's way out is undone with it whoever's
+    // row that was, and what fell out of it is followed.
+    @Test
+    fun `an entity goes back to what its oldest row says it was`() {
+        val horse = UUID.randomUUID()
+        val pile = UUID.randomUUID()
+        val untouched = byteArrayOf(10, 0, 0, 1)
+        val renamed = byteArrayOf(10, 0, 0, 2)
+        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(3, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:horse", horse, T0, actor = alice, before = untouched, after = renamed)))
+        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(4, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:horse", horse, T0 + 10, actor = alice, before = renamed, drops = listOf(pile))))
+        log.drain()
+        shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, io.pfaumc.pfauprotect.model.EntitySlot(horse, 400), io.pfaumc.pfauprotect.model.ItemEntityRef(UUID.randomUUID()), diamond, null, 1, T0 + 10))
+        shared.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val plan = planned.chunks.flatMap { it.positions }.flatMap { it.entities }.single()
+        assertEquals(io.pfaumc.pfauprotect.model.EntityKind.CHANGED, plan.oldest.kind)
+        assertEquals(untouched.toList(), plan.before!!.toList())
+        assertEquals(listOf(-1), plan.slots.map { it.qty })
+        assertEquals(listOf(pile), plan.drops)
+        assertEquals(WorldBlock(world, 3, 64, 3), plan.at)
+    }
+
     // The widest radius reads a square of chunks larger than any lookup does, and has to stay inside
     // what the region read allows; a world with no open base has no history to roll back over.
     @Test
@@ -226,28 +250,43 @@ class RollbackTest {
     @Test
     fun `a slot posting goes back into its own slot first and then wherever it fits`() {
         ServerRegistries.access
-        val chest = SimpleContainer(3)
+        val chest = ContainerSlots(SimpleContainer(3))
         val diamonds = NmsItemStack(Items.DIAMOND)
-        chest.setItem(1, NmsItemStack(Items.DIRT, 64))
+        chest.set(1, NmsItemStack(Items.DIRT, 64))
 
         assertEquals(10, putBack(chest, 0, diamonds, 10) { false })
-        assertEquals(10, chest.getItem(0).count)
+        assertEquals(10, chest.get(0).count)
         assertEquals(64, putBack(chest, 1, diamonds, 64) { false })
-        assertEquals(64, chest.getItem(0).count, "topped up where the same item already lay")
-        assertEquals(10, chest.getItem(2).count, "and the rest into the free slot")
+        assertEquals(64, chest.get(0).count, "topped up where the same item already lay")
+        assertEquals(10, chest.get(2).count, "and the rest into the free slot")
         assertEquals(54, putBack(chest, 1, diamonds, 200) { false }, "54 more fit, the rest has no room")
+    }
+
+    // A lectern and a campfire are no containers, and a rollback still has to put their things back: the
+    // book onto the lectern, the food onto the campfire, one item a slot.
+    @Test
+    fun `a book goes back onto a lectern and food back onto a campfire`() {
+        ServerRegistries.access
+        val lectern = net.minecraft.world.level.block.entity.LecternBlockEntity(net.minecraft.core.BlockPos(1, 64, 1), net.minecraft.world.level.block.Blocks.LECTERN.defaultBlockState())
+        assertEquals(1, putBack(slotsOf(lectern)!!, 0, NmsItemStack(Items.WRITABLE_BOOK), 1) { false })
+        assertEquals(Items.WRITABLE_BOOK, lectern.book.item)
+
+        val campfire = net.minecraft.world.level.block.entity.CampfireBlockEntity(net.minecraft.core.BlockPos(2, 64, 1), net.minecraft.world.level.block.Blocks.CAMPFIRE.defaultBlockState())
+        assertEquals(2, putBack(slotsOf(campfire)!!, 1, NmsItemStack(Items.BEEF), 2) { false })
+        // Its own slot first, then the first free one: one piece of food a slot.
+        assertEquals(listOf(true, true, false, false), campfire.items.map { it.item == Items.BEEF })
     }
 
     // What arrived is taken out again from wherever it lies by now, and no more than is there.
     @Test
     fun `a slot posting taken out is looked for in the whole chest`() {
         ServerRegistries.access
-        val chest = SimpleContainer(3)
-        chest.setItem(2, NmsItemStack(Items.TNT, 5))
+        val chest = ContainerSlots(SimpleContainer(3))
+        chest.set(2, NmsItemStack(Items.TNT, 5))
         val isTnt = { stack: NmsItemStack -> stack.item == Items.TNT }
 
         assertEquals(5, putBack(chest, 0, NmsItemStack(Items.TNT), -8, isTnt))
-        assertTrue(chest.getItem(2).isEmpty)
+        assertTrue(chest.get(2).isEmpty)
     }
 
     private fun around(filter: RowFilter): Planned {

@@ -96,6 +96,19 @@ class AttributionTest {
         assertNull(attribution.journalPlacerAt(at(11, 64, 10), TNT))
     }
 
+    // A frame comes down seconds after its wall: the breaker is still the newest row there, and a row
+    // older than a frame ever waits is not asked.
+    @Test
+    fun `the journal names who emptied a wall a frame has only now noticed`() {
+        val wall = at(10, 64, 10)
+        journalled(wall, STONE, AIR, bob, START, Cause.BLK_PLAYER_BREAK)
+        clock = START + 5_000
+        assertEquals(bob, attribution.journalRemoverAt(wall)?.actor)
+        assertEquals(Confidence.INFERRED, attribution.journalRemoverAt(wall)?.confidence)
+        clock = START + HANGING_MILLIS + 1
+        assertNull(attribution.journalRemoverAt(wall))
+    }
+
     @Test
     fun `nothing this answers with is a fact`() {
         val here = at(10, 64, 10)

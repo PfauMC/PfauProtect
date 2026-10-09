@@ -957,7 +957,8 @@ class ContainerCaptureListener(
                 val qty = minOf(need, slot.left)
                 slot.left -= qty
                 need -= qty
-                origins.expect(slot.holder, Cause.DEATH_DROP, encoded.key, spot, qty)
+                // Named under the player, so the death's own row can say what fell out of them.
+                origins.expect(slot.holder, Cause.DEATH_DROP, encoded.key, spot, qty, tag = player.uniqueId)
                 written += Intent(
                     cause = Cause.DEATH_DROP,
                     form = encoded.key.form,

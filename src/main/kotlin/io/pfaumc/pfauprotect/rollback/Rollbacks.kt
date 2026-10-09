@@ -23,7 +23,28 @@ import net.minecraft.nbt.NbtIo
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.util.ProblemReporter
 import net.minecraft.world.Clearable
+import io.pfaumc.pfauprotect.capture.entity.VOLATILE
+import io.pfaumc.pfauprotect.capture.entity.nbtOf
+import io.pfaumc.pfauprotect.capture.entity.snapshotOf
+import io.pfaumc.pfauprotect.model.EntityKind
+import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.Void
+import io.pfaumc.pfauprotect.storage.EntityChange
+import io.pfaumc.pfauprotect.storage.EntityRow
+import net.minecraft.world.entity.EntityProcessor
+import net.minecraft.world.entity.EntitySpawnReason
+import net.minecraft.world.entity.EntitySpawnRequest
+import net.minecraft.world.entity.EntityType
 import net.minecraft.world.level.block.Block
+import org.bukkit.Location
+import org.bukkit.craftbukkit.entity.CraftEntity
+import org.bukkit.entity.Entity
+import org.bukkit.entity.LivingEntity
+import org.bukkit.event.entity.CreatureSpawnEvent
+import net.minecraft.world.entity.LivingEntity as NmsLivingEntity
+import net.minecraft.world.level.block.entity.BlockEntity
+import net.minecraft.world.level.block.entity.CampfireBlockEntity
+import net.minecraft.world.level.block.entity.LecternBlockEntity
 import net.minecraft.world.level.storage.TagValueInput
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
@@ -60,6 +81,16 @@ private const val STALE_MILLIS = 10 * 60_000L
 private val TIME_FORMAT: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
 
+/**
+ * Something a rollback gave back, and where it had gone: `qty` above zero was put back and is followed
+ * from `lead` to whoever holds it now; below zero it was taken back out of what `lead` had put in, which
+ * is that much of the lead's debt already settled.
+ */
+class Trace(val lead: Holder, val formId: Long, val qty: Int)
+
+/** Work on a live entity, done on its own thread once every chunk has had its turn. */
+class EntityJob(val entity: Entity, val run: (Tally) -> Unit)
+
 /** What a rollback did, or in a preview would do, counted over every chunk it touched. */
 class Tally {
     var changed = 0
@@ -68,13 +99,23 @@ class Tally {
     var slots = 0
     var missed = 0
     var failed = 0
+    var entitiesBack = 0
+    var entitiesTaken = 0
+    var entitiesReverted = 0
+    var entitiesAlready = 0
+    var entitiesGoneSince = 0
 
     // What a rollback gave back, for taking it back from whoever carried it off: positions whose block
-    // came back, slot postings with how much of each moved (put back above zero, taken out below), and
-    // the breaks the plan read there.
+    // came back, what moved in slots, the item entities that fell out of what came back, and the breaks
+    // the plan read there.
     val restored = ArrayList<WorldBlock>()
-    val returned = ArrayList<Pair<Refill, Int>>()
+    val traces = ArrayList<Trace>()
+    val piles = ArrayList<UUID>()
     val breaks = ArrayList<LedgerEntry>()
+    val jobs = ArrayList<EntityJob>()
+
+    // Players killed by those the filter names, whose drops go back to them.
+    val deaths = ArrayList<EntityRow>()
 
     @Synchronized
     fun add(other: Tally) {
@@ -84,10 +125,76 @@ class Tally {
         slots += other.slots
         missed += other.missed
         failed += other.failed
+        entitiesBack += other.entitiesBack
+        entitiesTaken += other.entitiesTaken
+        entitiesReverted += other.entitiesReverted
+        entitiesAlready += other.entitiesAlready
+        entitiesGoneSince += other.entitiesGoneSince
         restored += other.restored
-        returned += other.returned
+        traces += other.traces
+        piles += other.piles
         breaks += other.breaks
+        jobs += other.jobs
+        deaths += other.deaths
     }
+}
+
+// What a dead entity carries that a living one must not: it would die again on its first tick. And how
+// it first came into the world: a stand summoned by a command would read as summoned again, and have what
+// it holds booked to it a second time on top of what the rollback gives back.
+private val DYING = listOf(
+    "DeathTime", "HurtTime", "HurtByTimestamp", "Fire", "fire", "FallDistance", "fall_distance", "Paper.SpawnReason",
+    // Snapshots from before passengers were left out of them.
+    "Passengers",
+)
+
+// How long a campfire cooks what is put back on it: what every vanilla campfire recipe takes.
+private const val CAMPFIRE_COOK_TICKS = 600
+
+/**
+ * A block's item slots, as a rollback puts things into them and takes them out. A container is its own;
+ * a lectern keeps its book behind a container of its own, which sets the book and the lectern's state
+ * together; a campfire keeps its food in a list no container wraps, one item a slot.
+ */
+internal interface Slots {
+    val size: Int
+    fun get(slot: Int): NmsItemStack
+    fun set(slot: Int, stack: NmsItemStack)
+    fun canPlace(slot: Int, stack: NmsItemStack): Boolean
+    fun room(stack: NmsItemStack): Int
+    fun changed()
+}
+
+internal class ContainerSlots(private val container: NmsContainer) : Slots {
+    override val size: Int get() = container.containerSize
+    override fun get(slot: Int): NmsItemStack = container.getItem(slot)
+    override fun set(slot: Int, stack: NmsItemStack) = container.setItem(slot, stack)
+    override fun canPlace(slot: Int, stack: NmsItemStack) = container.canPlaceItem(slot, stack)
+    override fun room(stack: NmsItemStack) = minOf(stack.maxStackSize, container.getMaxStackSize(stack))
+    override fun changed() = container.setChanged()
+}
+
+internal class CampfireSlots(private val campfire: CampfireBlockEntity) : Slots {
+    override val size: Int get() = campfire.items.size
+    override fun get(slot: Int): NmsItemStack = campfire.items[slot]
+    override fun set(slot: Int, stack: NmsItemStack) {
+        campfire.items[slot] = stack
+        campfire.cookingProgress[slot] = 0
+        campfire.cookingTime[slot] = CAMPFIRE_COOK_TICKS
+    }
+    override fun canPlace(slot: Int, stack: NmsItemStack) = true
+    override fun room(stack: NmsItemStack) = 1
+    override fun changed() {
+        campfire.setChanged()
+        campfire.level?.sendBlockUpdated(campfire.blockPos, campfire.blockState, campfire.blockState, Block.UPDATE_ALL)
+    }
+}
+
+internal fun slotsOf(entity: BlockEntity?): Slots? = when (entity) {
+    is NmsContainer -> ContainerSlots(entity)
+    is LecternBlockEntity -> ContainerSlots(entity.bookAccess)
+    is CampfireBlockEntity -> CampfireSlots(entity)
+    else -> null
 }
 
 /**
@@ -95,34 +202,34 @@ class Tally {
  * wherever else in the same block the item fits or is found. Returns how much of it moved; the rest had
  * no room or was not there.
  */
-internal fun putBack(container: NmsContainer, slot: Int, template: NmsItemStack, qty: Int, same: (NmsItemStack) -> Boolean): Int {
-    val order = listOf(slot).filter { it < container.containerSize } + (0 until container.containerSize).filter { it != slot }
+internal fun putBack(slots: Slots, slot: Int, template: NmsItemStack, qty: Int, same: (NmsItemStack) -> Boolean): Int {
+    val order = listOf(slot).filter { it < slots.size } + (0 until slots.size).filter { it != slot }
     var left = abs(qty)
     for (i in order) {
         if (left == 0) break
-        val here = container.getItem(i)
+        val here = slots.get(i)
         if (qty > 0) {
-            val room = minOf(template.maxStackSize, container.getMaxStackSize(template))
+            val room = slots.room(template)
             if (here.isEmpty) {
                 // The slot the row names held this item once; any other has to take it.
-                if (i != slot && !container.canPlaceItem(i, template)) continue
+                if (i != slot && !slots.canPlace(i, template)) continue
                 val n = minOf(left, room)
-                container.setItem(i, template.copyWithCount(n))
+                slots.set(i, template.copyWithCount(n))
                 left -= n
             } else if (NmsItemStack.isSameItemSameComponents(here, template)) {
                 val n = minOf(left, room - here.count)
                 if (n <= 0) continue
-                container.setItem(i, here.copyWithCount(here.count + n))
+                slots.set(i, here.copyWithCount(here.count + n))
                 left -= n
             }
         } else {
             if (here.isEmpty || !same(here)) continue
             val n = minOf(left, here.count)
-            container.setItem(i, if (n == here.count) NmsItemStack.EMPTY else here.copyWithCount(here.count - n))
+            slots.set(i, if (n == here.count) NmsItemStack.EMPTY else here.copyWithCount(here.count - n))
             left -= n
         }
     }
-    container.setChanged()
+    slots.changed()
     return abs(qty) - left
 }
 
@@ -136,6 +243,10 @@ class ChunkRollback(
     private val logs: BlockLogs,
     private val placed: PlacedForms,
     private val sink: (List<Transfer>) -> Unit,
+    // The ledger's forms, from memory: nothing here may read the database.
+    private val formOf: (Long) -> ByteArray? = { null },
+    // Tells the entity capture that a removal is the rollback's own and written by it.
+    private val forget: (UUID) -> Unit = {},
 ) {
     fun run(level: ServerLevel, chunk: ChunkPlan, actor: UUID?, apply: Boolean): Tally {
         val tally = Tally()
@@ -155,7 +266,7 @@ class ChunkRollback(
             // A container standing where it stood keeps what it holds: its contents are the slot
             // postings' business, and its tag would hand back what they already give back.
             val retagged = !reshaped && back?.payloadBefore?.contentEquals(was.payload) == false &&
-                level.getBlockEntity(spots[i]) !is NmsContainer
+                slotsOf(level.getBlockEntity(spots[i])) == null
             if (!reshaped && !retagged) {
                 if (plan.steps.isNotEmpty()) tally.unchanged++
                 return@forEachIndexed
@@ -182,15 +293,15 @@ class ChunkRollback(
             for (refill in plan.refills) {
                 tally.slots++
                 if (!apply) {
-                    tally.returned += refill to refill.qty
+                    tally.traces += Trace(refill.lead, refill.formId, refill.qty)
                     continue
                 }
-                val container = level.getBlockEntity(BlockPos(refill.at.x, refill.at.y, refill.at.z)) as? NmsContainer
+                val container = slotsOf(level.getBlockEntity(BlockPos(refill.at.x, refill.at.y, refill.at.z)))
                 // What arrived in a container this rollback took away went with it, and the reading
                 // below writes it off: that is this posting given back, not one that found nothing.
                 if (container == null && refill.qty < 0 && touched[i]) {
                     givenBack += refill.posting
-                    tally.returned += refill to refill.qty
+                    tally.traces += Trace(refill.lead, refill.formId, refill.qty)
                     continue
                 }
                 val moved = if (container == null) 0 else putBack(
@@ -198,9 +309,13 @@ class ChunkRollback(
                 ) { codec.encode(it).form.contentEquals(refill.form) }
                 if (moved < abs(refill.qty)) tally.missed++
                 if (moved > 0) givenBack += refill.posting
-                if (moved > 0) tally.returned += refill to if (refill.qty > 0) moved else -moved
+                if (moved > 0) tally.traces += Trace(refill.lead, refill.formId, if (refill.qty > 0) moved else -moved)
             }
         }
+        // After the blocks, so a frame comes back to a wall that is there again.
+        for (plan in positions) for (entity in plan.entities) entity(level, entity, actor, apply, tally)
+        // What the positions that came back dropped when they were broken.
+        for (plan in positions) if (plan.at in tally.restored) tally.piles += plan.dropped
         if (!apply) return tally
         val difference = Difference(world, Cause.ROLLBACK, Cause.ROLLBACK, Cause.ROLLBACK, Kind.TRANSFER, actor, System.currentTimeMillis())
         positions.forEachIndexed { i, plan ->
@@ -212,6 +327,106 @@ class ChunkRollback(
         // Last, and after the rows: what the neighbours do now is theirs, and the capture files it.
         for (i in positions.indices) if (touched[i]) level.updateNeighboursOnBlockSet(spots[i], before[i].state)
         return tally
+    }
+
+    /**
+     * One entity, by what its oldest row in the window says it was before (SPEC-v7 §11): brought back if
+     * it went, taken away if a player brought it in, changed back or brought back to where it stood. One
+     * that is already as it should be is left alone, so a second rollback does nothing twice. A live
+     * entity may stand in another region by now, so what is done to it waits for its own thread.
+     */
+    private fun entity(level: ServerLevel, plan: EntityPlan, actor: UUID?, apply: Boolean, tally: Tally) {
+        val alive = Bukkit.getEntity(plan.uuid)?.takeIf { it.isValid }
+        when (plan.oldest.kind) {
+            EntityKind.CREATED -> {
+                if (alive == null) return run { tally.entitiesAlready++ }
+                tally.entitiesTaken++
+                if (apply) tally.jobs += EntityJob(alive) { taken -> takeAway(alive, plan, actor, taken) }
+            }
+            EntityKind.REMOVED -> {
+                if (alive != null) return run { tally.entitiesAlready++ }
+                tally.entitiesBack++
+                if (apply) bringBack(level, plan, actor, tally)
+            }
+            else -> {
+                if (alive == null) return run { tally.entitiesGoneSince++ }
+                tally.entitiesReverted++
+                if (apply) tally.jobs += EntityJob(alive) { reverted -> revert(alive, plan, actor, reverted) }
+            }
+        }
+    }
+
+    // On the region that owns the place it went from.
+    private fun bringBack(level: ServerLevel, plan: EntityPlan, actor: UUID?, tally: Tally) {
+        val tag = nbtOf(plan.before!!)
+        for (key in DYING) tag.remove(key)
+        val entity = EntityType.loadEntityRecursive(tag, level, EntitySpawnRequest(EntitySpawnReason.LOAD, true), EntityProcessor.NOP)
+        (entity as? NmsLivingEntity)?.let { it.health = it.maxHealth }
+        if (entity == null || !level.tryAddFreshEntityWithPassengers(entity, CreatureSpawnEvent.SpawnReason.CUSTOM)) {
+            tally.failed++
+            plugin.logger.warning("a rollback could not bring back ${plan.type} ${plan.uuid}")
+            return
+        }
+        slotsBack(plan, actor, tally)
+        tally.piles += plan.drops
+        filed(plan, EntityKind.CREATED, actor)
+    }
+
+    // On the entity's own thread. Its slots go with it, and the capture writes them off as it does for
+    // any entity taken out of the world.
+    private fun takeAway(entity: Entity, plan: EntityPlan, actor: UUID?, tally: Tally) {
+        if (!entity.isValid) return
+        val before = snapshotOf((entity as CraftEntity).handle)
+        forget(entity.uniqueId)
+        entity.remove()
+        filed(plan, EntityKind.REMOVED, actor, before = before)
+    }
+
+    // On the entity's own thread: what a hand changed goes back, and a mob led away goes back to where it
+    // stood. What changes by itself stays as it is now.
+    private fun revert(entity: Entity, plan: EntityPlan, actor: UUID?, tally: Tally) {
+        if (!entity.isValid) return
+        val handle = (entity as CraftEntity).handle
+        val now = snapshotOf(handle) ?: return
+        val before = nbtOf(plan.before!!)
+        if (plan.oldest.kind == EntityKind.MOVED) {
+            val pos = before.getListOrEmpty("Pos")
+            entity.leaveVehicle()
+            (entity as? LivingEntity)?.setLeashHolder(null)
+            if (pos.size == 3) {
+                entity.teleportAsync(Location(entity.world, pos.getDoubleOr(0, 0.0), pos.getDoubleOr(1, 0.0), pos.getDoubleOr(2, 0.0)))
+            }
+            filed(plan, EntityKind.MOVED, actor, before = now)
+            return
+        }
+        val merged = nbtOf(now)
+        for (key in before.keySet()) if (key !in VOLATILE) merged.put(key, before.get(key)!!.copy())
+        for (key in merged.keySet().toList()) if (key !in VOLATILE && !before.contains(key)) merged.remove(key)
+        handle.load(TagValueInput.create(ProblemReporter.DISCARDING, handle.registryAccess(), merged))
+        slotsBack(plan, actor, tally)
+        filed(plan, EntityKind.CHANGED, actor, before = now, after = snapshotOf(handle))
+    }
+
+    // What the entity's own slots did after the moment it went back to: the NBT already holds them as
+    // they were, so here they are only written, and what left is followed to whoever has it.
+    private fun slotsBack(plan: EntityPlan, actor: UUID?, tally: Tally) {
+        val now = System.currentTimeMillis()
+        val moves = plan.slots.mapNotNull { posting ->
+            val form = formOf(posting.itemFormId) ?: return@mapNotNull null
+            val qty = -posting.qty
+            tally.traces += Trace(posting.counterparty, posting.itemFormId, qty)
+            Transfer(
+                Cause.ROLLBACK, if (qty > 0) Void else posting.holder, if (qty > 0) posting.holder else Void,
+                form, posting.damage, kotlin.math.abs(qty), now, actor = actor, reverts = listOf(posting.ref),
+            )
+        }
+        if (moves.isNotEmpty()) sink(moves)
+    }
+
+    private fun filed(plan: EntityPlan, kind: EntityKind, actor: UUID?, before: ByteArray? = null, after: ByteArray? = null) {
+        logs.get(plan.at.world)?.submit(
+            listOf(EntityChange(plan.at.x, plan.at.y, plan.at.z, kind, Cause.ROLLBACK, plan.type, plan.uuid, actor = actor, before = before, after = after))
+        )
     }
 
     private fun restored(tally: Tally, plan: PositionPlan) {
@@ -314,7 +529,7 @@ class Rollbacks(
                 val readings = if (query.global) {
                     everywhere(users, from, now, keeps)
                 } else {
-                    listOf(reader.around(target.world, target.x, target.y, target.z, query.radius!!, from, now, keeps::keeps, keeps::keeps))
+                    listOf(reader.around(target.world, target.x, target.y, target.z, query.radius!!, from, now, keeps::keeps, keeps::keeps, keeps::keeps))
                 }
                 val where = if (query.global) "everything ${query.users.joinToString(", ")} did since $since"
                 else "${query.radius} blocks around ${target.label} since $since"
@@ -344,7 +559,7 @@ class Rollbacks(
     private fun everywhere(users: Set<UUID>, from: Long, now: Long, keeps: RowFilter): List<Reading> {
         val touched = reader.touchedBy(users, from, now)
             ?: return listOf(Refused("those players did more in that window than one rollback reads; narrow the time"))
-        return touched.map { (world, positions) -> reader.at(world, positions, from, now, keeps::keeps, keeps::keeps) }
+        return touched.map { (world, positions) -> reader.at(world, positions, from, now, keeps::keeps, keeps::keeps, keeps::keeps) }
     }
 
     private fun dispatch(
@@ -358,13 +573,16 @@ class Rollbacks(
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
         val read = "${plans.sumOf { it.rows }} block rows, ${plans.sumOf { it.postings }} slot rows read"
-        if (work.isEmpty()) {
+        if (work.isEmpty() && plans.all { it.deaths.isEmpty() }) {
             sender.sendMessage("Nothing to roll back: $where.")
             release()
             return
         }
         val actor = (sender as? Player)?.uniqueId
         val total = Tally()
+        total.deaths += plans.flatMap { it.deaths }
+        // Only deaths to give back for, and no place to touch: straight on to them.
+        if (work.isEmpty()) return finishing(sender, total, read, where, apply, actor, global, release)
         val left = AtomicInteger(work.size)
         for ((level, chunk) in work) {
             // A chunk's neighbours are loaded with it, so a block on its edge can tell them it changed.
@@ -377,19 +595,42 @@ class Rollbacks(
                     plugin.logger.log(Level.SEVERE, "a rollback chunk at ${chunk.chunkX} ${chunk.chunkZ} failed", failure)
                     total.add(Tally().apply { failed = chunk.positions.size })
                 } finally {
-                    // Following what was given back to whoever holds it reads the ledger, which the
-                    // region thread may not.
-                    if (left.decrementAndGet() == 0) Bukkit.getAsyncScheduler().runNow(plugin) {
-                        try {
-                            finish(sender, total, read, where, apply, actor, global)
-                        } catch (failure: Throwable) {
-                            plugin.logger.log(Level.SEVERE, "taking back what the rollback at $where gave back failed", failure)
-                            sender.sendMessage("Taking back what the rollback gave back failed; the server log has the details.")
-                        } finally {
-                            release()
-                        }
-                    }
+                    if (left.decrementAndGet() == 0) entityJobs(total) { finishing(sender, total, read, where, apply, actor, global, release) }
                 }
+            }
+        }
+    }
+
+    // Live entities are worked on their own threads once every chunk is done; the rest waits for them.
+    private fun entityJobs(total: Tally, then: () -> Unit) {
+        val jobs = synchronized(total) { total.jobs.toList() }
+        if (jobs.isEmpty()) return then()
+        val left = AtomicInteger(jobs.size)
+        val done = { if (left.decrementAndGet() == 0) then() }
+        for (job in jobs) {
+            job.entity.scheduler.run(plugin, {
+                try {
+                    job.run(total)
+                } catch (failure: Throwable) {
+                    plugin.logger.log(Level.SEVERE, "a rollback could not change ${job.entity.uniqueId}", failure)
+                    synchronized(total) { total.failed++ }
+                } finally {
+                    done()
+                }
+            }, done) ?: done()
+        }
+    }
+
+    // Following what was given back to whoever holds it reads the ledger, which a region thread may not.
+    private fun finishing(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, global: Boolean, release: () -> Unit) {
+        Bukkit.getAsyncScheduler().runNow(plugin) {
+            try {
+                finish(sender, total, read, where, apply, actor, global)
+            } catch (failure: Throwable) {
+                plugin.logger.log(Level.SEVERE, "taking back what the rollback at $where gave back failed", failure)
+                sender.sendMessage("Taking back what the rollback gave back failed; the server log has the details.")
+            } finally {
+                release()
             }
         }
     }
@@ -397,6 +638,14 @@ class Rollbacks(
     private fun finish(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, global: Boolean) {
         val owed = confiscations.owedFor(total)
         report(sender, total, read, where, apply, global)
+        // A killed player gets back what fell out of them, wherever it went.
+        for (death in total.deaths.distinctBy { it.eventId to it.uuid }) {
+            val back = restitutionFor(ledger, death)
+            if (back.isEmpty()) continue
+            val victim = Bukkit.getOfflinePlayer(death.uuid).name ?: death.uuid.toString()
+            sender.sendMessage("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
+            if (apply) confiscations.restore(death.uuid, back, actor, sender, pileBirths(ledger, death).values.flatten())
+        }
         if (owed.isEmpty()) return
         val whom = confiscations.describe(owed)
         if (!apply) {
@@ -411,14 +660,19 @@ class Rollbacks(
         val blocks = "${total.changed} blocks ${if (apply) "put back" else "would change"}, " +
             "${total.unchanged} already as they were, ${total.conflicts} stopped by a later change"
         val slots = "${total.slots} slot postings ${if (apply) "given back" else "to give back"}"
+        val entities = "${total.entitiesBack} entities ${if (apply) "brought back" else "to bring back"}, " +
+            "${total.entitiesTaken} ${if (apply) "taken away" else "to take away"}, " +
+            "${total.entitiesReverted} ${if (apply) "changed back" else "to change back"}, " +
+            "${total.entitiesAlready} already as they were"
         if (!apply) {
-            sender.sendMessage("Rollback preview for $where: $blocks; $slots ($read).")
+            sender.sendMessage("Rollback preview for $where: $blocks; $slots; $entities ($read).")
             // A world-wide lookup has no index to read by, so it cannot show the rows of a global one.
             val rows = if (global) "" else "; /pp lookup with the same words shows the rows"
             sender.sendMessage("  /pp apply within 5 minutes runs it, /pp cancel drops it$rows.")
             return
         }
-        sender.sendMessage("Rolled back $where: $blocks; $slots.")
+        sender.sendMessage("Rolled back $where: $blocks; $slots; $entities.")
+        if (total.entitiesGoneSince > 0) sender.sendMessage("  ${total.entitiesGoneSince} entities to change back are gone since.")
         if (total.missed > 0) sender.sendMessage("  ${total.missed} slot postings found no room or nothing left to take out.")
         if (total.failed > 0) sender.sendMessage("  ${total.failed} positions failed; the server log has the details.")
     }

@@ -42,6 +42,7 @@ Packages under `io.pfaumc.pfauprotect`; tests sit in the package of the code the
 | `storage` | both RocksDB stores, codecs, registries, item forms |
 | `capture.item` | item movements: windows and the recompute pass, intents, entities, commands |
 | `capture.block` | block changes, mechanisms, `TickCoalescer` |
+| `capture.entity` | the entity plane's capture: entities removed (full NBT), created, changed or led away by a player, players killed |
 | `attribution` | the culprit ladder, entity origins, redstone energy (phase 5.7) |
 | `check` | plane sync and reconciliation |
 | `command` | `/pp lookup` and inspect |
@@ -87,7 +88,10 @@ again and runs it, a chunk per region task. It writes compensating rows (`Cause.
 edits old ones. A rollback's own rows are only rolled back when `action:rollback` names them, which is also how a
 rollback is undone. What it put back is then taken back from whoever carried it off (`Confiscation.kt`): from an
 online player through an `Intent`, from an offline one at their next join, from a pile still lying where it lies.
-`radius:global` with `user:` finds a player's positions through `by_actor` and their own item rows.
+`radius:global` with `user:` finds a player's positions through `by_actor` and their own item rows. Entities go
+back to what their oldest row in the window says they were (brought back from NBT with the same UUID, taken away,
+changed back, returned to where they stood), and a player killed by the one rolled back gets back what fell out of
+them.
 
 ## Invariants
 
@@ -96,7 +100,9 @@ online player through an `Intent`, from an offline one at their next join, from 
 - Bump `SCHEMA_VERSION` (`Storage.kt`) or `BLOCK_SCHEMA_VERSION` (`BlockStore.kt`) when a key layout, the CF set
   or the meaning of stored numbers changes.
 - Folia threading: touch world and player state only on the owning region thread (entity/region schedulers). Do
-  RocksDB I/O off it, never on a region thread.
+  RocksDB I/O off it, never on a region thread. One exception: `Attribution.journalRemoverAt` reads the
+  newest block row at a position on the region thread, once per hanging entity that falls, because who
+  emptied its wall has to be known as it falls and the tracker note is gone by then.
 - `onDisable` closes the per-world databases before the ledger.
 
 ## Specs (`.planning/`)
@@ -116,9 +122,16 @@ online player through an `Intent`, from an offline one at their next join, from 
 - SPEC-v4 §15 records how phase 4 was actually built and overrides §3–§13. Window slots are booked to
   their real owner: the crafting grid to the player (`EntitySlot`), a station to its block (`Container`).
   `MenuSlot` is left only for ownerless GUIs.
-- SPEC-v6 is rollback: 6.1 an area by the lookup's filters, 6.2 taking back what was carried off, 6.3 the
-  actor index and a player's rollback without a radius. §13 records how each phase was built.
-- TESTING-v6 is the live plan for SPEC-v6, with a player; the console-only checks are already in SPEC-v6 §13.
+- SPEC-v6 records what a rollback needs beyond blocks and items: an entity plane (`entities` in each world
+  base: entities removed with their full NBT, created by a player, changed or led away by one (a boat or a
+  cart ridden off included), and the item entities that fell out of a break or a death), and the slots of
+  a lectern and a campfire.
+- SPEC-v7 is rollback: 7.1 an area by the lookup's filters, 7.2 taking back what was carried off, 7.3 the
+  actor index and a player's rollback without a radius, 7.4–7.7 rolling back everything SPEC-v6 records.
+  §14 records how each phase was built.
+- TESTING-v6 is the live run for SPEC-v6, closed on 2026-10-03. TESTING-v6-RESULTS holds it, with the
+  D51–D57 defects and their fixes.
+- TESTING-v7 is the live plan for SPEC-v7, with a player; the console-only checks are already in SPEC-v7 §14.
 - PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
 - TESTING-v5 is the live run for SPEC-v5, closed on 2026-10-03. TESTING-v5-RESULTS holds it: the D17–D50

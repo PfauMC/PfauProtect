@@ -32,7 +32,11 @@ import org.bukkit.Bukkit
 import org.bukkit.plugin.Plugin
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import net.minecraft.world.level.block.entity.BlockEntity
+import net.minecraft.world.level.block.entity.CampfireBlockEntity
+import net.minecraft.world.level.block.entity.LecternBlockEntity
 import net.minecraft.world.Container as NmsContainer
+import net.minecraft.world.item.ItemStack as NmsItemStack
 import net.minecraft.world.level.block.state.BlockState as NmsBlockState
 
 // The commands that rewrite blocks. `/data`, `/item` and `/loot` are not registered on Canvas at all.
@@ -84,13 +88,22 @@ internal class Area(
 // What stood at one position: the state, and for a block entity the whole tag and what it held.
 internal class Standing(val state: NmsBlockState, val payload: ByteArray?, val contents: List<Pair<ItemKey, Int>?>?)
 
+/**
+ * What a block entity holds, slot by slot, wherever it keeps it: a container holds its own items, a
+ * lectern keeps its book behind a container of its own, and a campfire keeps what cooks on it in a list
+ * no container wraps. The item plane books all of them to the block as `Container` slots.
+ */
+internal fun heldStacks(entity: BlockEntity?): List<NmsItemStack>? = when (entity) {
+    is NmsContainer -> List(entity.containerSize) { entity.getItem(it) }
+    is LecternBlockEntity -> List(entity.bookAccess.containerSize) { entity.bookAccess.getItem(it) }
+    is CampfireBlockEntity -> entity.items.toList()
+    else -> null
+}
+
 internal fun standingAt(level: ServerLevel, pos: BlockPos, codec: ItemFormCodec): Standing {
     val entity = level.getBlockEntity(pos)
-    val contents = (entity as? NmsContainer)?.let { container ->
-        (0 until container.containerSize).map { slot ->
-            val stack = container.getItem(slot)
-            if (stack.isEmpty) null else codec.encode(stack).let { it.key to it.count }
-        }
+    val contents = heldStacks(entity)?.map { stack ->
+        if (stack.isEmpty) null else codec.encode(stack).let { it.key to it.count }
     }
     return Standing(level.getBlockState(pos), payloadOf(entity, level.registryAccess()), contents)
 }

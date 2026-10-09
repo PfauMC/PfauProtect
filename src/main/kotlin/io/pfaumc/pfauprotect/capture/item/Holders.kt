@@ -272,7 +272,7 @@ class HolderListener(
         val actor = (event.attacker as? Player)?.uniqueId
         for ((slot, stack) in contents.withIndex()) {
             val encoded = codec.encodeOrNull(stack) ?: continue
-            origins.expect(EntitySlot(vehicle.uniqueId, slot), Cause.CONTAINER_BREAK_DROP, encoded.key, spot, encoded.count, actor)
+            origins.expect(EntitySlot(vehicle.uniqueId, slot), Cause.CONTAINER_BREAK_DROP, encoded.key, spot, encoded.count, actor, tag = vehicle.uniqueId)
         }
     }
 

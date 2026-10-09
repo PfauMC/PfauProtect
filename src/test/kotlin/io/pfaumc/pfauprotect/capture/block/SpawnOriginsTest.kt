@@ -42,6 +42,27 @@ class SpawnOriginsTest {
         assertEquals(1, row.qty)
     }
 
+    // A dead cow drops beef and leather into two piles; its row has to name both, and only once, and a
+    // pile that came out of something else nearby is not among them.
+    @Test
+    fun `the items that came out of an event are named under it once`() {
+        val cow = UUID.randomUUID()
+        val beef = UUID.randomUUID()
+        val leather = UUID.randomUUID()
+        val stranger = UUID.randomUUID()
+        val leatherKey = ItemKey("leather".toByteArray(), null)
+        origins.expect(Void, Cause.MOB_DROP, stone, at, 1, tag = cow)
+        origins.expect(Void, Cause.MOB_DROP, leatherKey, at, 1, tag = cow)
+        origins.expect(dropper, Cause.DROPPER_EJECT, honeycomb, at, 1)
+
+        origins.claim(beef, at, stone, 1)
+        origins.claim(leather, at, leatherKey, 1)
+        origins.claim(stranger, at, honeycomb, 1)
+
+        assertEquals(setOf(beef, leather), origins.droppedFor(cow).toSet())
+        assertTrue(origins.droppedFor(cow).isEmpty(), "taken once")
+    }
+
     // A villager's harvest falls in another count than the roll the note was made from: the note takes
     // the whole stack, and an exact note at the same spot is served first.
     @Test

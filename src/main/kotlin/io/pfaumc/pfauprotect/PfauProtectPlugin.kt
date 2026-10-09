@@ -13,6 +13,7 @@ import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.HandTouches
 import io.papermc.paper.command.brigadier.ApiMirrorRootNode
 import io.pfaumc.pfauprotect.capture.block.CommandBrackets
+import io.pfaumc.pfauprotect.capture.entity.EntityCapture
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.capture.block.BlockMechanismListener
 import io.pfaumc.pfauprotect.model.Cause
@@ -204,10 +205,17 @@ class PfauProtectPlugin : JavaPlugin() {
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
         // the way back down.
         val worldItems = WorldItemListener(codec, mechanisms, origins, capture, attribution, entities)
-        val confiscations = Confiscations(this, ledger, codec, capture, worldItems, uncovered::submit)
-        val rollbacks = Rollbacks(
-            this, ledger, blocks, lookups, ChunkRollback(this, codec, blocks, ledger, uncovered::submit), confiscations,
+        val entityCapture = EntityCapture(
+            blocks, origins, attribution, entities,
+            later = { at, task -> server.regionScheduler.run(this, at) { task() } },
+            // A null task means the entity was gone before it could be scheduled, and neither ever runs.
+            laterOn = { entity, task, retired -> entity.scheduler.run(this, { task() }, retired) ?: retired() },
         )
+        val confiscations = Confiscations(this, ledger, codec, capture, worldItems, uncovered::submit)
+        val chunkRollback = ChunkRollback(
+            this, codec, blocks, ledger, uncovered::submit, formOf = ledger::form, forget = entityCapture::forget,
+        )
+        val rollbacks = Rollbacks(this, ledger, blocks, lookups, chunkRollback, confiscations)
         val running = Running(
             ledger, blocks, attribution, uncovered, codec, capture, destruction, mechanisms, origins,
             lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks), rollbacks,
@@ -228,6 +236,9 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(destruction, this)
         server.pluginManager.registerEvents(EntityOriginListener(attribution, entities), this)
         server.pluginManager.registerEvents(RedstoneListener(energy, blocks, entities, nudges), this)
+        // After the attribution of entities, whose notes it reads for who brought a mob in, and before the
+        // item capture, which takes the marks off a dying mob's slots that its snapshot has to keep.
+        server.pluginManager.registerEvents(entityCapture, this)
         server.pluginManager.registerEvents(capture, this)
         server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
         server.pluginManager.registerEvents(ProjectileListener(capture, codec, mechanisms, origins), this)

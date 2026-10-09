@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.storage
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
+import io.pfaumc.pfauprotect.model.EntityKind
 import org.rocksdb.BloomFilter
 import org.rocksdb.ColumnFamilyDescriptor
 import org.rocksdb.ColumnFamilyHandle
@@ -24,22 +25,50 @@ import java.util.logging.Level
 import kotlin.concurrent.read
 import kotlin.concurrent.write
 
+// What a world's base takes in one submission: changes to blocks, and to the entities standing among them.
+sealed interface WorldChange {
+    val x: Int
+    val y: Int
+    val z: Int
+    val actor: UUID?
+}
+
+/**
+ * What became of one entity, filed at the block position it stood in. `before` and `after` are its
+ * whole NBT, kept byte for byte in the shared payload table; `drops` the item entities that fell out of it.
+ */
+data class EntityChange(
+    override val x: Int,
+    override val y: Int,
+    override val z: Int,
+    val kind: EntityKind,
+    val cause: Cause,
+    val type: String,
+    val uuid: UUID,
+    val timestamp: Long = System.currentTimeMillis(),
+    val confidence: Confidence = Confidence.FACT,
+    override val actor: UUID? = null,
+    val before: ByteArray? = null,
+    val after: ByteArray? = null,
+    val drops: List<UUID> = emptyList(),
+) : WorldChange
+
 // Both sides are nullable so that a capture which only learned one of them says so and is refused,
 // rather than filing air for the side it never saw.
 data class BlockChange(
-    val x: Int,
-    val y: Int,
-    val z: Int,
+    override val x: Int,
+    override val y: Int,
+    override val z: Int,
     val before: String?,
     val after: String?,
     val cause: Cause,
     val timestamp: Long = System.currentTimeMillis(),
     val confidence: Confidence = Confidence.FACT,
     val alongside: Boolean = false,
-    val actor: UUID? = null,
+    override val actor: UUID? = null,
     val payloadBefore: ByteArray? = null,
     val payloadAfter: ByteArray? = null,
-)
+) : WorldChange
 
 // What stands at a position, with `row` null where the position has no history at all. `torn` marks
 // an answer nothing may be concluded from: the newest row of the position did not decode, so the row
@@ -50,7 +79,9 @@ data class BlockStanding(val row: BlockRow?, val torn: Boolean)
 // What a rollback reads: every row of the window, how many rows the walk could not read, and whether
 // it ran out of budget first. A rollback that went ahead over less than all of it would put back part
 // of a place and report it done.
-data class BlockWindow(val rows: List<BlockRow>, val unreadable: Int, val complete: Boolean, val walked: Int)
+data class Window<T>(val rows: List<T>, val unreadable: Int, val complete: Boolean, val walked: Int)
+
+typealias BlockWindow = Window<BlockRow>
 
 // The positions an actor's rows stand at in a window, and whether the walk got to its end.
 data class ActorTouches(val positions: Set<List<Int>>, val complete: Boolean)
@@ -60,9 +91,11 @@ data class ActorTouches(val positions: Set<List<Int>>, val complete: Boolean)
 // opens and every key is parsed as something it never was.
 //
 // Version 2 adds the index of rows by actor. A version 1 base is the same base with the index still to
-// build, and it is built from its rows the first time it opens.
-private const val BLOCK_SCHEMA_VERSION = 2L
+// build, and it is built from its rows the first time it opens. Version 3 adds the entity plane, which an
+// older base simply has none of yet.
+private const val BLOCK_SCHEMA_VERSION = 3L
 private const val INDEXED_FROM = 1L
+private const val WITHOUT_ENTITIES = 2L
 
 // How many index rows a base being indexed for the first time writes per batch.
 private const val INDEX_BATCH = 10_000
@@ -73,6 +106,7 @@ private val NOTHING = ByteArray(0)
 private val ROWS_CF = "rows".toByteArray()
 private val BLOCK_META_CF = "meta".toByteArray()
 private val BY_ACTOR_CF = "by_actor".toByteArray()
+private val ENTITIES_CF = "entities".toByteArray()
 
 private val META_SCHEMA_KEY = "schema".toByteArray()
 private val META_EVENT_ID = "event_id".toByteArray()
@@ -97,7 +131,7 @@ private fun lastUnder(prefix: ByteArray): ByteArray =
 class BlockLog(
     dir: Path,
     private val shared: RocksItemLog,
-    // Shown every list the log accepts, on the thread that submitted it.
+    // Shown every list of block changes the log accepts, on the thread that submitted it.
     private val watch: (List<BlockChange>) -> Unit = {},
 ) : AutoCloseable {
     // The ledger's cache and memtable budget, so a world loaded is not another bound of its own.
@@ -136,7 +170,10 @@ class BlockLog(
     // ends to file it under, so without this "everything this player did" is a walk of the whole world.
     private val byActorCf: ColumnFamilyHandle
 
-    private val queue = LinkedBlockingQueue<List<BlockChange>>()
+    // What became of the entities of this world, keyed as the block rows are.
+    private val entitiesCf: ColumnFamilyHandle
+
+    private val queue = LinkedBlockingQueue<List<WorldChange>>()
     private val submitted = AtomicLong()
     private val written = AtomicLong()
 
@@ -163,7 +200,7 @@ class BlockLog(
         // at all. A database refused for its schema has to be left exactly as it was found.
         val stored = try {
             storedSchema(path)?.also {
-                require(it == BLOCK_SCHEMA_VERSION || it == INDEXED_FROM) {
+                require(it == BLOCK_SCHEMA_VERSION || it == INDEXED_FROM || it == WITHOUT_ENTITIES) {
                     "block database schema $it cannot be read by this build (schema $BLOCK_SCHEMA_VERSION)"
                 }
             }
@@ -176,6 +213,7 @@ class BlockLog(
             ROWS_CF to rowsOptions,
             BLOCK_META_CF to metaOptions,
             BY_ACTOR_CF to byActorOptions,
+            ENTITIES_CF to rowsOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
         // A stale lock file or a truncated manifest fails the open, and the options, the cache and the
         // filter behind it answer to nothing afterwards: the bindings free no native memory on their
@@ -189,6 +227,7 @@ class BlockLog(
         rowsCf = cfHandles[1]
         metaCf = cfHandles[2]
         byActorCf = cfHandles[3]
+        entitiesCf = cfHandles[4]
 
         // Nothing outside reaches a constructor that threw, so a failure here would hold the file
         // lock and the native memory until the process ends and no later open could succeed.
@@ -290,7 +329,7 @@ class BlockLog(
      * A change missing either side is refused and dropped on its own; the rest of the list is
      * written. False means the log took nothing and the caller still holds the only copy.
      */
-    fun submit(changes: List<BlockChange>): Boolean {
+    fun submit(changes: List<WorldChange>): Boolean {
         // Not `closed`: that is only set once the writer has been joined, and from the moment the
         // writer stops there is nobody left to take the queue. A change accepted in between would be
         // counted as submitted, sit in the queue and never be written, and `drain` would not wait for
@@ -298,7 +337,8 @@ class BlockLog(
         if (!running || closed || writerFailure != null || changes.isEmpty()) return false
         submitted.incrementAndGet()
         queue.add(changes)
-        watch(changes)
+        val blocks = changes.filterIsInstance<BlockChange>()
+        if (blocks.isNotEmpty()) watch(blocks)
         return true
     }
 
@@ -364,37 +404,60 @@ class BlockLog(
         toTs: Long,
         budget: Int,
         within: (Int, Int, Int) -> Boolean,
-    ): BlockWindow = window(Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within)
+    ): BlockWindow = window(rowsCf, Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within, ::blockRow)
 
     fun windowAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): BlockWindow =
-        window(BlockCodec.positionPrefix(x, y, z), fromTs, toTs, budget) { _, _, _ -> true }
+        window(rowsCf, BlockCodec.positionPrefix(x, y, z), fromTs, toTs, budget, { _, _, _ -> true }, ::blockRow)
 
-    private fun window(
+    /** The entity plane's rows of a chunk, read the way `windowInChunk` reads the block plane's. */
+    fun entitiesInChunk(
+        chunkX: Int,
+        chunkZ: Int,
+        fromTs: Long,
+        toTs: Long,
+        budget: Int,
+        within: (Int, Int, Int) -> Boolean,
+    ): Window<EntityRow> = window(entitiesCf, Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within, ::entityRow)
+
+    fun entitiesAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): Window<EntityRow> =
+        window(entitiesCf, BlockCodec.positionPrefix(x, y, z), fromTs, toTs, budget, { _, _, _ -> true }, ::entityRow)
+
+    private fun blockRow(key: ByteArray, value: ByteArray): BlockRow? = BlockCodec.decodeOrNull(key, value, shared.registries)
+
+    private fun entityRow(key: ByteArray, value: ByteArray): EntityRow? =
+        EntityCodec.decodeOrNull(key, value, shared.registries) { shared.registries.keyOf(RegistryNamespace.ENTITY_TYPE, it) }
+
+    private fun <T> window(
+        cf: ColumnFamilyHandle,
         prefix: ByteArray,
         fromTs: Long,
         toTs: Long,
         budget: Int,
         within: (Int, Int, Int) -> Boolean,
-    ): BlockWindow = dbLock.read {
-        if (closed) return BlockWindow(emptyList(), 0, false, 0)
-        val rows = ArrayList<BlockRow>()
+        decode: (ByteArray, ByteArray) -> T?,
+    ): Window<T> = dbLock.read {
+        if (closed) return Window(emptyList(), 0, false, 0)
+        val rows = ArrayList<T>()
         var unreadable = 0
         var walked = 0
         var complete = true
-        forEachUnder(prefix, reverse = false) { key, value ->
+        forEachUnder(prefix, reverse = false, cf) { key, value ->
             if (walked >= budget) {
                 complete = false
                 return@forEachUnder false
             }
             walked++
-            val row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            val row = decode(key, value)
+            // The key alone says where and when, so a window and a box are asked of it, decoded or not.
+            val at = if (key.size >= BlockCodec.KEY_SIZE) Zcode.decode(key) else null
+            val ts = if (at != null) ByteReader(key).also { it.bytes(Zcode.SIZE) }.longBE() else null
             when {
                 row == null -> unreadable++
-                row.timestamp in fromTs..toTs && within(row.x, row.y, row.z) -> rows += row
+                ts != null && ts in fromTs..toTs && within(at!![0], at[1], at[2]) -> rows += row
             }
             true
         }
-        BlockWindow(rows, unreadable, complete, walked)
+        Window(rows, unreadable, complete, walked)
     }
 
     /**
@@ -457,6 +520,7 @@ class BlockLog(
     private inline fun forEachUnder(
         prefix: ByteArray,
         reverse: Boolean,
+        cf: ColumnFamilyHandle = rowsCf,
         action: (ByteArray, ByteArray) -> Boolean,
     ) {
         val lower = Slice(prefix)
@@ -473,7 +537,7 @@ class BlockLog(
                 // keeps the extractor bytes it shares with its own bound and stays in it.
                 .setTotalOrderSeek(prefix.size <= Zcode.CHUNK_PREFIX_SIZE)
                 .use { options ->
-                    db.newIterator(rowsCf, options).use { iter ->
+                    db.newIterator(cf, options).use { iter ->
                         if (reverse) iter.seekForPrev(lastUnder(prefix)) else iter.seekToFirst()
                         while (iter.isValid) {
                             if (!action(iter.key(), iter.value())) return
@@ -494,7 +558,7 @@ class BlockLog(
                 val first = queue.poll(WRITER_POLL_MILLIS, TimeUnit.MILLISECONDS)
                 if (first == null && !running) return
                 if (first != null) {
-                    val batched = ArrayList<List<BlockChange>>(MAX_BATCH)
+                    val batched = ArrayList<List<WorldChange>>(MAX_BATCH)
                     batched += first
                     queue.drainTo(batched, MAX_BATCH - 1)
                     writeAll(batched)
@@ -519,7 +583,7 @@ class BlockLog(
     // One change that cannot be written is a bug in the capture; every change after it is not.
     // Letting the first one stop the writer turns a single bad row into a history that silently
     // records nothing for the rest of the session.
-    private fun writeAll(submissions: List<List<BlockChange>>) {
+    private fun writeAll(submissions: List<List<WorldChange>>) {
         WriteBatch().use { batch ->
             // Nothing in the batch is readable until it is written, so a position this batch already
             // holds a row for can only be clamped against what is remembered here.
@@ -535,7 +599,10 @@ class BlockLog(
                     batch.setSavePoint()
                     try {
                         val ordinal = seen.merge(Triple(change.x, change.y, change.z), 0) { old, _ -> old + 1 }!!
-                        writeChange(batch, change, eventId, ordinal, batchTs)
+                        when (change) {
+                            is BlockChange -> writeChange(batch, change, eventId, ordinal, batchTs)
+                            is EntityChange -> writeEntity(batch, change, eventId, ordinal)
+                        }
                     } catch (failure: Exception) {
                         batch.rollbackToSavePoint()
                         LOGGER.log(Level.SEVERE, "a block change could not be written and was dropped", failure)
@@ -544,6 +611,26 @@ class BlockLog(
             }
             batch.put(metaCf, META_LAST_TS, longBytes(lastTs))
             db.write(writeOptions, batch)
+        }
+    }
+
+    // An entity row is not a state of its position, so it needs none of the clamping a block row does:
+    // two rows of one position order by their event, and the key keeps them apart by it.
+    private fun writeEntity(batch: WriteBatch, change: EntityChange, eventId: Long, ordinal: Int) {
+        val row = EntityRow(
+            x = change.x, y = change.y, z = change.z,
+            timestamp = change.timestamp, eventId = eventId, ordinal = ordinal,
+            kind = change.kind, cause = change.cause, type = change.type, uuid = change.uuid,
+            confidence = change.confidence, actor = change.actor,
+            payloadBefore = change.before?.let { shared.payloads.idOf(it) },
+            payloadAfter = change.after?.let { shared.payloads.idOf(it) },
+            drops = change.drops,
+        )
+        val key = BlockCodec.key(change.x, change.y, change.z, change.timestamp, eventId, ordinal)
+        val type = shared.registries.idForKey(RegistryNamespace.ENTITY_TYPE, change.type)
+        batch.put(entitiesCf, key, EntityCodec.value(row, shared.registries, type))
+        change.actor?.let { actor ->
+            batch.put(byActorCf, actorKey(shared.registries.id(RegistryNamespace.PLAYER, actor), key), NOTHING)
         }
     }
 
