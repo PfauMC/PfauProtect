@@ -18,6 +18,7 @@ import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
+import org.bukkit.block.ShulkerBox
 import org.bukkit.block.data.BlockData
 import org.bukkit.block.data.Directional
 import org.bukkit.block.data.type.Bed
@@ -26,12 +27,14 @@ import org.bukkit.block.data.type.TechnicalPiston
 import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.craftbukkit.block.CraftBlock
 import org.bukkit.craftbukkit.block.data.CraftBlockData
+import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.craftbukkit.inventory.CraftItemType
 import org.bukkit.entity.Creeper
 import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.FallingBlock
 import org.bukkit.entity.Player
+import org.bukkit.entity.Projectile
 import org.bukkit.entity.TNTPrimed
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -45,7 +48,6 @@ import org.bukkit.event.block.BlockFromToEvent
 import org.bukkit.event.block.BlockGrowEvent
 import org.bukkit.event.block.BlockIgniteEvent
 import org.bukkit.event.block.BlockPhysicsEvent
-import org.bukkit.event.block.BlockPistonEvent
 import org.bukkit.event.block.BlockPistonExtendEvent
 import org.bukkit.event.block.BlockPistonRetractEvent
 import org.bukkit.event.block.BlockSpreadEvent
@@ -110,11 +112,20 @@ internal fun expectDrops(
     block: Block,
     cause: Cause,
     actor: UUID?,
+    // The name a shulker box's contents were packed under. The box that falls out has to carry it, and
+    // the name is part of its form, so the drop is expected under the named form and the entity is
+    // named the same way before its spawn reads it.
+    boxOwner: UUID? = null,
 ) {
     val spot = spotOf(block.location)
     for (drop in block.drops) {
-        val key = codec.encodeOrNull(drop)?.key ?: continue
-        origins.expect(Void, cause, key, spot, drop.amount, actor)
+        val stack = CraftItemStack.asNMSCopy(drop)
+        if (stack.isEmpty) continue
+        if (boxOwner != null && NestedItems.isShulkerBox(stack)) {
+            origins.expectBox(stack, boxOwner, spot)
+            NestedItems.mark(stack, boxOwner)
+        }
+        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor)
     }
 }
 
@@ -159,8 +170,14 @@ internal fun explosionCause(exploded: String): Cause = when {
 internal fun litBy(source: Entity): Player? = when (source) {
     is TNTPrimed -> source.source as? Player
     is Creeper -> source.igniter as? Player
+    // A fireball a player hit back is theirs from then on.
+    is Projectile -> source.shooter as? Player
     else -> null
 }
+
+// A skull a wither fires is a projectile with no origin of its own, so it is the wither behind it that
+// the summoner rung has to ask about.
+internal fun firedBy(source: Entity): Entity = (source as? Projectile)?.shooter as? Entity ?: source
 
 /**
  * An entity changing a block. Null for the two that belong to somebody else: a player using a shovel,
@@ -233,7 +250,7 @@ internal fun bucketPlaced(bucket: Material, target: NmsBlockState): String? {
  * it was broken would credit a position it never reached.
  */
 internal fun pistonDestroys(data: BlockData) =
-    (data as CraftBlockData).state.pistonPushReaction == PushReaction.DESTROY
+    (data as CraftBlockData).state.pistonPushReaction == PushReaction.POPPED
 
 /**
  * Where each block a piston is about to shift ends up: the positions it leaves, and the positions it
@@ -277,6 +294,23 @@ internal fun pistonHead(facing: Direction, sticky: Boolean): BlockData = Blocks.
     .setValue(BlockStateProperties.FACING, facing)
     .setValue(BlockStateProperties.PISTON_TYPE, if (sticky) PistonType.STICKY else PistonType.DEFAULT)
     .asBlockData()
+
+/**
+ * The base of a piston taking its head back, asked of the head. A sticky piston that cannot pull what
+ * stands in front of it raises no retract event at all: the server removes the head quietly, and the
+ * block plane went on saying a head stood there. What it does not hide is the physics update the base
+ * sends its neighbours once it has turned into the moving block, while the head is still standing to
+ * be read. An extending piston never looks like this: its base stays a piston, and the moving block
+ * stands where the head is going.
+ */
+internal fun retractingBase(head: Block): Block? {
+    // Asked on every physics update in the world, so the cheap question goes first.
+    if (head.type != Material.PISTON_HEAD) return null
+    val data = head.blockData as? PistonHead ?: return null
+    val base = head.getRelative(data.facing.oppositeFace)
+    if (base.type != Material.MOVING_PISTON) return null
+    return base.takeIf { (it.blockData as? Directional)?.facing == data.facing }
+}
 
 /**
  * The piston itself, which is the same block before and after and differs only in being extended. Both
@@ -579,6 +613,7 @@ class BlockDestructionListener(
     private val origins: SpawnOrigins,
     private val entities: EntityOrigins,
     private val placed: PlacedForms,
+    private val owners: NestedOwners,
     private val sink: (List<Transfer>) -> Unit,
 ) : Listener {
 
@@ -699,7 +734,7 @@ class BlockDestructionListener(
     fun onLeafDecay(event: LeavesDecayEvent) {
         val block = event.block
         val before = block.blockData
-        changed(block, before, leftBehind(before).asString, Cause.BLK_LEAF_DECAY, by = null)
+        changed(block, before, leftBehind(before).asString, Cause.BLK_LEAF_DECAY, attribution.fellerOf(positionOf(block)))
     }
 
     /**
@@ -733,11 +768,11 @@ class BlockDestructionListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPistonExtend(event: BlockPistonExtendEvent) =
-        piston(event, event.blocks, Cause.BLK_PISTON_EXTEND, extending = true)
+        piston(event.block, event.blocks, Cause.BLK_PISTON_EXTEND, extending = true)
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPistonRetract(event: BlockPistonRetractEvent) =
-        piston(event, event.blocks, Cause.BLK_PISTON_RETRACT, extending = false)
+        piston(event.block, event.blocks, Cause.BLK_PISTON_RETRACT, extending = false)
 
     /**
      * A flight that ended in anything but a landing: the block was destroyed in the air, fell out of
@@ -808,6 +843,12 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPhysics(event: BlockPhysicsEvent) {
         val block = event.block as CraftBlock
+        // Every retract passes through here too, and the ones that did raise their event have filed
+        // this same change already; the read-back refuses the second row.
+        retractingBase(block)?.let { base ->
+            piston(base, emptyList(), Cause.BLK_PISTON_RETRACT, extending = false)
+            return
+        }
         val state = block.blockState
         if (state.isAir || state.canSurvive(block.level, block.position)) return
         // The cause dictionary has no entry of its own for a block that could no longer stand where it
@@ -879,8 +920,7 @@ class BlockDestructionListener(
      * neither is who fired this piston, and the player who last touched it is not behind every block
      * the redstone around it shifts afterwards.
      */
-    private fun piston(event: BlockPistonEvent, moving: List<Block>, cause: Cause, extending: Boolean) {
-        val base = event.block
+    private fun piston(base: Block, moving: List<Block>, cause: Cause, extending: Boolean) {
         val log = logs.get(base.world.uid) ?: return
         val data = base.blockData
         // A retracting sticky piston is already the moving block here, and that block carries the
@@ -992,8 +1032,16 @@ class BlockDestructionListener(
         val gone = real.filter { wentAway(it.before.asString, it.after) }
         if (gone.isEmpty()) return
         // A block that moved carries itself to the position it arrived in and drops nothing on the way.
-        for (site in gone) if (site.went == null) expectDrops(origins, codec, site.block, cause, by?.actor)
-        by?.actor?.let { actor -> for (site in gone) noteRemoval(site.at, site.after, actor) }
+        for (site in gone) {
+            if (site.went != null) continue
+            expectDrops(origins, codec, site.block, cause, by?.actor, packBox(site, by, timestamp))
+        }
+        by?.actor?.let { actor ->
+            for (site in gone) {
+                noteRemoval(site.at, site.after, actor)
+                attribution.felledBy(site.block, actor)
+            }
+        }
         // The note saying what a position took over is cleared wherever the block it was written about
         // stopped standing there: left behind, it answers for a block that is not the one there.
         val positions = gone.map { it.at }
@@ -1008,6 +1056,32 @@ class BlockDestructionListener(
             placed.setFormAt(at.world, at.x, at.y, at.z, posting.form)
         }
         sink(transaction)
+    }
+
+    /**
+     * A shulker box a piston or an explosion breaks keeps what it held: the contents fall out inside
+     * the item. They are filed into the box's own name the way a hand's break files them, or they stay
+     * booked to a position that holds nothing and come back as births nobody explains once the box is
+     * opened. The name is handed back for the drop to carry.
+     */
+    private fun packBox(site: Site, by: Attributed?, timestamp: Long): UUID? {
+        val box = site.block.getState(false) as? ShulkerBox ?: return null
+        val packed = ArrayList<Transfer>()
+        val owner = packShulker(owners, site.block, box) { slot, owner, item ->
+            val encoded = codec.encode(item)
+            packed += Transfer(
+                cause = Cause.CONTAINER_BREAK_PACK,
+                from = containerAt(site.block, slot),
+                to = Nested(owner, slot),
+                form = encoded.key.form,
+                damage = encoded.key.damage,
+                qty = encoded.count,
+                timestamp = timestamp,
+                actor = by?.actor,
+            )
+        }
+        if (packed.isNotEmpty()) sink(packed)
+        return owner
     }
 
     // A change worth a row: one that changes something, and one the journal has not already been told
@@ -1151,7 +1225,7 @@ class BlockDestructionListener(
         }
         // The last rung: a wither nobody lit was still built by somebody, and the explosion it opens
         // with is the first thing it does.
-        return entities.summonerOf(source.uniqueId)
+        return entities.summonerOf(firedBy(source).uniqueId)
     }
 
     // A block that no longer stands there leaves whatever it was standing in, which for anything dry

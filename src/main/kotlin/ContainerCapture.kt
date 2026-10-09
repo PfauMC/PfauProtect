@@ -249,7 +249,7 @@ internal fun playerHolders(uuid: UUID, inventory: PlayerInventory): (Int) -> Hol
 // book, a copied banner, a scaled map — consumes and produces rather than mutates, so its two sides
 // carry the ordinary form. The rest hand back the very item that went in, changed.
 internal fun shiftOf(top: Inventory): Shift? = when (top) {
-    is CraftingInventory -> Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER)
+    is CraftingInventory -> Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
     is AnvilInventory -> Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
     is GrindstoneInventory -> Shift(Cause.GRINDSTONE, Cause.GRINDSTONE, Kind.MUTATE)
     // The station itself names which of the two smithing recipes matched, and it only names it while
@@ -275,7 +275,12 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
     for (move in moves) {
         when {
             move.to == Void -> transformed += move.copy(cause = shift.consume)
-            move.from == Void -> transformed += move.copy(cause = shift.result)
+            // The product is taken to the player; what the recipe leaves behind stays in the grid.
+            // A remainder that finds its grid slot still occupied — a stack of honey bottles —
+            // is pushed into the inventory by the game and books as the result.
+            move.from == Void -> transformed += move.copy(
+                cause = if (move.to is PlayerHolder) shift.result else shift.remainder,
+            )
             else -> rest += listOf(move)
         }
     }
@@ -689,6 +694,11 @@ class ContainerCaptureListener(
     fun onClose(event: InventoryCloseEvent) {
         val player = event.player as? Player ?: return
         if (!plugin.isEnabled) return
+        // The game hands back what was left in a crafting grid or a station, and the cursor with it,
+        // without a click of its own. A label and not a quantity: it renames what the pass pairs up.
+        // A click the game applied in this same tick with no label of its own is renamed
+        // too; telling them apart needs the pass to know which snapshot each edge came from.
+        intents.add(player.uniqueId, Intent(Cause.MENU_CLOSE_RETURN))
         player.scheduler.run(plugin, {
             recompute(player)
             rebaseline(player)

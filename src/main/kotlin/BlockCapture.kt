@@ -4,6 +4,7 @@ import net.minecraft.core.BlockPos
 import net.minecraft.core.HolderLookup
 import net.minecraft.nbt.NbtIo
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.tags.BlockTags
 import net.minecraft.tags.EnchantmentTags
 import net.minecraft.world.attribute.EnvironmentAttributes
 import net.minecraft.world.item.ItemStack as NmsItemStack
@@ -15,11 +16,13 @@ import net.minecraft.world.level.block.IceBlock
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.state.BlockState as NmsBlockState
 import net.minecraft.world.level.block.state.properties.ChestType
+import org.bukkit.Bukkit
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.data.Bisected
 import org.bukkit.block.data.BlockData
 import org.bukkit.block.data.type.Bed
+import org.bukkit.block.data.type.Leaves
 import org.bukkit.block.data.type.Piston
 import org.bukkit.block.data.type.PistonHead
 import org.bukkit.block.data.type.Stairs
@@ -85,7 +88,7 @@ internal fun brokenAfter(
     val removed = state.fluidState.createLegacyBlock()
     if (state.block !is IceBlock || !dropsBlock || waterEvaporates) return removed
     if (EnchantmentHelper.hasTag(tool, EnchantmentTags.PREVENTS_ICE_MELTING)) return removed
-    return if (below.blocksMotion() || below.liquid()) IceBlock.meltsInto() else removed
+    return if (below.`is`(BlockTags.ICE_MELTS_WHEN_DESTROYED_ABOVE) || below.liquid()) IceBlock.meltsInto() else removed
 }
 
 /**
@@ -144,6 +147,49 @@ internal fun Attribution.cleared(block: Block, actor: UUID) {
         val at = positionOf(standing)
         removed(at, actor)
         placed(at, leftBy(standing.blockData), actor)
+    }
+    felledBy(block, actor)
+}
+
+// How far a leaf reaches for a log, counted in steps through other leaves. The game's own number.
+private const val LEAF_REACH = 6
+
+/**
+ * The leaves a log may have been holding up: every leaf that would decay by itself, reachable from the
+ * log within the game's reach, stepping through leaves only. Whether each still has another log in
+ * reach is the game's to decide later; a note on a leaf that stays simply runs out.
+ *
+ * `owned` keeps the walk inside the region ticking this block. A leaf over the border belongs to
+ * another thread, and it is left without a note rather than read from the wrong one.
+ */
+internal fun leavesHeldBy(log: Block, owned: (Block) -> Boolean = Bukkit::isOwnedByCurrentRegion): List<Block> {
+    val found = LinkedHashSet<Block>()
+    var edge = listOf(log)
+    repeat(LEAF_REACH) {
+        val next = ArrayList<Block>()
+        for (block in edge) {
+            for (face in LEAF_FACES) {
+                val near = block.getRelative(face)
+                if (near in found || !owned(near)) continue
+                val leaves = near.blockData as? Leaves ?: continue
+                if (leaves.isPersistent) continue
+                found += near
+                next += near
+            }
+        }
+        edge = next
+    }
+    return found.toList()
+}
+
+private val LEAF_FACES = listOf(
+    BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN,
+)
+
+/** Notes the leaves a log was holding up, when the block going is a log. */
+internal fun Attribution.felledBy(block: Block, actor: UUID) {
+    if ((block.blockData as CraftBlockData).state.`is`(BlockTags.LOGS)) {
+        felled(leavesHeldBy(block).map(::positionOf), actor)
     }
 }
 

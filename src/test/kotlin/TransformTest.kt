@@ -12,7 +12,7 @@ class TransformTest {
     private val world = UUID.randomUUID()
     private val player = UUID.randomUUID()
 
-    private val craft = Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER)
+    private val craft = Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
     private val anvil = Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
 
     private fun key(name: String) = ItemKey(name.toByteArray(), null)
@@ -54,6 +54,24 @@ class TransformTest {
         )
         // The pass counted; the grouping only renamed. Quantities have to survive it untouched.
         assertEquals(listOf(8, 1, 1), transaction.map { it.qty })
+    }
+
+    // A cake leaves its buckets in the grid. They come out of the Void just as the cake does, and only
+    // where they land tells them apart.
+    @Test
+    fun `what a recipe leaves in the grid is its remainder and not its result`() {
+        val moves = listOf(
+            move(grid(1), Void, "milk_bucket", 1, Cause.CONTAINER_REMOVE),
+            move(Void, grid(1), "bucket", 1, Cause.CONTAINER_ADD),
+            move(Void, cursor, "cake", 1, Cause.CONTAINER_ADD),
+        )
+
+        val transaction = transactions(moves, craft).single()
+
+        assertEquals(
+            listOf(Cause.CRAFT_CONSUME, Cause.CRAFT_REMAINDER, Cause.CRAFT_RESULT),
+            transaction.map { it.cause },
+        )
     }
 
     // A movement that happened for its own reasons in the same tick keeps that reason and its own row.

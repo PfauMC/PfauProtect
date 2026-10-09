@@ -103,7 +103,34 @@ class SpawnOrigins(private val pending: TickCoalescer) {
 
     private val notes = ConcurrentLinkedQueue<Note>()
 
-    val isEmpty: Boolean get() = notes.isEmpty()
+    // A shulker box that falls out of a block something other than a hand broke has to carry the name
+    // its contents were filed under, and the only moment to give it one is before its spawn reads its
+    // form. Matched by the whole stack, contents and all, so two boxes blown up side by side cannot
+    // trade names.
+    private class Box(val stack: NmsItemStack, val owner: UUID, val at: Spot) {
+        var swept = false
+    }
+
+    private val boxes = ConcurrentLinkedQueue<Box>()
+
+    val isEmpty: Boolean get() = notes.isEmpty() && boxes.isEmpty()
+
+    fun expectBox(stack: NmsItemStack, owner: UUID, at: Spot) {
+        boxes += Box(stack.copy(), owner, at)
+    }
+
+    /** The name a box that has just appeared here has to carry, taken once. */
+    @Synchronized
+    fun ownerFor(stack: NmsItemStack, at: Spot): UUID? {
+        val boxes = boxes.iterator()
+        while (boxes.hasNext()) {
+            val box = boxes.next()
+            if (!near(box.at, at) || !NmsItemStack.isSameItemSameComponents(box.stack, stack)) continue
+            boxes.remove()
+            return box.owner
+        }
+        return null
+    }
 
     fun expect(from: Holder, cause: Cause, key: ItemKey, at: Spot, qty: Int, actor: UUID? = null) {
         if (qty <= 0) return
@@ -160,6 +187,11 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         while (notes.hasNext()) {
             val note = notes.next()
             if (note.swept) notes.remove() else note.swept = true
+        }
+        val boxes = boxes.iterator()
+        while (boxes.hasNext()) {
+            val box = boxes.next()
+            if (box.swept) boxes.remove() else box.swept = true
         }
     }
 

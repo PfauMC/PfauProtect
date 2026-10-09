@@ -1,15 +1,18 @@
 package io.pfaumc.pfauprotect
 
+import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Item
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
+import org.bukkit.event.entity.EntityDamageEvent
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityPickupItemEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.entity.ItemMergeEvent
 import org.bukkit.event.entity.ItemSpawnEvent
+import net.minecraft.world.item.ItemStack as NmsItemStack
 
 // There is no cause for the end of an item that nobody can name, so the cause for its unnamed
 // beginning stands on the other side of the row instead. Deliberately written as a guess: an end
@@ -56,6 +59,21 @@ internal fun itemEnd(
         else -> UNNAMED_END
     }
 
+// The game's own arithmetic: health is whole, and what the hit leaves is cut down to a whole number.
+internal fun lethal(health: Int, damage: Double) = (health.toFloat() - damage.toFloat()).toInt() <= 0
+
+// An item that ran out of health spills what it held on the spot, before it is removed; any other end
+// takes the contents with it.
+internal fun spills(removal: EntityRemoveEvent.Cause, health: Int) =
+    removal == EntityRemoveEvent.Cause.DEATH && health <= 0
+
+// What a box or a bundle held, each item under the name it is filed under. A container nobody ever
+// named was never filed, and there is nothing of it to account for.
+internal fun namedContents(stack: NmsItemStack, codec: ItemFormCodec): List<Pair<Nested, EncodedItem>> {
+    val owner = NestedItems.ownerOf(stack) ?: return emptyList()
+    return NestedItems.contents(stack).map { (index, child) -> Nested(owner, index) to codec.encode(child) }
+}
+
 // Two piles only merge at all when the whole donor fits under the survivor's own maximum, and the
 // merge that follows still stops at 64 whatever that maximum is. An item that stacks higher than 64 —
 // a datapack or a plugin can take it to 99 — therefore moves in part, the donor lives on holding the
@@ -95,9 +113,9 @@ class WorldItemListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onSpawn(event: ItemSpawnEvent) {
         val entity = event.entity
+        val spot = spotOf(entity.location)
+        nameBox(entity, spot)
         val encoded = codec.encodeOrNull(entity.itemStack) ?: return
-        val at = entity.location
-        val spot = spotOf(at)
         val unexplained = encoded.count - origins.claim(entity.uniqueId, spot, encoded.key, encoded.count)
         pending.add(
             Void,
@@ -109,6 +127,17 @@ class WorldItemListener(
         )
     }
 
+    // A box that fell out of a block something other than a hand broke is given the name its contents
+    // were packed under before its form is read, or it would not match the form its drop was expected
+    // under and its contents would belong to no item at all.
+    private fun nameBox(entity: Item, spot: Spot) {
+        val stack = CraftItemStack.asNMSCopy(entity.itemStack)
+        if (!NestedItems.isShulkerBox(stack) || NestedItems.ownerOf(stack) != null) return
+        val owner = origins.ownerFor(stack, spot) ?: return
+        NestedItems.mark(stack, owner)
+        entity.itemStack = CraftItemStack.asBukkitCopy(stack)
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     fun onRemove(event: EntityRemoveEvent) {
         val item = event.entity as? Item ?: return
@@ -117,7 +146,33 @@ class WorldItemListener(
         if (item.isDead) return
         val (cause, confidence) = itemEnd(event.cause, item.lastDamageCause?.cause, item.health) ?: return
         val encoded = codec.encodeOrNull(item.itemStack) ?: return
-        pending.add(ItemEntityRef(item.uniqueId), Void, cause, encoded.key, encoded.count, confidence = confidence)
+        // Whoever threw it is who put it where it ended: into the lava, onto the cactus, over the edge.
+        // The server keeps that on the entity, so it is read rather than worked out.
+        val thrower = item.thrower
+        pending.add(ItemEntityRef(item.uniqueId), Void, cause, encoded.key, encoded.count, thrower, confidence)
+        // What spilled has already been claimed by its own spawn; everything else goes down with the box.
+        if (spills(event.cause, item.health)) return
+        for ((inside, child) in namedContents(CraftItemStack.asNMSCopy(item.itemStack), codec)) {
+            pending.add(inside, Void, cause, child.key, child.count, thrower, confidence)
+        }
+    }
+
+    /**
+     * A box or a bundle about to be destroyed spills what it holds as new items, and the game does it
+     * before the removal event, inside the hit that kills it. This is the last event before that, so
+     * the contents are expected here, as coming out of the box's own name. They were not destroyed:
+     * the box broke and they fell out, which is what a container breaking already says.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onDamage(event: EntityDamageEvent) {
+        val item = event.entity as? Item ?: return
+        if (!lethal(item.health, event.finalDamage)) return
+        val contents = namedContents(CraftItemStack.asNMSCopy(item.itemStack), codec)
+        if (contents.isEmpty()) return
+        val spot = spotOf(item.location)
+        for ((inside, child) in contents) {
+            origins.expect(inside, Cause.CONTAINER_BREAK_DROP, child.key, spot, child.count, item.thrower)
+        }
     }
 
     // The smaller pile is always the one that gives way, so which of two items survives can come out

@@ -45,11 +45,11 @@ object ServerRegistries {
         var layers = RegistryLayer.createRegistryAccess()
         val pendingTags = TagLoader.loadTagsForExistingRegistries(resources, layers.getLayer(RegistryLayer.STATIC))
         val staticLookups =
-            TagLoader.buildUpdatedLookups(layers.getAccessForLoading(RegistryLayer.WORLDGEN), pendingTags)
+            TagLoader.buildUpdatedLookups(layers.getAccessForLoading(RegistryLayer.WORLD), pendingTags)
         val worldgen = RegistryDataLoader
-            .load(resources, staticLookups, RegistryDataLoader.WORLDGEN_REGISTRIES, Util.backgroundExecutor())
+            .load(resources, staticLookups, RegistryDataLoader.WORLD_REGISTRIES, Util.backgroundExecutor())
             .join()
-        layers = layers.replaceFrom(RegistryLayer.WORLDGEN, worldgen)
+        layers = layers.replaceFrom(RegistryLayer.WORLD, worldgen)
         val worldgenLookups = staticLookups + worldgen.listRegistries().toList()
         val dimensions = RegistryDataLoader
             .load(resources, worldgenLookups, RegistryDataLoader.DIMENSION_REGISTRIES, Util.backgroundExecutor())

@@ -244,6 +244,40 @@ class AttributionTest {
         assertEquals(alice, attribution.supportRemoverAt(at(5, 65, 5))?.actor)
     }
 
+    // A silverfish appears inside the block that was broken, which is the one cell the support search
+    // skips.
+    @Test
+    fun `the remover of a position answers for that position and not its neighbours`() {
+        attribution.removed(at(5, 64, 5), alice)
+
+        assertNull(attribution.supportRemoverAt(at(5, 64, 5)))
+        assertEquals(alice, attribution.removerAt(at(5, 64, 5))?.actor)
+        assertNull(attribution.removerAt(at(5, 65, 5)))
+
+        clock += SUPPORT_MILLIS + 1
+        assertNull(attribution.removerAt(at(5, 64, 5)))
+    }
+
+    // Leaves drop minutes after the log that held them, long after every other note is gone. Whoever
+    // fells last is who they answer to, each leaf answers once, and the note runs out eventually.
+    @Test
+    fun `a leaf answers to whoever last felled what held it, once and for a while`() {
+        val leaf = at(1, 70, 0)
+        attribution.felled(listOf(leaf, at(2, 70, 0)), alice)
+        clock += 1000
+        attribution.felled(listOf(leaf), bob)
+
+        val found = attribution.fellerOf(leaf)
+        assertEquals(bob, found?.actor)
+        assertEquals(Confidence.INFERRED, found?.confidence)
+        assertNull(attribution.fellerOf(leaf))
+
+        clock += FELLED_MILLIS
+        assertNull(attribution.fellerOf(at(2, 70, 0)))
+        attribution.sweep()
+        assertTrue(attribution.isEmpty)
+    }
+
     @Test
     fun `flight state is kept by entity and taken exactly once`() {
         val entity = UUID.randomUUID()

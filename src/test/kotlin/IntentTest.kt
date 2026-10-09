@@ -63,6 +63,18 @@ class IntentTest {
         assertEquals(Cause.QUICK_MOVE, Intents.explain(edges, emptyList(), player).first().cause)
     }
 
+    // A grid belongs to the player as an entity rather than to their inventory, so only the receiving
+    // end is theirs; that is still a movement they made.
+    @Test
+    fun `a closed window labels what the grid hands back`() {
+        val grid = EntitySlot(player, 1)
+        val edges = listOf(Edge(grid, bag(5), key("diamond"), 9, Confidence.FACT))
+
+        val moves = Intents.explain(edges, listOf(Intent(Cause.MENU_CLOSE_RETURN)), player)
+
+        assertEquals(listOf(Move(grid, bag(5), key("diamond"), 9, Cause.MENU_CLOSE_RETURN, Confidence.FACT)), moves)
+    }
+
     @Test
     fun `an intent nobody needed leaves no trace`() {
         val intents = listOf(Intent(Cause.BLOCK_PLACE, to = placed, qty = 1))

@@ -2,8 +2,10 @@ package io.pfaumc.pfauprotect
 
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
 import net.minecraft.core.Direction
+import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStack as NmsItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.item.component.ItemContainerContents
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.state.properties.BedPart
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
@@ -17,13 +19,17 @@ import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
 import org.bukkit.block.data.BlockData
 import org.bukkit.block.data.type.Bed
+import org.bukkit.craftbukkit.block.data.CraftBlockData
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Creeper
 import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.FallingBlock
+import org.bukkit.entity.Fireball
 import org.bukkit.entity.Player
 import org.bukkit.entity.TNTPrimed
+import org.bukkit.entity.Wither
+import org.bukkit.entity.WitherSkull
 import org.bukkit.event.Cancellable
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -39,6 +45,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -163,6 +170,7 @@ class BlockDestructionTest {
         origins = origins,
         entities = entityOrigins,
         placed = shared,
+        owners = shared,
         sink = sink,
     )
 
@@ -793,6 +801,43 @@ class BlockDestructionTest {
         assertNull(litBy(stub(TNTPrimed::class.java, emptyMap())))
         // An end crystal remembers nobody at all.
         assertNull(litBy(mob))
+        // A fireball a player hit back.
+        assertEquals(bob, litBy(stub(Fireball::class.java, mapOf("getShooter" to player)))?.uniqueId)
+    }
+
+    // A sticky piston against obsidian takes its head back without an event. The one trace is the
+    // head's physics update with the base already turned into the moving block.
+    @Test
+    fun `a head whose base has turned into the moving block is being taken back`() {
+        fun block(state: net.minecraft.world.level.block.state.BlockState, next: Block? = null): Block {
+            val data = state.asBlockData()
+            return stub(Block::class.java, mapOf("getType" to data.material, "getBlockData" to data, "getRelative" to next))
+        }
+        val head = (pistonHead(Direction.EAST, sticky = true) as CraftBlockData).state
+        val moving = Blocks.MOVING_PISTON.defaultBlockState().setValue(BlockStateProperties.FACING, Direction.EAST)
+        val retracting = block(moving)
+
+        assertSame(retracting, retractingBase(block(head, retracting)))
+        // An extended piston behind its head is a piston at rest.
+        val resting = block((pistonBase(Direction.EAST, sticky = true, extended = true) as CraftBlockData).state)
+        assertNull(retractingBase(block(head, resting)))
+        // A moving block facing elsewhere belongs to some other piston.
+        val other = block(moving.setValue(BlockStateProperties.FACING, Direction.UP))
+        assertNull(retractingBase(block(head, other)))
+        // Anything that is not a head is not asked about at all.
+        assertNull(retractingBase(block(Blocks.STONE.defaultBlockState(), retracting)))
+    }
+
+    @Test
+    fun `a skull is asked about as the wither that fired it`() {
+        val wither = stub(Wither::class.java, emptyMap())
+        val skull = stub(WitherSkull::class.java, mapOf("getShooter" to wither))
+
+        assertSame(wither, firedBy(skull))
+        assertSame(wither, firedBy(wither))
+        // A skull whose wither is gone has nobody behind it but itself.
+        val orphan = stub(WitherSkull::class.java, emptyMap())
+        assertSame(orphan, firedBy(orphan))
     }
 
     /**
@@ -1273,7 +1318,7 @@ class BlockDestructionTest {
 
     @Test
     fun `a block the world takes away explains the item it drops`() {
-        val cactus = CraftItemStack.asCraftMirror(NmsItemStack(Items.CACTUS))
+        val cactus = CraftItemStack.asBukkitMirror(NmsItemStack(Items.CACTUS))
         val block = blockStub(5, 64, 7, Blocks.CACTUS.defaultBlockState().asBlockData(), drops = listOf(cactus))
         val breaker = UUID.randomUUID()
 
@@ -1292,6 +1337,44 @@ class BlockDestructionTest {
         assertEquals(Cause.BLK_FADE, row.cause)
         assertEquals(breaker, row.actor)
         assertEquals(1, row.qty)
+    }
+
+    // A shulker box a piston broke drops with its contents inside, and those were packed under the
+    // name the position kept. The box that appears has to carry that name, and a second box broken
+    // beside it must not be handed the first one's.
+    @Test
+    fun `a box broken by the world is expected under the name its contents were packed under`() {
+        fun box(item: net.minecraft.world.item.Item, count: Int) = NmsItemStack(Items.SHULKER_BOX).apply {
+            set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(NmsItemStack(item, count))))
+        }
+        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
+        val diamonds = box(Items.DIAMOND, 5)
+        val stone = box(Items.STONE, 64)
+        val first = UUID.randomUUID()
+        val second = UUID.randomUUID()
+        val state = Blocks.SHULKER_BOX.defaultBlockState().asBlockData()
+        expectDrops(
+            origins, codec, blockStub(5, 64, 7, state, drops = listOf(CraftItemStack.asBukkitMirror(diamonds.copy()))),
+            Cause.BLK_PISTON_EXTEND, null, first,
+        )
+        expectDrops(
+            origins, codec, blockStub(6, 64, 7, state, drops = listOf(CraftItemStack.asBukkitMirror(stone.copy()))),
+            Cause.BLK_PISTON_EXTEND, null, second,
+        )
+        val spot = Spot(world, 6.2, 64.0, 7.4)
+
+        // What the spawn does with each box before it reads the form, in the order they appear.
+        val stoneDrop = stone.copy()
+        assertEquals(second, origins.ownerFor(stoneDrop, spot))
+        NestedItems.mark(stoneDrop, second)
+        val diamondDrop = diamonds.copy()
+        assertEquals(first, origins.ownerFor(diamondDrop, spot))
+        NestedItems.mark(diamondDrop, first)
+        // Each name is handed out once.
+        assertNull(origins.ownerFor(diamonds.copy(), spot))
+
+        assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(stoneDrop).key, 1))
+        assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(diamondDrop).key, 1))
     }
 
     @Test

@@ -225,12 +225,14 @@ class BlockLog(dir: Path, private val shared: RocksItemLog) : AutoCloseable {
         toTs: Long = Long.MAX_VALUE,
         limit: Int = 100,
         reverse: Boolean = false,
+        // Applied before the limit for the same reason the limit waits for the whole chunk.
+        within: (BlockRow) -> Boolean = { true },
     ): List<BlockRow> = dbLock.read {
         if (closed || limit <= 0) return emptyList()
         val found = ArrayList<BlockRow>()
         forEachUnder(Zcode.chunkPrefix(chunkX, chunkZ), reverse = false) { key, value ->
             val row = BlockCodec.decodeOrNull(key, value, shared.registries)
-            if (row != null && row.timestamp in fromTs..toTs) found += row
+            if (row != null && row.timestamp in fromTs..toTs && within(row)) found += row
             true
         }
         val byTime = compareBy<BlockRow>({ it.timestamp }, { it.eventId }, { it.ordinal })

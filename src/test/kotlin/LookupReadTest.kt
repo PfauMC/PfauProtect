@@ -1,8 +1,12 @@
 package io.pfaumc.pfauprotect
 
+import net.minecraft.core.BlockPos
 import net.minecraft.core.component.DataComponents
 import net.minecraft.network.chat.Component
 import net.minecraft.world.item.Items
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.entity.SignBlockEntity
+import net.minecraft.world.level.block.entity.SignTextSlot
 import org.bukkit.command.CommandSender
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -48,6 +52,8 @@ class LookupReadTest {
         y: Int = 64,
         z: Int = -3,
         codec: ItemFormCodec? = null,
+        // Stands in for the server's player cache, which a test has none of.
+        players: Map<String, UUID> = emptyMap(),
     ): List<String> {
         val lines = ArrayList<String>()
         val sender = Proxy.newProxyInstance(
@@ -57,7 +63,8 @@ class LookupReadTest {
             if (method.name == "sendMessage") args?.filterIsInstance<String>()?.forEach { lines += it }
             null
         } as CommandSender
-        Lookups(stubPlugin(), shared, logs, codec)
+        val names = players.entries.associate { (name, id) -> id to name }
+        Lookups(stubPlugin(), shared, logs, codec, players::get, names::get)
             .report(sender, LookupTarget(world, x, y, z, "stone at $x $y $z"), query)
         return lines
     }
@@ -179,35 +186,106 @@ class LookupReadTest {
 
     // Keys inside a chunk sort by position before time, so a chunk read up to a limit hands back one
     // corner of itself. The asked-for position was in the crater and not in that corner, and the
-    // answer was silence about it.
+    // answer was silence about it. It is also older than everything in the corner, so a box applied
+    // after the newest rows of the whole chunk were cut would find nothing left of it.
     @Test
     fun `a busy corner of the chunk does not hide the position that was asked about`() {
         val corner = WorldBlock(world, 15, 64, -15)
         val here = WorldBlock(world, 10, 64, -3)
+        shared.submit(Transfer(Cause.BLK_TNT, here, Void, stone, null, 1, T0))
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0)))
         repeat(40) { i ->
-            shared.submit(Transfer(Cause.BLK_TNT, corner, Void, stone, null, 1, T0 + i))
+            shared.submit(Transfer(Cause.BLK_TNT, corner, Void, stone, null, 1, T0 + 1 + i))
+            log.submit(listOf(BlockChange(15, 64, -15, STONE, AIR, Cause.BLK_TNT, T0 + 1 + i)))
         }
-        shared.submit(Transfer(Cause.BLK_TNT, here, Void, stone, null, 1, T0 + 100))
         shared.drain()
+        log.drain()
 
-        val lines = said(LookupQuery(radius = 1, limit = 1))
+        // Two rows asked for, eight times that read: far fewer than the corner holds.
+        val lines = said(LookupQuery(radius = 1, limit = 2)).filter { it.contains("block 10 64 -3") }
 
-        assertTrue(lines.any { it.contains("block 10 64 -3") }, "$lines")
+        assertTrue(lines.any { !it.contains("->") }, "the item plane lost it: $lines")
+        assertTrue(lines.any { it.contains("->") }, "the block plane lost it: $lines")
     }
 
     // A read that stopped early answers about what it saw, not about what is there. Saying "no
     // entries" for a position it never reached clears somebody of what the rows behind the cut say.
     @Test
     fun `an empty answer says so when the read stopped early`() {
-        val elsewhereInTheChunk = WorldBlock(world, 15, 64, -15)
+        val nextDoor = WorldBlock(world, 11, 64, -3)
         repeat(40) { i ->
-            shared.submit(Transfer(Cause.BLK_TNT, elsewhereInTheChunk, Void, stone, null, 1, T0 + i))
+            shared.submit(Transfer(Cause.BLK_TNT, nextDoor, Void, stone, null, 1, T0 + i))
         }
         shared.drain()
 
-        val lines = said(LookupQuery(radius = 1, limit = 1))
+        // Forty rows inside the box, more than one row's worth of read, and none of them the kind asked for.
+        val lines = said(LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE)))
         assertTrue(lines.any { it.contains("stopped before the whole area") }, "$lines")
         assertTrue(lines.none { it.startsWith("No ledger entries") }, "$lines")
+    }
+
+    // What a player carried has no position, and a crafting grid is booked to them as an entity. Both
+    // are read by whose they are, and only theirs.
+    @Test
+    fun `a player lookup reads their own slots and their crafting grid and nobody else's`() {
+        val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
+        val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
+        val chest = Container(world, 1, 64, 1, 0)
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 3), stone, null, 5, T0))
+        shared.submit(Transfer(Cause.CRAFT_CONSUME, EntitySlot(alice, 1), Void, stone, null, 8, T0 + 1))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), stone, null, 2, T0 + 2))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerEquip(alice, 5), stone, null, 1, T0 + 3))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerCursor(alice), stone, null, 1, T0 + 4))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerEnder(alice, 7), stone, null, 1, T0 + 5))
+        shared.drain()
+
+        val lines = said(LookupQuery(players = listOf("Alice")), players = mapOf("Alice" to alice, "Bob" to bob))
+
+        assertTrue(lines.any { it.contains("Alice slot 3") }, "$lines")
+        assertTrue(lines.any { it.contains("craft_consume") && it.contains("entity Alice slot 1") }, "$lines")
+        assertTrue(lines.any { it.contains("Alice equipment slot 5") }, "$lines")
+        assertTrue(lines.any { it.contains("Alice cursor") }, "$lines")
+        assertTrue(lines.any { it.contains("Alice ender chest slot 7") }, "$lines")
+        assertTrue(lines.none { it.contains("Bob") }, "$lines")
+        assertTrue(
+            said(LookupQuery(players = listOf("Alice"), radius = 5), players = mapOf("Alice" to alice))
+                .single().contains("drop the radius"),
+        )
+        assertEquals(
+            listOf("Unknown player: Carol"),
+            said(LookupQuery(players = listOf("Carol")), players = mapOf("Alice" to alice)),
+        )
+    }
+
+    // The text of a sign is what was kept for it, and an edit reads as what it said before and after.
+    // A payload that is not a sign keeps the marker it always had.
+    @Test
+    fun `a sign row reads out its text and an edit reads out both`() {
+        val registries = ServerRegistries.access
+        fun sign(line: String) = payloadOf(
+            SignBlockEntity(BlockPos(10, 64, -3), Blocks.OAK_SIGN.defaultBlockState()).apply {
+                setText(getText(SignTextSlot.FRONT).asMutable().setLine(0, Component.literal(line)).asImmutable(), SignTextSlot.FRONT)
+            },
+            registries,
+        )
+        val sign = "minecraft:oak_sign[rotation=0,waterlogged=false]"
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, sign, Cause.BLK_PLAYER_PLACE, T0, payloadAfter = sign("здесь был Боб"))))
+        log.submit(
+            listOf(
+                BlockChange(
+                    10, 64, -3, sign, sign, Cause.BLK_PLAYER_PLACE, T0 + 1000,
+                    payloadBefore = sign("здесь был Боб"), payloadAfter = sign("здесь была Алиса"),
+                )
+            )
+        )
+        log.submit(listOf(BlockChange(10, 64, -2, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 2000, payloadAfter = byteArrayOf(1, 2, 3))))
+        log.drain()
+
+        val lines = said(LookupQuery(radius = 1))
+
+        assertTrue(lines.any { it.endsWith("text \"здесь был Боб\"") }, "$lines")
+        assertTrue(lines.any { it.contains("text \"здесь был Боб\" -> \"здесь была Алиса\"") }, "$lines")
+        assertTrue(lines.any { it.contains("block 10 64 -2") && it.contains("+contents") }, "$lines")
     }
 
     // A filter meant for the block plane must not drag the item plane's rows in behind it.

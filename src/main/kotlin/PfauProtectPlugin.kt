@@ -131,7 +131,7 @@ class PfauProtectPlugin : JavaPlugin() {
         }
         val entities = EntityOrigins()
         val destruction = BlockDestructionListener(
-            this, ledger.registries, blocks, attribution, codec, origins, entities, ledger, uncovered::submit,
+            this, ledger.registries, blocks, attribution, codec, origins, entities, ledger, ledger, uncovered::submit,
         )
         val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)

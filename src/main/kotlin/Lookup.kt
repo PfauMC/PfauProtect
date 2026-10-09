@@ -10,18 +10,25 @@ import com.mojang.brigadier.suggestion.Suggestions
 import com.mojang.brigadier.suggestion.SuggestionsBuilder
 import io.papermc.paper.command.brigadier.argument.CustomArgumentType
 import net.minecraft.core.component.DataComponents
+import net.minecraft.nbt.NbtIo
+import net.minecraft.nbt.NbtOps
+import net.minecraft.world.level.block.entity.SignText
 import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
+import java.io.ByteArrayInputStream
+import java.io.DataInputStream
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Level
+import kotlin.jvm.optionals.getOrNull
 
 const val DEFAULT_LIMIT = 10
 const val MAX_LIMIT = 200
@@ -48,6 +55,7 @@ private val TIME_FORMAT: DateTimeFormatter =
 // readable while the short forms typed from muscle memory keep working.
 internal enum class Param(vararg val keys: String) {
     USER("user", "u", "users"),
+    PLAYER("player", "p"),
     TIME("time", "t"),
     RADIUS("radius", "r"),
     ACTION("action", "a"),
@@ -150,6 +158,9 @@ private val DURATION = Regex("(\\d+)(mo|[ymwdhs])")
 
 data class LookupQuery(
     val users: List<String> = emptyList(),
+    // Whose own slots to read, rather than where. `users` narrows the rows of a place down to the
+    // ones a player is named on; this is the other question, what went through their hands.
+    val players: List<String> = emptyList(),
     val included: List<String> = emptyList(),
     val excluded: List<String> = emptyList(),
     val causes: Set<Cause>? = null,
@@ -228,6 +239,7 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
         reader.cursor = valueStart
         query = when (param) {
             Param.USER -> query.copy(users = query.users + values(value))
+            Param.PLAYER -> query.copy(players = query.players + values(value))
             Param.TIME -> query.copy(secondsBack = durationOrNull(value) ?: fail(reader, BAD_TIME, value))
             Param.RADIUS -> query.copy(radius = radiusOrNull(value) ?: fail(reader, BAD_RADIUS, value))
             Param.ACTION -> query.copy(causes = (query.causes ?: emptySet()) + causes(reader, valueStart, value))
@@ -328,7 +340,7 @@ class LookupArgument : CustomArgumentType<LookupQuery, String> {
     }
 
     private fun valuesFor(param: Param?): List<String> = when (param) {
-        Param.USER, Param.EXCLUDE -> Bukkit.getOnlinePlayers().map { it.name }
+        Param.USER, Param.PLAYER, Param.EXCLUDE -> Bukkit.getOnlinePlayers().map { it.name }
         Param.TIME -> TIME_EXAMPLES
         Param.RADIUS -> RADIUS_EXAMPLES
         Param.ACTION -> Action.names
@@ -372,6 +384,10 @@ class Lookups(
     private val ledger: RocksItemLog,
     private val blocks: BlockLogs,
     private val codec: ItemFormCodec? = null,
+    private val idOf: (String) -> UUID? = { name ->
+        Bukkit.getPlayerExact(name)?.uniqueId ?: Bukkit.getOfflinePlayerIfCached(name)?.uniqueId
+    },
+    private val nameOf: (UUID) -> String? = { Bukkit.getOfflinePlayer(it).name },
 ) {
 
     // Reading hits RocksDB through JNI, which has no business running on a region thread, and a task
@@ -388,33 +404,72 @@ class Lookups(
     }
 
     internal fun report(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+        if (query.players.isNotEmpty()) return reportPlayers(sender, query)
         if (query.global) {
             sender.sendMessage("A world-wide lookup needs the analytical backend; give a radius instead.")
             return
         }
-        val named = query.users.associateWith { resolve(it) }
-        val unknown = named.filterValues { it == null }.keys
-        if (unknown.isNotEmpty()) {
-            sender.sendMessage("Unknown player: ${unknown.joinToString(", ")}")
-            return
-        }
-        val users = named.values.filterNotNull().toSet()
+        val users = resolveAll(sender, query.users) ?: return
         val page = read(target, query)
         val items = wholeTransactions(ledger, filter(page.entries, query, users))
             .map { Line(it.timestamp, describe(it)) }
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
         val changes = blockLines(target, query, users)
-        val matched = (items + changes).sortedByDescending { it.timestamp }
-        val lines = matched.take(query.limit)
         val where = if (query.radius == null) target.label else "${query.radius} blocks around ${target.label}"
+        answer(sender, items + changes, page.complete, where, query)
+    }
+
+    /**
+     * What went through a player's own hands: their inventory, equipment, cursor, ender chest and the
+     * crafting grid, which the server books to the player as an entity. None of it has a position, so
+     * no radius reaches it, and the block plane has nothing to say about it.
+     */
+    private fun reportPlayers(sender: CommandSender, query: LookupQuery) {
+        // Answering anyway would read as narrowed to the area while nothing was narrowed.
+        if (query.radius != null) {
+            sender.sendMessage("player: reads what went through a player's hands, which has no position; drop the radius.")
+            return
+        }
+        val players = resolveAll(sender, query.players) ?: return
+        val users = resolveAll(sender, query.users) ?: return
+        val fromTs = query.secondsBack?.let { System.currentTimeMillis() - it * 1000 } ?: 0
+        val fetch = minOf(query.limit * FETCH_FACTOR, MAX_FETCH)
+        // The slot never enters the key, so slot 0 stands for every slot of its kind.
+        val pages = players.flatMap { player ->
+            listOf(
+                PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player),
+                PlayerEnder(player, 0), EntitySlot(player, 0),
+            )
+        }.map { ledger.holderPage(it, fromTs, Long.MAX_VALUE, reverse = true, limit = fetch) }
+        val entries = pages.flatMap { it.entries }.sortedByDescending { it.timestamp }
+        val items = wholeTransactions(ledger, filter(entries, query, users))
+            .map { Line(it.timestamp, describe(it)) }
+        answer(sender, items, pages.all { it.complete }, "player ${query.players.joinToString(", ")}", query)
+    }
+
+    // Every name has to be known: dropping the one that was misspelt would answer about the rest as
+    // if it were the whole question.
+    private fun resolveAll(sender: CommandSender, names: List<String>): Set<UUID>? {
+        val named = names.associateWith { idOf(it) }
+        val unknown = named.filterValues { it == null }.keys
+        if (unknown.isNotEmpty()) {
+            sender.sendMessage("Unknown player: ${unknown.joinToString(", ")}")
+            return null
+        }
+        return named.values.filterNotNull().toSet()
+    }
+
+    private fun answer(sender: CommandSender, found: List<Line>, complete: Boolean, where: String, query: LookupQuery) {
+        val matched = found.sortedByDescending { it.timestamp }
+        val lines = matched.take(query.limit)
         // Nothing matched can mean two very different things, and telling them apart is the whole
         // difference between "nothing happened here" and "I did not get far enough to see". A read
         // that stopped early inside a busy chunk hands back rows from one corner of it, and answering
         // that with silence would clear a position the reader is standing in the crater of.
         if (lines.isEmpty()) {
             sender.sendMessage(
-                if (page.complete) "No ledger entries for $where."
+                if (complete) "No ledger entries for $where."
                 else "Nothing matched for $where, but the read stopped before the whole area was " +
                     "seen. Narrow the radius or ask for more with limit:${query.limit * 4}."
             )
@@ -425,7 +480,7 @@ class Lookups(
         // A truncated view that says nothing about being truncated reads as the whole history, and an
         // investigator would conclude the item came from nowhere. The read itself stops early too, and
         // it stops before the filter runs, so a page cut short says so even when few rows matched.
-        if (matched.size > lines.size || !page.complete) {
+        if (matched.size > lines.size || !complete) {
             sender.sendMessage("  ... older entries are cut off; ask for more with limit:${query.limit * 4}")
         }
     }
@@ -445,13 +500,13 @@ class Lookups(
         } else {
             val chunkX = ((target.x - radius) shr 4)..((target.x + radius) shr 4)
             val chunkZ = ((target.z - radius) shr 4)..((target.z + radius) shr 4)
+            val inBox = boxAround(target, radius)
             chunkX.flatMap { cx -> chunkZ.map { cz -> cx to cz } }
-                .flatMap { (cx, cz) -> log.inChunk(cx, cz, fromTs, Long.MAX_VALUE, limit = fetch, reverse = true) }
-                .filter { row ->
-                    row.x in (target.x - radius)..(target.x + radius) &&
-                        row.y in (target.y - radius)..(target.y + radius) &&
-                        row.z in (target.z - radius)..(target.z + radius)
+                .flatMap { (cx, cz) ->
+                    log.inChunk(cx, cz, fromTs, Long.MAX_VALUE, limit = fetch, reverse = true) { inBox(it.x, it.y, it.z) }
                 }
+                // Each chunk came back newest first; together they have to be again.
+                .sortedByDescending { it.timestamp }
         }
         val included = query.included.map(::normalizeItem).toSet()
         val excluded = query.excluded.map(::normalizeItem).toSet()
@@ -487,7 +542,8 @@ class Lookups(
                 pages.all { it.complete },
             )
         }
-        val region = ledger.regionPage(
+        val inBox = boxAround(target, radius)
+        return ledger.regionPage(
             world = target.world,
             minX = target.x - radius,
             minZ = target.z - radius,
@@ -497,25 +553,23 @@ class Lookups(
             toTs = Long.MAX_VALUE,
             reverse = true,
             limit = fetch,
-        )
-        // The scan reads whole chunks, so it comes back with rows the radius does not cover. The block
-        // plane filters itself to the box, and two planes disagreeing about what one radius means
-        // inside one answer reads as rows appearing and vanishing for no reason.
-        val inBox = { x: Int, y: Int, z: Int ->
-            x in (target.x - radius)..(target.x + radius) &&
-                y in (target.y - radius)..(target.y + radius) &&
-                z in (target.z - radius)..(target.z + radius)
-        }
-        return EntryPage(
-            region.entries.filter { entry ->
-                when (val holder = entry.holder) {
+            // The scan reads whole chunks, so it comes back with rows the radius does not cover. The
+            // block plane keeps to the box, and two planes disagreeing about what one radius means
+            // inside one answer reads as rows appearing and vanishing for no reason.
+            within = { holder ->
+                when (holder) {
                     is Container -> inBox(holder.x, holder.y, holder.z)
                     is WorldBlock -> inBox(holder.x, holder.y, holder.z)
                     else -> true
                 }
             },
-            region.complete,
         )
+    }
+
+    private fun boxAround(target: LookupTarget, radius: Int) = { x: Int, y: Int, z: Int ->
+        x in (target.x - radius)..(target.x + radius) &&
+            y in (target.y - radius)..(target.y + radius) &&
+            z in (target.z - radius)..(target.z + radius)
     }
 
     // Keeps one row more than asked for: the caller shows `limit` of them and needs the extra one to
@@ -536,8 +590,7 @@ class Lookups(
             .toList()
     }
 
-    private fun resolve(name: String): UUID? =
-        Bukkit.getPlayerExact(name)?.uniqueId ?: Bukkit.getOfflinePlayerIfCached(name)?.uniqueId
+    private fun resolve(name: String): UUID? = idOf(name)
 
     private fun normalizeItem(name: String): String =
         if (name.contains(':')) name.lowercase() else "$VANILLA_NAMESPACE:${name.lowercase()}"
@@ -567,7 +620,7 @@ class Lookups(
             row.confidence == Confidence.INFERRED -> "  by ${playerName(row.actor)} (worked out)"
             else -> "  by ${playerName(row.actor)}"
         }
-        val payload = if (row.payloadBefore != null || row.payloadAfter != null) "  +contents" else ""
+        val payload = payloadLabel(row)
         // Two rows of a door or a bed are otherwise the same row twice, and which half was struck is
         // the whole of what an investigator is asking.
         val half = if (row.alongside) "  (other half)" else ""
@@ -575,6 +628,33 @@ class Lookups(
             "${row.cause.name.lowercase()}  " +
             "${stateOf(row.stateBefore)} -> ${stateOf(row.stateAfter)}  " +
             "block ${row.x} ${row.y} ${row.z}$by$payload$half"
+    }
+
+    // A sign is what a payload is most often asked about, and its text is the whole of what was
+    // written. Anything else keeps the marker: what a container held is already rows of the item plane.
+    private fun payloadLabel(row: BlockRow): String {
+        if (row.payloadBefore == null && row.payloadAfter == null) return ""
+        val before = row.payloadBefore?.let(::signText)
+        val after = row.payloadAfter?.let(::signText)
+        return when {
+            before == null && after == null -> "  +contents"
+            before != null && after != null && before != after -> "  text $before -> $after"
+            else -> "  text ${after ?: before}"
+        }
+    }
+
+    // A payload is kept byte for byte, so reading it can fail on a tag a later game version wrote; the
+    // row then says what it always said rather than failing the whole answer.
+    private fun signText(payloadId: Long): String? {
+        val bytes = ledger.payload(payloadId) ?: return null
+        val tag = runCatching { NbtIo.read(DataInputStream(ByteArrayInputStream(bytes))) }.getOrNull() ?: return null
+        val sides = listOf("front_text", "back_text").mapNotNull { side ->
+            val text = tag.get(side) ?: return@mapNotNull null
+            SignText.CODEC.parse(NbtOps.INSTANCE, text).result().getOrNull()
+                ?.getMessages(false)?.map { it.string }?.filter { it.isNotBlank() }
+                ?.takeIf { it.isNotEmpty() }?.joinToString(" | ", "\"", "\"")
+        }
+        return sides.takeIf { it.isNotEmpty() }?.joinToString(" / ")
     }
 
     // The full state string is what the registry keeps, properties and all, which is what makes a row
@@ -614,11 +694,17 @@ class Lookups(
         is MenuSlot -> "menu ${menuName(holder.menuType)} slot ${holder.slot}"
         is Container -> "container ${holder.x} ${holder.y} ${holder.z} slot ${holder.slot}"
         is WorldBlock -> "block ${holder.x} ${holder.y} ${holder.z}"
-        is EntitySlot -> "entity ${holder.uuid} slot ${holder.slot}"
+        // A crafting grid is the player's own entity slot, and a name reads better than their uuid.
+        is EntitySlot -> "entity ${playerName(holder.uuid)} slot ${holder.slot}"
         is ItemEntityRef -> "dropped item ${holder.uuid}"
         is Nested -> "inside ${holder.ownerId} at ${holder.index}"
         Void -> "nowhere"
     }
 
-    private fun playerName(uuid: UUID): String = Bukkit.getOfflinePlayer(uuid).name ?: uuid.toString()
+    // An offline player's name can come off disk, once per printed row and holder otherwise.
+    // ponytail: never evicted, so a rename shows after a restart; a timed cache if that matters.
+    private val names = ConcurrentHashMap<UUID, String>()
+
+    private fun playerName(uuid: UUID): String =
+        names[uuid] ?: nameOf(uuid)?.also { names[uuid] = it } ?: uuid.toString()
 }

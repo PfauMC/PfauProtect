@@ -12,8 +12,10 @@ version = "1.0.0"
 
 // Canvas publishes the dev bundle to maven and the matching server jar to Jenkins under the same
 // CI number.
-val canvasBuild = "923"
-val canvasMinecraftVersion = "26.2"
+val canvasBuild = "956"
+val canvasMinecraftVersion = "26.3"
+// 26.3 has no stable builds yet; the dev bundle's version carries the channel.
+val canvasChannel = "alpha"
 val rocksdbVersion = "10.4.2"
 
 kotlin {
@@ -31,11 +33,11 @@ repositories {
     }
 }
 
-val canvasServer: Configuration by configurations.creating
+val canvasServer = configurations.create("canvasServer")
 
 dependencies {
     paperweight.foliaDevBundle(
-        version = "$canvasMinecraftVersion.build.$canvasBuild-stable",
+        version = "$canvasMinecraftVersion.build.$canvasBuild-$canvasChannel",
         group = "io.canvasmc.canvas",
     )
     // Everything declared with library(...) is written into plugin.yml's `libraries` block by
@@ -49,6 +51,9 @@ dependencies {
     testImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.0")
     testImplementation("org.rocksdb:rocksdbjni:$rocksdbVersion:osx")
     testImplementation("org.rocksdb:rocksdbjni:$rocksdbVersion:linux64")
+    // Tests also run on Windows dev machines; the server itself never does, so plugin.yml stays
+    // without it.
+    testImplementation("org.rocksdb:rocksdbjni:$rocksdbVersion:win64")
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")

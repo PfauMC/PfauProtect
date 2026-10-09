@@ -58,6 +58,8 @@ class LookupTest {
     fun `comma separated values accumulate and repeated parameters append`() {
         assertEquals(listOf("Steve", "Alex"), parseLookupQuery("u:Steve,Alex").users)
         assertEquals(listOf("Steve", "Alex"), parseLookupQuery("u:Steve u:Alex").users)
+        assertEquals(listOf("Steve"), parseLookupQuery("player:Steve").players)
+        assertEquals(listOf("Steve", "Alex"), parseLookupQuery("p:Steve,Alex").players)
         assertEquals(listOf("diamond", "emerald"), parseLookupQuery("b:diamond,emerald").included)
     }
 
