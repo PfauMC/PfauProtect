@@ -11,17 +11,20 @@ import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.capture.item.transactions
 import org.rocksdb.BlockBasedTableConfig
 import org.rocksdb.BloomFilter
+import org.rocksdb.Cache
 import org.rocksdb.ColumnFamilyDescriptor
 import org.rocksdb.ColumnFamilyHandle
 import org.rocksdb.ColumnFamilyOptions
 import org.rocksdb.CompressionType
 import org.rocksdb.DBOptions
+import org.rocksdb.Filter
 import org.rocksdb.LRUCache
 import org.rocksdb.Options
 import org.rocksdb.ReadOptions
 import org.rocksdb.RocksDB
 import org.rocksdb.Slice
 import org.rocksdb.WriteBatch
+import org.rocksdb.WriteBufferManager
 import org.rocksdb.WriteOptions
 import java.nio.file.Files
 import java.nio.file.Path
@@ -109,9 +112,14 @@ private const val UNASSIGNED = -1
 // with this many 0xFF bytes sorts after every key under it while still sharing its prefix.
 internal const val KEY_TAIL_PAD = 32
 
-// One cache for every column family. An unconfigured family quietly gets a 32 MiB cache of its own,
-// so leaving this out is not "no cache" but eight of them.
-internal const val BLOCK_CACHE_BYTES = 64L * 1024 * 1024
+// One cache for every column family of the ledger and of every world's base, with their memtables and
+// their index and filter blocks counted inside it: the whole native footprint of the plugin has this one
+// bound. An unconfigured family quietly gets a 32 MiB cache of its own, and a base memtables of 64 MiB
+// a family; left to themselves, the ledger and three worlds held some 700 MiB nobody had sized.
+internal const val BLOCK_CACHE_BYTES = 256L * 1024 * 1024
+
+// Of that, what memtables of all the bases together may hold before the fullest is flushed.
+internal const val MEMTABLE_BYTES = 64L * 1024 * 1024
 internal const val BLOOM_BITS_PER_KEY = 10.0
 
 // The ledger takes every write; the rest hold a handful of small rows each and have no use for the
@@ -161,15 +169,35 @@ internal fun afterPrefix(prefix: ByteArray): ByteArray {
     throw IllegalArgumentException("a prefix of nothing but 0xFF bytes has no key after it")
 }
 
+// Index and filter blocks live in the cache too: outside it a table reader keeps them for as long as
+// its file is open, and they grow with the data with nothing to bound them.
+internal fun tableIn(cache: Cache, filter: Filter? = null): BlockBasedTableConfig =
+    BlockBasedTableConfig()
+        .setBlockCache(cache)
+        .setCacheIndexAndFilterBlocks(true)
+        // The newest files are read the most, and evicting their index would cost a read per lookup.
+        .setPinL0FilterAndIndexBlocksInCache(true)
+        .also { table -> filter?.let { table.setFilterPolicy(it) } }
+
 class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, PlacedForms {
-    private val dbOptions = DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true)
-    private val blockCache = LRUCache(BLOCK_CACHE_BYTES)
+    // Before any native object: a cache, unlike the option classes, does not load the library itself.
+    init {
+        RocksDB.loadLibrary()
+    }
+
+    // Lent to every world's base for as long as it is open, and the world bases close before this one.
+    internal val blockCache = LRUCache(BLOCK_CACHE_BYTES)
+    internal val writeBuffers = WriteBufferManager(MEMTABLE_BYTES, blockCache)
+    private val dbOptions = DBOptions()
+        .setCreateIfMissing(true)
+        .setCreateMissingColumnFamilies(true)
+        .setWriteBufferManager(writeBuffers)
     private val bloom = BloomFilter(BLOOM_BITS_PER_KEY)
 
     // Every family we ever ask for a single row by key wants the filter; the ones we only ever walk
     // would pay for it on every write and save nothing.
-    private val filteredTable = BlockBasedTableConfig().setBlockCache(blockCache).setFilterPolicy(bloom)
-    private val plainTable = BlockBasedTableConfig().setBlockCache(blockCache)
+    private val filteredTable = tableIn(blockCache, bloom)
+    private val plainTable = tableIn(blockCache)
 
     private val entriesOptions = compressed()
         .setTableFormatConfig(filteredTable)
@@ -745,8 +773,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, NestedOwners, Plac
         unfilteredOptions.close()
         // The table configs hold these, so they may only go once nothing can reach them.
         bloom.close()
-        blockCache.close()
         dbOptions.close()
+        writeBuffers.close()
+        blockCache.close()
     }
 
     override fun loadAll(): List<RegistryRow> = dbLock.read {

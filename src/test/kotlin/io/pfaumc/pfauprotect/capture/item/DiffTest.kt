@@ -386,20 +386,33 @@ class DiffTest {
         )
     }
 
-    // What an editor changed while the player was away, and nothing else: a stack moved between two
-    // slots unseen stands against itself, and only the surplus or the shortfall of a form is written.
+    // What changed while nobody watched, slot by slot: a stack moved between two slots unseen is a move,
+    // and only what one form gained or lost overall comes from or goes to nowhere.
     @Test
-    fun `an offline change is written where it shows and a move writes nothing`() {
+    fun `an unseen change is written where it shows and a move as a move`() {
         val diamond = FormKey("diamond".toByteArray())
         val slot0 = PlayerInv(player, 0)
+        val slot3 = PlayerInv(player, 3)
         val slot7 = PlayerInv(player, 7)
+        fun rows(live: Map<Holder, Map<FormKey, Int>>, booked: Map<Holder, Map<FormKey, Int>>) =
+            loadDifferences(live, booked).map { Triple(it.from, it.to, it.qty) }
 
-        assertTrue(loadDifferences(mapOf(slot7 to mapOf(diamond to 5)), mapOf(slot0 to mapOf(diamond to 5))).isEmpty())
+        assertEquals(listOf(Triple(slot0, slot7, 5)), rows(mapOf(slot7 to mapOf(diamond to 5)), mapOf(slot0 to mapOf(diamond to 5))))
+        assertEquals(emptyList<Triple<Holder, Holder, Int>>(), rows(mapOf(slot0 to mapOf(diamond to 5)), mapOf(slot0 to mapOf(diamond to 5))))
 
-        val gained = loadDifferences(mapOf(slot0 to mapOf(diamond to 5), slot7 to mapOf(diamond to 2)), mapOf(slot0 to mapOf(diamond to 5)))
-        assertEquals(listOf(Triple(slot7, 2, true)), gained.map { Triple(it.holder, it.qty, it.gained) })
-
-        val lost = loadDifferences(mapOf(slot7 to mapOf(diamond to 4)), mapOf(slot0 to mapOf(diamond to 5)))
-        assertEquals(listOf(Triple(slot0 as Holder, 1, false)), lost.map { Triple(it.holder, it.qty, it.gained) })
+        assertEquals(
+            listOf(Triple(Void, slot7, 2)),
+            rows(mapOf(slot0 to mapOf(diamond to 5), slot7 to mapOf(diamond to 2)), mapOf(slot0 to mapOf(diamond to 5))),
+        )
+        assertEquals(
+            listOf(Triple(slot0, slot7, 4), Triple(slot0, Void, 1)),
+            rows(mapOf(slot7 to mapOf(diamond to 4)), mapOf(slot0 to mapOf(diamond to 5))),
+        )
+        // Ten and five taken out of two slots and booked out of a third, as the copper golem's were once:
+        // two slots hold less than the ledger says, the third more by as much.
+        assertEquals(
+            listOf(Triple(slot3, slot0, 10), Triple(slot7, slot0, 5)),
+            rows(mapOf(slot0 to mapOf(diamond to 15)), mapOf(slot3 to mapOf(diamond to 10), slot7 to mapOf(diamond to 5))),
+        )
     }
 }

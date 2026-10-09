@@ -79,18 +79,24 @@ class PreviewSlotTest {
     // tells them apart, and only while the click is delivered.
     @Test
     fun `a special recipe in the crafting grid is named for what it does`() {
-        val cloning = Proxy.newProxyInstance(
-            org.bukkit.inventory.ComplexRecipe::class.java.classLoader,
-            arrayOf(org.bukkit.inventory.ComplexRecipe::class.java),
-        ) { _, method, _ -> if (method.name == "getKey") NamespacedKey.minecraft("book_cloning") else null }
-        val grid = Proxy.newProxyInstance(CraftingInventory::class.java.classLoader, arrayOf(CraftingInventory::class.java)) { _, method, _ ->
-            when (method.name) {
-                "getSize" -> 10
-                "getRecipe" -> cloning
-                else -> null
-            }
-        } as Inventory
-        assertEquals(Cause.BOOK_COPY, shiftOf(grid)!!.consume)
+        fun grid(key: String): Inventory {
+            val recipe = Proxy.newProxyInstance(
+                org.bukkit.inventory.ComplexRecipe::class.java.classLoader,
+                arrayOf(org.bukkit.inventory.ComplexRecipe::class.java),
+            ) { _, method, _ -> if (method.name == "getKey") NamespacedKey.minecraft(key) else null }
+            return Proxy.newProxyInstance(CraftingInventory::class.java.classLoader, arrayOf(CraftingInventory::class.java)) { _, method, _ ->
+                when (method.name) {
+                    "getSize" -> 10
+                    "getRecipe" -> recipe
+                    else -> null
+                }
+            } as Inventory
+        }
+        assertEquals(Cause.BOOK_COPY, shiftOf(grid("book_cloning"))!!.consume)
+        assertEquals(Cause.DYE_ITEM, shiftOf(grid("leather_chestplate_dyed"))!!.consume)
+        assertEquals(Cause.DYE_ITEM, shiftOf(grid("red_shulker_box"))!!.consume)
+        assertEquals(Cause.BANNER_DUPLICATE, shiftOf(grid("white_banner_duplicate"))!!.consume)
+        assertEquals(Cause.CRAFT_CONSUME, shiftOf(grid("shulker_box"))!!.consume)
         assertEquals(Cause.CRAFT_CONSUME, shiftOf(sized(CraftingInventory::class.java, 10))!!.consume)
     }
 
@@ -122,6 +128,15 @@ class PreviewSlotTest {
         val held = mapOf(0 to "sword".toByteArray(), 5 to "gold_ingot".toByteArray())
         assertEquals(5, heldSlotOf(held, "gold_ingot".toByteArray()))
         assertNull(heldSlotOf(held, "rotten_flesh".toByteArray()))
+    }
+
+    // A golem dies holding three copper ingots and its loot is one more: the one falls first and is the
+    // loot, the three after it are the hand.
+    @Test
+    fun `a mob's own loot of the form it holds is not taken for what it held`() {
+        assertEquals(false, heldDrop(need = 1, holding = 3, later = listOf(3)))
+        assertEquals(true, heldDrop(need = 3, holding = 3, later = emptyList()))
+        assertEquals(true, heldDrop(need = 1, holding = null, later = listOf(3)))
     }
 
     // A boat is removed before it drops: its drop still finds the slot, once, and the rest is left to

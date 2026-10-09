@@ -1,11 +1,13 @@
 package io.pfaumc.pfauprotect.capture.block
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -14,7 +16,8 @@ class SpawnOriginsTest {
     private val world = UUID.randomUUID()
     private val written = ArrayList<Transfer>()
     private val coalescer = TickCoalescer(written::add)
-    private val origins = SpawnOrigins(coalescer)
+    private var clock = 0L
+    private val origins = SpawnOrigins(coalescer) { clock }
 
     private val dropper = Container(world, 4, 70, 8, 2)
     private val honeycomb = ItemKey("honeycomb".toByteArray(), null)
@@ -37,6 +40,73 @@ class SpawnOriginsTest {
         assertEquals(dropper, row.from)
         assertEquals(ItemEntityRef(entity), row.to)
         assertEquals(1, row.qty)
+    }
+
+    // A villager's harvest falls in another count than the roll the note was made from: the note takes
+    // the whole stack, and an exact note at the same spot is served first.
+    @Test
+    fun `a note made from a loot roll takes whatever of its form lands`() {
+        val carrot = ItemKey("carrot".toByteArray(), null)
+        origins.expect(Void, Cause.BLK_MOB_GRIEF, carrot, at, 2, rolled = true)
+        origins.expect(dropper, Cause.CONTAINER_BREAK_DROP, carrot, at, 1)
+
+        assertEquals(4, origins.claim(UUID.randomUUID(), at, carrot, 4))
+        assertEquals(setOf(dropper to 1, Void to 3), rows().map { it.from to it.qty }.toSet())
+    }
+
+    // A vine drops itself one time in three, and the roll a note was made from need not be the roll the
+    // server made. What lands by the block in a form no note names still came out of it, after every
+    // note that names its form has had its share, and only near the block.
+    @Test
+    fun `a note for any form takes what no other note names`() {
+        val vine = ItemKey("twisting_vines".toByteArray(), null)
+        origins.expect(dropper, Cause.CONTAINER_BREAK_DROP, vine, at, 1)
+        origins.expectAny(Void, Cause.BLK_FADE, at, null)
+
+        assertEquals(2, origins.claim(UUID.randomUUID(), at, vine, 2))
+        assertEquals(setOf(dropper to 1, Void to 1), rows().map { it.from to it.qty }.toSet())
+        assertEquals(Cause.BLK_FADE, rows().single { it.from == Void }.cause)
+        assertEquals(0, origins.claim(UUID.randomUUID(), Spot(world, 40.0, 70.0, 8.0), vine, 1))
+    }
+
+    // A command's drop is waited for until a moment; after it, a stack the player throws is their own.
+    @Test
+    fun `a thrown note takes nothing past its deadline`() {
+        val player = UUID.randomUUID()
+        origins.expectThrown(player, Void, Cause.CMD_GIVE, stone, 1, until = 100)
+
+        clock = 101
+        assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1, thrower = player))
+        clock = 100
+        assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1, thrower = player))
+    }
+
+    // Only what falls in the same tick: a stranger's item dropped by the block a tick later is not its drop.
+    @Test
+    fun `a note for any form takes nothing a tick later`() {
+        val vine = ItemKey("twisting_vines".toByteArray(), null)
+        origins.expectAny(Void, Cause.BLK_FADE, at, null)
+
+        clock += 60
+        assertEquals(0, origins.claim(UUID.randomUUID(), at, vine, 1))
+    }
+
+    // A cart a dispenser put on a rail takes the note the dispenser left for its item, into the slot the
+    // cart holds it in, and the dispenser counts the item gone out. A block's drop is never a cart.
+    @Test
+    fun `a cart a dispenser put down takes the note left for its item`() {
+        val cart = ItemKey("minecart".toByteArray(), null)
+        val held = EntitySlot(UUID.randomUUID(), 16)
+        origins.expectAny(Void, Cause.BLK_FADE, at, null)
+        assertFalse(origins.claimInto(held, at, cart))
+
+        val ejected = origins.expect(dropper, Cause.DISPENSER_EJECT, cart, at, 1)
+        assertTrue(origins.claimInto(held, Spot(world, 5.6, 70.0, 8.5), cart))
+        assertEquals(1, ejected())
+        val row = rows().single()
+        assertEquals(dropper, row.from)
+        assertEquals(held, row.to)
+        assertEquals(Cause.DISPENSER_EJECT, row.cause)
     }
 
     @Test
@@ -155,5 +225,20 @@ class SpawnOriginsTest {
 
         origins.sweep()
         assertTrue(origins.isEmpty)
+    }
+
+    // What a full inventory throws out after a give lands wherever its player has got to, so the note
+    // follows the thrower, outlives the sweeps and is left alone by a drop from anybody else.
+    @Test
+    fun `a note for a thrower is claimed by that thrower's drop anywhere`() {
+        val player = UUID.randomUUID()
+        origins.expectThrown(player, Void, Cause.CMD_GIVE, stone, 1, System.currentTimeMillis() + 60_000)
+        origins.sweep()
+        origins.sweep()
+        val far = Spot(at.world, at.x + 500, at.y, at.z)
+
+        assertEquals(0, origins.claim(UUID.randomUUID(), far, stone, 1, UUID.randomUUID()))
+        assertEquals(1, origins.claim(UUID.randomUUID(), far, stone, 1, player))
+        assertEquals(Cause.CMD_GIVE, rows().single().cause)
     }
 }

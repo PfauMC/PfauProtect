@@ -108,14 +108,12 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
   `MenuSlot` is left only for ownerless GUIs.
 - PHASE2-FACTS records verified Canvas event behaviour, for example `EntityRemoveEvent` can fire twice and
   `PlayerRespawnEvent` never fires. Read it before writing a listener.
-- TESTING-v5 is the live run for SPEC-v5, in progress; TESTING-v5-RESULTS holds it so far, with D17–D27.
-  Section 5.8 (X1–X22) is the next run.
-  TESTING-v4-RESULTS holds the v4 run,
-  the D1–D16 defects and the v3 leftovers (R1).
+- TESTING-v5 is the live run for SPEC-v5, closed on 2026-10-03. TESTING-v5-RESULTS holds it: the D17–D50
+  defects, the O2–O11 observations and the stop tally of every session. TESTING-v4-RESULTS holds the v4
+  run, the D1–D16 defects and the v3 leftovers (R1).
 - TESTING-v3 / TESTING-v3-RESULTS is the manual test plan and its 2026-08-18 run. Sections B–F must be run in
   survival. TESTING-v4 covers crafting and stations, plus section R with the unrun v3 items and re-checks
-  of every fix made since v3. TESTING-v4-RESULTS holds its 2026-09-29 run and the D1–D11 defects; section E
-  was not checked, blocked by D4 (`onDisable` failing with a block window open).
+  of every fix made since v3.
 - `/pp lookup` reads by position, or with `player:<name>` by a player's own holders (inventory, equipment,
   cursor, ender chest, crafting grid). `user:` is something else: a filter on the actor of positional rows.
 

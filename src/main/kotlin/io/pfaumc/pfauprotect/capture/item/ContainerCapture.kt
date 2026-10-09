@@ -3,7 +3,6 @@ import io.canvasmc.canvas.event.PlayerPostRespawnAsyncEvent
 import io.pfaumc.pfauprotect.model.Cause
 import com.destroystokyo.paper.event.player.PlayerRecipeBookClickEvent
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 import io.pfaumc.pfauprotect.storage.EncodedItem
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
@@ -343,18 +342,23 @@ internal fun playerHolders(uuid: UUID, inventory: PlayerInventory): (Int) -> Hol
 // book, a copied banner, a scaled map — consumes and produces rather than mutates, so its two sides
 // carry the ordinary form. The rest hand back the very item that went in, changed.
 // The special recipes that copy or recolour rather than make, named by the game's own recipe key.
+// Dyeing and copying a banner are a recipe per item or per colour: `leather_chestplate_dyed`,
+// `red_shulker_box`, `white_banner_duplicate`.
 private val SPECIAL_CRAFTS = mapOf(
-    "armor_dye" to Cause.DYE_ITEM,
-    "shulker_box_coloring" to Cause.DYE_ITEM,
     "book_cloning" to Cause.BOOK_COPY,
-    "banner_duplicate" to Cause.BANNER_DUPLICATE,
     "map_cloning" to Cause.MAP_CLONE,
     "map_extending" to Cause.MAP_SCALE_LOCK,
 )
 
+private fun specialCraft(key: String): Cause? = when {
+    key.endsWith("_dyed") || key.endsWith("_shulker_box") -> Cause.DYE_ITEM
+    key.endsWith("_banner_duplicate") -> Cause.BANNER_DUPLICATE
+    else -> SPECIAL_CRAFTS[key]
+}
+
 internal fun shiftOf(top: Inventory): Shift? = when (top) {
     // Read while the click is delivered, like the smithing recipe below: the match is gone after it.
-    is CraftingInventory -> (top.recipe as? Keyed)?.key?.takeIf { it.namespace == "minecraft" }?.let { SPECIAL_CRAFTS[it.key] }
+    is CraftingInventory -> (top.recipe as? Keyed)?.key?.takeIf { it.namespace == "minecraft" }?.let { specialCraft(it.key) }
         ?.let { Shift(it, it, Kind.TRANSFER, Cause.CRAFT_REMAINDER) }
         ?: Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
     is AnvilInventory -> Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
@@ -425,33 +429,38 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
 // Long enough for every row about the moment of a reading to have left the writer's queue.
 private const val RECONCILE_DELAY_SECONDS = 2L
 
-internal class LoadDifference(val holder: Holder, val form: ByteArray, val qty: Int, val gained: Boolean)
+internal class LoadDifference(val from: Holder, val to: Holder, val form: ByteArray, val qty: Int)
 
 /**
- * Where a difference between a player's slots and the ledger shows. Counted by form and not by slot,
- * so an item moved between two slots unseen stands against itself and writes nothing; what is left is
- * put on the slots that hold more of the form than they were booked, or were booked more than they
- * hold.
+ * Where a difference between a player's slots and the ledger shows, slot by slot. Within a form, a
+ * slot booked more than it holds and one holding more than it was booked are a move nobody saw, and
+ * are written as one: left alone, the ledger would go on placing the item in a slot that never held
+ * it. What is left over on either side came from nowhere or went nowhere.
  */
 internal fun loadDifferences(
     live: Map<Holder, Map<FormKey, Int>>,
     booked: Map<Holder, Map<FormKey, Int>>,
 ): List<LoadDifference> {
+    fun ArrayDeque<Pair<Holder, Int>>.spend(qty: Int) {
+        val (holder, left) = removeFirst()
+        if (left > qty) addFirst(holder to left - qty)
+    }
     val forms = (live.values.flatMap { it.keys } + booked.values.flatMap { it.keys }).toSet()
     val differences = ArrayList<LoadDifference>()
     for (form in forms) {
         val excess = (live.keys + booked.keys).associateWith { holder ->
             (live[holder]?.get(form) ?: 0) - (booked[holder]?.get(form) ?: 0)
         }
-        val total = excess.values.sum()
-        if (total == 0) continue
-        val gained = total > 0
-        var left = abs(total)
-        for ((holder, own) in excess.entries.sortedByDescending { if (gained) it.value else -it.value }) {
-            val take = minOf(left, if (gained) own else -own)
-            if (take <= 0) break
-            differences += LoadDifference(holder, form.form, take, gained)
-            left -= take
+        // Largest first, so a stack moved whole is one row.
+        val over = ArrayDeque(excess.filterValues { it > 0 }.entries.sortedByDescending { it.value }.map { it.key to it.value })
+        val short = ArrayDeque(excess.filterValues { it < 0 }.entries.sortedBy { it.value }.map { it.key to -it.value })
+        while (over.isNotEmpty() || short.isNotEmpty()) {
+            val (to, wanted) = over.firstOrNull() ?: (Void to Int.MAX_VALUE)
+            val (from, spare) = short.firstOrNull() ?: (Void to Int.MAX_VALUE)
+            val qty = minOf(wanted, spare)
+            differences += LoadDifference(from, to, form.form, qty)
+            if (over.isNotEmpty()) over.spend(qty)
+            if (short.isNotEmpty()) short.spend(qty)
         }
     }
     return differences
@@ -553,8 +562,8 @@ class ContainerCaptureListener(
         val rows = differences.map { difference ->
             Transfer(
                 cause = Cause.INVENTORY_LOAD,
-                from = if (difference.gained) Void else difference.holder,
-                to = if (difference.gained) difference.holder else Void,
+                from = difference.from,
+                to = difference.to,
                 form = difference.form,
                 damage = null,
                 qty = difference.qty,
@@ -691,9 +700,15 @@ class ContainerCaptureListener(
         // the position took over, the tool would be handed back whole when the fire goes out, writing
         // off an item that is still in somebody's inventory.
         if (inHand.type.maxDurability > 0) return
+        // Powder snow out of its bucket is placed like a block and leaves the empty bucket, and the
+        // snow holds no item of its own.
+        if (inHand.type == Material.POWDER_SNOW_BUCKET) {
+            intend(event.player, mutation(Cause.BUCKET_EMPTY))
+            return
+        }
         // Wax, an eye of ender, a fire charge: the server raises a placement for what they do to a
         // block, but they are not what the block is made of.
-        if (!inHand.type.isBlock) return
+        if (!placesBlock(inHand.type)) return
         val form = codec.encodeOrNull(inHand)?.form ?: return
         val block = event.block
         placed.setFormAt(block.world.uid, block.x, block.y, block.z, form)
@@ -805,8 +820,10 @@ class ContainerCaptureListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDrag(event: InventoryDragEvent) {
         val player = event.whoClicked as? Player ?: return
-        // For the same reason as a click: the drag starts from whatever the window holds now.
-        recompute(player)
+        // For the same reason as a click: the drag starts from whatever the window holds now. The server
+        // has already put the remainder on the cursor, though, and fills the slots only after this, so
+        // the cursor is taken as it was before the drag.
+        recompute(player, cursor = event.oldCursor)
         intend(player, Intent(Cause.QUICK_CRAFT_DISTRIBUTE))
     }
 
@@ -1115,7 +1132,9 @@ class ContainerCaptureListener(
         player.scheduler.run(plugin, { recompute(player) }, null)
     }
 
-    internal fun recompute(player: Player) {
+    // `cursor` stands in for what the player holds on the cursor, for the one event that changes it
+    // before it is raised.
+    internal fun recompute(player: Player, cursor: BukkitItemStack? = null) {
         // Drained before anything can cut the pass short: a player who was already online when the
         // plugin came up has no baseline yet, and intents left behind would pile up until the first
         // one appeared and then explain a delta they had nothing to do with.
@@ -1127,7 +1146,7 @@ class ContainerCaptureListener(
             for (intent in taken) intent.qty?.let { unspent(intent, it) }
             return
         }
-        val after = snapshot(player, baseline.view)
+        val after = snapshot(player, baseline.view, cursor)
         baselines[player.uniqueId] = Baseline(baseline.view, after)
         val (was, now) = comparable(baseline.seen, after)
         // One item that became another is a mutation; a recipe that ate three and made one is not, so
@@ -1151,7 +1170,9 @@ class ContainerCaptureListener(
         }
         // After the movements, so a bundle picked up unnamed arrives under the form it was carried in.
         for (rows in namingRows(after, timestamp)) sink(rows)
-        val lingering = taken.filter { it.until != null && it.until > timestamp && it !in spent }
+        // Only a command leaves a reason that can wait, so most passes have nothing to ask the tick for.
+        val waiting = taken.filter { it.untilTick != null && it !in spent }
+        val lingering = if (waiting.isEmpty()) waiting else Bukkit.getCurrentTick().let { tick -> waiting.filter { it.lingers(tick) } }
         if (lingering.isNotEmpty()) {
             for (intent in lingering) intents.add(player.uniqueId, intent)
             scheduleRecompute(player)
@@ -1175,7 +1196,7 @@ class ContainerCaptureListener(
         return (0 until top.size).mapTo(HashSet()) { holders(it) }
     }
 
-    private fun snapshot(player: Player, view: InventoryView): Snapshot {
+    private fun snapshot(player: Player, view: InventoryView, cursor: BukkitItemStack? = null): Snapshot {
         val stacks = LinkedHashMap<Holder, Stack>()
         val containers = HashSet<UUID>()
         val named = HashMap<Holder, Naming>()
@@ -1191,7 +1212,7 @@ class ContainerCaptureListener(
         val inventory = player.inventory
         val holders = playerHolders(player.uniqueId, inventory)
         for (slot in 0 until inventory.size) record(stacks, containers, named, holders(slot), inventory.getItem(slot))
-        record(stacks, containers, named, PlayerCursor(player.uniqueId), player.itemOnCursor)
+        record(stacks, containers, named, PlayerCursor(player.uniqueId), cursor ?: (player.itemOnCursor as BukkitItemStack?))
         return Snapshot(stacks, containers, named)
     }
 

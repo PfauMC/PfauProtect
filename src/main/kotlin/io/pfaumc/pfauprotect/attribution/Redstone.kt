@@ -68,7 +68,7 @@ internal const val WIRE_WALK = 64
 private const val TRIPWIRE_SPAN = 41
 
 // A switch pressed by hand fires its own redstone change inside the same call, well within this.
-private const val PRESS_NANOS = 50_000_000L
+internal const val PRESS_NANOS = 50_000_000L
 
 /**
  * Whose energy is running through a position: the player who pressed, placed, broke or moved
@@ -213,6 +213,14 @@ private const val MAX_STACK = 8
 /** Who stands behind what set a switch off, and how far away they were when they only stood near. */
 class Behind(val by: Attributed?, val distance: Double? = null)
 
+/**
+ * The positions an explosion announced it is about to press or pull, for the switch changes it raises
+ * from inside the same call: a lever or a button a wind charge or a mace's burst reaches.
+ */
+internal class Blast(val at: Set<WorldBlock>, val cause: Cause, val behind: Behind, val type: String?, val nanos: Long) {
+    fun covers(position: WorldBlock, now: Long) = position in at && now - nanos <= PRESS_NANOS
+}
+
 // A step taken is worked out, whatever was seen at the start of it.
 internal fun Attributed.inferred(): Attributed =
     if (confidence == Confidence.FACT) copy(confidence = Confidence.INFERRED) else this
@@ -312,6 +320,7 @@ class RedstoneListener(
 
     private val pressing = ThreadLocal<Pressed?>()
     private val stepping = ThreadLocal<Stepped?>()
+    private val blasting = ThreadLocal<Blast?>()
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onInteract(event: PlayerInteractEvent) {
@@ -362,6 +371,11 @@ class RedstoneListener(
             switched(block, after, Cause.BLK_ENTITY_SWITCH, step.behind, step.type)
             return
         }
+        val blast = blasting.get()
+        if (blast != null && isSwitch(block.type) && blast.covers(at, now)) {
+            switched(block, after, blast.cause, blast.behind, blast.type)
+            return
+        }
         // A detector rail raises nothing that names the cart on it, so the cart is looked for.
         if (block.type == Material.DETECTOR_RAIL && event.newCurrent > 0) {
             val cart = block.world.getNearbyEntities(BoundingBox.of(block)) { it is Minecart }.firstOrNull()
@@ -391,12 +405,27 @@ class RedstoneListener(
 
     // The explosion is announced before it presses the buttons and flips the levers, doors and
     // trapdoors in its reach, so each of them finds the note of whoever set it off. A wind charge is
-    // the explosion a player sets off on purpose.
+    // the explosion a player sets off on purpose. A switch it reaches gets a row of its own, as one an
+    // arrow hits does: by hand for a mace's burst, whose source is the player who swung it, and by the
+    // charge, with its thrower behind it, otherwise.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onExplode(event: EntityExplodeEvent) {
-        val by = behind(event.entity)?.inferred() ?: return
+        val source = event.entity
+        val by = behind(source)?.inferred()
+        val positions = event.blockList().map(::positionOf)
+        val swung = source is Player
+        blasting.set(
+            Blast(
+                positions.toSet(),
+                if (swung) Cause.BLK_PLAYER_SWITCH else Cause.BLK_ENTITY_SWITCH,
+                Behind(by),
+                if (swung) null else typeOf(source),
+                System.nanoTime(),
+            )
+        )
+        if (by == null) return
         energy.note(positionOf(event.location.block), by)
-        for (block in event.blockList()) energy.note(positionOf(block), by)
+        for (at in positions) energy.note(at, by)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

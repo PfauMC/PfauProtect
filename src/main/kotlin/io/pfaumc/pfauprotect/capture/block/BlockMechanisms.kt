@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.capture.item.Intent
 import io.papermc.paper.event.block.BlockPreDispenseEvent
 import io.papermc.paper.event.block.CompostItemEvent
 import io.papermc.paper.event.block.PlayerShearBlockEvent
@@ -79,6 +80,9 @@ private const val COMPOSTER_FULL_LEVEL = 7
 // throws.
 internal const val SPAWN_REACH = 2.0
 
+// A tick, for a note that may only take what falls in the call that made it.
+private const val SAME_TICK_MILLIS = 50L
+
 data class Spot(val world: UUID, val x: Double, val y: Double, val z: Double)
 
 internal fun spotOf(at: Location) = Spot(at.world.uid, at.x, at.y, at.z)
@@ -116,7 +120,7 @@ internal fun gaveBack(remembered: ByteArray?, shell: ByteArray?): ByteArray? {
 // A block that puts an item into the world explains itself before that item exists: the event
 // carrying the reason fires first and the entity carrying the uuid appears inside the same call. A
 // note bridges the two, and a note nobody claims is dropped rather than guessed at.
-class SpawnOrigins(private val pending: TickCoalescer) {
+class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> Long = System::currentTimeMillis) {
     private class Note(
         // Null when the movement is written by whoever filed the note. Breaking a block already
         // names both ends in one transaction, and the birth that follows must not be booked twice.
@@ -132,6 +136,16 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         val actor: UUID?,
         val reach: Double = SPAWN_REACH,
         val confidence: Confidence = Confidence.FACT,
+        // Matched by who threw the item rather than by where it landed, and kept until a moment
+        // rather than for two sweeps: a command's drop lands wherever its player is by the time it runs.
+        val thrower: UUID? = null,
+        val until: Long? = null,
+        // Made from a roll of the block's loot rather than from what really fell: carrots, seeds and
+        // the like come out in another count each roll, so the note takes whatever of its form lands
+        // near it until it is swept, and is asked only after every exact note has had its turn.
+        val rolled: Boolean = false,
+        // When a note for any form was made: what falls by the block in a later tick is not its drop.
+        val made: Long? = null,
     ) {
         var swept = false
     }
@@ -182,9 +196,10 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         qty: Int,
         actor: UUID? = null,
         reach: Double = SPAWN_REACH,
+        rolled: Boolean = false,
     ): () -> Int {
         if (qty <= 0) return { 0 }
-        val note = Note(from, cause, key, at, null, qty, actor, reach)
+        val note = Note(from, cause, key, at, null, qty, actor, reach, rolled = rolled)
         notes += note
         return { qty - note.qty }
     }
@@ -202,6 +217,21 @@ class SpawnOrigins(private val pending: TickCoalescer) {
         notes += Note(from, cause, key, null, entity, qty, actor, confidence = confidence)
     }
 
+    /**
+     * Whatever lands by a block the world destroyed in a form no other note names. A drop left to chance
+     * is rolled again by the server, and its roll can bring what the roll a note was made from did not:
+     * a vine one time in three, a sapling out of leaves, flint out of gravel. Asked after every other
+     * note, so it takes only what nothing else explains.
+     */
+    fun expectAny(from: Holder, cause: Cause, at: Spot, actor: UUID?, reach: Double = SPAWN_REACH) {
+        notes += Note(from, cause, null, at, null, 0, actor, reach, rolled = true, made = clock())
+    }
+
+    fun expectThrown(thrower: UUID, from: Holder, cause: Cause, key: ItemKey, qty: Int, until: Long) {
+        if (qty <= 0) return
+        notes += Note(from, cause, key, null, null, qty, null, thrower = thrower, until = until)
+    }
+
     /** The birth of this entity is written by its own transaction, so the spawn must stay silent. */
     fun accounted(entity: UUID, qty: Int) {
         if (qty <= 0) return
@@ -214,25 +244,49 @@ class SpawnOrigins(private val pending: TickCoalescer) {
     // Returns how much of the spawn a note accounted for; what is left over is a birth nobody
     // explained, and the caller books it as such rather than letting it pass unrecorded.
     @Synchronized
-    fun claim(entity: UUID, at: Spot, key: ItemKey, count: Int): Int {
+    fun claim(entity: UUID, at: Spot, key: ItemKey, count: Int, thrower: UUID? = null): Int {
+        val into = ItemEntityRef(entity)
+        val now = clock()
         // A note that names the entity is exact, so it goes first: a note left at the same block for
         // some other reason must not take the quantity out from under it.
-        val named = take(entity, key, count) { it.entity == entity }
-        val nearby = take(entity, key, count - named) { it.entity == null && it.key == key && near(it.at!!, at, it.reach) }
-        return named + nearby
+        val named = take(into, key, count) { it.entity == entity }
+        val thrown = if (thrower == null) 0 else take(into, key, count - named) {
+            it.thrower == thrower && it.key == key && now <= it.until!!
+        }
+        val nearby = take(into, key, count - named - thrown) { placedFor(it, at, key) }
+        val rolled = take(into, key, count - named - thrown - nearby) {
+            it.rolled && it.key == key && near(it.at!!, at, it.reach)
+        }
+        val anyForm = take(into, key, count - named - thrown - nearby - rolled) {
+            it.rolled && it.key == null && now - it.made!! <= SAME_TICK_MILLIS && near(it.at!!, at, it.reach)
+        }
+        return named + thrown + nearby + rolled + anyForm
     }
 
-    private inline fun take(entity: UUID, key: ItemKey, count: Int, matches: (Note) -> Boolean): Int {
+    /**
+     * An item a dispenser puts down as an entity of another kind — a cart on a rail, a boat on water —
+     * claimed by that entity, into the slot it holds the item in, from the note the dispenser left for
+     * the item to come out. Only a note naming the item at that spot will do: a block's drop is never a
+     * cart.
+     */
+    @Synchronized
+    fun claimInto(into: Holder, at: Spot, key: ItemKey): Boolean = take(into, key, 1) { placedFor(it, at, key) } == 1
+
+    private fun placedFor(note: Note, at: Spot, key: ItemKey) =
+        !note.rolled && note.entity == null && note.thrower == null && note.key == key && near(note.at!!, at, note.reach)
+
+    private inline fun take(into: Holder, key: ItemKey, count: Int, matches: (Note) -> Boolean): Int {
         var left = count
         val notes = notes.iterator()
         while (notes.hasNext() && left > 0) {
             val note = notes.next()
             if (!matches(note)) continue
-            val qty = minOf(left, note.qty)
+            val qty = if (note.rolled) left else minOf(left, note.qty)
             if (note.from != null) {
-                pending.add(note.from, ItemEntityRef(entity), note.cause, key, qty, note.actor, note.confidence)
+                pending.add(note.from, into, note.cause, key, qty, note.actor, note.confidence)
             }
             left -= qty
+            if (note.rolled) continue
             note.qty -= qty
             if (note.qty <= 0) notes.remove()
         }
@@ -243,9 +297,15 @@ class SpawnOrigins(private val pending: TickCoalescer) {
     // go before the spawn that follows it microseconds later.
     @Synchronized
     fun sweep() {
+        val now = clock()
         val notes = notes.iterator()
         while (notes.hasNext()) {
             val note = notes.next()
+            val until = note.until
+            if (until != null) {
+                if (now > until) notes.remove()
+                continue
+            }
             if (note.swept) notes.remove() else note.swept = true
         }
         val boxes = boxes.iterator()
@@ -276,6 +336,18 @@ internal fun brewed(
     val was = before[slot] ?: return@mapNotNull null
     val became = after.getOrNull(slot) ?: return@mapNotNull null
     if (was == became) null else Triple(slot, was, became)
+}
+
+// A shulker keeps what it held inside the item it drops, and that move is written elsewhere.
+// A jukebox, a bookshelf, a pot, a lectern, a shelf and a campfire spill what they hold just as a
+// chest does, and their slots are the ones a click filled.
+internal fun spilled(state: BlockState?): Array<BukkitItemStack?> = when (state) {
+    is ShulkerBox -> emptyArray()
+    // One half of a double chest: the inventory of a live chest is both halves together.
+    is ContainerBlock -> state.snapshotInventory.contents
+    is TileStateInventoryHolder -> state.snapshotInventory.contents
+    is Campfire -> Array(state.size) { state.getItem(it) }
+    else -> emptyArray()
 }
 
 // A dispense spawns what it spawns inside its own call, a tick at most after the pre-dispense event,
@@ -327,6 +399,8 @@ class BlockMechanismListener(
     private val energy: Energy = Energy(),
     private val entities: EntityOrigins = EntityOrigins(),
     private val owners: NestedOwners? = null,
+    // Leaves a reason for the next pass over a player's slots, which are the pass's alone to write.
+    private val intend: (Player, Intent) -> Unit = { _, _ -> },
     // Runs a task on the block's own region a tick later.
     private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
@@ -386,12 +460,23 @@ class BlockMechanismListener(
         val block = event.block
         val item = event.item
         val key = key(item) ?: return
-        val load = loaded.get()?.takeIf { it.at == positionOf(block) } ?: return
+        val at = positionOf(block)
+        // A carved pumpkin and a skull raise the plain event first and then, from inside the same call,
+        // the armour event when they end up on a head. The second takes over the dispense the first
+        // began, and the first's reading of the dispenser a tick later stands down.
+        val begun = if (event is BlockDispenseArmorEvent) dispensed.get()?.takeIf { it.at == at } else null
+        begun?.equipped = true
+        val load = begun?.load ?: loaded.get()?.takeIf { it.at == at } ?: return
         loaded.remove()
         val slot = load.slot
         val from = containerAt(block, slot)
         if (event is BlockDispenseArmorEvent) {
             val target = event.targetEntity
+            // Armour put on a player lands in a slot of the player's own, written by the pass.
+            if (target is Player) {
+                intend(target, Intent(Cause.DISPENSER_BEHAVIOR, from = from, form = key.form, qty = item.amount, actor = load.actor))
+                return
+            }
             val equipped = EntitySlot(target.uniqueId, equipmentSlotOf(target, item))
             bookHeld(target, equipped.slot, key.form)
             pending.add(from, equipped, Cause.DISPENSER_BEHAVIOR, key, item.amount, load.actor)
@@ -406,10 +491,19 @@ class BlockMechanismListener(
         val projectile = stack.item is ProjectileItem
         val front = (block.blockData as? Directional)?.facing?.let(block::getRelative)
         val frontBefore = front?.blockData?.asString
+        val started = Dispensed(at, load)
+        dispensed.set(started)
         later(block) {
+            if (started.equipped) return@later
             settleDispense(block, slot, load.before, ejected(), projectile, load.actor, front, frontBefore, stack)
         }
     }
+
+    private class Dispensed(val at: WorldBlock, val load: Loaded) {
+        @Volatile var equipped = false
+    }
+
+    private val dispensed = ThreadLocal<Dispensed?>()
 
     private fun settleDispense(
         block: Block,
@@ -730,24 +824,12 @@ class BlockMechanismListener(
 
     private fun forget(at: WorldBlock) = placed.clearFormAt(at.world, at.x, at.y, at.z)
 
-    // A shulker keeps what it held inside the item it drops, and that move is written elsewhere.
-    // A jukebox, a bookshelf, a pot, a lectern, a shelf and a campfire spill what they hold just as a
-    // chest does, and their slots are the ones a click filled.
-    private fun spilled(state: BlockState): Array<BukkitItemStack?> = when (state) {
-        is ShulkerBox -> emptyArray()
-        // One half of a double chest: the inventory of a live chest is both halves together.
-        is ContainerBlock -> state.snapshotInventory.contents
-        is TileStateInventoryHolder -> state.snapshotInventory.contents
-        is Campfire -> Array(state.size) { state.getItem(it) }
-        else -> emptyArray()
-    }
-
     // What the block was made of, not what breaking it yields: a crop answers with the seed it was
     // planted from, and a block with no item form of its own — fire, a liquid, a portal — answers
     // with nothing and so is never written off.
     private fun shellForm(state: BlockState): ByteArray? {
         val data = state.blockData as CraftBlockData
-        val stack = NmsItemStack(data.state.block.asItem())
+        val stack = NmsItemStack(itemOf(data.state.block))
         return if (stack.isEmpty) null else codec.encode(stack).form
     }
 

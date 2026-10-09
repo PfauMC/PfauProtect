@@ -193,7 +193,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val destruction = BlockDestructionListener(
             this, ledger.registries, blocks, attribution, codec, origins, entities, ledger, ledger, uncovered::submit,
             energy, touches,
-        )
+        ) { at, task -> server.regionScheduler.run(this, at) { task() } }
         val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)
         // Held before anything that can fail, so a failure on the way up still closes the ledger on
@@ -212,7 +212,7 @@ class PfauProtectPlugin : JavaPlugin() {
         // the load handler and after the bases opened by hand. Against the other handlers of equal
         // priority the order is free: nothing it reads is written by any of them.
         server.pluginManager.registerEvents(
-            BlockCaptureListener(blocks, attribution) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
+            BlockCaptureListener(blocks, attribution, touches) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
             this,
         )
         server.pluginManager.registerEvents(destruction, this)
@@ -251,7 +251,7 @@ class PfauProtectPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(NestedCaptureListener(ledger, codec, mechanisms), this)
         server.pluginManager.registerEvents(
             BlockMechanismListener(
-                codec, mechanisms, origins, ledger, uncovered::submit, energy, entities, ledger,
+                codec, mechanisms, origins, ledger, uncovered::submit, energy, entities, ledger, capture::intend,
             ) { block, task ->
                 server.regionScheduler.run(this, block.location) { task() }
             },

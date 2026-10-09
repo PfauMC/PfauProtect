@@ -27,6 +27,7 @@ import net.minecraft.world.item.Items
 import net.minecraft.world.item.LeadItem
 import net.minecraft.world.item.MinecartItem
 import net.minecraft.world.item.MobBucketItem
+import net.minecraft.world.level.material.Fluids
 import net.minecraft.world.item.NameTagItem
 import net.minecraft.world.item.ProjectileItem
 import net.minecraft.world.item.SpawnEggItem
@@ -34,6 +35,7 @@ import net.minecraft.world.item.WritableBookItem
 import org.bukkit.GameMode
 import org.bukkit.Material
 import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.craftbukkit.util.CraftMagicNumbers
 import org.bukkit.entity.Allay
 import org.bukkit.entity.Animals
 import org.bukkit.entity.ArmorStand
@@ -41,6 +43,7 @@ import org.bukkit.entity.Cat
 import org.bukkit.entity.ItemFrame
 import org.bukkit.entity.MushroomCow
 import org.bukkit.entity.Piglin
+import org.bukkit.entity.SulfurCube
 import org.bukkit.entity.Player
 import org.bukkit.entity.Sheep
 import org.bukkit.entity.Tameable
@@ -96,8 +99,8 @@ internal fun useCause(item: NmsItemStack, target: Material?): Cause? {
 // What the target entity makes of an item. Worked out by the caller from the entity, so that this
 // stays a plain function of what was used and on what kind of thing.
 internal class EntityTarget(
-    // A mob that takes the item into a slot of its own — an allay, a piglin — or a frame or a stand:
-    // the item goes somewhere the ledger can name, and that is written where it lands.
+    // A mob that takes the item into a slot of its own — an allay, a piglin, a sulfur cube — or a frame
+    // or a stand: the item goes somewhere the ledger can name, and that is written where it lands.
     val keeps: Boolean = false,
     val untamed: Boolean = false,
     val breedsOn: Boolean = false,
@@ -123,9 +126,18 @@ internal fun entityUseCause(item: NmsItemStack, target: EntityTarget = EntityTar
     }
 }
 
+/**
+ * Whether the item puts a block down when it is used: under the block's own name, or under another — a
+ * carrot plants carrots, a seed plants wheat, redstone lays wire, string strings a tripwire. Asked of
+ * `Material.isBlock`, the second kind are all items, and their placement would read as a use of the block
+ * and the item as gone nowhere. The use capture leaves every such item to the placement event, so the two
+ * have to agree on which items these are.
+ */
+internal fun placesBlock(type: Material) = CraftMagicNumbers.getItem(type) is BlockItem
+
 private fun spentElsewhere(item: NmsItemStack): Boolean {
     val kind = item.item
-    return kind is BlockItem || item.isDamageableItem || item.has(DataComponents.CONSUMABLE) ||
+    return kind is BlockItem ||item.isDamageableItem || item.has(DataComponents.CONSUMABLE) ||
         item.has(DataComponents.EQUIPPABLE) || kind is BucketItem || kind is MobBucketItem ||
         (kind is ProjectileItem && kind !is FireChargeItem) || kind is EnderpearlItem ||
         kind is BottleItem || kind is EmptyMapItem || kind is BundleItem || kind is WritableBookItem ||
@@ -146,7 +158,7 @@ internal fun cauldronCause(reason: ChangeReason): Cause? = when (reason) {
 
 // A changed item carries every reason on both of its sides: the empty bucket went and the full one came,
 // and neither happened without the other.
-internal fun mutation(cause: Cause, until: Long? = null) = Intent(cause, shift = Shift(cause, cause, Kind.MUTATE), until = until)
+internal fun mutation(cause: Cause, untilTick: Int? = null) = Intent(cause, shift = Shift(cause, cause, Kind.MUTATE), untilTick = untilTick)
 
 class ItemUseListener(
     private val capture: ContainerCaptureListener,
@@ -164,6 +176,11 @@ class ItemUseListener(
         // Water from a source or a hive, a bottle at a time, beside the stack the bottle came from.
         if (live.item is BottleItem) {
             capture.intend(player, mutation(Cause.BOTTLE_FILL))
+            return
+        }
+        // A sulfur cube's bucket holds no water, so letting the cube out raises no bucket event.
+        if ((live.item as? MobBucketItem)?.content == Fluids.EMPTY) {
+            capture.intend(player, mutation(Cause.BUCKET_RELEASE_MOB))
             return
         }
         val target = event.clickedBlock?.type
@@ -211,7 +228,7 @@ class ItemUseListener(
             return
         }
         val target = EntityTarget(
-            keeps = entity is Allay || entity is Piglin,
+            keeps = entity is Allay || entity is Piglin || entity is SulfurCube,
             untamed = entity is Tameable && !entity.isTamed,
             breedsOn = entity is Animals && entity.isBreedItem(stack),
             dyeable = entity is Sheep || entity is Wolf || entity is Cat,

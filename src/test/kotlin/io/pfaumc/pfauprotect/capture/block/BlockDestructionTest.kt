@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.attribution.Falling
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
+import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.capture.item.NestedItems
 import io.pfaumc.pfauprotect.check.PlaneGap
@@ -158,6 +159,7 @@ class BlockDestructionTest {
         data: BlockData,
         neighbours: Map<BlockFace, Block> = emptyMap(),
         drops: Collection<org.bukkit.inventory.ItemStack> = emptyList(),
+        state: org.bukkit.block.BlockState? = null,
     ) =
         Proxy.newProxyInstance(Block::class.java.classLoader, arrayOf(Block::class.java)) { _, method, args ->
             val stubWorld = stub(World::class.java, mapOf("getUID" to world))
@@ -165,6 +167,7 @@ class BlockDestructionTest {
                 "getWorld" -> stubWorld
                 "getLocation" -> Location(stubWorld, x.toDouble(), y.toDouble(), z.toDouble())
                 "getDrops" -> drops
+                "getState" -> state
                 "getBlockData" -> data
                 "getRelative" -> neighbours[args[0] as BlockFace]
                 "getX" -> x
@@ -186,6 +189,7 @@ class BlockDestructionTest {
     private fun listener(
         attribution: Attribution = Attribution(shared.registries, logs),
         sink: (List<Transfer>) -> Unit = {},
+        later: (Location, () -> Unit) -> Unit = { _, _ -> },
     ) = BlockDestructionListener(
         // Disabled, so a read-back is never queued: there is no region scheduler to queue it on.
         plugin = stub(Plugin::class.java, mapOf("isEnabled" to false)),
@@ -198,6 +202,7 @@ class BlockDestructionTest {
         placed = shared,
         owners = shared,
         sink = sink,
+        later = later,
     )
 
     // The claim a handler leaves is what the event behind it reads, and it is the only trace either
@@ -720,6 +725,20 @@ class BlockDestructionTest {
         assertNull(otherBedHalf(Blocks.STONE.defaultBlockState().asBlockData()))
     }
 
+    // A dispenser puts the pumpkin down and the pattern takes it in the same call, so nobody placed a
+    // block of it; the note the dispenser left on itself names who set it going.
+    @Test
+    fun `a pattern nobody placed is built by whoever set the dispenser beside it going`() {
+        val energy = io.pfaumc.pfauprotect.attribution.Energy()
+        val head = WorldBlock(world, 0, 64, 0)
+        energy.note(WorldBlock(world, 0, 64, 1), Attributed(alice, Confidence.FACT))
+        assertEquals(Attributed(alice, Confidence.INFERRED), builderOf(listOf(null, null), listOf(head), energy))
+
+        val placer = Attributed(UUID.randomUUID())
+        assertEquals(placer, builderOf(listOf(null, placer), listOf(head), energy))
+        assertNull(builderOf(listOf(null), listOf(WorldBlock(world, 0, 64, 10)), energy))
+    }
+
     @Test
     fun `a read-back that finds the same block finds nothing to write`() {
         assertTrue(wentAway(TORCH, AIR))
@@ -1220,17 +1239,23 @@ class BlockDestructionTest {
         assertEquals(emptyList<String>(), shared.sweep(100).gaps)
     }
 
+    private fun fallingStub(entity: UUID, x: Double, y: Double, z: Double) = stub(
+        FallingBlock::class.java,
+        mapOf("getUniqueId" to entity, "getLocation" to Location(stub(World::class.java, mapOf("getUID" to world)), x, y, z)),
+    )
+
     /**
      * A flight that ends in anything but a landing — destroyed in the air, out of the world, turned
      * into an item — is not a movement at all: the position it left really did lose its block, and what
-     * it was holding is written off there. The note it was holding goes with it, or whatever is put
-     * down there next would be given back as a block somebody else paid for.
+     * it was holding is written off there once no drop has taken it. The note it was holding goes with
+     * it, or whatever is put down there next would be given back as a block somebody else paid for.
      */
     @Test
     fun `a flight that never landed is written off where it started`() {
         val attribution = Attribution(shared.registries, logs)
         val written = ArrayList<List<Transfer>>()
-        val listener = listener(attribution) { written += it }
+        val nextTick = ArrayList<() -> Unit>()
+        val listener = listener(attribution, { written += it }) { _, task -> nextTick += task }
         val entity = UUID.fromString("00000000-0000-4000-8000-0000000000f1")
         val from = WorldBlock(world, 2, 70, 2)
         // A form the position remembers only outranks the bare shell where it is the same item, so the
@@ -1244,12 +1269,10 @@ class BlockDestructionTest {
         // the table now would take whatever has moved in behind it instead.
         attribution.tookOff(entity, Falling(from, SAND, Attributed(bob), named))
 
-        listener.onEntityRemove(
-            EntityRemoveEvent(
-                stub(FallingBlock::class.java, mapOf("getUniqueId" to entity)),
-                EntityRemoveEvent.Cause.OUT_OF_WORLD,
-            )
-        )
+        listener.onEntityRemove(EntityRemoveEvent(fallingStub(entity, 2.5, -70.0, 2.5), EntityRemoveEvent.Cause.OUT_OF_WORLD))
+        // Nothing until the tick in which a drop could have claimed it is over.
+        assertEquals(emptyList<List<Transfer>>(), written)
+        nextTick.forEach { it() }
 
         val off = written.single().single()
         assertEquals(from, off.from)
@@ -1267,6 +1290,58 @@ class BlockDestructionTest {
         val report = PlaneSync(shared, logs).pass(100, now)
         assertEquals(emptyList<PlaneGap>(), report.gaps)
         assertEquals(emptyList<String>(), shared.sweep(100).gaps)
+    }
+
+    /**
+     * Sand that comes down on a torch is removed and then drops itself inside the same call, and that
+     * item is what the position gave up: one movement out of the position into the item, on whoever
+     * let the sand fall, and nothing left over to write off.
+     */
+    @Test
+    fun `a flight broken on landing drops out of the position it left`() {
+        val attribution = Attribution(shared.registries, logs)
+        val written = ArrayList<List<Transfer>>()
+        val nextTick = ArrayList<() -> Unit>()
+        val listener = listener(attribution, { written += it }) { _, task -> nextTick += task }
+        val entity = UUID.fromString("00000000-0000-4000-8000-0000000000f3")
+        val from = WorldBlock(world, 4, 70, 4)
+        val sand = byteArrayOf(5)
+        attribution.tookOff(entity, Falling(from, SAND, Attributed(bob), sand))
+
+        listener.onEntityRemove(EntityRemoveEvent(fallingStub(entity, 4.5, 64.0, 4.5), EntityRemoveEvent.Cause.DISCARD))
+        val item = UUID.randomUUID()
+        assertEquals(1, origins.claim(item, Spot(world, 4.5, 64.0, 4.5), ItemKey(sand, null), 1))
+        nextTick.forEach { it() }
+
+        assertEquals(emptyList<List<Transfer>>(), written)
+        coalescer.flush()
+        val row = spawned.single()
+        assertEquals(from, row.from)
+        assertEquals(ItemEntityRef(item), row.to)
+        assertEquals(Cause.BLK_FALL_START, row.cause)
+        assertEquals(bob, row.actor)
+    }
+
+    /**
+     * A vine tip turns into stem the moment the next one is put on it, and a stem has no item of its own.
+     * It is still the vine that was put down: the turn moves nothing and keeps the name the vine was put
+     * down under, and the stem gives the vine back when it breaks.
+     */
+    @Test
+    fun `a vine stem is the vine it was put down as`() {
+        val listener = listener()
+        val at = WorldBlock(world, 3, 64, 3)
+        val vine = ItemFormCodec(shared.registries, ServerRegistries.access).encode(NmsItemStack(Items.TWISTING_VINES)).form
+        val tip = Blocks.TWISTING_VINES.defaultBlockState().asBlockData()
+        val stem = Blocks.TWISTING_VINES_PLANT.defaultBlockState().asBlockData()
+
+        val off = releasedBy(listener, at, stem, AIR).single()
+        assertEquals(Void, off.to)
+        assertArrayEquals(vine, off.form)
+
+        val named = vine + 1
+        assertEquals(emptyList<Transfer>(), releasedBy(listener, at, tip, stem.asString, remembered = named))
+        assertArrayEquals(named, shared.formAt(world, 3, 64, 3))
     }
 
     // A read-back files its row a tick after the change, and the row carries the time of the event.
@@ -1290,7 +1365,7 @@ class BlockDestructionTest {
     fun `a flight whose chunk unloads is not an ending`() {
         val attribution = Attribution(shared.registries, logs)
         val written = ArrayList<List<Transfer>>()
-        val listener = listener(attribution) { written += it }
+        val listener = listener(attribution, { written += it })
         val entity = UUID.fromString("00000000-0000-4000-8000-0000000000f2")
         val from = WorldBlock(world, 3, 70, 3)
         attribution.tookOff(entity, Falling(from, SAND, Attributed(bob), byteArrayOf(5)))
@@ -1453,13 +1528,39 @@ class BlockDestructionTest {
         assertEquals(1, origins.claim(UUID.randomUUID(), Spot(world, 5.3, 64.0, 7.6), key, 1))
     }
 
+    // A barrel a creeper takes away spills what it held: the diamonds come out of the slot they were
+    // booked to, not out of nowhere.
     @Test
-    fun `a block that drops nothing leaves no note behind`() {
+    fun `a container the world destroys expects its contents out of their slots`() {
+        val diamonds = CraftItemStack.asBukkitCopy(NmsItemStack(Items.DIAMOND, 3))
+        val inventory = stub(org.bukkit.inventory.Inventory::class.java, mapOf("getContents" to arrayOf(null, diamonds)))
+        val barrel = stub(org.bukkit.block.Barrel::class.java, mapOf("getSnapshotInventory" to inventory))
+        val block = blockStub(5, 64, 7, Blocks.BARREL.defaultBlockState().asBlockData(), state = barrel)
+        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
+
+        expectDrops(origins, codec, block, Cause.BLK_CREEPER, alice)
+
+        assertEquals(3, origins.claim(UUID.randomUUID(), Spot(world, 5.5, 64.0, 7.5), codec.encodeOrNull(diamonds)!!.key, 3))
+        coalescer.flush()
+        val row = spawned.single()
+        assertEquals(io.pfaumc.pfauprotect.model.Container(world, 5, 64, 7, 1), row.from)
+        assertEquals(Cause.CONTAINER_BREAK_DROP, row.cause)
+    }
+
+    // Glass the world breaks drops nothing, and one roll cannot tell it from a vine that drops one time
+    // in three, so it too leaves the note for any form. That note is the tick's and no longer: it is
+    // gone by the second sweep, like every note nothing claimed.
+    @Test
+    fun `a block that drops nothing leaves nothing past the tick`() {
         val block = blockStub(5, 64, 7, Blocks.GLASS.defaultBlockState().asBlockData())
 
         expectDrops(origins, ItemFormCodec(shared.registries, ServerRegistries.access), block, Cause.BLK_FADE, null)
+        origins.sweep()
+        origins.sweep()
 
         assertTrue(origins.isEmpty)
+        coalescer.flush()
+        assertTrue(spawned.isEmpty())
     }
 
     // What a hand leaves standing is kept; what the signal carries is the switch rows' business, and
@@ -1482,6 +1583,12 @@ class BlockDestructionTest {
             "minecraft:red_bed[facing=east,occupied=true,part=head]"))
         assertFalse(handMade("minecraft:redstone_ore[lit=false]", "minecraft:redstone_ore[lit=true]"))
         assertFalse(handMade("minecraft:suspicious_sand[dusted=0]", "minecraft:suspicious_sand[dusted=2]"))
+        // What the neighbours decide is theirs; what a vine clings to is the vine's.
+        assertFalse(handMade("minecraft:grass_block[snowy=false]", "minecraft:grass_block[snowy=true]"))
+        assertFalse(handMade("minecraft:oak_fence[east=false,north=false,south=false,waterlogged=false,west=false]",
+            "minecraft:oak_fence[east=true,north=false,south=false,waterlogged=false,west=false]"))
+        assertTrue(handMade("minecraft:vine[east=false,north=true,south=false,up=false,west=false]",
+            "minecraft:vine[east=true,north=true,south=false,up=false,west=false]"))
         assertTrue(handMade("minecraft:suspicious_sand[dusted=3]", "minecraft:sand"))
         assertFalse(handMade(TORCH, TORCH))
     }

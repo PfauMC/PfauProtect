@@ -2,7 +2,6 @@ package io.pfaumc.pfauprotect.capture.item
 
 import io.papermc.paper.event.entity.ItemTransportingEntityValidateTargetEvent
 import io.pfaumc.pfauprotect.model.Cause
-import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Transfer
@@ -33,8 +32,10 @@ private val MAINHAND = net.minecraft.world.entity.EquipmentSlot.MAINHAND.ordinal
  * What a copper golem carries between chests. It takes one stack of up to sixteen from the first slot
  * that holds anything and puts it into the first slot that fits, and the server raises nothing for
  * either: only its hand changing is announced, a tick later. Which slots gave and took is read by
- * comparing the chest with a copy taken while the golem stood at it — a copy the golem's own scheduler
- * takes before the golem's tick, so the last one is the chest just before it reached in.
+ * comparing the chest with a copy taken while the golem stood at it. The golem's own scheduler copies
+ * the chest every tick before the server ticks the golem, and the golem announces a hand change at the
+ * start of its next tick, so by then the latest copy already shows the move: the one before it is the
+ * chest just before the golem reached in.
  */
 class CopperGolemListener(
     private val codec: ItemFormCodec,
@@ -42,7 +43,12 @@ class CopperGolemListener(
     // Runs a task every tick on the entity's own scheduler until it answers false.
     private val watch: (CopperGolem, () -> Boolean) -> Unit = { _, _ -> },
 ) : Listener {
-    private class Target(val block: Block, @Volatile var seen: Map<Holder, Stack>? = null, @Volatile var ticks: Int = 0)
+    private class Target(
+        val block: Block,
+        @Volatile var previous: Map<Holder, Stack>? = null,
+        @Volatile var seen: Map<Holder, Stack>? = null,
+        @Volatile var ticks: Int = 0,
+    )
 
     private val targets = ConcurrentHashMap<UUID, Target>()
 
@@ -63,6 +69,7 @@ class CopperGolemListener(
         }
         val centre = target.block.location.add(0.5, 0.5, 0.5)
         if (centre.world == golem.world && centre.distanceSquared(golem.location) <= GOLEM_REACH_SQUARED) {
+            target.previous = target.seen
             target.seen = contents(target.block)
         }
         return true
@@ -94,32 +101,22 @@ class CopperGolemListener(
         val moved = if (took) after!!.count else before!!.count - (after?.takeIf { it.form.contentEquals(form) }?.count ?: 0)
         if (moved <= 0) return
         val now = contents(target.block) ?: return
-        val seen = target.seen
+        val previous = target.previous
+        target.previous = now
         target.seen = now
+        // A hand change the chest does not show is no move between them: a golem killed with a stack in
+        // hand drops it, and the drop is filed as that.
+        val slots = golemSlots(previous, now, form, took, moved)
+        if (slots.isEmpty()) return
         val hand = EntitySlot(golem.uniqueId, MAINHAND)
-        val shifts = seen?.let { chestShifts(it, now, form, gave = took) }.orEmpty()
         val timestamp = System.currentTimeMillis()
-        val rows = ArrayList<Transfer>()
-        var left = moved
         val key = (if (took) after else before)!!.key
-        for ((slot, qty) in shifts) {
-            if (left <= 0) break
-            val part = minOf(left, qty)
-            left -= part
-            rows += golemRow(took, slot, hand, key, part, timestamp, Confidence.FACT)
-        }
-        // No copy of the chest from before, or one another hand has changed since: the slot the game
-        // would have used is the best guess there is.
-        if (left > 0) {
-            val guess = now.entries.firstOrNull { it.value.key.form.contentEquals(form) }?.key
-                ?: containerAt(target.block, 0)
-            rows += golemRow(took, guess, hand, key, left, timestamp, Confidence.INFERRED)
-        }
+        val rows = slots.map { (slot, qty) -> golemRow(took, slot, hand, key, qty, timestamp) }
         if (took) bookHeld(golem, MAINHAND, form) else if (after == null) unbookHeld(golem, MAINHAND)
         sink(rows)
     }
 
-    private fun golemRow(took: Boolean, slot: Holder, hand: Holder, key: ItemKey, qty: Int, timestamp: Long, confidence: Confidence) =
+    private fun golemRow(took: Boolean, slot: Holder, hand: Holder, key: ItemKey, qty: Int, timestamp: Long) =
         Transfer(
             cause = if (took) Cause.CONTAINER_REMOVE else Cause.CONTAINER_ADD,
             from = if (took) slot else hand,
@@ -128,7 +125,6 @@ class CopperGolemListener(
             damage = key.damage,
             qty = qty,
             timestamp = timestamp,
-            confidence = confidence,
         )
 }
 
@@ -144,4 +140,16 @@ internal fun chestShifts(before: Map<Holder, Stack>, after: Map<Holder, Stack>, 
         val qty = if (gave) -delta else delta
         if (qty > 0) holder to qty else null
     }.sortedBy { (it.first as? io.pfaumc.pfauprotect.model.Container)?.slot ?: 0 }
+}
+
+/**
+ * The slots a golem's hand change came out of, or went into, read against the copy of the chest from
+ * before it reached in, and never more than the hand changed by. Nothing when there is no copy or the
+ * chest shows no such change: the golem was not at the chest, or not the one changing it.
+ */
+internal fun golemSlots(previous: Map<Holder, Stack>?, now: Map<Holder, Stack>, form: ByteArray, took: Boolean, moved: Int): List<Pair<Holder, Int>> {
+    var left = moved
+    return previous?.let { chestShifts(it, now, form, gave = took) }.orEmpty().mapNotNull { (slot, qty) ->
+        minOf(left, qty).takeIf { it > 0 }?.let { part -> left -= part; slot to part }
+    }
 }

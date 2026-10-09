@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.capture.item.CommandBirths
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
 import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.attribution.Attribution
@@ -11,6 +12,8 @@ import io.pfaumc.pfauprotect.attribution.Energy
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.attribution.Falling
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
+import io.pfaumc.pfauprotect.storage.ItemKey
+import io.pfaumc.pfauprotect.storage.itemTypeIdOf
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.capture.item.NestedItems
@@ -25,14 +28,18 @@ import io.pfaumc.pfauprotect.capture.item.containerAt
 import io.pfaumc.pfauprotect.check.emptied
 import io.pfaumc.pfauprotect.attribution.energyAt
 import io.pfaumc.pfauprotect.attribution.culprit
+import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.capture.item.packShulker
 import io.pfaumc.pfauprotect.capture.item.positionOf
 import net.minecraft.core.Direction
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.resources.Identifier
 import net.minecraft.world.item.BucketItem
+import net.minecraft.world.item.Item
+import net.minecraft.world.item.Items
 import net.minecraft.world.level.block.AbstractCauldronBlock
 import net.minecraft.world.level.block.BaseFireBlock
+import net.minecraft.world.level.block.GrowingPlantBodyBlock
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.LiquidBlockContainer
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
@@ -40,6 +47,7 @@ import net.minecraft.world.level.block.state.properties.PistonType
 import net.minecraft.world.level.material.FlowingFluid
 import net.minecraft.world.level.material.PushReaction
 import org.bukkit.ExplosionResult
+import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
@@ -71,6 +79,7 @@ import org.bukkit.event.block.SpongeAbsorbEvent
 import com.destroystokyo.paper.event.block.AnvilDamagedEvent
 import io.papermc.paper.event.block.DragonEggFormEvent
 import io.papermc.paper.event.entity.EntityConstructEvent
+import io.canvasmc.canvas.event.EntityPortalAsyncEvent
 import org.bukkit.block.Sign
 import org.bukkit.block.CreatureSpawner
 import org.bukkit.block.TrialSpawner
@@ -169,7 +178,15 @@ internal fun expectDrops(
             origins.expectBox(stack, boxOwner, spot)
             NestedItems.mark(stack, boxOwner)
         }
-        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor, reach)
+        origins.expect(Void, cause, codec.encode(stack).key, spot, drop.amount, actor, reach, rolled = true)
+    }
+    // The roll above is this capture's own and the drop comes out of the server's, and where chance
+    // decides the two can disagree on more than the count.
+    origins.expectAny(Void, cause, spot, actor, reach)
+    // What it held spills out of the slots it was booked to, as from a hand's break.
+    spilled(block.getState(false)).forEachIndexed { slot, item ->
+        val encoded = codec.encodeOrNull(item) ?: return@forEachIndexed
+        origins.expect(containerAt(block, slot), Cause.CONTAINER_BREAK_DROP, encoded.key, spot, encoded.count, actor, reach)
     }
 }
 
@@ -395,6 +412,18 @@ internal fun wentAway(before: String, now: String) = blockNameOf(before) != bloc
 // whether anything an item was ever made into is standing there now.
 internal fun blockBehind(state: String): NmsBlock =
     BuiltInRegistries.BLOCK.getValue(Identifier.parse(blockNameOf(state)))
+
+/**
+ * The item a block is made of. A stem — twisting and weeping vines, kelp, cave vines — is a block of its
+ * own with no item: a tip turns into one the moment something is put or grows on top of it, and what was
+ * put down there was the tip. Without this the stem gives back nothing when it breaks, and the position
+ * holds the tip's item for ever. The game names each stem after its tip, and gives no public way to ask.
+ */
+internal fun itemOf(block: NmsBlock): Item {
+    val own = block.asItem()
+    if (own != Items.AIR || block !is GrowingPlantBodyBlock) return own
+    return blockBehind(BuiltInRegistries.BLOCK.getKey(block).toString().removeSuffix("_plant")).asItem()
+}
 
 private fun payloadAt(block: Block): ByteArray? {
     val level = (block as CraftBlock).level
@@ -639,11 +668,20 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
 }
 
 // Properties that carry the signal rather than the block, which the switch rows of phase 5.7 already
-// cover, and ones that a hand flips and the block flips back by itself. None of them is something a
-// rollback would have to put back.
+// cover; ones a block takes from its neighbours — grass under snow, a stair's corner, which sides a
+// fence or a pane joins — which change with the neighbour that was filed; and ones that a hand flips
+// and the block flips back by itself. None of them is something a rollback would have to put back.
 private val SIGNAL_PROPERTIES = setOf("powered", "power")
 
+private val SIDES = setOf("north", "south", "east", "west", "up")
+
 private fun selfRevertingOf(name: String): Set<String> = when {
+    // Taken from the neighbours. A vine's or a lichen's sides are what it clings to, and are not.
+    name.endsWith("_fence") || name.endsWith("_pane") || name.endsWith("_wall") || name == "minecraft:iron_bars" ||
+        name == "minecraft:redstone_wire" || name == "minecraft:tripwire" -> SIDES + "attached"
+    name.endsWith("_stairs") -> setOf("shape")
+    name.endsWith("_fence_gate") -> setOf("in_wall")
+    name == "minecraft:grass_block" || name == "minecraft:podzol" || name == "minecraft:mycelium" -> setOf("snowy")
     name == "minecraft:barrel" -> setOf("open")
     name.endsWith("_bed") -> setOf("occupied")
     name.endsWith("redstone_ore") -> setOf("lit")
@@ -659,7 +697,7 @@ private fun propertiesOf(state: String): Map<String, String> =
     state.substringAfter('[', "").removeSuffix("]").split(',').filter { it.isNotEmpty() }
         .associate { it.substringBefore('=') to it.substringAfter('=') }
 
-/** Whether going from one state to the other is a change a hand made, rather than signal or noise. */
+/** Whether going from one state to the other is a change worth a row, rather than signal or noise. */
 internal fun handMade(before: String, after: String): Boolean {
     if (before == after) return false
     val name = blockNameOf(before)
@@ -678,6 +716,10 @@ private const val TOUCH_STALE_MILLIS = 5_000L
 private val PRIMED_ELSEWHERE = setOf(
     TNTPrimeEvent.PrimeCause.EXPLOSION, TNTPrimeEvent.PrimeCause.FIRE, TNTPrimeEvent.PrimeCause.BLOCK_BREAK,
 )
+
+// How long after stepping through a portal a player can still be who the far side was built for: the
+// journey loads the chunks there first.
+private const val TRAVEL_MILLIS = 30_000L
 
 // The largest portal the game builds is 21 by 21.
 private const val PORTAL_MAX_BLOCKS = 21 * 21
@@ -721,6 +763,9 @@ class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
         for (change in changes) pending[WorldBlock(world, change.x, change.y, change.z)]?.filed = true
     }
 
+    /** Whether some capture filed the position since it was touched, while its read still waits. */
+    fun filedSinceTouch(at: WorldBlock): Boolean = pending[at]?.filed == true
+
     /** Ends the wait: the cause to file under, or null where some capture filed the position already. */
     fun take(at: WorldBlock): Cause? = pending.remove(at)?.takeIf { !it.filed }?.cause
 }
@@ -747,6 +792,13 @@ class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
  * either, and a note seeded ahead of the refusal would spend its whole window offering the refused
  * player as the answer for whatever happens there next.
  */
+/**
+ * Who built a golem or a wither: whoever put down a block of the pattern, or else whoever set going the
+ * dispenser beside it, whose pumpkin or skull the pattern took in the same call it was put down.
+ */
+internal fun builderOf(placers: List<Attributed?>, positions: List<WorldBlock>, energy: Energy): Attributed? =
+    placers.firstNotNullOfOrNull { it } ?: energy.near(positions)?.inferred()
+
 class BlockDestructionListener(
     private val plugin: Plugin,
     private val registries: Registries,
@@ -760,6 +812,8 @@ class BlockDestructionListener(
     private val sink: (List<Transfer>) -> Unit,
     private val energy: Energy = Energy(),
     private val touches: HandTouches = HandTouches(),
+    // Runs a task on the region of the location a tick later.
+    private val later: (Location, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
 
     private val growing = GrowClaims()
@@ -983,7 +1037,7 @@ class BlockDestructionListener(
     private fun readBack(blocks: List<Block>, by: Attributed?, cause: Cause = Cause.BLK_PLAYER_USE) {
         if (!plugin.isEnabled) return
         val touched = blocks
-            .filter { touches.touch(positionOf(it), cause, by) }
+            .filter { !commanded(it) && touches.touch(positionOf(it), cause, by) }
             // The block entity goes into the row as it was: a lectern, a jukebox or a pot put back by a
             // rollback needs what it held, not only its shape.
             .map { Site(positionOf(it), it, it.blockData, it.blockData.asString, payloadAt(it)) }
@@ -1050,11 +1104,13 @@ class BlockDestructionListener(
     /**
      * A flight that ended in anything but a landing: the block was destroyed in the air, fell out of
      * the world, or turned into an item. The position it left really did lose its block then, so what
-     * it was holding is written off there rather than handed on. A landing takes the flight itself, so
+     * it was holding leaves it here rather than being handed on. A landing takes the flight itself, so
      * what reaches here is only what nothing else claimed.
      *
-     * The item a broken flight leaves behind is born unexplained: the removal is announced before the
-     * drop, and by the time the drop exists there is nothing left saying the two belong together.
+     * A block that breaks on a torch is removed first and drops itself right after, inside the same
+     * call, and that item is what the position gave up: the drop is expected out of the position. Only
+     * what no drop took by the next tick — a block gone out of the world, drops switched off — is
+     * written off there.
      */
     @EventHandler(priority = EventPriority.MONITOR)
     fun onEntityRemove(event: EntityRemoveEvent) {
@@ -1066,7 +1122,12 @@ class BlockDestructionListener(
         if (event.cause == EntityRemoveEvent.Cause.UNLOAD) return
         val flight = attribution.landed(entity.uniqueId) ?: return
         val form = flight.form ?: return
-        sink(listOf(wroteOff(flight.from, form, Cause.BLK_FALL_START, flight.by, System.currentTimeMillis())))
+        val timestamp = System.currentTimeMillis()
+        val at = entity.location
+        val dropped = origins.expect(flight.from, Cause.BLK_FALL_START, ItemKey(form, null), spotOf(at), 1, flight.by.culprit())
+        later(at) {
+            if (dropped() < 1) sink(listOf(wroteOff(flight.from, form, Cause.BLK_FALL_START, flight.by, timestamp)))
+        }
     }
 
     /**
@@ -1136,6 +1197,8 @@ class BlockDestructionListener(
 
     // Every portal block joined to this one, read back: those the broken frame took with it are filed
     // on whoever broke the frame. The walk stays on the region that owns this block.
+    private fun commanded(block: Block) = CommandBirths.writing(block.world.uid, block.x, block.y, block.z)
+
     private fun portalShaken(block: Block) {
         val by = attribution.supportRemoverAt(positionOf(block))
         val sheet = LinkedHashSet<Block>()
@@ -1207,8 +1270,8 @@ class BlockDestructionListener(
     fun onConstruct(event: EntityConstructEvent) {
         val blocks = event.blocks
         if (blocks.isEmpty()) return
-        val by = blocks.firstNotNullOfOrNull { attribution.placerAt(positionOf(it), it.blockData.asString) }
-        readBack(blocks, by, Cause.BLK_FORM)
+        val placers = blocks.map { attribution.placerAt(positionOf(it), it.blockData.asString) }
+        readBack(blocks, builderOf(placers, blocks.map(::positionOf), energy), Cause.BLK_FORM)
     }
 
     private fun eggJumped(from: Block, to: Block) {
@@ -1224,23 +1287,41 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onEggFormed(event: DragonEggFormEvent) = readBack(listOf(event.block), null, Cause.BLK_FORM)
 
+    private val travellers = ConcurrentHashMap<UUID, Pair<UUID, Long>>()
+
+    // Canvas takes an entity through a portal on a path of its own, and this is the one event on it.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPortalAsync(event: EntityPortalAsyncEvent) {
+        val player = event.entity as? Player ?: return
+        travellers[event.to.uid] = player.uniqueId to System.currentTimeMillis()
+    }
+
     /**
      * A portal lit or built on the far side of a journey. The event hands over the new states while
      * the world still stands as it was, so both sides are read here; the frame a lit portal hands back
      * unchanged is no change. The pair built for a traveller clears and overwrites whatever stood where
      * it goes, and that is filed as taken away by the portal, on the traveller when that is a player.
+     *
+     * Overwriting drops nothing, but the frame goes down with its neighbours told, and a plant standing
+     * where the portal will be — crimson roots on nylium the frame replaces — breaks off and drops before
+     * the portal fills its place. The break finds its position already filed and leaves the drop to the
+     * capture that filed it, so this one has to expect it.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPortalCreate(event: PortalCreateEvent) {
         val log = logs.get(event.world.uid) ?: return
+        // Canvas builds the far side of a journey with no traveller on the event; the player who last
+        // stepped through a portal towards this world is who it was built for.
         val by = (event.entity as? Player)?.let { Attributed(it.uniqueId, Confidence.FACT) }
+            ?: travellers[event.world.uid]?.takeIf { System.currentTimeMillis() - it.second <= TRAVEL_MILLIS }
+                ?.let { Attributed(it.first, Confidence.INFERRED) }
         val sites = event.blocks.mapNotNull { state ->
             val block = state.block
             val before = block.blockData
             val after = state.blockData.asString
             if (before.asString == after) null else Site(positionOf(block), block, before, after)
         }
-        if (sites.isNotEmpty()) file(log, sites, Cause.BLK_PORTAL_CREATE, by, expectsDrops = false)
+        if (sites.isNotEmpty()) file(log, sites, Cause.BLK_PORTAL_CREATE, by)
     }
 
     /**
@@ -1257,6 +1338,7 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockDestroy(event: BlockDestroyEvent) {
         val block = event.block
+        if (commanded(block)) return
         val by = attribution.supportRemoverAt(positionOf(block))
         // The drops follow this event inside the same call, so this is where they are expected, and
         // always: a cactus breaks a tick after its support, while the read-back the physics of that
@@ -1426,15 +1508,17 @@ class BlockDestructionListener(
         // A block the world overwrites rather than destroys drops nothing to wait for.
         expectsDrops: Boolean = true,
     ) {
-        val real = sites.filter { unfiled(it) }
-        val rows = real + carried.filter { unfiled(it) }
+        val real = sites.filter { unfiled(it) && !commanded(it.block) }
+        val rows = real + carried.filter { unfiled(it) && !commanded(it.block) }
         log.submit(rows.map { row(it, cause, by, timestamp) })
         for (site in rows) readBacks.filed(site.at, site.before.asString, site.after)
         val gone = real.filter { wentAway(it.before.asString, it.after) }
         if (gone.isEmpty()) return
-        // A block that moved carries itself to the position it arrived in and drops nothing on the way.
+        // A block that moved carries itself to the position it arrived in and drops nothing on the way,
+        // and a position that was empty broke nothing: what stands there now arrived, and packing it
+        // up as though it had been broken would empty a shulker box a dispenser has just put down.
         for (site in gone) {
-            if (site.went != null || !expectsDrops) continue
+            if (site.went != null || !expectsDrops || emptied(site.before.asString)) continue
             expectDrops(origins, codec, site.block, cause, by.culprit(), packBox(site, by, timestamp), dropReach)
         }
         by.culprit()?.let { actor ->
@@ -1495,7 +1579,7 @@ class BlockDestructionListener(
     // what the first had just made new.
     private fun unfiled(site: Site): Boolean {
         val before = site.before.asString
-        return before != site.after && !readBacks.wasFiled(site.at, before, site.after)
+        return handMade(before, site.after) && !readBacks.wasFiled(site.at, before, site.after)
     }
 
     private fun row(
@@ -1540,6 +1624,12 @@ class BlockDestructionListener(
         }
         val held = heldForm(remembered, shell, twoPositions) ?: return emptyList()
         val taken = shellForm(site.after) ?: return emptyList()
+        // A vine tip that turned into stem under the next one is the same vine: taken over by itself it
+        // would be a mutation of nothing, and the name it was put down under has to stay with it.
+        if (itemTypeIdOf(held) == itemTypeIdOf(taken)) {
+            remembered?.let { placed.setFormAt(site.at.world, site.at.x, site.at.y, site.at.z, it) }
+            return emptyList()
+        }
         return tookOver(site.at, held, taken, cause, by, timestamp)
     }
 
@@ -1557,7 +1647,7 @@ class BlockDestructionListener(
     private fun defer(block: Block, before: BlockData, cause: Cause, by: Attributed?, expectsDrops: Boolean = true) {
         // A task queued against a plugin already on its way down is refused outright, and an event can
         // still reach a handler while the server is taking the plugin apart.
-        if (!plugin.isEnabled) return
+        if (!plugin.isEnabled || commanded(block)) return
         val at = positionOf(block)
         // One position raises two physics events in one tick, and a second read-back of it would find
         // the same air the first did and file the disappearance again, in both planes.
@@ -1659,7 +1749,7 @@ class BlockDestructionListener(
     // What the block was made of, which a block with no item form of its own — fire, a liquid, a
     // portal — answers with nothing at all.
     private fun shellForm(block: NmsBlock): ByteArray? {
-        val stack = NmsItemStack(block.asItem())
+        val stack = NmsItemStack(itemOf(block))
         return if (stack.isEmpty) null else codec.encode(stack).form
     }
 

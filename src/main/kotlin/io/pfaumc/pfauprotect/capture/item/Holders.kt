@@ -22,6 +22,7 @@ import org.bukkit.craftbukkit.CraftEquipmentSlot
 import org.bukkit.entity.Allay
 import org.bukkit.entity.Entity
 import org.bukkit.entity.Piglin
+import org.bukkit.entity.SulfurCube
 import org.bukkit.entity.Player
 import org.bukkit.event.Event
 import org.bukkit.event.EventHandler
@@ -236,8 +237,9 @@ class HolderListener(
         handed[event.rightClicked.uniqueId] = Handed(player, event.hand, form, now)
     }
 
-    // A saddle, a harness, horse or wolf armour put on with a click, an item handed to an allay or a
-    // piglin, or taken back from one. The server only says so after the fact, from the mob's side.
+    // A saddle, a harness, horse or wolf armour put on with a click, an item handed to an allay, a
+    // piglin or a sulfur cube, or taken back from one. The server only says so after the fact, from the
+    // mob's side.
     @EventHandler(priority = EventPriority.MONITOR)
     fun onEquipment(event: EntityEquipmentChangedEvent) {
         val mob = event.entity
@@ -250,7 +252,7 @@ class HolderListener(
             val removed = codec.encodeOrNull(change.oldItem())
             if (put != null && click.form?.contentEquals(put.form) == true) {
                 bookHeld(mob, index, put.form)
-                val cause = if (mob is Allay || mob is Piglin) Cause.GIVE_ITEM_TO_MOB else Cause.EQUIP_MOB
+                val cause = if (mob is Allay || mob is Piglin || mob is SulfurCube) Cause.GIVE_ITEM_TO_MOB else Cause.EQUIP_MOB
                 val hand = capture.handSlot(click.player, click.hand)
                 capture.intend(click.player, Intent(cause, to = EntitySlot(mob.uniqueId, index), form = put.form, qty = put.count, holder = hand))
             } else if (put == null && removed != null && click.form == null) {
