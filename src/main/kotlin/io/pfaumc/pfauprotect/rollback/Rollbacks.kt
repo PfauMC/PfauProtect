@@ -606,7 +606,12 @@ class ChunkRollback(
         val alive = Bukkit.getEntity(plan.uuid)?.takeIf { it.isValid }
         when (plan.oldest.kind) {
             EntityKind.CREATED -> {
-                if (alive == null) return run { tally.entitiesAlready++ }
+                // Gone already, but what fell out of it lies there: wool and mutton of a sheep the griefer let
+                // loose on a roof, which fell off it and died (D123).
+                if (alive == null) return run {
+                    tally.entitiesAlready++
+                    tally.piles += plan.drops
+                }
                 tally.entitiesTaken++
                 if (apply) tally.jobs += EntityJob(alive) { taken -> takeAway(alive, plan, actor, taken) }
             }

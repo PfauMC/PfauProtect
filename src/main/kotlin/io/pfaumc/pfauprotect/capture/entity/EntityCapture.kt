@@ -382,7 +382,13 @@ class EntityCapture(
         val entity = event.entity
         if (entity is Player) return
         val lit = alight.remove(entity.uniqueId)
-        val culprit = culpritOf(entity, Cause.ENTITY_KILLED, lit)
+        // A mob a player brought into the world that dies of nothing anybody did is still theirs: the griefer's
+        // sheep fell off the roof he let them loose on, and their wool and mutton lay there after his rollback
+        // had taken the rest of the flock away (D123).
+        val culprit = culpritOf(entity, Cause.ENTITY_KILLED, lit).let { found ->
+            if (found.by != null) found
+            else entities.summonerOf(entity.uniqueId)?.let { Culprit(found.cause, it.copy(confidence = Confidence.INFERRED)) } ?: found
+        }
         // A sculk catalyst nearby blooms off this death, and the sculk is whoever stands behind it.
         culprit.by.culprit()?.let { attribution.killed(positionOf(entity.location.block), it) }
         if (culprit.by.culprit() != null) return removed(entity, culprit, deathOf(event.damageSource))
