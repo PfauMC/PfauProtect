@@ -976,8 +976,9 @@ class BlockDestructionListener(
     }
 
     /**
-     * Queues the positions for the read at the start of the next tick. All of them are next to each
-     * other, so the region of the first owns the rest.
+     * Queues the positions for the read at the start of the next tick. The server writes every one of
+     * them from this thread, so this region owns them all now; a split before the next tick can hand
+     * some to another region, and those are read again there.
      */
     private fun readBack(blocks: List<Block>, by: Attributed?, cause: Cause = Cause.BLK_PLAYER_USE) {
         if (!plugin.isEnabled) return
@@ -990,30 +991,40 @@ class BlockDestructionListener(
         val marks = touched.associate { it.at to markOf(it.block) }
         val timestamp = System.currentTimeMillis()
         plugin.server.regionScheduler.execute(plugin, first.world, first.x shr 4, first.z shr 4) {
-            val log = logs.get(first.world.uid) ?: return@execute
-            val retouched = ArrayList<BlockChange>()
-            val changed = touched.mapNotNull { site ->
-                val filedAs = touches.take(site.at) ?: return@mapNotNull null
-                val now = site.block.blockData.asString
-                if (!handMade(site.before.asString, now)) {
-                    // The block is the same and only what its entity holds changed: a sign dyed or
-                    // waxed, a spawner given an egg.
-                    val was = marks[site.at]
-                    if (was != null && !was.contentEquals(markOf(site.block) ?: was)) {
-                        retouched += BlockChange(
-                            site.at.x, site.at.y, site.at.z, now, now, filedAs, timestamp,
-                            confidence = by?.confidence ?: Confidence.FACT, actor = by?.actor,
-                            payloadBefore = site.payload, payloadAfter = payloadAt(site.block),
-                        )
-                    }
-                    return@mapNotNull null
+            val (mine, moved) = touched.partition { plugin.server.isOwnedByCurrentRegion(it.block) }
+            compare(mine, marks, by, timestamp)
+            for (part in moved.groupBy { (it.block.x shr 4) to (it.block.z shr 4) }.values) {
+                val at = part.first().block
+                plugin.server.regionScheduler.execute(plugin, at.world, at.x shr 4, at.z shr 4) { compare(part, marks, by, timestamp) }
+            }
+        }
+    }
+
+    private fun compare(touched: List<Site>, marks: Map<WorldBlock, ByteArray?>, by: Attributed?, timestamp: Long) {
+        val first = touched.firstOrNull()?.block ?: return
+        val log = logs.get(first.world.uid) ?: return
+        val retouched = ArrayList<BlockChange>()
+        val changed = touched.mapNotNull { site ->
+            val filedAs = touches.take(site.at) ?: return@mapNotNull null
+            val now = site.block.blockData.asString
+            if (!handMade(site.before.asString, now)) {
+                // The block is the same and only what its entity holds changed: a sign dyed or
+                // waxed, a spawner given an egg.
+                val was = marks[site.at]
+                if (was != null && !was.contentEquals(markOf(site.block) ?: was)) {
+                    retouched += BlockChange(
+                        site.at.x, site.at.y, site.at.z, now, now, filedAs, timestamp,
+                        confidence = by?.confidence ?: Confidence.FACT, actor = by?.actor,
+                        payloadBefore = site.payload, payloadAfter = payloadAt(site.block),
+                    )
                 }
-                filedAs to Site(site.at, site.block, site.before, now, site.payload)
+                return@mapNotNull null
             }
-            if (retouched.isNotEmpty()) log.submit(retouched)
-            for ((filedAs, sites) in changed.groupBy({ it.first }, { it.second })) {
-                file(log, sites, filedAs, by, timestamp)
-            }
+            filedAs to Site(site.at, site.block, site.before, now, site.payload)
+        }
+        if (retouched.isNotEmpty()) log.submit(retouched)
+        for ((filedAs, sites) in changed.groupBy({ it.first }, { it.second })) {
+            file(log, sites, filedAs, by, timestamp)
         }
     }
 
