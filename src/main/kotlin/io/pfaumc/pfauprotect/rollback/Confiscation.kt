@@ -210,15 +210,27 @@ class Confiscations(
      * what is gone for good out of nothing.
      */
     fun restore(victim: UUID, owed: List<Owed>, actor: UUID?, sender: CommandSender, births: List<PostingRef> = emptyList()) {
-        take(owed.filter { it.taker !is Vanished }, actor, sender) { formId, n -> give(victim, formId, n, actor, sender) }
+        // A pile that went between the read and the take is gone for good like a burned one, and given out
+        // of nothing the same way, so every birth marked below was given back one way or the other.
+        take(
+            owed.filter { it.taker !is Vanished }, actor, sender,
+            gone = { formId, n -> give(victim, formId, n, actor, sender) },
+        ) { formId, n -> give(victim, formId, n, actor, sender) }
         for (gone in owed.filter { it.taker is Vanished }) give(victim, gone.formId, gone.qty, actor, sender)
         // The piles' births marked as given back. Nothing moves, so no posting is written: only the mark.
         val form = owed.firstNotNullOfOrNull { ledger.form(it.formId) } ?: return
         if (births.isNotEmpty()) sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, form, null, 1, System.currentTimeMillis(), actor = actor, reverts = births)))
     }
 
-    // `taken` hears of every amount actually taken, or owed by a player who will hand it over on joining.
-    fun take(owed: List<Owed>, actor: UUID?, sender: CommandSender, taken: (Long, Int) -> Unit = { _, _ -> }) {
+    // `taken` hears of every amount actually taken, or owed by a player who will hand it over on joining;
+    // `gone`, of what was lying in the world at the read and was not there to take.
+    fun take(
+        owed: List<Owed>,
+        actor: UUID?,
+        sender: CommandSender,
+        gone: (Long, Int) -> Unit = { _, _ -> },
+        taken: (Long, Int) -> Unit = { _, _ -> },
+    ) {
         for ((taker, all) in owed.groupBy { it.taker }) {
             when (taker) {
                 is Carrier -> {
@@ -244,10 +256,13 @@ class Confiscations(
                 // region; the global one may ask, and the pile's own scheduler does the rest.
                 is Lying -> Bukkit.getGlobalRegionScheduler().execute(plugin) {
                     val pile = Bukkit.getEntity(taker.entity) as? Item
+                    val missing = { all.forEach { gone(it.formId, it.qty) } }
                     if (pile == null) {
                         sender.sendMessage("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
+                        missing()
                     } else {
-                        pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender, taken) } }, null)
+                        pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender, gone, taken) } }, missing)
+                            ?: missing()
                     }
                 }
                 is Vanished -> Unit
@@ -319,14 +334,23 @@ class Confiscations(
     }
 
     // On the thread of the region the pile lies in.
-    private fun fromPile(pile: Item, owed: Owed, actor: UUID?, sender: CommandSender, taken: (Long, Int) -> Unit = { _, _ -> }) {
+    private fun fromPile(
+        pile: Item,
+        owed: Owed,
+        actor: UUID?,
+        sender: CommandSender,
+        gone: (Long, Int) -> Unit,
+        taken: (Long, Int) -> Unit,
+    ) {
         if (!pile.isValid) {
             sender.sendMessage("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
+            gone(owed.formId, owed.qty)
             return
         }
         val stack = pile.itemStack
-        val encoded = codec.encodeOrNull(stack) ?: return
+        val encoded = codec.encodeOrNull(stack) ?: return gone(owed.formId, owed.qty)
         val n = minOf(owed.qty, stack.amount)
+        if (n < owed.qty) gone(owed.formId, owed.qty - n)
         val now = System.currentTimeMillis()
         val rows = arrayListOf(Transfer(Cause.ROLLBACK, ItemEntityRef(pile.uniqueId), Void, encoded.form, encoded.damage, n, now, actor = actor))
         if (n == stack.amount) {
