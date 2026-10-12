@@ -203,7 +203,7 @@ object BlockCodec {
      * actor is built from rows already on disk, before anything has to know who the number is. Null for
      * a row with no actor, and for one this build cannot read.
      */
-    fun actorNumberOf(value: ByteArray): Int? = try {
+    fun actorNumberOf(value: ByteArray): Int? = nullOn<IllegalArgumentException, _> {
         val v = ByteReader(value)
         val header = v.byte()
         if (header and VERSION_MASK != VERSION || header and ACTOR_FLAG == 0) {
@@ -212,8 +212,6 @@ object BlockCodec {
             v.bytes(1 + 2 + 2)
             v.varInt()
         }
-    } catch (failure: IllegalArgumentException) {
-        null
     }
 
     /**

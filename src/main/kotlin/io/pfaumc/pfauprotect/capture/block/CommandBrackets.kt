@@ -170,12 +170,9 @@ internal class Difference(
 }
 
 /**
- * The block commands, bracketed. Each one is let run on the region that owns the area it writes, with
- * the area read just before and just after, and whatever changed there is filed on whoever ran it: a
- * block row per position under one event, the contents of a container it overwrote written off, the
- * contents of one it conjured written in, and the item a placed block stood for written off where the
- * block was replaced. The node's own executor is swapped for the bracket, so the console, a player,
- * `execute … run` and a function all go through it.
+ * Brackets each block command with a read of its area before and after, on the region that owns it, and
+ * files whatever changed under whoever ran it. The node's own executor is swapped for the bracket, so the
+ * console, a player, `execute … run` and a function all go through it.
  */
 class CommandBrackets(
     private val plugin: Plugin,

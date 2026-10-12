@@ -336,13 +336,13 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
     private fun sameBox(expected: NmsItemStack, spawned: NmsItemStack) =
         NmsItemStack.isSameItem(expected, spawned) &&
             expected.get(DataComponents.CONTAINER) == spawned.get(DataComponents.CONTAINER)
-
-    private fun near(origin: Spot, spawn: Spot, reach: Double = SPAWN_REACH) =
-        origin.world == spawn.world &&
-            abs(origin.x - spawn.x) <= reach &&
-            abs(origin.y - spawn.y) <= reach &&
-            abs(origin.z - spawn.z) <= reach
 }
+
+private fun near(origin: Spot, spawn: Spot, reach: Double = SPAWN_REACH) =
+    origin.world == spawn.world &&
+        abs(origin.x - spawn.x) <= reach &&
+        abs(origin.y - spawn.y) <= reach &&
+        abs(origin.z - spawn.z) <= reach
 
 // Which bottles the brew actually changed. A stand runs with slots empty and with bottles the recipe
 // has nothing to say about, and the results list is only as long as the game made it, so a slot counts
@@ -463,13 +463,8 @@ class BlockMechanismListener(
     fun onSpawn(event: EntitySpawnEvent) {
         val source = dispensing.get() ?: return
         if (System.nanoTime() - source.nanos > DISPENSE_NANOS) return dispensing.remove()
-        val spot = event.location
-        if (spot.world.uid != source.at.world) return
-        if (abs(spot.x - source.at.x - 0.5) > DISPENSE_REACH || abs(spot.y - source.at.y - 0.5) > DISPENSE_REACH ||
-            abs(spot.z - source.at.z - 0.5) > DISPENSE_REACH
-        ) {
-            return
-        }
+        val at = source.at
+        if (!near(Spot(at.world, at.x + 0.5, at.y + 0.5, at.z + 0.5), spotOf(event.location), DISPENSE_REACH)) return
         entities.appeared(event.entity.uniqueId, source.by.actor, source.by.confidence)
     }
 

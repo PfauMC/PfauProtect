@@ -397,11 +397,7 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
     // Both sides together name the station and both of its reasons, so they are FACT. A lone side stays
     // INFERRED: a creative craft that consumes nothing has nothing to corroborate it. Left INFERRED, every
     // ordinary craft would count as unexplained.
-    if (transformed.size > 1) {
-        rest += transformed.map { it.copy(confidence = Confidence.FACT) }
-    } else if (transformed.isNotEmpty()) {
-        rest += transformed
-    }
+    if (transformed.isNotEmpty()) rest += if (transformed.size > 1) transformed.map { it.copy(confidence = Confidence.FACT) } else transformed
     return rest
 }
 

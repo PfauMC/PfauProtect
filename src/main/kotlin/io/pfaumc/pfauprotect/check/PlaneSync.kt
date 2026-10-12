@@ -44,12 +44,9 @@ internal const val SETTLE_MILLIS = 60_000L
 
 data class PlaneGap(
     val at: WorldBlock,
-    // The state the block plane says stands in the position, which is one no item could have come out
-    // of: the position lost its block without the item plane ever being told, so it still holds the
-    // form of a block that is not there.
+    // The block state the block plane still shows, which no item could have come out of.
     val standing: String,
-    // Kept apart because where nothing can be confirmed both planes hold an inference, and a total
-    // that mixes the two cannot tell a hole in the capture from an honest guess.
+    // Kept apart so a guess cannot cancel a confirmed credit.
     val fact: Int,
     val inferred: Int,
 )
@@ -58,13 +55,9 @@ data class PlaneReport(
     val checked: Int,
     val settling: Int,
     val unreadable: Int,
-    // A position the block plane holds no row for was held against nothing, and counted as a comparison
-    // it would report a clean bill of health for a pass that read one plane alone. Every position
-    // placed before the block plane existed is one of these.
+    // Positions the block plane holds no row for, such as everything placed before it existed: not a comparison.
     val unrecorded: Int,
-    // The other direction: the item plane wrote off at the position more than it was ever given there.
-    // No reading of the block plane can settle that, and it is not a holding, so it is neither compared
-    // nor reported as one.
+    // Positions the item plane wrote off more than it was ever given: not a holding, so not compared.
     val overdrawn: Int,
     val gaps: List<PlaneGap>,
     val reachedEnd: Boolean,

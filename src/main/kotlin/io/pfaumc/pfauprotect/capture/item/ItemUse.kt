@@ -99,8 +99,8 @@ internal fun useCause(item: NmsItemStack, target: Material?): Cause? {
 // What the target entity makes of an item. Worked out by the caller from the entity, so that this
 // stays a plain function of what was used and on what kind of thing.
 internal class EntityTarget(
-    // A mob that takes the item into a slot of its own — an allay, a piglin, a sulfur cube — or a frame
-    // or a stand: the item goes somewhere the ledger can name, and that is written where it lands.
+    // A mob that takes the item into a slot of its own — an allay, a piglin, a sulfur cube: the item
+    // goes somewhere the ledger can name, and that is written where it lands.
     val keeps: Boolean = false,
     val untamed: Boolean = false,
     val breedsOn: Boolean = false,

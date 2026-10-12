@@ -538,11 +538,7 @@ internal fun tookOver(
  * cleared by the server under no event of its own — the same reason the break capture follows it.
  * Unfollowed, that half keeps for ever whatever the item plane credited to it.
  */
-internal fun withOtherHalves(blocks: List<Block>): Set<Block> {
-    val hit = LinkedHashSet(blocks)
-    for (block in blocks) otherHalfOf(block)?.let { hit += it }
-    return hit
-}
+internal fun withOtherHalves(blocks: List<Block>): Set<Block> = LinkedHashSet(blocks + blocks.mapNotNull(::otherHalfOf))
 
 /**
  * The other half of a bed, from the half the event names. Both halves are gone by the time the
@@ -810,7 +806,7 @@ class BlockDestructionListener(
     private val energy: Energy = Energy(),
     private val touches: HandTouches = HandTouches(),
     // Runs a task on the region of the location a tick later.
-    private val later: (Location, () -> Unit) -> Unit = { _, _ -> },
+    private val later: (Location, () -> Unit) -> Unit,
 ) : Listener {
 
     private val growing = GrowClaims()

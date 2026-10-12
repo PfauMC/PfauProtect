@@ -205,9 +205,9 @@ class EntityCapture(
     private val later: (Location, () -> Unit) -> Unit,
     // Runs a task on the entity's own scheduler a tick later, or the second one if the entity is gone by
     // then and the first never runs.
-    private val laterOn: (Entity, () -> Unit, () -> Unit) -> Unit = { _, _, _ -> },
+    private val laterOn: (Entity, () -> Unit, () -> Unit) -> Unit,
     // Runs a task off the region threads, where the journal may be read.
-    private val offThread: (() -> Unit) -> Unit = { it() },
+    private val offThread: (() -> Unit) -> Unit,
 ) : Listener {
     private val seen = ConcurrentHashMap<UUID, Long>()
 

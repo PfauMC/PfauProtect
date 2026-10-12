@@ -302,9 +302,9 @@ data class LookupQuery(
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
-    fun fromTs(now: Long = System.currentTimeMillis()): Long = secondsBack?.let { now - it * 1000 } ?: 0
+    fun fromTs(): Long = secondsBack?.let { System.currentTimeMillis() - it * 1000 } ?: 0
 
-    fun toTs(now: Long = System.currentTimeMillis()): Long = secondsUntil?.let { now - it * 1000 } ?: Long.MAX_VALUE
+    fun toTs(): Long = secondsUntil?.let { System.currentTimeMillis() - it * 1000 } ?: Long.MAX_VALUE
 
     // Rows a page needs read: every page before it as well, since a read is newest first. Runs folded
     // into one line each eat rows, so a folded page reads further.
@@ -867,9 +867,7 @@ class Lookups(
         val keeps = rowFilter(query, users)
         val rows = positions.flatMap { (x, y, z) -> log.at(x, y, z, fromTs, toTs, limit = query.fetch, reverse = true) }
         val entities = positions.flatMap { (x, y, z) -> log.entitiesAt(x, y, z, fromTs, toTs, MAX_ENTITY_WALK).rows }
-        val holders = positions.flatMap { (x, y, z) ->
-            listOf(Container(target.world, x, y, z, 0), WorldBlock(target.world, x, y, z))
-        }
+        val holders = positions.flatMap { (x, y, z) -> holdersAt(target.world, x, y, z) }
         val entries = holderRows(holders, fromTs, toTs, query).entries
         val lines = entryLines(wholeTransactions(ledger, filter(entries, query, users))) +
             marked(rows).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(target.world, row, back) } +
@@ -1096,7 +1094,6 @@ class Lookups(
         }
     }
 
-    // What became of the entities at the same place: killed, put down, changed, led away.
     private fun entityLines(log: BlockLog, target: LookupTarget, query: LookupQuery, keeps: RowFilter, fromTs: Long, toTs: Long): List<Line> {
         val radius = query.radius
         val rows = if (radius == null) {
@@ -1112,13 +1109,7 @@ class Lookups(
     private fun read(target: LookupTarget, query: LookupQuery): EntryPage {
         val fromTs = query.fromTs()
         val toTs = query.toTs()
-        val radius = query.radius ?: return holderRows(
-            listOf(
-                Container(target.world, target.x, target.y, target.z, 0),
-                WorldBlock(target.world, target.x, target.y, target.z),
-            ),
-            fromTs, toTs, query,
-        )
+        val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z), fromTs, toTs, query)
         val inBox = boxAround(target, radius)
         return ledger.regionPage(
             world = target.world,
@@ -1143,7 +1134,6 @@ class Lookups(
         )
     }
 
-    // The chunks a box of that radius around the target reaches into.
     private fun chunksAround(target: LookupTarget, radius: Int): List<Pair<Int, Int>> =
         (((target.x - radius) shr 4)..((target.x + radius) shr 4)).flatMap { cx ->
             (((target.z - radius) shr 4)..((target.z + radius) shr 4)).map { cz -> cx to cz }
@@ -1155,6 +1145,9 @@ class Lookups(
             z in (target.z - radius)..(target.z + radius)
     }
 
+    private fun holdersAt(world: UUID, x: Int, y: Int, z: Int): List<Holder> =
+        listOf(Container(world, x, y, z, 0), WorldBlock(world, x, y, z))
+
     private fun holderRows(holders: List<Holder>, fromTs: Long, toTs: Long, query: LookupQuery): EntryPage {
         val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = query.fetch) }
         return EntryPage(pages.flatMap { it.entries }.sortedByDescending { it.timestamp }, pages.all { it.complete })
@@ -1163,10 +1156,7 @@ class Lookups(
     private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
         val keeps = rowFilter(query, users)
         val placers = HashMap<Container, Placer>()
-        return entries.asSequence()
-            .filter(keeps::keeps)
-            .filter { !query.steal || stolen(it, placers) }
-            .toList()
+        return entries.filter { keeps.keeps(it) && (!query.steal || stolen(it, placers)) }
     }
 
     // Who put a container down; `known` false when the read stopped before it reached the placement.
@@ -1231,7 +1221,6 @@ class Lookups(
         return row(Ui.ago(entry.timestamp), who(who, entry.confidence), act, item(entry.itemFormId, amount), flow, at)
     }
 
-    // What a block row did: put a thing there, took one away, or turned one into another.
     private fun blockChange(row: BlockRow): Pair<String, String> {
         val before = stateName(ledger, row.stateBefore)
         val after = stateName(ledger, row.stateAfter)

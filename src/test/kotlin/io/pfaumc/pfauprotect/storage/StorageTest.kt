@@ -575,7 +575,7 @@ class StorageTest {
         assertEquals(Cause.CONTAINER_REMOVE, forwards[1].cause)
         assertEquals(7, forwards[2].damage)
 
-        val backwards = log.holderEntries(aliceInv, 0, Long.MAX_VALUE, reverse = true)
+        val backwards = log.holderPage(aliceInv, 0, Long.MAX_VALUE, reverse = true).entries
         assertEquals(forwards.reversed(), backwards)
     }
 
@@ -584,7 +584,7 @@ class StorageTest {
         assertEquals(1, log.holderEntries(aliceInv, T0 + 10, T0 + 10).size)
         assertEquals(2, log.holderEntries(aliceInv, T0 + 10, Long.MAX_VALUE).size)
         assertEquals(1, log.holderEntries(aliceInv, 0, Long.MAX_VALUE, limit = 1).size)
-        assertEquals(-1, log.holderEntries(aliceInv, 0, Long.MAX_VALUE, reverse = true, limit = 1).single().qty)
+        assertEquals(-1, log.holderPage(aliceInv, 0, Long.MAX_VALUE, reverse = true, limit = 1).entries.single().qty)
         assertTrue(log.holderEntries(PlayerInv(UUID.randomUUID(), 0), 0, Long.MAX_VALUE).isEmpty())
     }
 
@@ -815,7 +815,7 @@ class StorageTest {
         // A position: its prefix is exactly the width the extractor is sized for, which is the case
         // where seeking to the key just past the prefix asks the filter about the wrong prefix.
         assertEquals(20, log.holderEntries(position, 0, Long.MAX_VALUE, limit = 1000).size)
-        val newestFirst = log.holderEntries(position, 0, Long.MAX_VALUE, reverse = true, limit = 1000)
+        val newestFirst = log.holderPage(position, 0, Long.MAX_VALUE, reverse = true, limit = 1000).entries
         assertEquals(20, newestFirst.size)
         assertEquals(T0 + 119, newestFirst.first().timestamp)
         assertEquals(
@@ -828,7 +828,7 @@ class StorageTest {
         // extractor prefixes and no single one of them can stand for the lot.
         val fromAlice = log.holderEntries(aliceInv, 0, Long.MAX_VALUE, limit = 1000)
         assertEquals(3 + 20, fromAlice.size, "the seeded rows plus the placements")
-        assertEquals(fromAlice.reversed(), log.holderEntries(aliceInv, 0, Long.MAX_VALUE, reverse = true, limit = 1000))
+        assertEquals(fromAlice.reversed(), log.holderPage(aliceInv, 0, Long.MAX_VALUE, reverse = true, limit = 1000).entries)
         assertTrue(log.formBalance(alice).isNotEmpty())
 
         // The whole ledger, walked from the start and then again a few rows at a time from a cursor.

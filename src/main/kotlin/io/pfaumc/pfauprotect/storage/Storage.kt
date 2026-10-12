@@ -94,15 +94,12 @@ class OwedItem(val key: ByteArray, val formId: Long, val qty: Int, val actor: UU
 // carry a version this build reads, so without the bump an older database opens and every key is
 // parsed as something it never was; a family holds rows the value version never speaks for at all.
 //
-// Version 4 is neither: the layout is unchanged and a menu number is still one varint, but it now
-// counts through a registry instead of through InventoryType.ordinal, so an old row parses cleanly
-// and names the wrong menu. The record version cannot say so — an ordinary entry is pinned to a
-// header byte of 0x00 — which leaves this the only number that can refuse such a database.
+// Version 4 keeps the layout but counts menu numbers through a registry instead of InventoryType.ordinal,
+// so an old row parses cleanly and names the wrong menu; an ordinary entry's header byte is pinned to
+// 0x00, so only this number can refuse such a database.
 //
-// Versions 5 and 6 each add a family and nothing else — the compensations, then the items owed by
-// players who were offline when a rollback took them back — so an older ledger is a newer one whose
-// tables are still empty: it is opened, given the families and stamped anew, and an older build refuses
-// it afterwards by the stamp instead of failing on a family it was never told about.
+// Versions 5 and 6 each only add a family, so an older ledger is opened, given the families and
+// stamped anew, and an older build then refuses it by the stamp.
 private const val SCHEMA_VERSION = 6L
 private val WIDENS_FROM = setOf(4L, 5L)
 
@@ -131,7 +128,7 @@ internal const val KEY_TAIL_PAD = 32
 // One cache for every column family of the ledger and of every world's base, with their memtables and
 // their index and filter blocks counted inside it: the whole native footprint of the plugin has this one
 // bound. An unconfigured family quietly gets a 32 MiB cache of its own, and a base memtables of 64 MiB
-// a family; left to themselves, the ledger and three worlds held some 700 MiB nobody had sized.
+// a family, which across the ledger and every world adds up to hundreds of MiB nobody sized.
 internal const val BLOCK_CACHE_BYTES = 256L * 1024 * 1024
 
 // Of that, what memtables of all the bases together may hold before the fullest is flushed.
@@ -599,9 +596,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         holder: Holder,
         fromTs: Long,
         toTs: Long,
-        reverse: Boolean = false,
         limit: Int = 100,
-    ): List<LedgerEntry> = holderPage(holder, fromTs, toTs, reverse, limit).entries
+    ): List<LedgerEntry> = holderPage(holder, fromTs, toTs, limit = limit).entries
 
     fun holderPage(
         holder: Holder,

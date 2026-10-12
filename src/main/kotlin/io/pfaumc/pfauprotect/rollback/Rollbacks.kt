@@ -203,7 +203,7 @@ class Tally {
     var slots = 0
     var missed = 0
     var failed = 0
-    // Positions of chunks a /pp cancel reached before they were put back.
+    // Positions of chunks a /pp cancel stopped before they began.
     var skipped = 0
     var entitiesBack = 0
     var entitiesTaken = 0
@@ -438,23 +438,25 @@ class ChunkRollback(
                 plugin.logger.log(Level.WARNING, "a rollback could not put back the block at ${spots[i]}", failure)
             }
         }
-        if (apply) reshapeAround(level, spots.filterIndexed { i, _ -> touched[i] })
-        // Leaves put back at distance 1 count their way to a log again: the tick sets the distance and tells the
-        // leaves beside it, which count on from there.
-        if (apply) for (i in positions.indices) {
-            if (!touched[i]) continue
-            val state = level.getBlockState(spots[i])
-            if (state.block is LeavesBlock && !state.getValue(LeavesBlock.PERSISTENT)) level.scheduleTick(spots[i], state.block, 1)
-        }
-        if (apply) lift(level, spots.filterIndexed { i, _ -> touched[i] })
-        // An observer sees the rollback put a block in front of it, or take the griefer's trigger away, and fires:
-        // the flying machine it is part of, just put back, set off again under the rollback's name.
-        if (apply) positions.indices.filter { touched[it] }.forEach { i ->
-            for (face in Direction.entries) {
-                val at = spots[i].relative(face)
-                val state = level.getBlockState(at)
-                if (state.block is ObserverBlock && at.relative(state.getValue(ObserverBlock.FACING)) == spots[i]) {
-                    level.blockTicks.clearArea(BoundingBox(at))
+        if (apply) {
+            val put = spots.filterIndexed { i, _ -> touched[i] }
+            reshapeAround(level, put)
+            // Leaves put back at distance 1 count their way to a log again: the tick sets the distance and tells the
+            // leaves beside it, which count on from there.
+            for (spot in put) {
+                val state = level.getBlockState(spot)
+                if (state.block is LeavesBlock && !state.getValue(LeavesBlock.PERSISTENT)) level.scheduleTick(spot, state.block, 1)
+            }
+            lift(level, put)
+            // An observer sees the rollback put a block in front of it, or take the griefer's trigger away, and fires:
+            // the flying machine it is part of, just put back, set off again under the rollback's name.
+            for (spot in put) {
+                for (face in Direction.entries) {
+                    val at = spot.relative(face)
+                    val state = level.getBlockState(at)
+                    if (state.block is ObserverBlock && at.relative(state.getValue(ObserverBlock.FACING)) == spot) {
+                        level.blockTicks.clearArea(BoundingBox(at))
+                    }
                 }
             }
         }
@@ -531,9 +533,8 @@ class ChunkRollback(
 
     /**
      * Once every chunk is done, the running liquid in the chunk that no source feeds any more: a chunk put back
-     * first was flowed into again from its neighbour's sources, not yet taken, and the lava of a cast lay on the
-     * street long after the rollback, flows whose way down from the cast no row had followed. The game
-     * takes such a flow away by itself, tick by tick; a flow any source still feeds is left to it.
+     * first is flowed into again from a neighbour's sources not yet taken. A flow a source still feeds is left
+     * to the game.
      */
     fun drainLeft(level: ServerLevel, chunk: ChunkPlan) {
         if (chunk.positions.isEmpty()) return

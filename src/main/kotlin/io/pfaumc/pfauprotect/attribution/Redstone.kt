@@ -236,11 +236,7 @@ class Nudges(private val now: () -> Long = System::currentTimeMillis) {
     }
 }
 
-/**
- * The player behind an entity, first rung that answers: the entity itself, whoever rides with it,
- * whoever threw or shot it, whoever holds its lead, whoever last pushed it, whoever brought it into the
- * world, whoever tamed it. Null when none of them is a player.
- */
+/** The player behind an entity, from the first rung below that answers; null when none names a player. */
 internal fun behind(entity: Entity, nudges: Nudges, entities: EntityOrigins, depth: Int = 0): Attributed? {
     if (entity is Player) return Attributed(entity.uniqueId, Confidence.FACT)
     riderWith(entity)?.let { return Attributed(it.uniqueId, Confidence.FACT) }

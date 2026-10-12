@@ -37,8 +37,8 @@ object Ui {
         component.hoverEvent(HoverEvent.showText(Component.text(lines.joinToString("\n"))))
 
     /** How long ago, in its one largest unit; the date and time to the second when hovered. */
-    fun ago(at: Long, now: Long = System.currentTimeMillis()): Component =
-        hover(text(agoText(now - at), MUTED), DATE.format(Instant.ofEpochMilli(at)))
+    fun ago(at: Long): Component =
+        hover(text(agoText(System.currentTimeMillis() - at), MUTED), DATE.format(Instant.ofEpochMilli(at)))
 
     fun agoText(millis: Long): String {
         val s = maxOf(0, millis / 1000)

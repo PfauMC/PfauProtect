@@ -78,7 +78,7 @@ sealed class Holder(
     // void each hold exactly one thing, so their slot is always zero and is never written down.
     val carriesSlot: Boolean = true,
 ) {
-    abstract val slot: Int
+    open val slot: Int get() = 0
 }
 
 sealed class PlayerHolder(typeId: Int, carriesSlot: Boolean = true) :
@@ -93,9 +93,7 @@ data class PlayerEquip(override val uuid: UUID, override val slot: Int) :
     PlayerHolder(HolderType.PLAYER_EQUIP)
 
 data class PlayerCursor(override val uuid: UUID) :
-    PlayerHolder(HolderType.PLAYER_CURSOR, carriesSlot = false) {
-    override val slot: Int get() = 0
-}
+    PlayerHolder(HolderType.PLAYER_CURSOR, carriesSlot = false)
 
 data class PlayerEnder(override val uuid: UUID, override val slot: Int) :
     PlayerHolder(HolderType.PLAYER_ENDER)
@@ -115,23 +113,17 @@ data class Container(
 // instead would cut the chain in two at every build: the stolen blocks laid into a floor would
 // vanish from the graph when placed and reappear from nowhere hours later when mined back out.
 data class WorldBlock(val world: UUID, val x: Int, val y: Int, val z: Int) :
-    Holder(HolderType.WORLD_BLOCK, carriesSlot = false) {
-    override val slot: Int get() = 0
-}
+    Holder(HolderType.WORLD_BLOCK, carriesSlot = false)
 
 data class EntitySlot(val uuid: UUID, override val slot: Int) : Holder(HolderType.ENTITY_SLOT)
 
-data class ItemEntityRef(val uuid: UUID) : Holder(HolderType.ITEM_ENTITY, carriesSlot = false) {
-    override val slot: Int get() = 0
-}
+data class ItemEntityRef(val uuid: UUID) : Holder(HolderType.ITEM_ENTITY, carriesSlot = false)
 
 data class Nested(val ownerId: UUID, val index: Int) : Holder(HolderType.NESTED) {
     override val slot: Int get() = index
 }
 
-data object Void : Holder(HolderType.VOID, addressable = false, carriesSlot = false) {
-    override val slot: Int get() = 0
-}
+data object Void : Holder(HolderType.VOID, addressable = false, carriesSlot = false)
 
 data class LedgerEntry(
     val holder: Holder,

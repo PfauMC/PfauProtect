@@ -227,7 +227,7 @@ class MechanismCaptureListener(
         return if (slot < 0) null else out(slot)
     }
 
-    private fun submit(from: Holder, to: Holder, cause: Cause, stack: NmsItemStack, qty: Int, placer: UUID? = null) {
+    private fun submit(from: Holder, to: Holder, cause: Cause, stack: NmsItemStack, qty: Int, placer: UUID?) {
         pending.add(from, to, cause, codec.encode(stack).key, qty, placer, if (placer == null) Confidence.FACT else Confidence.INFERRED)
     }
 

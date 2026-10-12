@@ -6,12 +6,14 @@ import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
+import io.pfaumc.pfauprotect.capture.block.SPAWN_REACH
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.capture.block.spotOf
 import io.pfaumc.pfauprotect.capture.block.firedBy
 import io.papermc.paper.event.entity.EntityDamageItemEvent
+import org.bukkit.block.Block
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.Bukkit
 import org.bukkit.Location
@@ -525,21 +527,20 @@ class MobItemListener(
     fun onReward(event: BlockDispenseLootEvent) {
         val block = event.block
         val cause = if (block.type == Material.VAULT) Cause.VAULT_REWARD else Cause.TRIAL_SPAWNER_REWARD
-        val spot = spotOf(block.location.add(0.5, 0.5, 0.5))
-        val actor = event.player?.uniqueId
-        for (stack in event.dispensedLoot) {
-            val encoded = codec.encodeOrNull(stack) ?: continue
-            origins.expect(Void, cause, encoded.key, spot, encoded.count, actor, REWARD_REACH)
-        }
+        expectOutOf(block, event.dispensedLoot, cause, event.player?.uniqueId, REWARD_REACH)
     }
 
     // Berries, glow berries: picked off the block, which stays where it is.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onHarvest(event: PlayerHarvestBlockEvent) {
-        val spot = spotOf(event.harvestedBlock.location.add(0.5, 0.5, 0.5))
-        for (stack in event.itemsHarvested) {
+        expectOutOf(event.harvestedBlock, event.itemsHarvested, Cause.BLOCK_INTERACT_DROP, event.player.uniqueId)
+    }
+
+    private fun expectOutOf(block: Block, stacks: List<BukkitItemStack>, cause: Cause, actor: UUID?, reach: Double = SPAWN_REACH) {
+        val spot = spotOf(block.location.add(0.5, 0.5, 0.5))
+        for (stack in stacks) {
             val encoded = codec.encodeOrNull(stack) ?: continue
-            origins.expect(Void, Cause.BLOCK_INTERACT_DROP, encoded.key, spot, encoded.count, event.player.uniqueId)
+            origins.expect(Void, cause, encoded.key, spot, encoded.count, actor, reach)
         }
     }
 }

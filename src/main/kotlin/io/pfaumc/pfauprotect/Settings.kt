@@ -35,9 +35,9 @@ object Settings {
         }
         disabledWorlds = config.getStringList("worlds.disabled").toSet()
         disabledCauses = config.getStringList("causes.disabled").mapNotNull { name ->
-            val cause = Cause.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
-            if (cause == null || cause !in BLOCK_PLANE) log.warning("config.yml: '$name' is no block- or entity-plane cause; ignored")
-            cause?.takeIf { it in BLOCK_PLANE }
+            val cause = Cause.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }?.takeIf { it in BLOCK_PLANE }
+            if (cause == null) log.warning("config.yml: '$name' is no block- or entity-plane cause; ignored")
+            cause
         }.toSet()
         maxRadius = config.getInt("lookup.max-radius", maxRadius).coerceIn(1, 1_000)
         maxRollbackPositions = config.getInt("rollback.max-positions", maxRollbackPositions).coerceIn(1, 1_000_000)
