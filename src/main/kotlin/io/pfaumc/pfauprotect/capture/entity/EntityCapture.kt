@@ -6,6 +6,7 @@ import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.attribution.culprit
+import io.pfaumc.pfauprotect.attribution.typeOf
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.capture.block.explosionCause
@@ -272,7 +273,7 @@ class EntityCapture(
         if (!changedBetween(before, after)) return
         log.submit(
             EntityChange(
-                at.x, at.y, at.z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, entity.type.key.toString(), entity.uniqueId,
+                at.x, at.y, at.z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, typeOf(entity), entity.uniqueId,
                 timestamp, actor = player, before = before, after = after, drops = drops(),
             )
         )
@@ -332,7 +333,7 @@ class EntityCapture(
             val after = snapshotOf((entity as CraftEntity).handle) ?: return@laterOn
             log.submit(
                 EntityChange(
-                    block.x, block.y, block.z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, entity.type.key.toString(), entity.uniqueId,
+                    block.x, block.y, block.z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, typeOf(entity), entity.uniqueId,
                     confidence = by.confidence, actor = by.culprit(), before = before, after = after,
                 )
             )
@@ -374,7 +375,7 @@ class EntityCapture(
         val block = entity.location.block
         log.submit(
             EntityChange(
-                block.x, block.y, block.z, EntityKind.MOVED, Cause.ENTITY_LED, entity.type.key.toString(), entity.uniqueId,
+                block.x, block.y, block.z, EntityKind.MOVED, Cause.ENTITY_LED, typeOf(entity), entity.uniqueId,
                 actor = player.uniqueId, before = before,
             )
         )
@@ -543,7 +544,6 @@ class EntityCapture(
         seen[entity] = System.currentTimeMillis()
     }
 
-    // A lead's knot goes by itself the moment its last lead does, and the lead is on the mob's own NBT.
     // A mob let out of a bucket names no player on its spawn; the emptying that lets it out comes first, on
     // the same thread, and leaves the player here for the spawn to take.
     private val emptying = ThreadLocal<UUID?>()
@@ -598,7 +598,7 @@ class EntityCapture(
         val block = entity.location.block
         log.submit(
             EntityChange(
-                block.x, block.y, block.z, EntityKind.CREATED, cause, entity.type.key.toString(), entity.uniqueId,
+                block.x, block.y, block.z, EntityKind.CREATED, cause, typeOf(entity), entity.uniqueId,
                 confidence = by?.confidence ?: Confidence.FACT, actor = by.culprit(),
             )
         )
@@ -623,7 +623,7 @@ class EntityCapture(
         val nbt = snapshotOf((entity as CraftEntity).handle) ?: return
         val block = entity.location.block
         val uuid = entity.uniqueId
-        val type = entity.type.key.toString()
+        val type = typeOf(entity)
         later(entity.location) {
             val drops = origins.droppedFor(uuid)
             val write: (Attributed?) -> Unit = { by ->

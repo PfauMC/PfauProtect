@@ -59,7 +59,7 @@ class ChatLog(dir: Path) : AutoCloseable {
     }
 
     fun submit(line: ChatLine) {
-        val key = ByteBuffer.allocate(12).putLong(line.timestamp).putInt(sequence.getAndIncrement()).array()
+        val key = keyOf(line.timestamp, sequence.getAndIncrement())
         runCatching { writer.execute { dbLock.read { if (!closed) db.put(key, encode(line)) } } }
     }
 
@@ -68,7 +68,7 @@ class ChatLog(dir: Path) : AutoCloseable {
         val out = ArrayList<ChatLine>()
         if (closed) return out
         db.newIterator().use { iter ->
-            iter.seekForPrev(ByteBuffer.allocate(12).putLong(toTs).putInt(Int.MAX_VALUE).array())
+            iter.seekForPrev(keyOf(toTs, Int.MAX_VALUE))
             while (iter.isValid && out.size < limit) {
                 val ts = ByteBuffer.wrap(iter.key()).long
                 if (ts < fromTs) break
@@ -96,6 +96,8 @@ class ChatLog(dir: Path) : AutoCloseable {
             options.close()
         }
     }
+
+    private fun keyOf(ts: Long, seq: Int): ByteArray = ByteBuffer.allocate(12).putLong(ts).putInt(seq).array()
 
     private fun encode(line: ChatLine): ByteArray {
         val text = line.text.toByteArray(Charsets.UTF_8)

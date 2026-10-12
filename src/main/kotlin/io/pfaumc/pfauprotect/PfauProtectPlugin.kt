@@ -215,7 +215,12 @@ private class Running(
     val planes: PlaneSync,
     val rollbacks: Rollbacks,
     val chat: ChatLog,
-)
+) {
+    fun drainAll() {
+        ledger.drain()
+        for (world in blocks.worlds) blocks.get(world)?.drain()
+    }
+}
 
 class PfauProtectPlugin : JavaPlugin() {
     private var running: Running? = null
@@ -581,8 +586,7 @@ class PfauProtectPlugin : JavaPlugin() {
         .executes { verify(it.source, judgeRecent = false) }
         .then(Commands.literal("recent").executes { verify(it.source, judgeRecent = true) })
 
-    // Centred where the command was run from, like `near`: what a rollback covers is the place around
-    // whoever runs it, not the one block they happen to be looking at.
+    // Centred like `near`.
     private fun rollbackNode(literal: String) = gated(literal, ROLLBACK_PERMISSION)
         .executes { context ->
             rollbacks(context.source) { rollbacks, sender ->
@@ -695,8 +699,7 @@ class PfauProtectPlugin : JavaPlugin() {
         sender.say(if (confirm) "Purging everything older than $age; this walks the whole journal." else "Counting what a purge of everything older than $age would delete.")
         offThread(sender, "the purge failed", "The purge failed; the server log has the details.") {
             val cutoff = System.currentTimeMillis() - seconds * 1000
-            running.ledger.drain()
-            for (world in running.blocks.worlds) running.blocks.get(world)?.drain()
+            running.drainAll()
             val (entries, openings) = running.ledger.purgeBefore(cutoff, dryRun = !confirm)
             var rows = 0
             var entities = 0
@@ -796,8 +799,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val sender = source.sender
         sender.say("Running both self-checks to the end; this reads the whole journal.")
         offThread(sender, "the self-checks failed", "The self-checks failed; the server log has the details.") {
-            running.ledger.drain()
-            for (world in running.blocks.worlds) running.blocks.get(world)?.drain()
+            running.drainAll()
             checkLedger(running.ledger, VERIFY_ROUNDS, sender::say)
             checkPlanes(running.planes, VERIFY_ROUNDS, judgeRecent, sender::say)
         }

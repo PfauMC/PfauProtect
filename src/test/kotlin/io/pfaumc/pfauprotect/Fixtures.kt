@@ -78,8 +78,8 @@ abstract class BothPlanes {
         log = logs.open(world)
     }
 
-    protected fun assertPlanesAgree(now: Long, limit: Int = 100): PlaneReport {
-        val report = PlaneSync(shared, logs).pass(limit, now)
+    protected fun assertPlanesAgree(now: Long): PlaneReport {
+        val report = PlaneSync(shared, logs).pass(100, now)
         assertEquals(emptyList<PlaneGap>(), report.gaps)
         return report
     }

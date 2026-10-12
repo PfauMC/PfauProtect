@@ -287,3 +287,8 @@ enum class Cause(val id: Int) {
         fun byId(id: Int): Cause? = BY_ID.getOrNull(id)
     }
 }
+
+// The block plane's whole range, so a filter can name it without listing every cause: 0xCA..0xEF, and
+// the block causes that were numbered outside it.
+val BLOCK_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0xCA..0xEF }.toSet() +
+    setOf(Cause.BLK_SIGN_EDIT, Cause.BLK_SHAPE, Cause.BLK_LIQUID_FLOW, Cause.BLK_PLUGIN)

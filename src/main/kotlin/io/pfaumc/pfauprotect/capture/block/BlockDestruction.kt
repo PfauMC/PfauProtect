@@ -1840,7 +1840,7 @@ class BlockDestructionListener(
         return tookOver(site.at, held, taken, cause, by, timestamp)
     }
 
-    // The two halves of what `Attribution.cleared` does, with the state the position ends up in taken
+    // `Attribution.removed` and `placed` together, with the state the position ends up in taken
     // from what was observed rather than derived: fire spreading leaves fire standing there, and a
     // note naming air would break the chain at its first step.
     private fun noteRemoval(at: WorldBlock, after: String, actor: UUID) {

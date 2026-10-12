@@ -439,7 +439,7 @@ class MobInventories(
 }
 
 /**
- * A seed set down into the empty cell over farmland. A composter filling up under a farmer's seeds raises
+ * A seed set down into an empty cell. A composter filling up under a farmer's seeds raises
  * the same event, and booked as a planting every seed it took landed on the composter's position as well
  * as in its slot, never to leave it.
  */

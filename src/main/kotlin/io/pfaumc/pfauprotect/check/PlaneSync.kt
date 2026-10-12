@@ -73,7 +73,7 @@ private enum class Outcome { CHECKED, SETTLING, UNREADABLE, UNRECORDED, OVERDRAW
  */
 class PlaneSync(private val ledger: RocksItemLog, private val blocks: BlockLogs) {
 
-    fun pass(limit: Int, now: Long = System.currentTimeMillis()): PlaneReport {
+    fun pass(limit: Int, now: Long): PlaneReport {
         val page = ledger.blockPostings(limit)
         val gaps = ArrayList<PlaneGap>()
         val counts = page.positions.groupingBy { settle(it, now, gaps) }.eachCount()

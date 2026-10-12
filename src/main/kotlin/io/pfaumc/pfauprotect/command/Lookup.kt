@@ -15,6 +15,7 @@ import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.capture.entity.TRANSFORMED
 import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.storage.BlockRow
+import io.pfaumc.pfauprotect.model.BLOCK_CAUSES
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
@@ -241,12 +242,6 @@ private val USE_CAUSES = setOf(
     Cause.BONEMEAL_USE, Cause.SPAWN_EGG_USE, Cause.WAX_APPLY, Cause.ITEM_INTO_SINGLE_BLOCK,
     Cause.EYE_INTO_FRAME, Cause.ITEM_USED, Cause.BEACON_PAYMENT,
 )
-
-// The block plane's whole range, so a filter can name it without listing thirty-two causes.
-private val BLOCK_CAUSES: Set<Cause> =
-    Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT + Cause.BLK_SHAPE + Cause.BLK_PLAYER_SWITCH +
-        Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE + Cause.BLK_BUCKET +
-        Cause.BLK_SPONGE + Cause.BLK_COMMAND + Cause.BLK_LIQUID_FLOW + Cause.BLK_PLUGIN
 
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
 private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")

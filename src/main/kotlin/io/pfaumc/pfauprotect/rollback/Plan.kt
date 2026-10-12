@@ -82,7 +82,7 @@ private val TURFS = setOf("minecraft:grass_block", "minecraft:dirt_path", "minec
  *
  * `turf` says whether a fade row is one of [TURFS] dying under what stands on it, not a fire going out.
  */
-internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>, turf: (BlockRow) -> Boolean = { false }): List<BlockRow> {
+internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>, turf: (BlockRow) -> Boolean): List<BlockRow> {
     val first = kept.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, rows) -> rows.minWith(ROW_ORDER) }
     // What the world did after an earlier rollback had put the position back is the world's, not part of
     // the grief: grass a restored wall stands on going to dirt. Walked past, it took a second rollback

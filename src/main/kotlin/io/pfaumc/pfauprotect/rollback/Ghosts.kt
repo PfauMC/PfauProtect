@@ -73,7 +73,7 @@ class Ghosts(private val plugin: Plugin) : Listener {
         send(event.player, ghosts)
     }
 
-    // A click is answered with the block as the server has it, there and on the clicked face.
+    // A click makes the client show the real block, there and on the clicked face, so the ghost is sent again.
     @EventHandler(priority = EventPriority.MONITOR)
     fun onClick(event: PlayerInteractEvent) {
         val clicked = event.clickedBlock ?: return

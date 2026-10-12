@@ -229,7 +229,7 @@ class CommandBrackets(
                 source.sendFailure(ComponentUtils.fromMessage(failure.rawMessage))
                 return 0
             }
-            areas.forEachIndexed { index, area -> area.onRegion { settle(area, before[index], kind, actor, retries = 1) } }
+            areas.forEachIndexed { index, area -> area.onRegion { settle(area, before[index], kind, actor, retry = true) } }
             return result
         }
     }
@@ -277,7 +277,7 @@ class CommandBrackets(
         return out.toTypedArray()
     }
 
-    private fun settle(area: Area, before: Array<Standing>?, kind: Writes, actor: UUID?, retries: Int) {
+    private fun settle(area: Area, before: Array<Standing>?, kind: Writes, actor: UUID?, retry: Boolean) {
         if (before == null) return
         val after = read(area)
         val world = area.level.world.uid
@@ -290,9 +290,9 @@ class CommandBrackets(
         }
         // The server may finish the write a tick after the call that asked for it; read again once.
         if (difference.rows.isEmpty()) {
-            if (retries > 0 && plugin.isEnabled) {
+            if (retry && plugin.isEnabled) {
                 Bukkit.getRegionScheduler().runDelayed(plugin, area.level.world, area.minX shr 4, area.minZ shr 4, {
-                    settle(area, before, kind, actor, retries - 1)
+                    settle(area, before, kind, actor, retry = false)
                 }, 1)
             }
             return

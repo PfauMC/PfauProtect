@@ -624,12 +624,12 @@ class BlockMechanismListener(
         // movement and neither may name the other. Both face Void, and the shared tx_id is the only
         // thing that carries a walk of the graph across the break.
         val transaction = ArrayList<Transfer>(event.items.size + 1)
-        val position = paidHalf(broken.at, broken.partner, ::rememberedAt)
-        val remembered = rememberedAt(position)
+        val position = paidHalf(broken.at, broken.partner, placed::formAt)
+        val remembered = placed.formAt(position)
         // Cleared here because no other way for a block to leave says so, and on both halves because
         // a half left alone would go on naming a block that stands nowhere.
-        forget(broken.at)
-        broken.partner?.let(::forget)
+        placed.clearFormAt(broken.at)
+        broken.partner?.let(placed::clearFormAt)
         gaveBack(remembered, codec.shellOf(state.blockData))?.let {
             transaction += Transfer(
                 cause = Cause.BLOCK_DROP,
@@ -830,10 +830,6 @@ class BlockMechanismListener(
         breaking.remove()
         return broken?.takeIf { it.at == positionOf(block) }
     }
-
-    private fun rememberedAt(at: WorldBlock) = placed.formAt(at)
-
-    private fun forget(at: WorldBlock) = placed.clearFormAt(at)
 
     private fun key(stack: BukkitItemStack?): ItemKey? = codec.encodeOrNull(stack)?.key
 }

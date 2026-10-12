@@ -530,4 +530,4 @@ class RedstoneListener(
     }
 }
 
-private fun typeOf(entity: Entity) = entity.type.key.toString()
+internal fun typeOf(entity: Entity) = entity.type.key.toString()
