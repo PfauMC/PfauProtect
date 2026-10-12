@@ -611,7 +611,7 @@ class ContainerCaptureListener(
     fun onOpen(event: InventoryOpenEvent) {
         val player = event.player as? Player ?: return
         recompute(player)
-        baselines[player.uniqueId] = Baseline(event.view, snapshot(player, event.view))
+        rebaseline(player, event.view)
     }
 
     // Structure loot has no earlier existence to move from, so without this every naturally generated
@@ -1141,8 +1141,7 @@ class ContainerCaptureListener(
         }
     }
 
-    private fun rebaseline(player: Player) {
-        val view = player.openInventory
+    private fun rebaseline(player: Player, view: InventoryView = player.openInventory) {
         baselines[player.uniqueId] = Baseline(view, snapshot(player, view))
     }
 

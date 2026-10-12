@@ -1088,7 +1088,7 @@ class BlockDestructionListener(
         plugin.server.regionScheduler.execute(plugin, to.world, to.x shr 4, to.z shr 4) {
             val now = to.blockData
             if (now.material != Material.WATER && now.material != Material.LAVA) return@execute
-            log.submit(BlockChange(to.x, to.y, to.z, "minecraft:air", now.asString, Cause.BLK_LIQUID_FLOW, timestamp, by.confidence, actor = by.actor))
+            log.submit(BlockChange(to.x, to.y, to.z, AIR, now.asString, Cause.BLK_LIQUID_FLOW, timestamp, by.confidence, actor = by.actor))
         }
     }
 

@@ -7,7 +7,6 @@ import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
-import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.rollback.slotsOf

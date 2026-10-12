@@ -152,9 +152,7 @@ class ProjectileListener(
 
     private fun unmark(arrow: AbstractArrow): Boolean {
         val container = arrow.persistentDataContainer
-        if (!container.has(SHOT)) return false
-        container.remove(SHOT)
-        return true
+        return container.has(SHOT).also { container.remove(SHOT) }
     }
 
     private fun carriedBy(arrow: AbstractArrow): Holder = if (unmark(arrow)) EntitySlot(arrow.uniqueId, 0) else Void

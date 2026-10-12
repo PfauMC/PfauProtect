@@ -109,8 +109,7 @@ class PlaneSync(private val ledger: RocksItemLog, private val blocks: BlockLogs)
         val standing = log.standingAt(at.x, at.y, at.z)
         if (standing.torn) return Outcome.UNREADABLE
         // A block placed before this plane existed, or by a path the block capture does not cover, is
-        // not this check's business, and reporting it would drown the finding that is. It is not a
-        // comparison either: there is no second plane to hold the first against.
+        // not this check's business, and reporting it would drown the finding that is.
         val row = standing.row ?: return Outcome.UNRECORDED
         if (row.timestamp > now - SETTLE_MILLIS) return Outcome.SETTLING
         val state = ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) ?: return Outcome.UNREADABLE

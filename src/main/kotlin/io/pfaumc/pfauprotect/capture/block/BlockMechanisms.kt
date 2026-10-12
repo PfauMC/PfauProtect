@@ -809,7 +809,7 @@ class BlockMechanismListener(
         pending.add(Void, slot, Cause.COMPOSTER_BONEMEAL, bonemeal, 1, actor)
     }
 
-    // Shearing a pumpkin or a nest both land here, and only the hive belongs to this class of causes.
+    // Shearing a pumpkin lands here too; only a hive or a nest is a harvest.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onShearBlock(event: PlayerShearBlockEvent) {
         val block = event.block

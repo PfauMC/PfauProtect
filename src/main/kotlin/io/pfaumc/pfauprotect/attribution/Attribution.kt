@@ -67,7 +67,6 @@ internal val FIRING_CAUSES = setOf(Cause.BLK_PLAYER_USE, Cause.BLK_FIRE_SPREAD, 
 
 internal val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
 
-// A block state as its block alone, without the properties in brackets.
 internal fun blockNameOf(state: String) = state.substringBefore('[')
 
 // Every position within `reach` of the centre along each axis, x outermost and z innermost.

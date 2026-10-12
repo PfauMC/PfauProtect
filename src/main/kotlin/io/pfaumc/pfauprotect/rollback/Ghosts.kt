@@ -17,7 +17,6 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-// How many blocks of a preview its player is shown at most.
 private const val GHOST_LIMIT = 50_000
 
 /** A block as a preview would put it, shown to the player who previews until it is applied or dropped. */

@@ -579,9 +579,7 @@ class PfauProtectPlugin : JavaPlugin() {
         .then(Commands.literal("on").executes { inspect(it.source, true) })
         .then(Commands.literal("off").executes { inspect(it.source, false) })
 
-    // The self-checks run on their own schedules, which are minutes apart on purpose and far too slow
-    // to work against by hand. This is the same passes, now, from the beginning to the end of what
-    // they walk.
+    // The scheduled passes run minutes apart, too slow to wait on by hand; this runs them now, to the end.
     private fun verifyNode(literal: String) = gated(literal, VERIFY_PERMISSION)
         .executes { verify(it.source, judgeRecent = false) }
         .then(Commands.literal("recent").executes { verify(it.source, judgeRecent = true) })

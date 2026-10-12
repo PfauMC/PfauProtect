@@ -82,8 +82,7 @@ class Inspector(private val lookups: Lookups) : Listener {
 
     private fun inspect(player: Player, entity: Entity) {
         if (again(player, entity.uniqueId)) return
-        val at = entity.location
-        lookups.entity(player, entity.uniqueId, entity.type.key.toString(), lookupTargetAt(at))
+        lookups.entity(player, entity.uniqueId, entity.type.key.toString(), lookupTargetAt(entity.location))
     }
 
     @EventHandler

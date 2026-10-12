@@ -102,7 +102,7 @@ internal fun villagerGuess(
         }
     }
     val rest = changes.indices.filter { causes[it] == Cause.INVENTORY_LOAD }
-    if (rest.isNotEmpty() && rest.all { !changes[it].gain && food(changes[it].key.form) }) {
+    if (rest.all { !changes[it].gain && food(changes[it].key.form) }) {
         for (i in rest) causes[i] = Cause.CONSUME_FOOD
     }
     return causes

@@ -147,7 +147,7 @@ internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
     val restored = tally.restored.toHashSet()
     for (loss in tally.breaks.distinctBy { it.txId }) {
         val whole = ledger.transactionEntries(loss)
-        val gave = whole.filter { it.holder is WorldBlock && it.qty < 0 }.map { it.holder as WorldBlock }
+        val gave = whole.filter { it.qty < 0 }.mapNotNull { it.holder as? WorldBlock }
         if (!restored.containsAll(gave)) continue
         for (drop in whole.filter { it.holder is ItemEntityRef && it.qty > 0 }) {
             owed += trace(drop.holder, drop.itemFormId, drop.qty, rowsOf)
@@ -343,9 +343,7 @@ class Confiscations(
         }
         val piles = owed.filter { it.taker is Lying }
         val gone = owed.filter { it.taker is Vanished }
-        val lying = if (piles.isEmpty()) emptyList() else {
-            listOf("${piles.map { it.taker }.distinct().size} items lying in the world: ${amounts(piles)}")
-        }
+        val lying = if (piles.isEmpty()) emptyList() else listOf("${piles.map { it.taker }.distinct().size} items lying in the world: ${amounts(piles)}")
         val vanished = if (gone.isEmpty()) emptyList() else listOf("gone for good: ${amounts(gone)}")
         return (players + lying + vanished).joinToString("; ")
     }

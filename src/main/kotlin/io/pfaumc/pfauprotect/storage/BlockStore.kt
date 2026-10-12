@@ -318,7 +318,7 @@ class BlockLog(
         // Not `closed`: that is only set once the writer has been joined, and from the moment the
         // writer stops there is nobody left to take the queue. A change accepted in between would be
         // counted as submitted, sit in the queue and never be written, and `drain` would not wait for
-        // it either. Refusing it is the difference between a caller that knows and history that lies.
+        // it either.
         if (!running || closed || progress.failure != null || changes.isEmpty()) return false
         progress.submitted.incrementAndGet()
         queue.add(changes)
@@ -360,7 +360,7 @@ class BlockLog(
         if (closed || limit <= 0) return emptyList()
         val found = ArrayList<BlockRow>()
         forEachUnder(Zcode.chunkPrefix(chunkX, chunkZ), reverse = false) { key, value ->
-            val row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            val row = blockRow(key, value)
             if (row != null && row.timestamp in fromTs..toTs && within(row)) found += row
             true
         }
@@ -397,6 +397,10 @@ class BlockLog(
 
     fun entitiesAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): Window<EntityRow> =
         window(entitiesCf, BlockCodec.positionPrefix(x, y, z), fromTs, toTs, budget, { _, _, _ -> true }, ::entityRow)
+
+    private fun indexActor(batch: WriteBatch, actor: UUID?, key: ByteArray) {
+        if (actor != null) batch.put(byActorCf, actorKey(shared.registries.id(RegistryNamespace.PLAYER, actor), key), NOTHING)
+    }
 
     private fun blockRow(key: ByteArray, value: ByteArray): BlockRow? = BlockCodec.decodeOrNull(key, value, shared.registries)
 
@@ -444,7 +448,7 @@ class BlockLog(
         var row: BlockRow? = null
         forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = true) { key, value ->
             found = true
-            row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            row = blockRow(key, value)
             false
         }
         BlockStanding(row, torn = found && row == null)
@@ -458,7 +462,7 @@ class BlockLog(
         if (closed) return null
         var found: BlockRow? = null
         forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = true) { key, value ->
-            val row = BlockCodec.decodeOrNull(key, value, shared.registries) ?: return@forEachUnder true
+            val row = blockRow(key, value) ?: return@forEachUnder true
             if (row.timestamp >= ts) return@forEachUnder true
             found = row
             false
@@ -471,7 +475,7 @@ class BlockLog(
         if (closed) return null
         var row: BlockRow? = null
         forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = false) { key, value ->
-            row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            row = blockRow(key, value)
             row == null
         }
         row
@@ -485,7 +489,7 @@ class BlockLog(
         if (closed) return emptyList()
         val found = ArrayList<BlockRow?>()
         forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = true) { key, value ->
-            val row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            val row = blockRow(key, value)
             // Its time is in the key, which decodes when the rest does not.
             if (row == null) found += null else if (row.timestamp < ts) found += row
             found.size < limit
@@ -523,7 +527,7 @@ class BlockLog(
         forEachUnder(prefix, reverse) { key, value ->
             // The timestamp follows a position prefix directly, so the walk is already in time order
             // and the window is nothing but the rows it drops.
-            val row = BlockCodec.decodeOrNull(key, value, shared.registries)
+            val row = blockRow(key, value)
             if (row != null && row.timestamp in fromTs..toTs) found += row
             found.size < limit
         }
@@ -589,9 +593,7 @@ class BlockLog(
         val death = change.death?.let { ids.idForKey(RegistryNamespace.DAMAGE_TYPE, it) } ?: -1
         val via = change.via?.let { ids.idForKey(RegistryNamespace.ENTITY_TYPE, it) } ?: -1
         batch.put(entitiesCf, key, EntityCodec.value(row, ids, type, death, via))
-        change.actor?.let { actor ->
-            batch.put(byActorCf, actorKey(shared.registries.id(RegistryNamespace.PLAYER, actor), key), NOTHING)
-        }
+        indexActor(batch, change.actor, key)
     }
 
     private fun writeChange(
@@ -642,9 +644,7 @@ class BlockLog(
         val key = BlockCodec.key(change.x, change.y, change.z, ts, eventId, ordinal)
         batch.put(rowsCf, key, BlockCodec.value(row, shared.registries))
         // In the same batch as the row, so the index never names a row that is not there or misses one.
-        change.actor?.let { actor ->
-            batch.put(byActorCf, actorKey(shared.registries.id(RegistryNamespace.PLAYER, actor), key), NOTHING)
-        }
+        indexActor(batch, change.actor, key)
         batchTs[here] = ts
     }
 

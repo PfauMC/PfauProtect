@@ -741,7 +741,7 @@ class ChunkRollback(
             tally.traces += Trace(posting.counterparty, posting.itemFormId, qty)
             Transfer(
                 Cause.ROLLBACK, if (qty > 0) Void else posting.holder, if (qty > 0) posting.holder else Void,
-                form, posting.damage, kotlin.math.abs(qty), now, actor = actor, reverts = listOf(posting.ref),
+                form, posting.damage, abs(qty), now, actor = actor, reverts = listOf(posting.ref),
             )
         }
         if (moves.isNotEmpty()) sink(moves)
@@ -1149,7 +1149,6 @@ class Rollbacks(
         (sender as? Player)?.let(ghosts::hide)
     }
 
-    // The counts that are not zero, a line to each kind of thing, so a preview reads at a glance.
     private fun report(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, rows: String?) {
         fun parts(vararg counts: Pair<Int, String>) = counts.filter { it.first > 0 }.joinToString(" · ") { "${it.second} ${it.first}" }
         val blocks = parts(

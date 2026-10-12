@@ -79,7 +79,7 @@ private fun holderOf(spec: String): Holder {
 private fun everyEntry(log: RocksItemLog, action: (LedgerEntry) -> Unit) {
     val db = RocksItemLog::class.java.getDeclaredField("db").apply { isAccessible = true }.get(log) as RocksDB
     val cf = RocksItemLog::class.java.getDeclaredField("entriesCf").apply { isAccessible = true }.get(log) as ColumnFamilyHandle
-    db.newIterator(cf).use { it ->
+    db.newIterator(cf).use {
         it.seekToFirst()
         while (it.isValid) {
             EntryCodec.decodeOrNull(it.key(), it.value(), log.registries)?.let(action)

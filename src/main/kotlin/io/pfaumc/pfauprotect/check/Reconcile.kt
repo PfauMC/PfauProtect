@@ -13,8 +13,6 @@ data class Mismatch(val form: ByteArray, val ledger: Int, val actual: Int) {
     val difference: Int get() = actual - ledger
 }
 
-// Reading a player's slots is only safe on the region that ticks them, and reading the ledger has no
-// business running there, so the two halves of a reconciliation are separate calls on purpose.
 fun heldForms(player: Player, codec: ItemFormCodec): Map<FormKey, Int> {
     val totals = HashMap<FormKey, Int>()
     fun count(stack: BukkitItemStack?) {

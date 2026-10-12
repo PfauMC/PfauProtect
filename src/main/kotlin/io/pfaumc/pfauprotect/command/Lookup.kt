@@ -1320,7 +1320,7 @@ class Lookups(
     /**
      * The item type plus the name written on it, when one is. A named box and a bare one are the same
      * type and read as the same row without it, which is exactly the difference a shulker box full of
-     * somebody's things turns on. Hovered, the item shows as the game shows it.
+     * somebody's things turns on.
      */
     private fun item(itemFormId: Long, amount: Int): Component {
         val key = itemKey(ledger, itemFormId) ?: return Ui.text("item form $itemFormId", Ui.THING)

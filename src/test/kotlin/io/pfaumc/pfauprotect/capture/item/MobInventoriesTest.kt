@@ -2,17 +2,25 @@ package io.pfaumc.pfauprotect.capture.item
 
 import io.pfaumc.pfauprotect.capture.block.SlotChange
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.ItemEntityRef
+import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.ItemKey
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.util.UUID
 
 class MobInventoriesTest {
     private val wheat = ItemKey("wheat".toByteArray(), null)
     private val bread = ItemKey("bread".toByteArray(), null)
     private val hoe = ItemKey("hoe".toByteArray(), 12)
+    private val world = UUID.randomUUID()
+
+    private fun slot(i: Int): Holder = Container(world, 0, 64, 0, i)
 
     private fun changes(before: List<Pocket>, after: List<Pocket>) =
         pocketChanges(before, after).map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) }
@@ -127,8 +135,8 @@ class MobInventoriesTest {
     @Test
     fun `a pickup the pocket shows nothing of went through it unless a hand holds it`() {
         val carrot = ItemKey("carrot".toByteArray(), null)
-        val item = io.pfaumc.pfauprotect.model.ItemEntityRef(java.util.UUID.randomUUID())
-        val block = io.pfaumc.pfauprotect.model.WorldBlock(java.util.UUID.randomUUID(), 0, -60, 0)
+        val item = ItemEntityRef(UUID.randomUUID())
+        val block = WorldBlock(UUID.randomUUID(), 0, -60, 0)
         fun pickup() = PocketLabel(carrot.form, true, item, Cause.ITEM_PICKUP_BY_MOB_INV, 1, hand = 0)
         fun read(before: List<Pocket>, after: List<Pocket>, vararg labels: PocketLabel, held: Boolean = false) =
             explainPocket(before, after, labels.toList()) { held }
@@ -154,8 +162,6 @@ class MobInventoriesTest {
     // chest meanwhile, in another form, is not read as its doing.
     @Test
     fun `a golem's move is read out of the chest by its own form only`() {
-        val world = java.util.UUID.randomUUID()
-        fun slot(i: Int): io.pfaumc.pfauprotect.model.Holder = io.pfaumc.pfauprotect.model.Container(world, 0, 64, 0, i)
         val before = mapOf(slot(0) to Stack(wheat, 20), slot(3) to Stack(bread, 2))
         val took = mapOf(slot(0) to Stack(wheat, 4), slot(3) to Stack(bread, 1))
 
@@ -171,14 +177,12 @@ class MobInventoriesTest {
     // is read. A hand emptied with the chest unchanged, as by the golem's death, is no put at all.
     @Test
     fun `a golem's move is what the chest shows against the copy from before it reached in`() {
-        val world = java.util.UUID.randomUUID()
-        fun slot(i: Int): io.pfaumc.pfauprotect.model.Holder = io.pfaumc.pfauprotect.model.Container(world, 0, 64, 0, i)
         val previous = mapOf(slot(0) to Stack(wheat, 16), slot(1) to Stack(bread, 10))
         val now = mapOf(slot(0) to Stack(wheat, 16))
 
         assertEquals(listOf(slot(1) to 10), golemSlots(previous, now, bread.form, took = true, moved = 10))
-        assertEquals(emptyList<Pair<io.pfaumc.pfauprotect.model.Holder, Int>>(), golemSlots(now, now, bread.form, took = false, moved = 5))
-        assertEquals(emptyList<Pair<io.pfaumc.pfauprotect.model.Holder, Int>>(), golemSlots(null, now, bread.form, took = false, moved = 5))
+        assertEquals(emptyList<Pair<Holder, Int>>(), golemSlots(now, now, bread.form, took = false, moved = 5))
+        assertEquals(emptyList<Pair<Holder, Int>>(), golemSlots(null, now, bread.form, took = false, moved = 5))
     }
 
     // A farmer sets wheat down into the air over farmland; a farmer feeding a composter changes the composter.

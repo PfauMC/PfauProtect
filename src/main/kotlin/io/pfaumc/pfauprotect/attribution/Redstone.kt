@@ -131,10 +131,8 @@ private fun alongTripwire(hook: Block, energy: Energy): Attributed? {
     val line = ArrayList<WorldBlock>()
     for (step in 1..TRIPWIRE_SPAN) {
         val block = readable(hook, facing, step) ?: break
-        when (block.type) {
-            Material.TRIPWIRE -> line += positionOf(block)
-            else -> break
-        }
+        if (block.type != Material.TRIPWIRE) break
+        line += positionOf(block)
     }
     return if (line.isEmpty()) null else energy.near(line, reach = 1)
 }

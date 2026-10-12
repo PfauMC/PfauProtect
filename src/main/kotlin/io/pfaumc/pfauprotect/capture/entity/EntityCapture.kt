@@ -189,7 +189,6 @@ internal fun keepingOthersMarks(before: CompoundTag, now: CompoundTag): Compound
 /** Whether a player's hand changed anything about the entity between two snapshots of it. */
 internal fun changedBetween(before: ByteArray, after: ByteArray): Boolean = significant(nbtOf(before)) != significant(nbtOf(after))
 
-/** Why an entity went and who stands behind it. */
 internal class Culprit(val cause: Cause, val by: Attributed?)
 
 /**
