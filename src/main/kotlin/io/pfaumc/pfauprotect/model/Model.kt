@@ -25,6 +25,14 @@ enum class Confidence(val id: Int) {
     }
 }
 
+/**
+ * The actor of what a bolt nobody called down did: the fire it lit and everything that fire burnt, the
+ * mob or player it killed or turned. Not a player, so an owner's complaint about a house burnt in a storm
+ * reads as the accident it was rather than a fire nobody can account for. Written into rows like a
+ * player's id, so it never changes.
+ */
+val LIGHTNING: UUID = UUID(0L, 1L)
+
 // What an entity row says became of the entity it names. Written into every such row, so a number is
 // never changed or reused.
 enum class EntityKind(val id: Int) {

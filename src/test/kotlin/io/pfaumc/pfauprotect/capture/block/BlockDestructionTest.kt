@@ -17,6 +17,7 @@ import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
+import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.capture.item.NestedItems
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
@@ -52,6 +53,7 @@ import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.FallingBlock
 import org.bukkit.entity.Fireball
+import org.bukkit.entity.LightningStrike
 import org.bukkit.entity.Player
 import org.bukkit.entity.TNTPrimed
 import org.bukkit.entity.Wither
@@ -295,6 +297,17 @@ class BlockDestructionTest : BothPlanes() {
 
         assertEquals(Cause.BLK_SNOWMAN, entityFormCause(EntityType.SNOW_GOLEM))
         assertEquals(Cause.BLK_FROST_WALKER, entityFormCause(EntityType.PLAYER))
+    }
+
+    // A storm's bolt is nobody's grief, and its rows say whose it is not: the weather's, not a bystander's.
+    @Test
+    fun `a bolt answers to the trident's thrower, else its summoner, else the weather`() {
+        val thrower = stub(Player::class.java, mapOf("getUniqueId" to alice))
+        val bolt = { by: Entity? -> stub(LightningStrike::class.java, mapOf("getCausingEntity" to by, "getUniqueId" to UUID(7L, 7L))) }
+        val summoned = { id: UUID -> if (id == UUID(7L, 7L)) Attributed(bob) else null }
+        assertEquals(Attributed(alice, Confidence.FACT), boltBy(bolt(thrower), summoned))
+        assertEquals(Attributed(bob), boltBy(bolt(null), summoned))
+        assertEquals(Attributed(LIGHTNING, Confidence.FACT), boltBy(bolt(null)) { null })
     }
 
     @Test

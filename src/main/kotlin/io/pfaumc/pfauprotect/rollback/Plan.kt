@@ -8,6 +8,7 @@ import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.model.LedgerEntry
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerEnder
@@ -47,7 +48,9 @@ private val NATURE = setOf(
     Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD, Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM,
 )
 
-private fun passable(row: BlockRow) = row.cause == Cause.ROLLBACK || row.actor == null && row.cause in NATURE
+// A storm's fire is nature too, for all that it names the bolt.
+private fun passable(row: BlockRow) =
+    row.cause == Cause.ROLLBACK || (row.actor == null || row.actor == LIGHTNING) && row.cause in NATURE
 
 // How far back a position is read for what it held before the players a rollback names first touched it.
 private const val ORIGIN_WALK = 64
