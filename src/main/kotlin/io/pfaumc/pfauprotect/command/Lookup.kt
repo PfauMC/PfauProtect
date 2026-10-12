@@ -118,7 +118,7 @@ internal enum class Param(vararg val keys: String) {
     }
 }
 
-// Same one-table rule as Param: the first key is what completion offers, the rest are silent aliases.
+// Same one-table rule as Param.
 internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     CONTAINER(
         setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
@@ -580,8 +580,6 @@ internal class RowFilter(
         return (included.isEmpty() || item in included) && item !in excluded && !namesUser(entry, excludedUsers)
     }
 
-    // An entity row answers to its entity type for `include:` and `exclude:`, the way a block row answers
-    // to its blocks.
     fun keeps(row: EntityRow): Boolean {
         if (!keepsActed(row.cause, row.eventId, row.actor, row.confidence)) return false
         return (included.isEmpty() || row.type in included) && row.type !in excluded
@@ -676,11 +674,9 @@ class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType
 
 private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER)
 
-// One line of an answer, from either plane, so the two can be shown in the order things happened
-// rather than as two lists a reader has to interleave in their head. `same` is what a run of lines folds
-// on: who did what to which thing, which way. `amount` is what a folded line adds up — items, or one per
-// block. `undone`, whether a rollback has since undone it. `draw` makes the line for the amount and the
-// number of rows it stands for.
+// One line of an answer, from either plane, so the two read in the order things happened. `same` is what
+// a run of lines folds on: who did what to which thing, which way. `amount` is what a folded line adds
+// up — items, or one per block.
 private class Line(
     val timestamp: Long,
     val cause: Cause,
@@ -1074,7 +1070,6 @@ class Lookups(
         }
     }
 
-    // An entity's row is undone by a later rollback row of the same entity.
     private fun markedEntities(rows: List<EntityRow>): List<Pair<EntityRow, Boolean>> {
         val rollbacks = rows.filter { it.cause == Cause.ROLLBACK }.groupBy { it.uuid }
         return rows.map { row ->

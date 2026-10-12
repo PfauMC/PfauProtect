@@ -9,9 +9,8 @@ fun CommandSender.say(text: String) = sendMessage(Texts.translate(text))
 fun CommandSender.sayNamed(text: String) = sendMessage(Ui.named(Texts.translate(text)))
 
 /**
- * What the plugin says, in Russian when config.yml asks for it. Every message is written in English where
- * it is made, and translated here as a whole line on its way out: the sentences by pattern, the places they
- * name word by word. A line no rule knows goes out in English, which is a missing rule and no error. Lines
+ * What the plugin says, in Russian when config.yml asks for it: whole lines translated on their way out,
+ * the sentences by pattern, the places they name word by word. A line no rule knows goes out in English, which is a missing rule and no error. Lines
  * made of parts — a lookup row, a rollback's counts — are put together in the language already, with tr().
  */
 object Texts {

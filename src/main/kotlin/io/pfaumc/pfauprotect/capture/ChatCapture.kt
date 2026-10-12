@@ -14,8 +14,7 @@ import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
 
 /**
- * What players say, the commands they run, and when they come and go, for an investigation to read beside
- * the planes. A chat line comes off the region threads, where a player's position is no thing to read, so
+ * A chat line comes off the region threads, where a player's position is no thing to read, so
  * it is kept without one; the rest are kept where they happened.
  */
 class ChatCapture(private val log: ChatLog) : Listener {

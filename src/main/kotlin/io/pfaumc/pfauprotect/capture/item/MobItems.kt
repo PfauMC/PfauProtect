@@ -159,7 +159,7 @@ class MobItemListener(
 
     // Shearing and bartering throw their results through the same drop event as anything else a mob
     // lets go of, inside the same call as their own event. Marked for the tick it happened in.
-    private class Marked(val entity: java.util.UUID, val tick: Int, val actor: java.util.UUID? = null)
+    private class Marked(val entity: UUID, val tick: Int, val actor: UUID? = null)
 
     private val sheared = ThreadLocal<Marked?>()
     private val bartered = ThreadLocal<Marked?>()

@@ -73,7 +73,6 @@ internal fun carriesInventory(entity: Entity) = entity is Mob && entity is Inven
 
 internal class Pocket(val slot: Int, val key: ItemKey, val count: Int)
 
-/** Slot by slot, what went between two readings of one pocket. */
 internal fun pocketChanges(before: List<Pocket>, after: List<Pocket>): List<SlotChange> = slotDiff(slots(before), slots(after))
 
 private fun slots(pockets: List<Pocket>): List<Stack?> {

@@ -119,7 +119,6 @@ class TransformTest {
         assertEquals(moves, withoutForeignEnds(moves, anvil))
     }
 
-    // An empty map used from a stack stays where it was minus one, and the filled map lands beside it.
     @Test
     fun `filling a map is one map changing and not a loss beside a birth`() {
         val fill = Shift(Cause.MAP_FILL, Cause.MAP_FILL, Kind.MUTATE)

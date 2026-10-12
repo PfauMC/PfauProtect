@@ -161,15 +161,9 @@ internal class Site(
 private const val DROPS_SETTLE_TICKS = 2L
 
 /**
- * A block taken away by anything other than a player break drops its items with no event naming the
- * break behind them: only a player break raises the drop event, so every other way of taking a block
- * away leaves the birth of what it dropped to arrive at the spawn funnel unexplained, with neither
- * the cause nor the culprit of the break on it.
- *
- * The drops are read while the block still stands, because a moment later there is nothing left to
- * ask. Whether the block really goes need not be settled first: a note nobody claims is swept rather
- * than written, so a block that survives after all, or a drop chance that came up empty, costs the
- * note and nothing else.
+ * Only a player break raises the drop event, so what any other break drops would reach the spawn funnel
+ * with no cause or culprit. The drops are read while the block still stands; a note nobody claims is
+ * swept, so a block that survives after all costs the note and nothing else.
  */
 internal fun expectDrops(
     origins: SpawnOrigins,

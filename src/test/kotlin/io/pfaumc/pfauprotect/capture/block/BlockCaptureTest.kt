@@ -448,7 +448,6 @@ class BlockCaptureTest : BothPlanes() {
 
     @Test
     fun `a lectern's book and a campfire's food are read as the block's slots`() {
-        ServerRegistries.access
         val lectern = net.minecraft.world.level.block.entity.LecternBlockEntity(BlockPos(1, 64, 1), Blocks.LECTERN.defaultBlockState())
         lectern.setBook(NmsItemStack(Items.WRITABLE_BOOK))
         val campfire = net.minecraft.world.level.block.entity.CampfireBlockEntity(BlockPos(2, 64, 1), Blocks.CAMPFIRE.defaultBlockState())

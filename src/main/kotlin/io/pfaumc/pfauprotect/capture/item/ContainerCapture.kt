@@ -1238,5 +1238,4 @@ private val KEEPS_ON_CLOSE = setOf(
     "BLAST_FURNACE", "SMOKER", "BREWING", "CRAFTER",
 )
 
-/** Whether closing a window of this type hands anything back to the player's inventory. */
 internal fun returnsOnClose(type: String, cursorEmpty: Boolean): Boolean = type !in KEEPS_ON_CLOSE || !cursorEmpty

@@ -77,9 +77,8 @@ internal fun slotDiff(before: List<Stack?>, after: List<Stack?>): List<SlotChang
     return changes
 }
 
-// Everything that holds an item the player gave it: a block with slots and no window, a stand, a frame,
-// a placed boat, a mob wearing a saddle. The player's side is the pass's to write, as always; what
-// these handlers add is the far end, and where the entity has to remember what it holds, the mark.
+// Holders of what a player gave them: a block with slots and no window, a stand, a frame, a placed boat,
+// a saddled mob. The pass writes the player's side; these handlers write the far end and the entity's mark.
 class HolderListener(
     private val capture: ContainerCaptureListener,
     private val codec: ItemFormCodec,

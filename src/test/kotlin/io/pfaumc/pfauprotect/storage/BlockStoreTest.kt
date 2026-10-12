@@ -137,9 +137,8 @@ class BlockStoreTest : BothPlanes() {
         assertFalse(BlockCodec.decode(key, BlockCodec.value(row.copy(alongside = false), IdResolver { _, _ -> 0 }), names).alongside)
     }
 
-    // The witness flag took the top bit of the version field, which every row so far has clear.
     @Test
-    fun `a witness row says so through the bytes and the other confidences stay as they were`() {
+    fun `a nearby row says so through the bytes and the other confidences stay as they were`() {
         val names = IdLookup { _, _ -> alice }
         for (confidence in Confidence.entries) {
             val row = BlockRow(1, 2, 3, T0, 0, 0, Cause.BLK_ENTITY_SWITCH, 1, 2, confidence = confidence, actor = alice)

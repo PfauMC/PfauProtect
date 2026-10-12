@@ -755,7 +755,6 @@ class BlockDestructionTest : BothPlanes() {
         listener.onFertilize(fertilize(spread))
         listener.onFertilize(fertilize(dispensed))
 
-        // Only the tree nobody spread anything on is still waiting to be filed.
         val claims = claimsOf(listener)
         assertFalse(claims.claims(spread))
         assertFalse(claims.claims(dispensed))
@@ -1052,7 +1051,6 @@ class BlockDestructionTest : BothPlanes() {
 
         val left = log.at(1, 64, 0)
         val through = log.at(2, 64, 0)
-        // One firing is one event over every position it touched.
         assertEquals(1, (left.drop(1) + through.drop(1) + log.at(0, 64, 0)).map { it.eventId }.distinct().size)
         // The position the first block left holds the head the piston put down, in that order, and the
         // position in the middle gave its block up before the next one arrived in it.

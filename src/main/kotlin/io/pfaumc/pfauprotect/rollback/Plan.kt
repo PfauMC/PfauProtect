@@ -211,9 +211,7 @@ class Refill(
 
 /**
  * What a rollback does to one entity. `oldest` is the first row in the window the filter keeps, and what
- * it says the entity was before — `before`, its whole NBT then — is what the entity goes back to: an
- * entity a player brought in is taken away again, one that went is brought back as it was, one changed
- * or led away is changed back or brought back to where it stood. `slots` are what its own slots gave up
+ * it says the entity was before — `before`, its whole NBT then — is what the entity goes back to. `slots` are what its own slots gave up
  * or took since, given back along with it; `drops` what fell out of it when it went or was changed. `removed` says it
  * went within the window even when its oldest row was a change: a wolf whose armour broke under the
  * blows that then killed it is brought back, not looked for alive to be changed back.
@@ -279,7 +277,6 @@ sealed interface Reading
 // `positions` is set where the refusal is the position limit, which a smaller radius gets under.
 class Refused(val reason: String, val positions: Int? = null) : Reading
 
-// `deaths` are players killed by those the filter names: what fell out of them goes back to them.
 class Planned(
     val world: UUID,
     val chunks: List<ChunkPlan>,

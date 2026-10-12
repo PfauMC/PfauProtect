@@ -107,7 +107,6 @@ private val WIDENS_FROM = setOf(4L, 5L)
 // undo of that. Past this a posting is taken as given back, which is the side that cannot mint items.
 private const val MAX_UNDO_DEPTH = 16
 
-// Which of the two note families a pending note belongs to.
 private const val FORMS = 0
 private const val OWNERS = 1
 private const val MAX_REGION_CHUNKS = 1024

@@ -91,7 +91,7 @@ class MechanismTest {
         val change = dispenseChanges(before, after, 1, ejected = 0).single()
         assertEquals(1, change.slot)
         assertEquals(1, change.qty)
-        assertTrue(!change.gain)
+        assertFalse(change.gain)
     }
 
     @Test

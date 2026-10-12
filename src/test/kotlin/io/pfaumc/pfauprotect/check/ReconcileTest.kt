@@ -78,8 +78,8 @@ class ReconcileTest {
         assertEquals(emptyList<Mismatch>(), reconcile.compare(steve, held(pickaxe to 1)))
     }
 
-    // Eating is not captured yet, so the loaves the player no longer has are still on their account:
-    // the difference names bread, and bread is the address of the missing path.
+    // Loaves the player no longer holds and the ledger never saw leave: the difference names bread,
+    // and bread is the address of the missing path.
     @Test
     fun `an uncaptured path shows up as the form it lost`() {
         move(Cause.PICKUP, ItemEntityRef(UUID.randomUUID()), PlayerInv(steve, 0), bread, 3)

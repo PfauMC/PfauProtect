@@ -200,10 +200,8 @@ class Attribution(
     }
 
     /**
-     * Who took away the support under a block that has just given way. One primitive feeds falling
-     * sand and a torch or a sign losing its wall. The six faces
-     * are what carries support and are searched first; a corner neighbour counts as a hit, which is a
-     * guess and reads as one. Within either ring the most recent removal is the answer.
+     * Who took away the support under a block that has just given way. The six faces are what carries
+     * support and are searched first; a corner neighbour counts as a hit, which is a guess and reads as one. Within either ring the most recent removal is the answer.
      */
     fun supportRemoverAt(at: WorldBlock): Attributed? {
         val found = around(removals, at, FACES, SUPPORT_MILLIS)

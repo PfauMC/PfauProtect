@@ -575,7 +575,6 @@ class BlockMechanismListener(
                 actor = actor,
             )
         )
-        val owners = owners
         if (owners != null && Tag.SHULKER_BOXES.isTagged(front.type)) {
             val owner = NestedItems.ownerOf(spent) ?: UUID.randomUUID()
             owners.setOwnerAt(at.world, at.x, at.y, at.z, owner)

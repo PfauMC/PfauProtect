@@ -52,9 +52,6 @@ class LookupReadTest : BothPlanes() {
 
     private fun said(
         query: LookupQuery = LookupQuery(),
-        x: Int = 10,
-        y: Int = 64,
-        z: Int = -3,
         codec: ItemFormCodec? = null,
         // Stands in for the server's player cache, which a test has none of.
         players: Map<String, UUID> = emptyMap(),
@@ -62,7 +59,7 @@ class LookupReadTest : BothPlanes() {
         val lines = ArrayList<String>()
         val names = players.entries.associate { (name, id) -> id to name }
         Lookups(stub(Plugin::class.java), shared, logs, codec, players::get, names::get)
-            .report(senderInto(lines), LookupTarget(world, x, y, z, "stone at $x $y $z"), query)
+            .report(senderInto(lines), LookupTarget(world, 10, 64, -3, "stone at 10 64 -3"), query)
         return lines
     }
 

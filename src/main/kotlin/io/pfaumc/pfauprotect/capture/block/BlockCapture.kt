@@ -432,7 +432,7 @@ class BlockCaptureListener(
             alongside = alongside,
             actor = actor,
             // The block entity is only there while the event runs.
-            payloadBefore = payloadOf(level.getBlockEntity(pos), level.registryAccess()),
+            payloadBefore = payloadAt(block),
         )
     }
 

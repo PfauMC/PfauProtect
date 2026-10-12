@@ -7,7 +7,7 @@ import io.pfaumc.pfauprotect.tr
 import net.kyori.adventure.text.Component
 
 /**
- * What a cause reads as on a lookup line. The Russian is a noun of the action rather than a verb: a past
+ * The Russian is a noun of the action rather than a verb: a past
  * verb has a gender, and the ledger does not know the reader's. Where the cause is a thing of the game — a
  * creeper, a hopper — the line names it through the game's own translation.
  */

@@ -443,8 +443,7 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     // A position where the two planes disagree is a change that reached one of them and not the other,
-    // which from inside either plane on its own reads as perfectly consistent. That is a hole in the
-    // capture rather than anything a player did.
+    // which from inside either plane on its own reads as perfectly consistent.
     private fun checkPlanes(planes: PlaneSync, rounds: Int, judgeRecent: Boolean, say: (String) -> Unit): Boolean {
         // Reading as though a settle window's worth of time had already passed is what lets a position
         // touched a moment ago be judged at all.

@@ -441,7 +441,6 @@ class AttributionTest : BothPlanes() {
 
     @Test
     fun `an entity carries the player it came from until it is gone`() {
-        var clock = T0
         val origins = EntityOrigins { clock }
         val wither = UUID.randomUUID()
 

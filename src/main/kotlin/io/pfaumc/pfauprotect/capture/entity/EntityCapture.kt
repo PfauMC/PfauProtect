@@ -186,7 +186,6 @@ internal fun keepingOthersMarks(before: CompoundTag, now: CompoundTag): Compound
     return before.copy().also { if (ours.isEmpty) it.remove("BukkitValues") else it.put("BukkitValues", ours) }
 }
 
-/** Whether a player's hand changed anything about the entity between two snapshots of it. */
 internal fun changedBetween(before: ByteArray, after: ByteArray): Boolean = significant(nbtOf(before)) != significant(nbtOf(after))
 
 internal class Culprit(val cause: Cause, val by: Attributed?)

@@ -118,7 +118,6 @@ private const val LOAD_MILLIS = 60_000L
 // How long a rollback keeps its chunks after it is done, for the taking back queued behind it.
 private const val HOLD_LINGER_TICKS = 200L
 
-// How far from a block it put back a rollback puts fire out.
 private const val DOUSE_REACH = 2
 
 // How far above and below the plan's positions running liquid is looked for once the rollback is done: a
@@ -258,7 +257,6 @@ class Tally {
     }
 }
 
-// How many chunks of a rollback are worked at once.
 private const val CONCURRENT_CHUNKS = 8
 
 // How far around an event's own position and either side of its time a rollback of it reads.
@@ -504,7 +502,6 @@ class ChunkRollback(
         }
         // After the blocks, so a frame comes back to a wall that is there again.
         for (plan in positions) for (entity in plan.entities) entity(level, entity, actor, apply, tally)
-        // What the positions that came back dropped when they were broken.
         for (plan in positions) if (plan.at in tally.restored) tally.piles += plan.dropped
         if (!apply) return tally
         val difference = Difference(world, Cause.ROLLBACK, Cause.ROLLBACK, Cause.ROLLBACK, Kind.TRANSFER, actor, System.currentTimeMillis())

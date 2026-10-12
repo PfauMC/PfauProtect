@@ -212,13 +212,10 @@ private fun ownRows(ledger: RocksItemLog, since: Long, vararg holders: Holder, r
 internal fun stashesOf(ledger: RocksItemLog, player: UUID, formId: Long, since: Long): List<Container> {
     if (since <= 0) return emptyList()
     val rows = ownRows(ledger, since, PlayerInv(player, 0), PlayerEnder(player, 0), reverse = true)
-    return rows.asSequence()
-        .filter { it.itemFormId == formId && it.qty < 0 }
+    return rows.filter { it.itemFormId == formId && it.qty < 0 }
         .sortedByDescending { it.timestamp }
-        .mapNotNull { it.counterparty as? Container }
-        .map { it.copy(slot = 0) }
+        .mapNotNull { (it.counterparty as? Container)?.copy(slot = 0) }
         .distinct()
-        .toList()
 }
 
 /**

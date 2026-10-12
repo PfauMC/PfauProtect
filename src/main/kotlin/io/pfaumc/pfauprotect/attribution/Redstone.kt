@@ -134,7 +134,7 @@ private fun alongTripwire(hook: Block, energy: Energy): Attributed? {
         if (block.type != Material.TRIPWIRE) break
         line += positionOf(block)
     }
-    return if (line.isEmpty()) null else energy.near(line, reach = 1)
+    return energy.near(line, reach = 1)
 }
 
 private fun overWire(start: Block, energy: Energy): Attributed? {
@@ -144,7 +144,7 @@ private fun overWire(start: Block, energy: Energy): Attributed? {
     while (queue.isNotEmpty() && seen.size <= WIRE_WALK) {
         for (next in wireAround(queue.removeFirst())) if (seen.add(positionOf(next))) queue += next
     }
-    return if (seen.isEmpty()) null else energy.near(seen, reach = 1)
+    return energy.near(seen, reach = 1)
 }
 
 // Wire connects to wire beside it, one block up and one block down.
@@ -491,8 +491,6 @@ class RedstoneListener(
 
     private fun behind(entity: Entity): Attributed? = behind(entity, nudges, entities)
 
-    // The ladder, then whatever set the mechanisms around the switch going — a piston that shoved the
-    // entity, a rail that sped the cart — and last the nearest player.
     private fun behindSwitch(entity: Entity, block: Block): Behind {
         behind(entity)?.let { return Behind(it) }
         energy.near(positionOf(block))?.let { return Behind(it.inferred()) }

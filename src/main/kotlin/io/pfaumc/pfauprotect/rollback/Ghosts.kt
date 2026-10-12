@@ -34,7 +34,7 @@ internal fun nearest(ghosts: List<Ghost>, world: UUID, x: Double, y: Double, z: 
  * The previewing player sees the blocks as the rollback would put them, for them alone, until they apply,
  * cancel, preview again or the preview runs out. Nothing in the world changes. The client drops a ghost
  * whenever the server tells it about that block again: a chunk it did not have yet or sent anew after the
- * player went away and came back, a click on the block. Each time it is shown again.
+ * player went away and came back, a click on the block.
  */
 class Ghosts(private val plugin: Plugin) : Listener {
     // A class rather than the bare map for its identity: an expiry removes only the preview it was set

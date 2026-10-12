@@ -10,7 +10,6 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
-// Which command reaches into whose slots, and with which reasons. Plain words in, plain reasons out.
 class CommandsTest {
     @Test
     fun `a command is read the way the server reads it`() {

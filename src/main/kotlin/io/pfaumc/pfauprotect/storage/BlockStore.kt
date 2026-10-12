@@ -81,7 +81,6 @@ data class Window<T>(val rows: List<T>, val unreadable: Int, val complete: Boole
 
 typealias BlockWindow = Window<BlockRow>
 
-// The positions an actor's rows stand at in a window, and whether the walk got to its end.
 data class ActorTouches(val positions: Set<List<Int>>, val complete: Boolean)
 
 // Raised by a change to the key layout or to the set of column families. The record version in the
@@ -119,9 +118,9 @@ class BlockLog(
     dir: Path,
     private val shared: RocksItemLog,
     // Shown every list of block changes the log accepts, on the thread that submitted it.
-    private val watch: (List<BlockChange>) -> Unit = {},
+    private val watch: (List<BlockChange>) -> Unit,
     // Asked of every change before it is accepted: false drops it, as another plugin may ask.
-    private val keeps: (WorldChange) -> Boolean = { true },
+    private val keeps: (WorldChange) -> Boolean,
 ) : AutoCloseable {
     // Before the options that take them, and given back once those are freed.
     init {
@@ -678,7 +677,6 @@ class BlockLog(
     }
 }
 
-// One database per world, each in a directory named after it.
 class BlockLogs(
     private val root: Path,
     private val shared: RocksItemLog,
