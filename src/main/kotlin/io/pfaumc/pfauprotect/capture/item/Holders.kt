@@ -102,7 +102,8 @@ class HolderListener(
         // Both have events of their own that name the item.
         if (!keepsItems(type) || type == Material.LECTERN || type == Material.FLOWER_POT) return
         // A powered shelf swaps the whole hotbar with every shelf chained to it, not the hand alone.
-        val blocks = poweredChain(block) ?: listOf(block)
+        val chain = poweredChain(block)
+        val blocks = chain ?: listOf(block)
         val before = blocks.map { slotsOf(it) ?: return }
         val player = event.player
         // A record comes out of the jukebox onto the ground rather than into the hand.
@@ -112,7 +113,7 @@ class HolderListener(
                 origins.expect(containerAt(block, 0), Cause.CONTAINER_REMOVE, it.key, spot, it.count, player.uniqueId)
             }
         }
-        val hand = if (blocks.size == 1 && poweredChain(block) == null) capture.handSlot(player, event.hand) else null
+        val hand = if (chain == null) capture.handSlot(player, event.hand) else null
         val into = if (type == Material.JUKEBOX) Cause.RECORD_INTO_JUKEBOX else Cause.ITEM_INTO_SINGLE_BLOCK
         later(block) {
             blocks.forEachIndexed { index, part ->

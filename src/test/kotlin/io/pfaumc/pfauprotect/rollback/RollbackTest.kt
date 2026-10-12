@@ -261,7 +261,7 @@ class RollbackTest {
     }
 
     // Alice put dynamite down before the window and blew it up inside; an earlier rollback had already put the
-    // air back. From the window's start the position would get her dynamite again (D108); it stands as before
+    // air back. From the window's start the position would get her dynamite again; it stands as before
     // her, so there is nothing to do. Where it does not, the window's start is still what it goes back to.
     @Test
     fun `a position standing as before the player first touched it is left alone`() {
@@ -278,7 +278,7 @@ class RollbackTest {
         assertEquals(tnt, settle(STONE, position.steps.map { Step(it.before, STONE, null) }, position.origin).back?.before)
     }
 
-    // A wall the same block as before Alice first touched it, in another shape, is not as it was (D120).
+    // A wall the same block as before Alice first touched it, in another shape, is not as it was.
     @Test
     fun `a wall joined otherwise than at the origin is not as it was`() {
         val joined = "minecraft:diorite_wall[east=low,north=none,south=none,up=false,waterlogged=false,west=low]"
@@ -323,7 +323,7 @@ class RollbackTest {
     }
 
     // Alice's water ran in, became a source by itself between two others, and her sponge drank it twice
-    // over. The walk met a source where her row had left a flow, stopped, and put the source back (D109).
+    // over. The walk met a source where her row had left a flow, stopped, and put the source back.
     @Test
     fun `a flow that became a source by itself is the same water`() {
         val source = "minecraft:water[level=0]"
@@ -553,7 +553,7 @@ class RollbackTest {
         assertEquals("minecraft:lever[face=floor,facing=east,powered=true]", quiet("minecraft:lever[face=floor,facing=east,powered=true]"))
         assertEquals("minecraft:light_weighted_pressure_plate[power=4]", quiet("minecraft:light_weighted_pressure_plate[power=4]"))
         assertEquals("minecraft:dispenser[facing=east,triggered=true]", quiet("minecraft:dispenser[facing=east,triggered=true]"))
-        // A leaf's distance is its neighbours' (D112); one a player placed keeps it, never decaying anyway.
+        // A leaf's distance is its neighbours'; one a player placed keeps it, never decaying anyway.
         assertEquals("minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]", quiet("minecraft:oak_leaves[distance=7,persistent=false,waterlogged=false]"))
         assertEquals("minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]", quiet("minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]"))
         assertEquals("minecraft:stone", quiet("minecraft:stone"))

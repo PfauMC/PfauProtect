@@ -3,13 +3,10 @@ package io.pfaumc.pfauprotect.capture.entity
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.nbt.DoubleTag
 import net.minecraft.nbt.ListTag
-import net.minecraft.nbt.NbtIo
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import java.io.ByteArrayOutputStream
-import java.io.DataOutputStream
 
 class EntityCaptureTest {
     private fun cow(x: Double, health: Float, name: String?, ticks: Int, resting: Boolean = false, touched: Boolean = false): ByteArray {
@@ -21,9 +18,7 @@ class EntityCaptureTest {
         tag.putFloat("Health", health)
         tag.putInt("Spigot.ticksLived", ticks)
         if (name != null) tag.putString("CustomName", name)
-        val bytes = ByteArrayOutputStream()
-        DataOutputStream(bytes).use { NbtIo.write(tag, it) }
-        return bytes.toByteArray()
+        return bytesOf(tag)
     }
 
     // A cow that walked a step, healed and lived another tick is the cow it was. A cow somebody named is not.
@@ -39,17 +34,16 @@ class EntityCaptureTest {
         assertFalse(changedBetween(before, cow(1.0, 5f, null, 100, touched = true)))
     }
 
-    // CoreProtect marks an entity on every click: its bookkeeping, not the player's change (O23), and left
+    // CoreProtect marks an entity on every click: its bookkeeping, not the player's change, and left
     // as it is by a rollback. The slots this plugin booked on the entity still count.
     @Test
     fun `what other plugins keep on an entity is theirs`() {
         fun marked(vararg keys: String) = CompoundTag().apply {
             put("BukkitValues", CompoundTag().apply { for (key in keys) putByte(key, 1) })
         }
-        fun bytes(tag: CompoundTag) = ByteArrayOutputStream().also { out -> DataOutputStream(out).use { NbtIo.write(tag, it) } }.toByteArray()
         val before = marked("pfauprotect:held_16")
-        assertFalse(changedBetween(bytes(before), bytes(marked("pfauprotect:held_16", "coreprotect:pending_entity_identity"))))
-        assertTrue(changedBetween(bytes(before), bytes(marked("coreprotect:pending_entity_identity"))))
+        assertFalse(changedBetween(bytesOf(before), bytesOf(marked("pfauprotect:held_16", "coreprotect:pending_entity_identity"))))
+        assertTrue(changedBetween(bytesOf(before), bytesOf(marked("coreprotect:pending_entity_identity"))))
 
         val back = keepingOthersMarks(marked("pfauprotect:held_3", "coreprotect:old"), marked("pfauprotect:held_16", "coreprotect:pending_entity_identity"))
         assertEquals(setOf("pfauprotect:held_3", "coreprotect:pending_entity_identity"), back.getCompoundOrEmpty("BukkitValues").keySet())

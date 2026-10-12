@@ -9,7 +9,6 @@ import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.capture.item.transactions
 import org.rocksdb.BlockBasedTableConfig
 import org.rocksdb.BloomFilter
 import org.rocksdb.Cache
@@ -887,8 +886,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) = putNote(FORMS, world, x, y, z, null)
 
-    // A position with no note comes back as a null in its own place, so the answers stay aligned with
-    // the positions asked about and only the ones holding something are named.
+    // Positions with no note are absent from the map.
     override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = dbLock.read {
         if (closed || positions.isEmpty()) return emptyMap()
         val forms = HashMap<WorldBlock, ByteArray>(positions.size)
@@ -1207,11 +1205,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             if (entry == null) unreadable++ else if (entry.timestamp in fromTs..toTs) found += entry
             found.size <= limit
         }
-        return if (found.size <= limit) {
-            EntryPage(found, true, unreadable)
-        } else {
-            EntryPage(found.take(limit), false, unreadable)
-        }
+        return EntryPage(found.take(limit), found.size <= limit, unreadable)
     }
 
     // A fill that mints thousands of numbers in a row would otherwise pay a write apiece. The batch is

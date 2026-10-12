@@ -11,8 +11,6 @@ import io.pfaumc.pfauprotect.model.PlayerHolder
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.check.emptied
-import io.pfaumc.pfauprotect.attribution.inferred
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -48,8 +46,6 @@ class IntentTest {
         assertEquals(listOf(Move(bag(0), placed, key("stone"), 1, Cause.BLOCK_PLACE, Confidence.FACT)), moves)
     }
 
-    // A command's reason waits through the player's own ticks it was given, however long each of them
-    // takes, and a reason left by an event that saw its change happen waits for nothing.
     @Test
     fun `a command's reason lingers through the ticks it was given and no further`() {
         val clear = Intent(Cause.CMD_CLEAR, to = Void, untilTick = 105)
@@ -250,9 +246,6 @@ class IntentTest {
         assertEquals(listOf(Move(bag(0), Void, key("stone"), 1, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
 
-    // The open container is snapshotted before the player's own slots, so its unpaired loss is offered
-    // every intent first. Left to match on form alone it takes the drop the player made out of their
-    // own hand and the chest is written as the thrower.
     @Test
     fun `an intent cannot explain a loss from a holder that is not the player's`() {
         val chest = Container(world, 10, 64, -3, 0)
@@ -281,9 +274,6 @@ class IntentTest {
         assertEquals(listOf(Move(stranger, Void, key("stone"), 1, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
 
-    // A drop out of the creative menu empties no slot, so the pass finds nothing to spend the intent
-    // on. The drop silenced its own spawn on the promise that the pass would write the birth instead,
-    // and has to hear that the promise went unkept or the entity is never born at all.
     @Test
     fun `a drop that emptied no slot is handed back to the event that silenced its spawn`() {
         val unspent = ArrayList<Pair<Cause, Int>>()
@@ -305,12 +295,6 @@ class IntentTest {
         assertEquals(emptyList<Pair<Cause, Int>>(), unspent)
     }
 
-    // A death writes one note per stack it dropped. Swallowing whichever loss of that form the pass
-    // reaches first would leave the slot the note was written for to be written off a second time.
-    // Bridging: one cobblestone leaves the held slot for the world and another is picked up straight
-    // back into it inside one tick. The slot reads the same on both sides, so the pass finds no delta
-    // and neither intent has anything to be spent on. Run through one holder the two rows cancel on
-    // the player, and the position and the item entity each get the row they are owed.
     @Test
     fun `a placement and a pickup that cancelled in one slot are written through that slot`() {
         val handed = ArrayList<Cause>()
@@ -330,8 +314,6 @@ class IntentTest {
         assertEquals(emptyList<Cause>(), handed)
     }
 
-    // One half of a pair is not evidence of anything: an intent names its far end and not its slot,
-    // and a placement in creative consumes nothing, so writing it alone would invent a debit.
     @Test
     fun `one unspent intent is never written on its own authority`() {
         val place = Intent(Cause.BLOCK_PLACE, to = placed, form = "cobble".toByteArray(), qty = 1)
@@ -412,8 +394,6 @@ class IntentTest {
         assertEquals(listOf(Move(bag(0), Void, key("stone"), 1, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
 
-    // An intent that named both of its ends is its own counterparty on both sides of the netting, and
-    // pairing it with itself would spend its remainder twice and write two rows out of one movement.
     @Test
     fun `an intent that names both ends is not married to itself`() {
         val entity = ItemEntityRef(UUID.randomUUID())

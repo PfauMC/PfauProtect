@@ -12,7 +12,6 @@ import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.attribution.inferred
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -32,10 +31,6 @@ class DiffTest {
     private fun seen(vararg rows: Pair<Holder, Stack>, containers: Set<UUID> = emptySet()) =
         Snapshot(mapOf(*rows), containers)
 
-    // A grindstone merges two worn tools into one, and wear is not part of a form, so from the diff
-    // alone the result is indistinguishable from one of the inputs having simply moved out. Paired
-    // that way the transformation vanishes: an ordinary move plus one tool that disappeared for no
-    // stated reason. Naming the station's slots keeps both halves unpaired and facing the Void.
     @Test
     fun `a station slot does not pair with the item it became`() {
         val station = setOf<Holder>(chest(0), chest(1))
@@ -122,8 +117,6 @@ class DiffTest {
         assertEquals(emptyList<Edge>(), Netting.diff(both, both))
     }
 
-    // A pass now runs after every block broken, so a pickaxe losing a point of durability between two
-    // of them must not read as one pickaxe vanishing and another appearing.
     @Test
     fun `wearing a tool down in place moves nothing`() {
         val edges = Netting.diff(
@@ -217,10 +210,6 @@ class DiffTest {
         assertEquals(64, edges.sumOf { it.qty })
     }
 
-    // Placing one cobblestone out of a stack while three more are picked up into another slot: paired
-    // by form first, the loss marries the unrelated gain and asserts a move between two slots that
-    // never exchanged anything, while the position is credited nothing and the entity only part of
-    // what it handed over.
     @Test
     fun `an intent claims its share before an unrelated gain can be married to the loss`() {
         val entity = ItemEntityRef(UUID.randomUUID())
@@ -244,8 +233,6 @@ class DiffTest {
         )
     }
 
-    // An intent explains at most what the pass actually found, because the event only ever saw what it
-    // meant to do.
     @Test
     fun `an intent claims no more than the pass found`() {
         val entity = ItemEntityRef(UUID.randomUUID())
@@ -279,9 +266,6 @@ class DiffTest {
         )
     }
 
-    // One cobblestone laid into the world out of the held slot and one taken off the ground back into
-    // it inside a tick. The slot reads 64 on both sides, so the pass finds nothing at all and the two
-    // intents left over are the only account of what the slot hid.
     @Test
     fun `two movements that cancelled in one slot still reach the ends they touched`() {
         val entity = ItemEntityRef(UUID.randomUUID())
@@ -330,9 +314,6 @@ class DiffTest {
         assertEquals(listOf(Edge(Void, bag(0), key("shulker"), 1, Confidence.INFERRED)), edges)
     }
 
-    // A box is one item wherever it goes and what it holds rides along inside it. Laid down as a block
-    // or taken off the body by a death, the rows filed under it leave the snapshot with it, and read
-    // as movements they write off a whole box of stone at every placement and mint it back later.
     @Test
     fun `a full shulker box leaving the player moves nothing that is inside it`() {
         val box = UUID.randomUUID()

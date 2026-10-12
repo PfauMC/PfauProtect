@@ -75,9 +75,6 @@ class SpawnOriginsTest {
         assertEquals(setOf(dropper to 1, Void to 3), rows().map { it.from to it.qty }.toSet())
     }
 
-    // A vine drops itself one time in three, and the roll a note was made from need not be the roll the
-    // server made. What lands by the block in a form no note names still came out of it, after every
-    // note that names its form has had its share, and only near the block.
     @Test
     fun `a note for any form takes what no other note names`() {
         val vine = ItemKey("twisting_vines".toByteArray(), null)
@@ -193,8 +190,6 @@ class SpawnOriginsTest {
         assertTrue(rows().isEmpty())
     }
 
-    // A break builds its entities before announcing them, so the note can say which one it means and
-    // distance never enters into it.
     @Test
     fun `a note addressed to an entity claims only that entity`() {
         val mine = UUID.randomUUID()
@@ -245,10 +240,10 @@ class SpawnOriginsTest {
         assertEquals(1, rows().size)
 
         origins.sweep()
-        assertTrue(origins.isEmpty)
+        assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1))
     }
 
-    // A blast read off by its own row claims nothing of the next one along the street (D114).
+    // A blast read off by its own row claims nothing of the next one along the street.
     @Test
     fun `an event read off leaves the next one's drops to it`() {
         val first = Any()
@@ -264,7 +259,6 @@ class SpawnOriginsTest {
         assertEquals(listOf(late), origins.droppedFor(second))
     }
 
-    // A crater breaks for longer than two sweeps of the global region before its drops spawn (D114).
     @Test
     fun `a note waits out sweeps that come quicker than its spawn`() {
         origins.expect(Void, Cause.BLK_TNT, stone, at, 1, rolled = true)
@@ -273,11 +267,9 @@ class SpawnOriginsTest {
 
         clock += 1_000
         origins.sweep()
-        assertTrue(origins.isEmpty)
+        assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1))
     }
 
-    // What a full inventory throws out after a give lands wherever its player has got to, so the note
-    // follows the thrower, outlives the sweeps and is left alone by a drop from anybody else.
     @Test
     fun `a note for a thrower is claimed by that thrower's drop anywhere`() {
         val player = UUID.randomUUID()

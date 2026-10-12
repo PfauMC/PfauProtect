@@ -72,7 +72,7 @@ class ConfiscationTest {
         assertEquals(listOf(his.copy(slot = 0), older), owed.stashes)
     }
 
-    // Bob packed the loot into a shulker box and broke it (D102). Left lying, the box is the pile the loot is
+    // Bob packed the loot into a shulker box and broke it. Left lying, the box is the pile the loot is
     // taken out of; picked up and set down again far away, it is a container like the chests.
     @Test
     fun `the loot packed into a box is followed to where the box is now`() {
@@ -122,7 +122,7 @@ class ConfiscationTest {
     }
 
     // Bob built steps of the loot that the same rollback takes away: those are back already, and only what he
-    // set where the rollback does not reach is still owed (O13).
+    // set where the rollback does not reach is still owed.
     @Test
     fun `what a carrier set as blocks the rollback takes away is not owed again`() {
         val steps = WorldBlock(world, 3, 64, 3)

@@ -171,7 +171,7 @@ object Netting {
     ): List<Edge> {
         val losses = ArrayList<Delta>()
         val gains = ArrayList<Delta>()
-        val holders = LinkedHashSet(before.stacks.keys).apply { addAll(after.stacks.keys) }
+        val holders = before.stacks.keys + after.stacks.keys
         for (holder in holders) {
             // A row filed under a container item can only have moved while the container itself was
             // in view. Place the box, drop it or die holding it and its rows leave the snapshot inside
@@ -468,7 +468,7 @@ internal fun transferOf(move: Move, timestamp: Long, kind: Kind = Kind.TRANSFER)
     qty = move.qty,
     timestamp = timestamp,
     // A creative copy leaves the stack it was copied from where it was: the copy is a second carrier,
-    // not a movement, and SPEC-v1 gives it a kind of its own.
+    // not a movement, so it is written as a CLONE rather than a TRANSFER.
     kind = if (move.cause == Cause.CREATIVE_CLONE) Kind.CLONE else kind,
     confidence = move.confidence,
     actor = move.actor,
@@ -516,8 +516,7 @@ class ContainerCaptureListener(
     private val placed: PlacedForms,
     // What the ledger books to every slot under these holders, from rows up to a moment.
     private val booked: (List<Holder>, Long) -> Map<Holder, Map<FormKey, Int>> = { _, _ -> emptyMap() },
-    // What an intent asked for and the pass never found. An event that silenced a funnel of its own on
-    // the promise that the pass would write the row has to hear about it when the pass could not.
+    // What an intent asked for and the pass never found.
     private val unspent: (Intent, Int) -> Unit = { _, _ -> },
 ) : Listener {
     private class Baseline(val view: InventoryView, val seen: Snapshot)
@@ -931,14 +930,10 @@ class ContainerCaptureListener(
         val player = event.entity
         val slots = heldAtDeath(player)
         val spot = spotOf(player.location)
-        // What the death wrote is on the ledger already, so the pass that sees the emptied slots a
-        // tick later has to swallow exactly those slots and no others. That is one note per stack
-        // written, naming the slot and the form it was written for: a single total swallows whichever
-        // loss the pass reaches first, and where that is the wrong one the slot it was written for is
-        // written off a second time. Beyond these notes the death took something nobody named — a drop
-        // another plugin removed from the list — and that has to stay visible as an unexplained loss
-        // rather than disappear into them. The cursor is dropped by an event of its own after this one
-        // and is not in the list here, so it is left for that event to explain.
+        // One note per stack written, not one total: a total swallows whichever loss the pass reaches
+        // first, and that may be the wrong one. A drop another plugin removed from the list gets no note
+        // and stays an unexplained loss. The cursor is dropped by an event of its own after this one and
+        // is not in the list here, so it is left for that event to explain.
         val written = ArrayList<Intent>()
         for (dropped in event.drops) {
             val encoded = codec.encodeOrNull(dropped) ?: continue
@@ -1018,7 +1013,7 @@ class ContainerCaptureListener(
         // A click the game applied in this same tick with no label of its own is renamed
         // too; telling them apart needs the pass to know which snapshot each edge came from.
         // A store keeps what it holds and hands back only the cursor: a shift-click out of a chest in the
-        // tick it closed is a removal, not a return (O18).
+        // tick it closed is a removal, not a return.
         if (returnsOnClose(event.view.topInventory.type.name, player.itemOnCursor.isEmpty)) {
             intents.add(player.uniqueId, Intent(Cause.MENU_CLOSE_RETURN))
         }
@@ -1136,8 +1131,7 @@ class ContainerCaptureListener(
         val taken = intents.take(player.uniqueId)
         val baseline = baselines[player.uniqueId]
         if (baseline == null) {
-            // Dropping them silently would strand an event that silenced a funnel of its own on the
-            // promise of this pass: the entity would get an end and never a beginning.
+            // Reported unspent rather than dropped, so an event that relied on this pass can write its own row.
             for (intent in taken) intent.qty?.let { unspent(intent, it) }
             return
         }
@@ -1150,7 +1144,7 @@ class ContainerCaptureListener(
         val edges = Netting.diff(was, now, taken, player.uniqueId, stationSlots(player, baseline, shift))
         val timestamp = System.currentTimeMillis()
         // A bundle the player holds is theirs to empty: a drop out of it is still their drop.
-        val carried = { nested: Nested -> nested.ownerId in was.containers }
+        val carried = was::sees
         val spent = HashSet<Intent>()
         // A transformation's reason is spent by whatever the pass gathered at all.
         if (edges.isNotEmpty()) taken.filter { it.shift != null }.forEach(spent::add)

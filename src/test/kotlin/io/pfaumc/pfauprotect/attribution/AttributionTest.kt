@@ -8,9 +8,7 @@ import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.WorldBlock
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
-import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -53,6 +51,18 @@ class AttributionTest {
     }
 
     private fun at(x: Int, y: Int, z: Int) = WorldBlock(world, x, y, z)
+
+    // Every read enforces its own window, so a note the sweep left behind reads as nobody all the same.
+    // Read from the moment the notes were written, only a note that is really gone answers with nobody.
+    private fun <T> asOf(time: Long, read: () -> T): T {
+        val now = clock
+        clock = time
+        return try {
+            read()
+        } finally {
+            clock = now
+        }
+    }
 
     private fun journalled(
         at: WorldBlock,
@@ -139,7 +149,7 @@ class AttributionTest {
     }
 
     // Lava that ran far from its bucket sets fire where no walk back to the source reaches, and the flow row
-    // of the lava block itself names who let it run: 6595 ignitions on a real map were nobody's (D110).
+    // of the lava block itself names who let it run: 6595 ignitions on a real map were nobody's.
     @Test
     fun `the journal names who let a flow run`() {
         val here = at(10, 64, 10)
@@ -359,7 +369,7 @@ class AttributionTest {
         clock += FELLED_MILLIS
         assertNull(attribution.fellerOf(at(2, 70, 0)))
         attribution.sweep()
-        assertTrue(attribution.isEmpty)
+        asOf(START) { assertNull(attribution.fellerOf(at(2, 70, 0))) }
     }
 
     @Test
@@ -382,7 +392,7 @@ class AttributionTest {
         attribution.tookOff(entity, Falling(here, SAND, null))
 
         attribution.sweep()
-        assertFalse(attribution.isEmpty)
+        assertEquals(alice, attribution.removerAt(here)?.actor)
 
         clock += SUPPORT_MILLIS + 1
         attribution.sweep()
@@ -397,7 +407,11 @@ class AttributionTest {
         attribution.tookOff(entity, Falling(here, SAND, null))
         clock += FLIGHT_MILLIS + 1
         attribution.sweep()
-        assertTrue(attribution.isEmpty)
+        asOf(START) {
+            assertNull(attribution.placerAt(here, TNT))
+            assertNull(attribution.removerAt(here))
+            assertNull(attribution.landed(entity))
+        }
     }
 
     @Test
@@ -406,7 +420,7 @@ class AttributionTest {
         val entity = UUID.randomUUID()
         attribution.placed(here, TNT, alice)
         attribution.removed(here, alice)
-        attribution.tookOff(entity, Falling(here, SAND, null))
+        attribution.tookOff(entity, Falling(here, SAND, Attributed(alice)))
 
         clock += SUPPORT_MILLIS + 1
         attribution.sweepRemovals()
@@ -415,10 +429,17 @@ class AttributionTest {
 
         clock += NOTE_MILLIS + FLIGHT_MILLIS
         attribution.sweepRemovals()
-        assertFalse(attribution.isEmpty)
+        asOf(START) {
+            assertNull(attribution.removerAt(here))
+            assertEquals(alice, attribution.placerAt(here, TNT)?.actor)
+            assertEquals(alice, attribution.flying(entity)?.actor)
+        }
 
         attribution.sweep()
-        assertTrue(attribution.isEmpty)
+        asOf(START) {
+            assertNull(attribution.placerAt(here, TNT))
+            assertNull(attribution.flying(entity))
+        }
     }
 
     @Test
@@ -451,7 +472,6 @@ class AttributionTest {
         val origins = EntityOrigins { clock }
         val wither = UUID.randomUUID()
 
-        assertTrue(origins.isEmpty)
         assertNull(origins.summonerOf(wither))
 
         origins.appeared(wither, alice)
@@ -461,12 +481,10 @@ class AttributionTest {
 
         origins.gone(wither)
         assertNull(origins.summonerOf(wither))
-        assertTrue(origins.isEmpty)
     }
 
     @Test
     fun `an origin nobody saw end stops answering once its window has passed`() {
-        var clock = START
         val origins = EntityOrigins { clock }
         val golem = UUID.randomUUID()
         origins.appeared(golem, alice)
@@ -475,6 +493,6 @@ class AttributionTest {
         assertNull(origins.summonerOf(golem))
 
         origins.sweep()
-        assertTrue(origins.isEmpty)
+        asOf(START) { assertNull(origins.summonerOf(golem)) }
     }
 }

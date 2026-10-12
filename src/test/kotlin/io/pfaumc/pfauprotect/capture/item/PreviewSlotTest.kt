@@ -1,9 +1,11 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.ServerRegistries
+import io.pfaumc.pfauprotect.stub
 import org.bukkit.NamespacedKey
 import org.bukkit.inventory.AnvilInventory
 import org.bukkit.inventory.CartographyInventory
+import org.bukkit.inventory.ComplexRecipe
 import org.bukkit.inventory.CraftingInventory
 import org.bukkit.inventory.FurnaceInventory
 import org.bukkit.inventory.GrindstoneInventory
@@ -19,7 +21,6 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
-import java.lang.reflect.Proxy
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PreviewSlotTest {
@@ -34,32 +35,28 @@ class PreviewSlotTest {
     // two-by-two both hide the same slot however many grid slots follow it.
     @Test
     fun `a crafting menu computes its first slot`() {
-        assertEquals(0, previewSlot(sized(CraftingInventory::class.java, 10)))
-        assertEquals(0, previewSlot(sized(CraftingInventory::class.java, 5)))
+        assertEquals(0, previewSlot(stub(CraftingInventory::class.java, mapOf("getSize" to 10))))
+        assertEquals(0, previewSlot(stub(CraftingInventory::class.java, mapOf("getSize" to 5))))
     }
 
-    // Every station built on a result inventory puts its ingredients first and its result last, so the
-    // slot to hide follows the size rather than a number per station.
     @Test
     fun `a station built on a result inventory computes its last slot`() {
-        assertEquals(2, previewSlot(sized(AnvilInventory::class.java, 3)))
-        assertEquals(2, previewSlot(sized(GrindstoneInventory::class.java, 3)))
-        assertEquals(3, previewSlot(sized(SmithingInventory::class.java, 4)))
-        assertEquals(1, previewSlot(sized(StonecutterInventory::class.java, 2)))
-        assertEquals(3, previewSlot(sized(LoomInventory::class.java, 4)))
-        assertEquals(2, previewSlot(sized(CartographyInventory::class.java, 3)))
+        assertEquals(2, previewSlot(stub(AnvilInventory::class.java, mapOf("getSize" to 3))))
+        assertEquals(2, previewSlot(stub(GrindstoneInventory::class.java, mapOf("getSize" to 3))))
+        assertEquals(3, previewSlot(stub(SmithingInventory::class.java, mapOf("getSize" to 4))))
+        assertEquals(1, previewSlot(stub(StonecutterInventory::class.java, mapOf("getSize" to 2))))
+        assertEquals(3, previewSlot(stub(LoomInventory::class.java, mapOf("getSize" to 4))))
+        assertEquals(2, previewSlot(stub(CartographyInventory::class.java, mapOf("getSize" to 3))))
     }
 
     // A furnace output holds a real item that stands there until it is taken, and hiding it would lose
     // every smelted stack sitting in a furnace nobody has emptied.
     @Test
     fun `a menu that stores its output hides nothing`() {
-        assertNull(previewSlot(sized(FurnaceInventory::class.java, 3)))
-        assertNull(previewSlot(sized(Inventory::class.java, 27)))
+        assertNull(previewSlot(stub(FurnaceInventory::class.java, mapOf("getSize" to 3))))
+        assertNull(previewSlot(stub(Inventory::class.java, mapOf("getSize" to 27))))
     }
 
-    // The station names which of the two smithing recipes matched, and it only names it while the
-    // click is being delivered — which is why it is read here and not from the deferred pass.
     @Test
     fun `a smithing station tells a trim apart from a transform`() {
         val trim = SmithingTrimRecipe(
@@ -80,42 +77,23 @@ class PreviewSlotTest {
     @Test
     fun `a special recipe in the crafting grid is named for what it does`() {
         fun grid(key: String): Inventory {
-            val recipe = Proxy.newProxyInstance(
-                org.bukkit.inventory.ComplexRecipe::class.java.classLoader,
-                arrayOf(org.bukkit.inventory.ComplexRecipe::class.java),
-            ) { _, method, _ -> if (method.name == "getKey") NamespacedKey.minecraft(key) else null }
-            return Proxy.newProxyInstance(CraftingInventory::class.java.classLoader, arrayOf(CraftingInventory::class.java)) { _, method, _ ->
-                when (method.name) {
-                    "getSize" -> 10
-                    "getRecipe" -> recipe
-                    else -> null
-                }
-            } as Inventory
+            val recipe = stub(ComplexRecipe::class.java, mapOf("getKey" to NamespacedKey.minecraft(key)))
+            return stub(CraftingInventory::class.java, mapOf("getSize" to 10, "getRecipe" to recipe))
         }
         assertEquals(Cause.BOOK_COPY, shiftOf(grid("book_cloning"))!!.consume)
         assertEquals(Cause.DYE_ITEM, shiftOf(grid("leather_chestplate_dyed"))!!.consume)
         assertEquals(Cause.DYE_ITEM, shiftOf(grid("red_shulker_box"))!!.consume)
         assertEquals(Cause.BANNER_DUPLICATE, shiftOf(grid("white_banner_duplicate"))!!.consume)
         assertEquals(Cause.CRAFT_CONSUME, shiftOf(grid("shulker_box"))!!.consume)
-        assertEquals(Cause.CRAFT_CONSUME, shiftOf(sized(CraftingInventory::class.java, 10))!!.consume)
+        assertEquals(Cause.CRAFT_CONSUME, shiftOf(stub(CraftingInventory::class.java, mapOf("getSize" to 10)))!!.consume)
     }
 
-    private fun smithing(recipe: Any?): Inventory {
-        val type = SmithingInventory::class.java
-        return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ ->
-            when (method.name) {
-                "getSize" -> 4
-                "getRecipe" -> recipe
-                else -> null
-            }
-        } as Inventory
-    }
+    private fun smithing(recipe: Any?): Inventory =
+        stub(SmithingInventory::class.java, mapOf("getSize" to 4, "getRecipe" to recipe))
 
-    // The goods are computed from the payment the way a craft is from its grid, and taking them
-    // destroys the payment and makes the goods.
     @Test
     fun `a trade is a station whose result is its last slot`() {
-        val merchant = sized(MerchantInventory::class.java, 3)
+        val merchant = stub(MerchantInventory::class.java, mapOf("getSize" to 3))
         assertEquals(2, previewSlot(merchant))
         val shift = shiftOf(merchant)!!
         assertEquals(Cause.TRADE_PAYMENT, shift.consume)
@@ -168,17 +146,5 @@ class PreviewSlotTest {
         assertEquals(net.minecraft.world.entity.EquipmentSlot.SADDLE.ordinal, horseSlot(0))
         assertEquals(net.minecraft.world.entity.EquipmentSlot.BODY.ordinal, horseSlot(1))
         assertEquals(17, horseSlot(2))
-    }
-
-    private fun <T : Any> stub(type: Class<T>): T {
-        @Suppress("UNCHECKED_CAST")
-        return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, _, _ -> null } as T
-    }
-
-    private fun <T : Inventory> sized(type: Class<T>, size: Int): Inventory {
-        @Suppress("UNCHECKED_CAST")
-        return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ ->
-            if (method.name == "getSize") size else null
-        } as T
     }
 }

@@ -48,7 +48,7 @@ object Settings {
 
     private val LANGUAGES = setOf("ru", "en")
 
-    // The causes rows of the block and entity planes are written with: the 0xC0..0xEF block range, the
+    // The causes rows of the block and entity planes are written with: the 0xCA..0xEF block range, the
     // entity plane's own, and the rest a block row can carry.
     private val BLOCK_PLANE: Set<Cause> = Cause.entries.filter { it.id in 0xCA..0xEF }.toSet() + setOf(
         Cause.BLK_SIGN_EDIT, Cause.BLK_SHAPE, Cause.BLK_LIQUID_FLOW, Cause.BLK_PLUGIN, Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.ENTITY_CHANGED,

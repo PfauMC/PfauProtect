@@ -163,7 +163,7 @@ internal fun bytesOf(tag: CompoundTag): ByteArray {
 internal fun significant(tag: CompoundTag): CompoundTag = tag.copy().also { copy ->
     for (key in VOLATILE) copy.remove(key)
     // The plugin's own mark is no hand of a player's, and neither is what other plugins keep on the entity:
-    // CoreProtect marks one on every click (O23). The slots this plugin booked go with what it carries.
+    // CoreProtect marks one on every click. The slots this plugin booked go with what it carries.
     (copy.get("BukkitValues") as? CompoundTag)?.let { values ->
         for (key in values.keySet().toList()) if (key == TOUCHED_TAG || !key.startsWith(OWN_KEYS)) values.remove(key)
         if (values.isEmpty) copy.remove("BukkitValues")
@@ -194,7 +194,7 @@ internal class Culprit(val cause: Cause, val by: Attributed?)
 /**
  * The entity plane's side of an entity leaving the world: killed, broken, blown up. Its whole NBT is
  * taken while the event still has it, and the row is written a tick on, once the items that fell out of
- * it have spawned and can be named (SPEC-v6 §2.1, §2.5).
+ * it have spawned and can be named.
  */
 class EntityCapture(
     private val logs: BlockLogs,
@@ -218,7 +218,7 @@ class EntityCapture(
     private val handling = ConcurrentHashMap.newKeySet<UUID>()
 
     /**
-     * A player's hand on an entity (SPEC-v6 §2.3). The events come before the hand acts, so this is the
+     * A player's hand on an entity. The events come before the hand acts, so this is the
      * entity as it was; a tick later, on its own thread, it is read again, and a row is written only if
      * anything besides what changes by itself has changed.
      */
@@ -340,7 +340,7 @@ class EntityCapture(
     }
 
     /**
-     * A mob led away (SPEC-v6 §2.4): put on a lead, ridden off, carried in a boat or a cart with a player
+     * A mob led away: put on a lead, ridden off, carried in a boat or a cart with a player
      * in it; and the boat or the cart itself, ridden off. What is kept is the entity as it was, which says
      * where it stood. A player's own pet is theirs to walk.
      */
@@ -392,7 +392,7 @@ class EntityCapture(
         val lit = alight.remove(entity.uniqueId)
         // A mob a player brought into the world that dies of nothing anybody did is still theirs: the griefer's
         // sheep fell off the roof he let them loose on, and their wool and mutton lay there after his rollback
-        // had taken the rest of the flock away (D123).
+        // had taken the rest of the flock away.
         val found = culpritOf(entity, Cause.ENTITY_KILLED, lit)
         // A sculk catalyst nearby blooms off this death, and the sculk is whoever stands behind it.
         found.by.culprit()?.let { attribution.killed(positionOf(entity.location.block), it) }
@@ -512,7 +512,7 @@ class EntityCapture(
     }
 
     /**
-     * A player killed by another (SPEC-v6 §2.6): where, by whom, and what fell out of them. The drops are
+     * A player killed by another: where, by whom, and what fell out of them. The drops are
      * the item plane's, slot by slot; this row is how a rollback of the killer finds the victim. A death
      * nobody stands behind — a fall, a zombie — is no grief between players and is left to the item plane.
      */
@@ -551,7 +551,7 @@ class EntityCapture(
     }
 
     /**
-     * A mob a player brought into the world (SPEC-v6 §2.2): out of an egg or a bucket, bred, built. Who did
+     * A mob a player brought into the world: out of an egg or a bucket, bred, built. Who did
      * it is what the attribution already noted for the entity, or the bucket's player.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -724,7 +724,8 @@ class EntityCapture(
 
     private companion object {
         const val SEEN_CAP = 1024
-        // Lava sets a mob burning for fifteen seconds after it climbs out.
+        // Lava sets a mob burning for fifteen seconds after it climbs out; the rest is slack for a server
+        // running behind, whose fifteen seconds of ticks take longer on the clock this is measured by.
         const val BURN_MILLIS = 20_000L
         // The ways of dying that a place deals out, and that a player changing the place can therefore be behind.
         val BY_PLACE = setOf(

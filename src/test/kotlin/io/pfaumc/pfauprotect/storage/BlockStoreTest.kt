@@ -13,12 +13,6 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import org.rocksdb.ColumnFamilyDescriptor
-import org.rocksdb.ColumnFamilyHandle
-import org.rocksdb.ColumnFamilyOptions
-import org.rocksdb.DBOptions
-import org.rocksdb.Options
-import org.rocksdb.RocksDB
 import java.nio.file.Path
 import java.util.UUID
 
@@ -74,24 +68,9 @@ class BlockStoreTest {
     private fun stateOf(blockData: String): Int? =
         shared.registries.lookupKey(RegistryNamespace.BLOCK_STATE, blockData)
 
-    // The only way to a row the log itself would never write. The log has to be shut for it: RocksDB
-    // takes one writer per directory.
     private fun writeRawRow(key: ByteArray, value: ByteArray) {
         logs.close(world)
-        val path = root.resolve(world.toString()).toAbsolutePath().toString()
-        val names = Options().use { RocksDB.listColumnFamilies(it, path) }
-        val rowsIndex = names.indexOfFirst { it.contentEquals("rows".toByteArray()) }
-        val handles = ArrayList<ColumnFamilyHandle>()
-        ColumnFamilyOptions().use { cfOptions ->
-            DBOptions().use { options ->
-                try {
-                    RocksDB.open(options, path, names.map { ColumnFamilyDescriptor(it, cfOptions) }, handles)
-                        .use { it.put(handles[rowsIndex], key, value) }
-                } finally {
-                    handles.forEach { it.close() }
-                }
-            }
-        }
+        rawEdit(root.resolve(world.toString())) { raw, family -> raw.put(family("rows"), key, value) }
         log = logs.open(world)
     }
 
@@ -327,20 +306,9 @@ class BlockStoreTest {
         log.submit(listOf(placed(8, 64, 8, ts = T0)))
         log.drain()
         logs.close(world)
-        val path = root.resolve(world.toString()).toAbsolutePath().toString()
-        val names = Options().use { RocksDB.listColumnFamilies(it, path) }
-        val handles = ArrayList<ColumnFamilyHandle>()
-        ColumnFamilyOptions().use { cfOptions ->
-            DBOptions().use { options ->
-                RocksDB.open(options, path, names.map { ColumnFamilyDescriptor(it, cfOptions) }, handles).use { raw ->
-                    try {
-                        raw.dropColumnFamily(handles[names.indexOfFirst { it.contentEquals("entities".toByteArray()) }])
-                        raw.put(handles[names.indexOfFirst { it.contentEquals("meta".toByteArray()) }], "schema".toByteArray(), longBytes(2L))
-                    } finally {
-                        handles.forEach { it.close() }
-                    }
-                }
-            }
+        rawEdit(root.resolve(world.toString())) { raw, family ->
+            raw.dropColumnFamily(family("entities"))
+            raw.put(family("meta"), "schema".toByteArray(), longBytes(2L))
         }
         log = logs.open(world)
 
@@ -355,20 +323,9 @@ class BlockStoreTest {
         log.submit(listOf(placed(7, 64, 7, ts = T0)))
         log.drain()
         logs.close(world)
-        val path = root.resolve(world.toString()).toAbsolutePath().toString()
-        val names = Options().use { RocksDB.listColumnFamilies(it, path) }
-        val handles = ArrayList<ColumnFamilyHandle>()
-        ColumnFamilyOptions().use { cfOptions ->
-            DBOptions().use { options ->
-                RocksDB.open(options, path, names.map { ColumnFamilyDescriptor(it, cfOptions) }, handles).use { raw ->
-                    try {
-                        raw.dropColumnFamily(handles[names.indexOfFirst { it.contentEquals("by_actor".toByteArray()) }])
-                        raw.put(handles[names.indexOfFirst { it.contentEquals("meta".toByteArray()) }], "schema".toByteArray(), longBytes(1L))
-                    } finally {
-                        handles.forEach { it.close() }
-                    }
-                }
-            }
+        rawEdit(root.resolve(world.toString())) { raw, family ->
+            raw.dropColumnFamily(family("by_actor"))
+            raw.put(family("meta"), "schema".toByteArray(), longBytes(1L))
         }
         log = logs.open(world)
 

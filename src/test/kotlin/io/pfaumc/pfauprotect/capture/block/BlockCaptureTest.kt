@@ -10,6 +10,7 @@ import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.attribution.behind
+import io.pfaumc.pfauprotect.stub
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.core.RegistryAccess
@@ -108,13 +109,6 @@ class BlockCaptureTest {
         dropsBlock: Boolean = true,
         waterEvaporates: Boolean = false,
     ): String = brokenAfter(state, below, tool, dropsBlock, waterEvaporates).asBlockData().asString
-
-    private fun <T : Any> stub(type: Class<T>, answers: Map<String, Any?> = emptyMap()): T {
-        @Suppress("UNCHECKED_CAST")
-        return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ ->
-            answers[method.name]
-        } as T
-    }
 
     // A block that is not the server's own is what turns reading anything off it into a failure rather
     // than a quiet row, so a handler that must read nothing more is caught by the stub refusing.
@@ -409,10 +403,6 @@ class BlockCaptureTest {
         assertTrue(attribution.isEmpty)
     }
 
-    // A protection plugin cancels at NORMAL or HIGH, and both halves of this capture sit behind that
-    // cancellation on purpose: a break or a placement it refused changed nothing, so there is neither
-    // a row to write nor a position to attribute to anybody. Registered earlier, the notes would spend
-    // their whole window offering the refused player as the answer for whatever happens there next.
     @Test
     fun `both handlers run behind the cancellation`() {
         for (handler in listOf(
@@ -485,9 +475,6 @@ class BlockCaptureTest {
         assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 63, 5))?.actor)
     }
 
-    // The item plane books a lectern's book and a campfire's food to the block as slots, so the reading
-    // a command or a rollback takes before and after has to see them, though neither block is a
-    // container.
     @Test
     fun `a lectern's book and a campfire's food are read as the block's slots`() {
         ServerRegistries.access

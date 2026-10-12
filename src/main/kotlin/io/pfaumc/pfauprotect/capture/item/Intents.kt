@@ -175,13 +175,10 @@ object Intents {
                 }
             }
         }
-        // Two opposite movements of one form into one slot cancel before the pass can see them: the
-        // slot reads the same on both sides and there is no delta for either intent to be spent on.
-        // Neither half may be written alone — an intent names its far end and not its slot, and a
-        // placement in creative consumes nothing, so a lone one would invent a debit that was never
-        // paid. The pair is safe where the half is not: run through one and the same holder the two
-        // rows move the player's own total by zero whichever holder that turns out to be, while the
-        // two far ends each get the row they are owed.
+        // Two opposite movements of one form into one slot cancel before the pass can see them, and
+        // `Netting.claim` says why neither half may be written alone. The pair is safe where the half
+        // is not: run through one and the same holder the two rows move the player's own total by zero
+        // whichever holder that turns out to be, while the two far ends each get the row they are owed.
         for (out in intents.indices) {
             val outgoing = intents[out]
             val to = outgoing.to ?: continue

@@ -613,7 +613,7 @@ internal class RowFilter(
     // A neighbour's shape goes back with whatever went back beside it, so a rollback narrowed to fire or to
     // explosions takes the shape rows too; undoing a rollback is the one reading that leaves them, since the
     // rollback wrote none. A lookup shows them only when asked: there is one for every fence beside every
-    // block that changed (D104).
+    // block that changed.
     private val all = query.all
 
     private fun caused(cause: Cause): Boolean {
@@ -826,7 +826,7 @@ class Lookups(
     }
 
     // A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it.
-    private fun canTeleport(sender: CommandSender) = sender is Player && sender.hasPermission(io.pfaumc.pfauprotect.TELEPORT_PERMISSION)
+    private fun canTeleport(sender: CommandSender) = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
 
     internal fun report(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
         if (query.players.isNotEmpty()) return reportPlayers(sender, target, query)
@@ -865,11 +865,10 @@ class Lookups(
         val keeps = rowFilter(query, users)
         val rows = positions.flatMap { (x, y, z) -> log.at(x, y, z, fromTs, toTs, limit = query.fetch, reverse = true) }
         val entities = positions.flatMap { (x, y, z) -> log.entitiesAt(x, y, z, fromTs, toTs, MAX_ENTITY_WALK).rows }
-        val entries = positions.flatMap { (x, y, z) ->
-            listOf(Container(target.world, x, y, z, 0), WorldBlock(target.world, x, y, z)).flatMap {
-                ledger.holderPage(it, fromTs, toTs, reverse = true, limit = query.fetch).entries
-            }
-        }.sortedByDescending { it.timestamp }
+        val holders = positions.flatMap { (x, y, z) ->
+            listOf(Container(target.world, x, y, z, 0), WorldBlock(target.world, x, y, z))
+        }
+        val entries = holderRows(holders, fromTs, toTs, query).entries
         val lines = entryLines(wholeTransactions(ledger, filter(entries, query, users))) +
             marked(rows).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(target.world, row, back) } +
             markedEntities(entities).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(target.world, row, back) }
@@ -890,18 +889,17 @@ class Lookups(
         }
         val players = resolveAll(sender, query.players) ?: return
         val users = resolveAll(sender, query.users) ?: return
-        val fromTs = query.fromTs()
         // The slot never enters the key, so slot 0 stands for every slot of its kind.
-        val pages = players.flatMap { player ->
+        val holders = players.flatMap { player ->
             listOf(
                 PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player),
                 PlayerEnder(player, 0), EntitySlot(player, 0),
             )
-        }.map { ledger.holderPage(it, fromTs, query.toTs(), reverse = true, limit = query.fetch) }
-        val entries = pages.flatMap { it.entries }.sortedByDescending { it.timestamp }
-        val items = entryLines(wholeTransactions(ledger, filter(entries, query, users)))
+        }
+        val page = holderRows(holders, query.fromTs(), query.toTs(), query)
+        val items = entryLines(wholeTransactions(ledger, filter(page.entries, query, users)))
         val who = query.players.joinToString(", ")
-        answer(sender, items, pages.all { it.complete }, Ui.text(tr("what $who carried", "вещи $who")), query, target)
+        answer(sender, items, page.complete, Ui.text(tr("what $who carried", "вещи $who")), query, target)
     }
 
     // Every name has to be known: dropping the one that was misspelt would answer about the rest as
@@ -1112,18 +1110,13 @@ class Lookups(
     private fun read(target: LookupTarget, query: LookupQuery): EntryPage {
         val fromTs = query.fromTs()
         val toTs = query.toTs()
-        val radius = query.radius ?: run {
-            val pages = listOf(
+        val radius = query.radius ?: return holderRows(
+            listOf(
                 Container(target.world, target.x, target.y, target.z, 0),
                 WorldBlock(target.world, target.x, target.y, target.z),
-            ).map { holder ->
-                ledger.holderPage(holder, fromTs, toTs, reverse = true, limit = query.fetch)
-            }
-            return EntryPage(
-                pages.flatMap { it.entries }.sortedByDescending { it.timestamp },
-                pages.all { it.complete },
-            )
-        }
+            ),
+            fromTs, toTs, query,
+        )
         val inBox = boxAround(target, radius)
         return ledger.regionPage(
             world = target.world,
@@ -1160,8 +1153,11 @@ class Lookups(
             z in (target.z - radius)..(target.z + radius)
     }
 
-    // Keeps one row more than asked for: the caller shows `limit` of them and needs the extra one to
-    // know whether saying so would be a lie.
+    private fun holderRows(holders: List<Holder>, fromTs: Long, toTs: Long, query: LookupQuery): EntryPage {
+        val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = query.fetch) }
+        return EntryPage(pages.flatMap { it.entries }.sortedByDescending { it.timestamp }, pages.all { it.complete })
+    }
+
     private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
         val keeps = rowFilter(query, users)
         val placers = HashMap<Container, Placer>()

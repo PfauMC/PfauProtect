@@ -86,9 +86,10 @@ internal fun flowing(state: String): Boolean =
     state.substringBefore('[') in LIQUIDS && "level=" in state && "level=0]" !in state
 
 /**
- * Somebody worked out rather than somebody witnessed. Everything this file answers with is
- * `INFERRED`; the direct source on the event — a TNT entity whose source is a player — is the
- * caller's own rung and the only one that may carry `FACT`.
+ * Somebody worked out rather than somebody witnessed. Whatever this file works out is `INFERRED`, or
+ * `NEARBY` where the row it read only knew who stood near; the direct source on the event — a TNT
+ * entity whose source is a player — is the caller's own rung and the only one that may carry `FACT`.
+ * A flight or an origin hands back the confidence it was noted with.
  */
 data class Attributed(val actor: UUID, val confidence: Confidence = Confidence.INFERRED)
 
@@ -351,8 +352,6 @@ class EntityOrigins(private val now: () -> Long = System::currentTimeMillis) {
     private class Note(val actor: UUID, val at: Long, val confidence: Confidence)
 
     private val origins = ConcurrentHashMap<UUID, Note>()
-
-    val isEmpty: Boolean get() = origins.isEmpty()
 
     // A dispenser set off by nobody but a witness hands the witness on as a witness.
     fun appeared(entity: UUID, actor: UUID, confidence: Confidence = Confidence.INFERRED) {

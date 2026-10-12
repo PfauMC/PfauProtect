@@ -5,13 +5,14 @@ import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
-import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.storage.Registries
+import io.pfaumc.pfauprotect.NoPlacedForms
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.capture.item.Stack
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
+import io.pfaumc.pfauprotect.stub
 import net.minecraft.core.Direction
 import net.minecraft.core.component.DataComponents
 import net.minecraft.network.chat.Component
@@ -32,7 +33,6 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
-import java.lang.reflect.Proxy
 import java.util.UUID
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
@@ -58,8 +58,6 @@ class MechanismTest {
 
     private fun held(name: String, count: Int) = Stack(ItemKey(name.toByteArray(), null), count)
 
-    // A dispenser puts its item down only when one item went, nothing came back, and the block in front
-    // became one made of it: a bucket comes back as a bucket, and a pumpkin that became a golem is gone.
     @Test
     fun `a dispense that placed its item is told apart from one that spent it`() {
         val box = ItemKey("shulker_box".toByteArray(), null)
@@ -136,9 +134,6 @@ class MechanismTest {
         assertEquals(Fitting(1, 4), Placement.fit(destination, stone(4), null))
     }
 
-    // A sorter hopper stands loaded against a container that cannot take from it, and the game keeps
-    // firing the event as long as it holds an item: without this the ledger fills with movements that
-    // never happened.
     @Test
     fun `a container with no room for the form takes nothing`() {
         val full = chest(size = 3, fill = mapOf(0 to dirt(64), 1 to dirt(64), 2 to dirt(64)))
@@ -240,25 +235,17 @@ class MechanismTest {
         assertArrayEquals(grass, gaveBack(form(Items.DIRT, "Sod"), grass))
     }
 
-    // Fire, a liquid and a portal are the blocks nobody put down, and there is nothing to give back
-    // for them because nothing was ever taken.
     @Test
     fun `a block nobody placed and with no item form of its own gives nothing back`() {
         assertNull(gaveBack(null, null))
     }
 
-    // A potted plant, a candle cake and a stem that has grown its fruit all back an item that is
-    // nowhere in the registry while standing on a position the ledger credited. Giving nothing back
-    // there leaves that credit behind for ever, where no self-check reaches it.
     @Test
     fun `a position that was placed gives back what it took even where the block backs no item`() {
         val pot = form(Items.FLOWER_POT)
         assertArrayEquals(pot, gaveBack(pot, null))
     }
 
-    // A door, a bed, a tall plant and an extended piston are paid for once, on the half the placement
-    // names. Struck on the other half, the debit still belongs where the credit sits, or the credited
-    // half keeps a holding for a block that is gone.
     @Test
     fun `a debit for a double block goes to the half that was paid for`() {
         val lower = WorldBlock(world, 2, -60, 22)
@@ -270,8 +257,6 @@ class MechanismTest {
         assertEquals(lower, paidHalf(lower, upper, remembered))
     }
 
-    // A plant the world generated was paid for on neither half, and inventing a partner for it would
-    // move the debit off the position that actually lost the block.
     @Test
     fun `a debit for a double block nobody paid for stays where it was struck`() {
         val lower = WorldBlock(world, 2, -60, 22)
@@ -313,14 +298,6 @@ class MechanismTest {
         assertEquals(Container(world, 7, 65, -12, 2), produced.to)
     }
 
-    private object NoPlacedForms : PlacedForms {
-        override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = null
-        override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = emptyMap()
-        override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) = Unit
-        override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) = Unit
-        override fun clearFormsAt(positions: List<WorldBlock>) = Unit
-    }
-
     private fun furnaceBlock(): Block {
         val furnace = stub(Furnace::class.java)
         val worldStub = stub(World::class.java, mapOf("getUID" to world))
@@ -328,13 +305,6 @@ class MechanismTest {
             Block::class.java,
             mapOf("getWorld" to worldStub, "getX" to 7, "getY" to 65, "getZ" to -12, "getState" to furnace),
         )
-    }
-
-    private fun <T : Any> stub(type: Class<T>, answers: Map<String, Any?> = emptyMap()): T {
-        @Suppress("UNCHECKED_CAST")
-        return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ ->
-            answers[method.name]
-        } as T
     }
 
     // Stands in for a furnace: reachable slots depend on the face, and the game asks the container

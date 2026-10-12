@@ -72,8 +72,8 @@ internal const val PRESS_NANOS = 50_000_000L
 
 /**
  * Whose energy is running through a position: the player who pressed, placed, broke or moved
- * something a moment ago, carried from one component to the next. SPEC-v3's water and fire in
- * another medium: every step copies the freshest note around it onto itself.
+ * something a moment ago, carried from one component to the next. `Attribution.carriedTo` for water
+ * and fire, in another medium: every step copies the freshest note around it onto itself.
  *
  * In memory only and short-lived, like every tracker in `Attribution`. A clock renews its own notes
  * as long as it ticks, which is the answer wanted for it: whoever started it.
@@ -82,8 +82,6 @@ class Energy(private val now: () -> Long = System::currentTimeMillis) {
     private class Note(val by: Attributed, val at: Long)
 
     private val notes = ConcurrentHashMap<WorldBlock, Note>()
-
-    val size: Int get() = notes.size
 
     fun note(at: WorldBlock, by: Attributed) {
         notes[at] = Note(by, now())
@@ -340,7 +338,7 @@ class RedstoneListener(
     /**
      * A plate or a tripwire somebody else put down, stepped on: a trap, and what it sets off is the one who
      * laid it. The griefer's mines under the street went off as the owner's, who walked over the plate,
-     * and the griefer's rollback left the crater (D118). A switch pressed by hand stays the presser's.
+     * and the griefer's rollback left the crater. A switch pressed by hand stays the presser's.
      */
     private fun trapOf(block: Block, at: WorldBlock, event: PlayerInteractEvent): Attributed? {
         if (event.action != Action.PHYSICAL || attribution == null) return null

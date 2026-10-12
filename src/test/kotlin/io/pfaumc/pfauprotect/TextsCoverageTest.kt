@@ -116,7 +116,8 @@ class TextsCoverageTest {
         return i + 1
     }
 
-    // Made of parts that are sentences of their own, which a number cannot stand in for; T1 reads them live.
+    // Filled in with a phrase built in a variable, whose words the translation needs and a number cannot
+    // stand in for; a live run in Russian reads them.
     private val COMPOSED = listOf("  would swap back ", "  swapping back ")
 
     // What is left once names, ids, causes, commands and parameters are taken out: a Latin word is English.

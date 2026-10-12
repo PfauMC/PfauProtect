@@ -8,7 +8,6 @@ import org.rocksdb.ColumnFamilyHandle
 import org.rocksdb.DBOptions
 import org.rocksdb.ReadOptions
 import org.rocksdb.RocksDB
-import org.rocksdb.Slice
 import org.rocksdb.WriteBatch
 import org.rocksdb.WriteOptions
 import java.nio.file.Files
@@ -114,10 +113,8 @@ private val META_LAST_TS = "last_ts".toByteArray()
 // which is what makes deleting a world a matter of deleting a directory: registry numbers are never
 // reused, so rows of a world that is gone could otherwise only be got rid of by a range delete.
 //
-// The state numbers, the player numbers and the interned payloads all live in `shared`, and there is
-// no write-ahead log spanning the two databases. The guarantee is the order: what a row names is
-// made durable before the row that names it. An orphaned payload is garbage nobody reads; a row
-// whose payload never landed is lost data.
+// The state numbers, the player numbers and the interned payloads all live in `shared`, and each is
+// made durable there before the row that names it, for the reason given at `RocksItemLog.payloads`.
 class BlockLog(
     dir: Path,
     private val shared: RocksItemLog,
@@ -186,9 +183,7 @@ class BlockLog(
         RocksDB.loadLibrary()
         Files.createDirectories(dir)
         val path = dir.toAbsolutePath().toString()
-        // Opening writes every missing column family into the manifest before anything can look at
-        // the schema, and a build that does not know those families can no longer open the database
-        // at all. A database refused for its schema has to be left exactly as it was found.
+        // Read before the open, as the ledger's is, so a base refused for its schema is left as it was found.
         val stored = cleaningUpOnFailure({ closeOptions() }) {
             storedSchema(path, BLOCK_META_CF, META_SCHEMA_KEY)?.also {
                 require(it == BLOCK_SCHEMA_VERSION || it == INDEXED_FROM || it == WITHOUT_ENTITIES) {
@@ -203,9 +198,7 @@ class BlockLog(
             BY_ACTOR_CF to byActorOptions,
             ENTITIES_CF to rowsOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
-        // A stale lock file or a truncated manifest fails the open, and the options, the cache and the
-        // filter behind it answer to nothing afterwards: the bindings free no native memory on their
-        // own, and every world load that retries would strand another set of them.
+        // Each world load that retries a failed open would otherwise strand another set of natives.
         db = cleaningUpOnFailure({ closeOptions() }) { RocksDB.open(dbOptions, path, descriptors, cfHandles) }
         rowsCf = cfHandles[1]
         metaCf = cfHandles[2]
@@ -310,26 +303,16 @@ class BlockLog(
         if (closed) return ActorTouches(emptySet(), false)
         if (number == null) return ActorTouches(emptySet(), true)
         val prefix = actorPrefix(number)
+        val start = ByteWriter(12).bytes(prefix).longBE(fromTs).toByteArray()
         val positions = HashSet<List<Int>>()
         var walked = 0
-        val lower = Slice(ByteWriter(12).bytes(prefix).longBE(fromTs).toByteArray())
-        val upper = Slice(afterPrefix(prefix))
-        try {
-            ReadOptions().setIterateLowerBound(lower).setIterateUpperBound(upper).use { options ->
-                db.newIterator(byActorCf, options).use { iter ->
-                    iter.seekToFirst()
-                    while (iter.isValid) {
-                        val ts = ByteReader(iter.key()).also { it.bytes(prefix.size) }.longBE()
-                        if (ts > toTs) break
-                        if (walked++ >= budget) return ActorTouches(positions, false)
-                        positions += Zcode.decode(iter.key(), ACTOR_KEY_SIZE - Zcode.SIZE).toList()
-                        iter.next()
-                    }
-                }
-            }
-        } finally {
-            lower.close()
-            upper.close()
+        // The index has no prefix extractor, so there is no prefix mode to leave.
+        db.forEachUnder(byActorCf, prefix, extractorSize = 0, reverse = false, from = start) { key, _ ->
+            val ts = ByteReader(key).also { it.bytes(prefix.size) }.longBE()
+            if (ts > toTs) return@forEachUnder false
+            if (walked++ >= budget) return ActorTouches(positions, false)
+            positions += Zcode.decode(key, ACTOR_KEY_SIZE - Zcode.SIZE).toList()
+            true
         }
         ActorTouches(positions, true)
     }
@@ -621,9 +604,7 @@ class BlockLog(
         }
     }
 
-    // One change that cannot be written is a bug in the capture; every change after it is not.
-    // Letting the first one stop the writer turns a single bad row into a history that silently
-    // records nothing for the rest of the session.
+    // A change that cannot be written is dropped on its own, as a movement is in the ledger's writeAll.
     private fun writeAll(submissions: List<List<WorldChange>>) {
         WriteBatch().use { batch ->
             // Nothing in the batch is readable until it is written, so a position this batch already

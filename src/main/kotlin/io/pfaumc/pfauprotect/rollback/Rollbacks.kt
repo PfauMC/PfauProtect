@@ -98,7 +98,7 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 private const val SHAPE_FLAGS = Block.UPDATE_CLIENTS or Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS
 
 // And the shape each row names is the shape put back: a block set with its neighbours' shapes worked out
-// anew made a wall the builder left low tall beside the plank that came back (D104).
+// anew made a wall the builder left low tall beside the plank that came back.
 private const val PLACE_FLAGS = SHAPE_FLAGS or Block.UPDATE_KNOWN_SHAPE
 
 
@@ -385,7 +385,7 @@ class ChunkRollback(
         // put back in the middle of the flow would cut the walk off, and lava left running sets fire to
         // the house the rollback is putting back.
         // So does a flow the players' rows stand in whose source is no more: the lava of a cast whose sources the
-        // water turned to stone ran on down the restored roofs for minutes, read as air and left to drain (NX1).
+        // water turned to stone ran on down the restored roofs for minutes, read as air and left to drain.
         val drained = if (!apply) emptyList() else positions.indices.flatMap { i ->
             val was = before[i].state
             val removed = was.block is LiquidBlock && was.fluidState.isSource &&
@@ -443,7 +443,7 @@ class ChunkRollback(
         }
         if (apply) lift(level, spots.filterIndexed { i, _ -> touched[i] })
         // An observer sees the rollback put a block in front of it, or take the griefer's trigger away, and fires:
-        // the flying machine it is part of, just put back, set off again under the rollback's name (D100).
+        // the flying machine it is part of, just put back, set off again under the rollback's name.
         if (apply) positions.indices.filter { touched[it] }.forEach { i ->
             for (face in Direction.entries) {
                 val at = spots[i].relative(face)
@@ -454,7 +454,7 @@ class ChunkRollback(
             }
         }
         // Around every position of the plan, not only the ones put back: fire on a plank the griefer's lava had
-        // not yet burnt stood next to nothing that came back, and burnt the house again (D80).
+        // not yet burnt stood next to nothing that came back, and burnt the house again.
         val doused = if (!apply) emptyList() else douse(level, spots)
         // After the blocks, so a chest that came back is there to take its contents.
         val givenBack = ArrayList<PostingRef>()
@@ -476,7 +476,7 @@ class ChunkRollback(
                     givenBack += refill.posting
                     marker = marker ?: refill.form
                     // What a player or a pile carried out of it is in their hands, not at another stop: the
-                    // griefer who emptied his own hopper kept the owner's diamonds (D115).
+                    // griefer who emptied his own hopper kept the owner's diamonds.
                     if (refill.qty < 0 || refill.lead is PlayerHolder || refill.lead is ItemEntityRef) {
                         tally.traces += Trace(refill.lead, refill.formId, refill.qty)
                     }
@@ -512,7 +512,7 @@ class ChunkRollback(
         if (difference.moved) {
             sink(difference.transfers(givenBack))
         } else if (givenBack.isNotEmpty()) {
-            // Containers taken away empty, the griefer's dispensers fired out (D116): nothing moves, but the
+            // Containers taken away empty, the griefer's dispensers fired out: nothing moves, but the
             // postings are given back all the same, or every rollback after this one counts them again.
             sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, marker!!, null, 1, difference.timestamp, actor = actor, reverts = givenBack)))
         }
@@ -527,7 +527,7 @@ class ChunkRollback(
     /**
      * Once every chunk is done, the running liquid in the chunk that no source feeds any more: a chunk put back
      * first was flowed into again from its neighbour's sources, not yet taken, and the lava of a cast lay on the
-     * street long after the rollback, flows whose way down from the cast no row had followed (NX1). The game
+     * street long after the rollback, flows whose way down from the cast no row had followed. The game
      * takes such a flow away by itself, tick by tick; a flow any source still feeds is left to it.
      */
     fun drainLeft(level: ServerLevel, chunk: ChunkPlan) {
@@ -585,7 +585,7 @@ class ChunkRollback(
      * stands on a block meant to burn for ever is somebody's hearth and stays.
      *
      * The plan's own positions too, once the blocks are in: one the plan left as it stood — its walk stopped
-     * on a later change — kept its fire, and a house rolled back under the lava's fire burnt down again (D113).
+     * on a later change — kept its fire, and a house rolled back under the lava's fire burnt down again.
      */
     private fun douse(level: ServerLevel, back: List<BlockPos>): List<Pair<BlockPos, Standing>> {
         val out = LinkedHashMap<BlockPos, Standing>()
@@ -604,7 +604,7 @@ class ChunkRollback(
     }
 
     /**
-     * One entity, by what its oldest row in the window says it was before (SPEC-v7 §11): brought back if
+     * One entity, by what its oldest row in the window says it was before: brought back if
      * it went, taken away if a player brought it in, changed back or brought back to where it stood. One
      * that is already as it should be is left alone, so a second rollback does nothing twice. A live
      * entity may stand in another region by now, so what is done to it waits for its own thread.
@@ -614,7 +614,7 @@ class ChunkRollback(
         when (plan.oldest.kind) {
             EntityKind.CREATED -> {
                 // Gone already, but what fell out of it lies there: wool and mutton of a sheep the griefer let
-                // loose on a roof, which fell off it and died (D123).
+                // loose on a roof, which fell off it and died.
                 if (alive == null) return run {
                     tally.entitiesAlready++
                     tally.piles += plan.drops
@@ -756,7 +756,7 @@ class ChunkRollback(
     /**
      * The neighbours outside the plan told of what came back beside them, the way the game tells them of any
      * block set: leaves count their way to a log again. One that takes its shape from what is beside it is
-     * left as it stands, since what a griefer made of it is a row of its own and in the plan (D104): worked out
+     * left as it stands, since what a griefer made of it is a row of its own and in the plan: worked out
      * again it would lose a shape no rule of the game gives, which a builder's tool put there. Before the
      * observers are quietened, which this would set off.
      */

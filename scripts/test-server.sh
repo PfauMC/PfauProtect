@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# The Canvas server for manual runs (.planning/TESTING-*.md), in a Linux container. plugin.yml only
+# The Canvas server for manual runs, in a Linux container. plugin.yml only
 # ships the RocksDB natives production runs on, so a Windows host cannot load the plugin itself; the
 # container is also the platform production is.
 #

@@ -2,14 +2,14 @@ package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
-import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.ServerRegistries
+import io.pfaumc.pfauprotect.NoPlacedForms
+import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Transfer
-import io.pfaumc.pfauprotect.model.WorldBlock
 import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.block.Block
@@ -28,7 +28,6 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
-import java.lang.reflect.Proxy
 import java.util.UUID
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
@@ -79,7 +78,7 @@ class ForeignSlotTest {
         val written = ArrayList<List<Transfer>>()
         val listener = ContainerCaptureListener(
             stub(Plugin::class.java, mapOf("isEnabled" to false)), written::add, codec,
-            Registries(MemoryRegistryStore()), SpawnOrigins(TickCoalescer { }), noPlacedForms(),
+            Registries(MemoryRegistryStore()), SpawnOrigins(TickCoalescer { }), NoPlacedForms,
         )
 
         listener.onOpen(InventoryOpenEvent(view))
@@ -114,30 +113,5 @@ class ForeignSlotTest {
                 "getHolder" to stub(BlockInventoryHolder::class.java, mapOf("getBlock" to block)),
             ),
         )
-    }
-
-    private fun noPlacedForms() = object : PlacedForms {
-        override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = null
-        override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = emptyMap()
-        override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) = Unit
-        override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) = Unit
-        override fun clearFormsAt(positions: List<WorldBlock>) = Unit
-    }
-
-    // An answer may be a function of the call's arguments; a primitive nobody answered for reads as
-    // zero rather than failing to unbox.
-    private fun <T : Any> stub(type: Class<T>, answers: Map<String, Any?> = emptyMap()): T {
-        @Suppress("UNCHECKED_CAST")
-        return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->
-            when (val answer = answers[method.name]) {
-                is Function1<*, *> -> (answer as (Array<out Any?>) -> Any?)(args ?: emptyArray())
-                null -> when (method.returnType) {
-                    Boolean::class.javaPrimitiveType -> false
-                    Int::class.javaPrimitiveType -> 0
-                    else -> null
-                }
-                else -> answer
-            }
-        } as T
     }
 }

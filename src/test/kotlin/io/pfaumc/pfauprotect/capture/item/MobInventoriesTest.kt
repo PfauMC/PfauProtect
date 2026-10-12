@@ -92,10 +92,8 @@ class MobInventoriesTest {
         assertEquals(listOf(Triple(0, "carrot", -5), Triple(1, "carrot", 3)), signed(up))
     }
 
-    // A villager that tries to breed eats until it has twelve points and has twelve taken straight off,
-    // bed or no bed: three bread from nothing leaves it where it was, three bread and a carrot from
-    // nothing leaves one point, two tries take twenty-four. Food that went without the points moving
-    // that way went somewhere else.
+    // Three bread from nothing leaves a villager where it was, three bread and a carrot from nothing
+    // leaves one point, two tries take twenty-four.
     @Test
     fun `food points tell food a villager ate from food that went elsewhere`() {
         assertEquals(true, ateToBreed(eaten = 12, before = 0, after = 0))

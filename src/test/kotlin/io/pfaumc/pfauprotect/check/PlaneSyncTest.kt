@@ -11,6 +11,7 @@ import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.attribution.inferred
+import io.pfaumc.pfauprotect.storage.rawEdit
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -18,12 +19,6 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import org.rocksdb.ColumnFamilyDescriptor
-import org.rocksdb.ColumnFamilyHandle
-import org.rocksdb.ColumnFamilyOptions
-import org.rocksdb.DBOptions
-import org.rocksdb.Options
-import org.rocksdb.RocksDB
 import java.nio.file.Path
 import java.util.UUID
 
@@ -146,25 +141,10 @@ class PlaneSyncTest {
         shared.drain()
     }
 
-    // The only way to a row the ledger itself would never write. The ledger has to be shut for it:
-    // RocksDB takes one writer per directory.
     private fun writeRawEntry(key: ByteArray, value: ByteArray) {
         logs.close()
         shared.close()
-        val path = dir.resolve("items").toAbsolutePath().toString()
-        val names = Options().use { RocksDB.listColumnFamilies(it, path) }
-        val entriesIndex = names.indexOfFirst { it.contentEquals("entries".toByteArray()) }
-        val handles = ArrayList<ColumnFamilyHandle>()
-        ColumnFamilyOptions().use { cfOptions ->
-            DBOptions().use { options ->
-                try {
-                    RocksDB.open(options, path, names.map { ColumnFamilyDescriptor(it, cfOptions) }, handles)
-                        .use { it.put(handles[entriesIndex], key, value) }
-                } finally {
-                    handles.forEach { it.close() }
-                }
-            }
-        }
+        rawEdit(dir.resolve("items")) { raw, family -> raw.put(family("entries"), key, value) }
         openAll()
     }
 
@@ -245,8 +225,6 @@ class PlaneSyncTest {
         assertEquals(0, report.unrecorded)
     }
 
-    // A house that stood before the plugin gives up its planks to the first blast with nothing booked to set
-    // against them; on a real map that was thousands of positions a pass (O24). Not a fault of the capture.
     @Test
     fun `a block that stood before the block plane saw it is not overdrawn when it goes`() {
         releaseItem(9, 64, 9)

@@ -11,6 +11,7 @@ import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.storage.EntryCodec
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
+import io.pfaumc.pfauprotect.storage.itemTypeIdOf
 import org.rocksdb.ColumnFamilyHandle
 import org.rocksdb.RocksDB
 import java.nio.file.Path
@@ -91,16 +92,8 @@ private fun line(log: RocksItemLog, e: LedgerEntry) =
     "ts=${e.timestamp} cause=${e.cause.name} holder=${e.holder} qty=${e.qty} item=${itemOf(log, e.itemFormId)} " +
         "counterparty=${e.counterparty} actor=${e.actor ?: "-"} confidence=${e.confidence} tx=${e.txId}"
 
-// A form starts with the item's registry id as a varint.
 private fun itemOf(log: RocksItemLog, formId: Long): String {
     val form = log.form(formId) ?: return "form#$formId"
-    var id = 0
-    var shift = 0
-    var at = 0
-    do {
-        val b = form[at++].toInt() and 0xff
-        id = id or ((b and 0x7f) shl shift)
-        shift += 7
-    } while (b and 0x80 != 0)
+    val id = itemTypeIdOf(form)
     return log.registries.keyOf(RegistryNamespace.ITEM_TYPE, id) ?: "item#$id"
 }

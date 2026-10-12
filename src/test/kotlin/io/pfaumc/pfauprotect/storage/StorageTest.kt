@@ -27,9 +27,6 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import org.rocksdb.ColumnFamilyDescriptor
-import org.rocksdb.ColumnFamilyHandle
-import org.rocksdb.DBOptions
 import org.rocksdb.Options
 import org.rocksdb.RocksDB
 import java.nio.file.Path
@@ -652,19 +649,8 @@ class StorageTest {
         assertTrue(report.reachedEnd)
     }
 
-    private fun writeRawEntry(dir: Path, key: ByteArray, value: ByteArray) {
-        RocksDB.loadLibrary()
-        val path = dir.toAbsolutePath().toString()
-        val names = Options().use { RocksDB.listColumnFamilies(it, path) }
-        val handles = ArrayList<ColumnFamilyHandle>()
-        DBOptions().use { options ->
-            RocksDB.open(options, path, names.map { ColumnFamilyDescriptor(it) }, handles).use { db ->
-                val entries = handles[names.indexOfFirst { it.contentEquals("entries".toByteArray()) }]
-                db.put(entries, key, value)
-                handles.forEach { it.close() }
-            }
-        }
-    }
+    private fun writeRawEntry(dir: Path, key: ByteArray, value: ByteArray) =
+        rawEdit(dir) { raw, family -> raw.put(family("entries"), key, value) }
 
     @Test
     fun `region entries cover the block box and nothing else`() {

@@ -287,7 +287,7 @@ internal fun ranFrom(
 /**
  * Notes the leaves a log was holding up, when the block going is a log, and the leaves a leaf was the way
  * to the log for, when it is a leaf: fire took the leaves between a trunk and the far crown, and the crown
- * decayed on nobody before the log beside it burnt (D111).
+ * decayed on nobody before the log beside it burnt.
  */
 internal fun Attribution.felledBy(block: Block, actor: UUID) {
     val state = (block.blockData as CraftBlockData).state

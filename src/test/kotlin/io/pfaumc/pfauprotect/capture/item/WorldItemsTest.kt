@@ -1,18 +1,18 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.NoPlacedForms
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.model.Nested
-import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
-import io.pfaumc.pfauprotect.model.WorldBlock
+import io.pfaumc.pfauprotect.stub
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStackTemplate
 import net.minecraft.world.item.Items
@@ -28,7 +28,6 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import java.lang.reflect.Proxy
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
@@ -52,16 +51,12 @@ class WorldItemsTest {
         assertEquals(Cause.ITEM_DESTROY_VOID to Confidence.FACT, end(EntityRemoveEvent.Cause.OUT_OF_WORLD))
     }
 
-    // Both of these are the same movement seen from the other side, and their own events say more
-    // about it than this one can. A row here would be the second copy of it.
     @Test
     fun `being picked up or merged is not an end`() {
         assertNull(end(EntityRemoveEvent.Cause.PICKUP))
         assertNull(end(EntityRemoveEvent.Cause.MERGE))
     }
 
-    // The entity goes into the region file still holding its item and comes back holding it, so a
-    // death written here would turn into a second copy of the item on the next load.
     @Test
     fun `an unloaded item has not stopped existing`() {
         assertNull(end(EntityRemoveEvent.Cause.UNLOAD))
@@ -189,7 +184,7 @@ class WorldItemsTest {
         val origins = SpawnOrigins(coalescer)
         val capture = ContainerCaptureListener(
             stub(Plugin::class.java, mapOf("isEnabled" to false)), {}, codec,
-            Registries(MemoryRegistryStore()), origins, noPlacedForms(),
+            Registries(MemoryRegistryStore()), origins, NoPlacedForms,
         )
         val item = stub(
             Item::class.java,
@@ -210,21 +205,7 @@ class WorldItemsTest {
         assertTrue(rows.all { it.to == Void && it.cause == Cause.ITEM_DESTROY_VOID && it.actor == thrower }, "$rows")
     }
 
-    private fun noPlacedForms() = object : PlacedForms {
-        override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = null
-        override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = emptyMap()
-        override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) = Unit
-        override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) = Unit
-        override fun clearFormsAt(positions: List<WorldBlock>) = Unit
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun <T : Any> stub(type: Class<T>, answers: Map<String, Any?>): T =
-        Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ -> answers[method.name] } as T
-
-    // The merge is allowed as long as the donor fits under the survivor's own maximum, and then never
-    // fills it past 64. An item that stacks to 99 therefore leaves the donor alive holding the rest,
-    // and recording the whole donor would book items that never moved.
+    // Recording the whole donor would book items that never moved.
     @Test
     fun `a merge moves only as much as the survivor has room for`() {
         assertEquals(10, mergedAmount(donor = 10, target = 50, targetMax = 64))

@@ -561,9 +561,9 @@ internal fun otherBedHalf(data: BlockData): BlockData? {
 }
 
 /**
- * Growing a tree announces itself to two events, and only one of them may file it. Two rows for one
- * change would make the second declare as old what the first had just made new, and the newest row of
- * the position would stop being what stands there, which is what the whole attribution ladder reads.
+ * Growing a tree announces itself to two events, and only one of them may file it: with a second row,
+ * the newest row of the position would stop being what stands there, which is what the whole
+ * attribution ladder reads.
  *
  * The fertilize event owns the change wherever it fires: the server places the captured snapshots
  * gated on that one alone and the cancel link from the structure event runs one way, so a tree filed
@@ -584,8 +584,6 @@ internal class GrowClaims {
 
     private val claimed = ConcurrentLinkedQueue<Claim>()
     private val tick = AtomicLong()
-
-    val isEmpty: Boolean get() = claimed.isEmpty()
 
     fun claim(blocks: List<BlockState>, file: () -> Unit) {
         claimed += Claim(blocks, tick.get(), file)
@@ -614,8 +612,7 @@ private const val FILED_MILLIS = 5_000L
  * `Level.setBlock` fires one through `updateNeighborsAt`, and the neighbour shape update behind it
  * fires a second from `VegetationBlock.updateShape` before that returns air. Both read back air and
  * both file it, which is one disappearance booked twice and a position driven below zero on the item
- * plane. The journal cannot answer whether the first has filed: its submit is asynchronous and the row
- * is not there yet, so the answer is kept where it is knowable.
+ * plane.
  *
  * A claim expires with the tick it was made in. Two steps between taking it and the task that releases
  * it can fail — the block-entity read and the queueing itself — and a task that was queued can still
@@ -678,10 +675,7 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
     }
 }
 
-// Properties that carry the signal rather than the block, which the switch rows of phase 5.7 already
-// cover; ones a block takes from its neighbours — grass under snow, a stair's corner, which sides a
-// fence or a pane joins — which change with the neighbour and are filed by [Cause.BLK_SHAPE], not as the
-// hand's; and ones that a hand flips and the block flips back by itself.
+// Properties that carry the signal rather than a hand's change; the switch rows already file those.
 private val SIGNAL_PROPERTIES = setOf("powered", "power")
 
 private val SIDES = setOf("north", "south", "east", "west", "up")
@@ -710,6 +704,7 @@ internal fun reshaped(before: String, after: String): Boolean {
     return (was.keys + now.keys).filter { was[it] != now[it] }.all { it in keys }
 }
 
+// Besides what it takes from its neighbours, what a hand flips and the block flips back by itself.
 private fun selfRevertingOf(name: String): Set<String> = shapeKeysOf(name) + when {
     name == "minecraft:barrel" -> setOf("open")
     name.endsWith("_bed") -> setOf("occupied")
@@ -761,7 +756,7 @@ private const val PORTAL_MAX_BLOCKS = 21 * 21
  * Positions a player or a mechanism has just touched, waiting for the read a tick later that files
  * what the touch changed. Every row any capture submits passes through [filed], so a touch whose change
  * was already written by the capture that made it — a placement, a break, a switch, a sign — is left
- * to that row. The journal cannot answer that in time: a submitted row is still queued for its writer.
+ * to that row.
  */
 class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
     private class Touch(val at: Long, @Volatile var cause: Cause, val by: Attributed?) {
@@ -849,7 +844,7 @@ class BlockDestructionListener(
     private val readBacks = ReadBacks()
     // The shaped neighbours waiting for their read, one per position and tick: the first look is the
     // state the tick found, and the next change beside it in that tick would only see it half rewritten.
-    // A capture that files the position before the read takes the look over (D107).
+    // A capture that files the position before the read takes the look over.
     private class ShapeWatch(val before: BlockData, val by: Attributed, val timestamp: Long)
     private val shapeWatches = ConcurrentHashMap<WorldBlock, ShapeWatch>()
     // Who stands behind dynamite just primed, on its position until the entity appears there.
@@ -887,7 +882,7 @@ class BlockDestructionListener(
         // the placement note and the form the position took over.
         val partner = otherBedHalf(data)?.let { half -> partnerFace(data)?.let { at.getRelative(it) to half } }
         // A bed in the Nether and a charged anchor outside it go off under a player's click, and that
-        // player set them off; who put the block down is asked only when nobody clicked (D82).
+        // player set them off; who put the block down is asked only when nobody clicked.
         val by = touches.toucher(positionOf(at))
             ?: partner?.let { (block, _) -> touches.toucher(positionOf(block)) }
             ?: placerOf(positionOf(at), standing)
@@ -1049,7 +1044,7 @@ class BlockDestructionListener(
         val entity = (event as? EntityBlockFormEvent)?.entity
         val cause = entity?.let { entityFormCause(it.type) } ?: formCause(before.asString)
         // Frost walker freezes the water under the player wearing it, and that player is who froze it; a
-        // snow golem's trail is whoever built the golem (D83). Stone out of a liquid and concrete out of
+        // snow golem's trail is whoever built the golem. Stone out of a liquid and concrete out of
         // its powder are whoever let the liquid run.
         val by = when {
             entity is Player -> Attributed(entity.uniqueId, Confidence.FACT)
@@ -1151,7 +1146,7 @@ class BlockDestructionListener(
         val standing = liquid.blockData.asString
         attribution.placerAt(at, standing)?.let { return it }
         // Its own flow row first: lava that ran far from its bucket is past any walk back to the source, and
-        // 6595 fires it set on a real map were nobody's (D110).
+        // 6595 fires it set on a real map were nobody's.
         val found = attribution.journalPlacerAt(at, standing, FLOWING_CAUSES)
             ?: sourcesOf(liquid).firstNotNullOfOrNull {
                 attribution.journalPlacerAt(positionOf(it), it.blockData.asString, POURING_CAUSES)
@@ -1338,11 +1333,7 @@ class BlockDestructionListener(
         grew(sitesOf(blocks), Cause.BLK_BONEMEAL, event.player?.let { Attributed(it.uniqueId, Confidence.FACT) })
     }
 
-    /**
-     * Belongs on the per-tick task. A structure event leaves its filing behind for the fertilize event
-     * that may follow it in the same call, and what no fertilize event took is a tree that grew on its
-     * own and has been waiting a tick to be filed.
-     */
+    /** Belongs on the per-tick task: [GrowClaims] counts its ticks by the calls of this. */
     fun settleGrowth() {
         growing.settle()
         readBacks.sweep()
@@ -1388,7 +1379,7 @@ class BlockDestructionListener(
      * What a change here does to the blocks beside it: the sides bars or a fence join, a stair's corner, a
      * wall's height. The server rewrites them with no event, so the neighbours are read now and again a tick
      * later, and each that changed gets a row on whoever changed this block. Without it bars beside a plank
-     * that burnt were filed as joining air when the TNT took them, and the rollback put them back so (D104).
+     * that burnt were filed as joining air when the TNT took them, and the rollback put them back so.
      */
     private fun watchShapes(block: CraftBlock) {
         val at = positionOf(block)
@@ -1399,7 +1390,7 @@ class BlockDestructionListener(
         val log = logs.get(block.world.uid) ?: return
         val timestamp = System.currentTimeMillis()
         // And the shaped blocks beside those: the wall under a wall that lost its neighbour grows low with it,
-        // a change of a change with no event of its own, and was put back tall under a wall put back low (D117).
+        // a change of a change with no event of its own, and was put back tall under a wall put back low.
         val shaped = SIX_FACES.map { block.getRelative(it) }.filter { Bukkit.isOwnedByCurrentRegion(it) && shapedNow(it) }
         val watched = LinkedHashSet<Block>(shaped)
         for (near in shaped) for (face in SIX_FACES) {
@@ -1427,7 +1418,7 @@ class BlockDestructionListener(
     /**
      * A shaped block filed by a capture while what a change beside it made of it still waits for its read:
      * that goes first, up to the state the capture found. A fence let go by a plank that burnt and blown up
-     * by TNT in the same tick was read back as air, and its blast row named it already let go (D107).
+     * by TNT in the same tick was read back as air, and its blast row named it already let go.
      */
     private fun shapeFirst(log: BlockLog, at: WorldBlock, block: Block, found: BlockData) {
         val watch = shapeWatches.remove(at) ?: return
@@ -1483,7 +1474,7 @@ class BlockDestructionListener(
         file(log, listOf(Site(at, block, standing, AIR)), Cause.BLK_TNT, by ?: placer, expectsDrops = false)
         (by ?: placer)?.culprit()?.let { attribution.placed(at, standing.asString, it) }
         // The entity carries it too: dynamite lit by a redstone block in the air fell and went off where
-        // nobody had put any, and the whole crater was nobody's (D106).
+        // nobody had put any, and the whole crater was nobody's.
         (by ?: placer)?.let { priming[at] = it to System.currentTimeMillis() }
     }
 
@@ -1581,19 +1572,16 @@ class BlockDestructionListener(
      * the tick that took the support has already run and found them standing.
      *
      * Everything reaching here through a capture of its own — a mob griefing, a block giving way
-     * under physics — is filed by that one, and the read-back is what refuses the second row: a
-     * position already waiting for one takes no other, and a position whose newest row already runs
-     * between these two states has had this change filed by a capture that knew more about it.
+     * under physics — is filed by that one, drops and all, and the read-back is what refuses the second
+     * row: a position already waiting for one takes no other, and a position whose newest row already
+     * runs between these two states has had this change filed by a capture that knew more about it.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBlockDestroy(event: BlockDestroyEvent) {
         val block = event.block
         if (commanded(block)) return
         val by = attribution.supportRemoverAt(positionOf(block))
-        // The drops follow this event inside the same call, so this is where they are expected, and
-        // always: a cactus breaks a tick after its support, while the read-back the physics of that
-        // support queued still holds the position, and the note that read-back left may already have
-        // been swept by then. A capture that filed the position this tick expected them itself.
+        // The drops follow inside this call, while the support's read-back may still hold the position.
         if (!readBacks.settled(positionOf(block))) dropsOf(block, Cause.BLK_FADE, by)
         defer(block, block.blockData, Cause.BLK_FADE, by, expectsDrops = false)
     }
@@ -1897,7 +1885,7 @@ class BlockDestructionListener(
 
     /**
      * The drops of a block broken by something other than a hand, expected under its position; a couple of
-     * ticks on, once they have spawned, the position says which items they were (SPEC-v6 §2.5). A rollback
+     * ticks on, once they have spawned, the position says which items they were. A rollback
      * that puts the block back takes those back from whoever picked them up.
      */
     private fun dropsOf(block: Block, cause: Cause, by: Attributed?, boxOwner: UUID? = null, reach: Double = SPAWN_REACH) {
@@ -1961,8 +1949,7 @@ class BlockDestructionListener(
 
     /**
      * A block an explosion takes away also receives a physics update for that very removal, and its
-     * own break already wrote the row a moment earlier. Two rows for one change would make the second
-     * declare as old what the first had just made new, so the read-back asks the position what its
+     * own break already wrote the row a moment earlier, so the read-back asks the position what its
      * newest row says: one that already runs from this state to that one is this same change, filed
      * by a capture that knew more about it.
      *
@@ -1979,7 +1966,7 @@ class BlockDestructionListener(
         val row = log.standingAt(at.x, at.y, at.z).row ?: return false
         // That same change, filed a moment ago: one filed an hour before is another change, after which
         // something that writes no row put the block back. A lantern CoreProtect had hung up again fell
-        // under the next blast with no row, and the rollback left it down (D122).
+        // under the next blast with no row, and the rollback left it down.
         if (System.currentTimeMillis() - row.timestamp > FILED_MILLIS) return false
         return registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore) == before &&
             registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) == after
@@ -2032,8 +2019,7 @@ class BlockDestructionListener(
     private fun shellForm(state: String) = codec.shellOf(blockBehind(state))
 
     // A change the server is capturing rather than applying is one it will report again, in full, in
-    // the event that closes the capture. Written twice, the second row would declare as old what the
-    // first had just made new.
+    // the event that closes the capture.
     private fun capturing(block: Block) =
         (block.world as CraftWorld).handle.currentWorldData?.captureBlockStates == true
 

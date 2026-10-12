@@ -98,7 +98,7 @@ internal fun spotOf(at: Location) = Spot(at.world.uid, at.x, at.y, at.z)
 // a liquid, a portal — that is the whole answer. Where something was put down it is not: a potted
 // plant, a candle cake and a stem that has grown its fruit all back an item nowhere in the registry
 // while standing on a position the ledger credited, and giving nothing back there would leave that
-// credit behind for ever.
+// credit behind for ever, where no self-check reaches it.
 // A door, a bed, a tall plant and an extended piston stand in two positions but are paid for once,
 // and the credit goes to the half the placement event names. The breaker may strike either half, and
 // the debit belongs where the credit is: booked against the struck half instead, it leaves the
@@ -172,7 +172,7 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
     /**
      * The items that came out of an event so far, taken once. Its notes go with it: the event is over, and a
      * note of it left standing took the piles of the next blast along the street under a name nobody would
-     * ask about again, and they lay there after the rollback (D114).
+     * ask about again, and they lay there after the rollback.
      */
     @Synchronized
     fun droppedFor(tag: Any): List<UUID> {
@@ -330,26 +330,21 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
     // Two passes before dropping: a note written by a region thread while this runs would otherwise
     // go before the spawn that follows it microseconds later. And NOTE_MILLIS after the first: the sweep
     // ticks on the global region, and a crater of a few hundred blocks takes its own region longer than two
-    // of those ticks to break before the drops spawn — a griefer's dynamite left its loot to nobody (D114).
+    // of those ticks to break before the drops spawn — a griefer's dynamite left its loot to nobody.
     @Synchronized
     fun sweep() {
         val now = clock()
-        val notes = notes.iterator()
-        while (notes.hasNext()) {
-            val note = notes.next()
+        notes.removeIf { note ->
             val until = note.until
-            if (until != null) {
-                if (now > until) notes.remove()
-                continue
-            }
+            if (until != null) return@removeIf now > until
             val swept = note.swept
-            if (swept == null) note.swept = now else if (now - swept >= NOTE_MILLIS) notes.remove()
+            if (swept == null) note.swept = now
+            swept != null && now - swept >= NOTE_MILLIS
         }
-        val boxes = boxes.iterator()
-        while (boxes.hasNext()) {
-            val box = boxes.next()
+        boxes.removeIf { box ->
             val swept = box.swept
-            if (swept == null) box.swept = now else if (now - swept >= NOTE_MILLIS) boxes.remove()
+            if (swept == null) box.swept = now
+            swept != null && now - swept >= NOTE_MILLIS
         }
         // Asked for a tick after the event; one nobody asks about is gone well before it could matter.
         witnessed.values.removeIf { now - it.at > WITNESS_MILLIS }

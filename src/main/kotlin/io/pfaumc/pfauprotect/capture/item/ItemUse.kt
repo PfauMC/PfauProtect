@@ -174,29 +174,17 @@ class ItemUseListener(
         if (live.isEmpty) return
         val player = event.player
         // Water from a source or a hive, a bottle at a time, beside the stack the bottle came from.
-        if (live.item is BottleItem) {
-            capture.intend(player, mutation(Cause.BOTTLE_FILL))
-            return
-        }
+        if (live.item is BottleItem) return capture.intend(player, mutation(Cause.BOTTLE_FILL))
         // A sulfur cube's bucket holds no water, so letting the cube out raises no bucket event.
-        if ((live.item as? MobBucketItem)?.content == Fluids.EMPTY) {
-            capture.intend(player, mutation(Cause.BUCKET_RELEASE_MOB))
-            return
-        }
+        if ((live.item as? MobBucketItem)?.content == Fluids.EMPTY) return capture.intend(player, mutation(Cause.BUCKET_RELEASE_MOB))
         val target = event.clickedBlock?.type
         // Water poured onto dirt makes mud and leaves the bottle; a compass on a lodestone becomes a
         // lodestone compass, in the slot or beside it.
         val block = event.clickedBlock
         if (live.item is PotionItem && block != null &&
             (block as CraftBlock).blockState.`is`(BlockTags.CONVERTIBLE_TO_MUD)
-        ) {
-            capture.intend(player, mutation(Cause.BOTTLE_EMPTY))
-            return
-        }
-        if (live.item is CompassItem && target == Material.LODESTONE) {
-            capture.intend(player, mutation(Cause.ITEM_USED))
-            return
-        }
+        ) return capture.intend(player, mutation(Cause.BOTTLE_EMPTY))
+        if (live.item is CompassItem && target == Material.LODESTONE) return capture.intend(player, mutation(Cause.ITEM_USED))
         // A block that keeps what is put into it has its own reckoning, slot by slot.
         if (target != null && keepsItems(target)) return
         val cause = useCause(live, target) ?: return
@@ -218,15 +206,9 @@ class ItemUseListener(
             return
         }
         // An axolotl eats the fish out of the bucket and hands the water back.
-        if (entity is Axolotl && stack.type == Material.TROPICAL_FISH_BUCKET) {
-            capture.intend(player, mutation(Cause.FEED_MOB))
-            return
-        }
+        if (entity is Axolotl && stack.type == Material.TROPICAL_FISH_BUCKET) return capture.intend(player, mutation(Cause.FEED_MOB))
         // A bowl held to a mooshroom comes back full of stew.
-        if (entity is MushroomCow && stack.type == Material.BOWL) {
-            capture.intend(player, mutation(Cause.ITEM_USED))
-            return
-        }
+        if (entity is MushroomCow && stack.type == Material.BOWL) return capture.intend(player, mutation(Cause.ITEM_USED))
         val target = EntityTarget(
             keeps = entity is Allay || entity is Piglin || entity is SulfurCube,
             untamed = entity is Tameable && !entity.isTamed,

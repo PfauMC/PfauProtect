@@ -44,15 +44,8 @@ class ByteWriter(initialCapacity: Int = 32) {
         if (len + more > buf.size) buf = buf.copyOf(maxOf(len + more, buf.size * 2))
     }
 
-    fun varInt(v: Int): ByteWriter {
-        var rest = v
-        while (true) {
-            val chunk = rest and 0x7F
-            rest = rest ushr 7
-            if (rest == 0) return byte(chunk)
-            byte(chunk or 0x80)
-        }
-    }
+    // Widened unsigned, so a negative still takes five bytes, as it always has on disk.
+    fun varInt(v: Int): ByteWriter = varLong(v.toLong() and 0xFFFF_FFFFL)
 
     fun varLong(v: Long): ByteWriter {
         var rest = v

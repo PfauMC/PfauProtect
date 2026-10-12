@@ -22,6 +22,7 @@ import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.check.SETTLE_MILLIS
 import io.pfaumc.pfauprotect.ServerRegistries
+import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
@@ -179,10 +180,6 @@ class BlockDestructionTest {
                 else -> null
             }
         } as Block
-
-    @Suppress("UNCHECKED_CAST")
-    private fun <T> stub(type: Class<T>, answers: Map<String, Any?>): T =
-        Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ -> answers[method.name] } as T
 
     private fun handlers() = BlockDestructionListener::class.java.declaredMethods
         .mapNotNull { method -> method.getAnnotation(EventHandler::class.java)?.let { method to it } }
@@ -412,15 +409,10 @@ class BlockDestructionTest {
         assertNull(lostForm(namedBed, bedShell, SHULKER_BOX, twoPositions = false))
     }
 
-    /**
-     * Two physics events reach one position in one tick: the neighbour updates of `Level.setBlock`
-     * fire one, and the neighbour shape update behind them fires a second from the block's own
-     * `updateShape` before it returns air. Both would read back air and file it, which is one
-     * disappearance booked twice and a position driven below zero on the item plane.
-     */
     @Test
     fun `a position with a read-back pending refuses a second and takes one again once it has run`() {
-        val readBacks = ReadBacks()
+        // A clock that stands still, so a claim reads as pending for exactly as long as it is held.
+        val readBacks = ReadBacks { now }
         val sapling = WorldBlock(world, 4, 64, 4)
         val neighbour = WorldBlock(world, 4, 65, 4)
 
@@ -434,7 +426,8 @@ class BlockDestructionTest {
 
         readBacks.done(sapling)
         readBacks.done(neighbour)
-        assertTrue(readBacks.isEmpty)
+        assertFalse(readBacks.pending(sapling))
+        assertFalse(readBacks.pending(neighbour))
     }
 
     // A plank burnt into fire that went out on the spot: the fade comes while the burn's read-back is on
@@ -453,12 +446,6 @@ class BlockDestructionTest {
         assertFalse(readBacks.pending(plank))
     }
 
-    /**
-     * A ravager and a wither each raise their own event for a block and then destroy it, so one
-     * capture files the change and the read-back behind it asks whether it is already there. Asking
-     * the journal cannot answer: a submit only queues the row for a writer thread of its own, so the
-     * read-back is told no and books the same disappearance a second time.
-     */
     @Test
     fun `a change filed this tick is known before the journal has it`() {
         var clock = now
@@ -764,11 +751,7 @@ class BlockDestructionTest {
         assertFalse(wentAway(TORCH, TORCH))
     }
 
-    /**
-     * Growing a tree with bone meal raises both the structure event and the fertilize event, over the
-     * same list. Two rows for one change would make the second declare as old what the first had just
-     * made new, and the newest row of the position would stop being what stands there.
-     */
+    // Growing a tree with bone meal raises both the structure event and the fertilize event, over the same list.
     @Test
     fun `the event that files a tree takes the list and the one behind it is refused`() {
         val claims = GrowClaims()
@@ -788,11 +771,6 @@ class BlockDestructionTest {
         assertFalse(claims.claims(other))
     }
 
-    /**
-     * A claim settled in the tick it was made could be settled between the two events: the sweep runs
-     * on the global region while the events run on the region owning the tree, and the fertilize event
-     * follows the structure event within one call. A whole tick is what keeps them apart.
-     */
     @Test
     fun `a claim nobody took is filed a tick later and one the fertilize event took never is`() {
         val claims = GrowClaims()
@@ -806,7 +784,7 @@ class BlockDestructionTest {
 
         claims.settle()
         assertEquals(listOf("natural"), filed)
-        assertTrue(claims.isEmpty)
+        assertFalse(claims.claims(natural))
 
         claims.claim(spread) { filed += "spread" }
         assertTrue(claims.claims(spread))
@@ -814,7 +792,8 @@ class BlockDestructionTest {
         claims.settle()
 
         assertEquals(listOf("natural"), filed)
-        assertTrue(claims.isEmpty)
+        assertFalse(claims.claims(natural))
+        assertFalse(claims.claims(spread))
     }
 
     /**
@@ -839,9 +818,10 @@ class BlockDestructionTest {
         listener.onFertilize(fertilize(dispensed))
 
         // Only the tree nobody spread anything on is still waiting to be filed.
-        assertFalse(claimsOf(listener).isEmpty)
-        assertTrue(claimsOf(listener).claims(natural))
-        assertTrue(claimsOf(listener).isEmpty)
+        val claims = claimsOf(listener)
+        assertFalse(claims.claims(spread))
+        assertFalse(claims.claims(dispensed))
+        assertTrue(claims.claims(natural))
     }
 
     /**
@@ -925,11 +905,6 @@ class BlockDestructionTest {
         assertNull(bucketPlaced(Material.MILK_BUCKET, air))
     }
 
-    /**
-     * A protection plugin cancels at `NORMAL` or `HIGH`, and every handler here sits behind that:
-     * a refused explosion takes nothing away, a refused ignition lights no fire and a refused bucket
-     * empties nothing, so there is neither a row to write nor a position to attribute.
-     */
     @Test
     fun `every handler runs behind the cancellation`() {
         val found = handlers()
@@ -965,12 +940,6 @@ class BlockDestructionTest {
         assertFalse(taken.contains(EntityBlockFormEvent::class.java))
     }
 
-    /**
-     * A cactus and a sugar cane whose support goes do not take themselves away from the shape update:
-     * they schedule a block tick and remove themselves from it, under no event any of the handlers
-     * here receives. Block ticks run after the read-back of the tick that took the support, which
-     * finds them standing, so without this handler the removal is never seen at all.
-     */
     @Test
     fun `the removal a block does to itself from its own tick is taken`() {
         val taken = handlers().map { (method, _) -> method.parameterTypes.single() }
@@ -1081,20 +1050,6 @@ class BlockDestructionTest {
         )
     }
 
-    // A block breaking loose leaves behind whatever it was standing in; a block landing puts down the
-    // very state it has been carrying all the way down.
-    @Test
-    fun `the two halves of a fall are told apart by what the position becomes`() {
-        assertFalse(SAND == AIR)
-        assertFalse(SAND == SOURCE_WATER)
-        assertTrue(SAND == SAND)
-    }
-
-    /**
-     * A block that moved is one transfer naming both ends, which is what lets a walk of the graph
-     * follow it across the move. A write-off at the one end and a birth at the other would be two
-     * blocks where there is one.
-     */
     @Test
     fun `a block that moved is one transfer naming both ends`() {
         val from = WorldBlock(world, 1, 64, 0)
@@ -1261,12 +1216,6 @@ class BlockDestructionTest {
         mapOf("getUniqueId" to entity, "getLocation" to Location(stub(World::class.java, mapOf("getUID" to world)), x, y, z)),
     )
 
-    /**
-     * A flight that ends in anything but a landing — destroyed in the air, out of the world, turned
-     * into an item — is not a movement at all: the position it left really did lose its block, and what
-     * it was holding is written off there once no drop has taken it. The note it was holding goes with
-     * it, or whatever is put down there next would be given back as a block somebody else paid for.
-     */
     @Test
     fun `a flight that never landed is written off where it started`() {
         val attribution = Attribution(shared.registries, logs)
@@ -1530,9 +1479,6 @@ class BlockDestructionTest {
         assertEquals(7.0, craterReach(listOf(blockStub(0, 64, 0, stone), blockStub(6, 62, -2, stone))))
     }
 
-    // A cactus breaks a tick after its support, from its own block tick, while the read-back that the
-    // support's physics queued may still hold the position. The destroy event is the moment the drops
-    // are certain and follow at once, so it expects them whatever the read-back is doing.
     @Test
     fun `a block the world destroys expects its drops on the destroy event itself`() {
         val cactus = CraftItemStack.asBukkitMirror(NmsItemStack(Items.CACTUS))
@@ -1611,7 +1557,7 @@ class BlockDestructionTest {
         assertFalse(handMade(TORCH, TORCH))
     }
 
-    // Bars beside a plank that burnt let go of it with no event, and were put back still facing air (D104):
+    // Bars beside a plank that burnt let go of it with no event, and were put back still facing air:
     // what the neighbours decide gets a row of its own, and only that does.
     @Test
     fun `a shape is told apart from every other change of a block`() {

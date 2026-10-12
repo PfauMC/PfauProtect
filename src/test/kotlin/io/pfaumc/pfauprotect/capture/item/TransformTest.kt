@@ -10,6 +10,8 @@ import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.capture.block.brewed
+import io.pfaumc.pfauprotect.stub
+import org.bukkit.inventory.Inventory
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -214,7 +216,7 @@ class TransformTest {
     fun `a workbench runs a recipe while a station changes the item`() {
         assertEquals(Kind.TRANSFER, craft.kind)
         assertEquals(Kind.MUTATE, anvil.kind)
-        assertNull(shiftOf(inventoryStub()))
+        assertNull(shiftOf(stub(Inventory::class.java)))
     }
 
     // A stand brews three bottles at once, and every combination of "there was nothing there", "the
@@ -272,12 +274,5 @@ class TransformTest {
         // what keeps both facing the Void and the transaction readable as a change rather than a move.
         assertEquals(1, transaction.count { it.to == Void })
         assertEquals(1, transaction.count { it.from == Void })
-    }
-
-    private fun inventoryStub(): org.bukkit.inventory.Inventory {
-        val type = org.bukkit.inventory.Inventory::class.java
-        return java.lang.reflect.Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, _, _ ->
-            null
-        } as org.bukkit.inventory.Inventory
     }
 }

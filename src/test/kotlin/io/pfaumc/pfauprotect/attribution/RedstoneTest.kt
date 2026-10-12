@@ -6,6 +6,7 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.capture.item.endedBy
+import io.pfaumc.pfauprotect.stub
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
@@ -16,7 +17,6 @@ import org.bukkit.entity.Pig
 import org.bukkit.entity.Player
 import org.bukkit.entity.Wolf
 import org.junit.jupiter.api.io.TempDir
-import java.lang.reflect.Proxy
 import java.nio.file.Path
 import java.util.UUID
 
@@ -47,11 +47,14 @@ class RedstoneTest {
 
     @Test
     fun `a note older than one step answers for nothing`() {
+        val noted = clock
         energy.note(at(0), Attributed(alice, Confidence.FACT))
         clock += ENERGY_MILLIS + 1
         assertNull(energy.near(at(0)))
         energy.sweep()
-        assertEquals(0, energy.size)
+        // The read enforces the window itself; only a read from the moment of the note can tell it is gone.
+        clock = noted
+        assertNull(energy.near(at(0)))
     }
 
     // A clock somebody started keeps its own notes fresh; a newer press next to it is still newer.
@@ -100,17 +103,8 @@ class RedstoneTest {
     }
 
     // An entity stands in for itself with only what the ladder asks of it answered.
-    @Suppress("UNCHECKED_CAST")
     private fun <T : Entity> entity(type: Class<T>, id: UUID, answers: Map<String, Any?> = emptyMap()): T =
-        Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, _ ->
-            when {
-                method.name == "getUniqueId" -> id
-                method.name in answers -> answers[method.name]
-                method.returnType == List::class.java -> emptyList<Entity>()
-                method.returnType == Boolean::class.javaPrimitiveType -> false
-                else -> null
-            }
-        } as T
+        stub(type, mapOf("getUniqueId" to id) + answers, lenient = true)
 
     private val nudges = Nudges { clock }
     private val origins = EntityOrigins { clock }

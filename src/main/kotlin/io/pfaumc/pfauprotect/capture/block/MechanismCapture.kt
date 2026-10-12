@@ -212,8 +212,8 @@ class MechanismCaptureListener(
         submit(origin, into(fitting.slot), cause, moved, fitting.qty, placer)
     }
 
-    // A crafter hands out what it has just made, and the result never sat in a slot to be taken from:
-    // the ingredients it consumed are a transformation, which nothing captures yet.
+    // A crafter hands out what it has just made, and the result never sat in a slot to be taken from,
+    // so it comes out of the Void. The ingredients it consumed are booked by the crafter's craft event.
     private fun origin(
         source: Inventory,
         from: NmsContainer,

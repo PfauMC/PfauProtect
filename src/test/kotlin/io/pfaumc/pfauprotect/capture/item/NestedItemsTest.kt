@@ -3,7 +3,6 @@ import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.ServerRegistries
-import io.pfaumc.pfauprotect.check.emptied
 import io.pfaumc.pfauprotect.storage.fillTypeRegistries
 import net.minecraft.core.NonNullList
 import net.minecraft.core.component.DataComponents
@@ -82,8 +81,6 @@ class NestedItemsTest {
         assertTrue(NestedItems.contents(ItemStack(Items.DIAMOND, 4)).isEmpty())
     }
 
-    // The contents are written as rows of their own, so leaving them in the form as well would make a
-    // container read as a different item every time something moved inside it.
     @Test
     fun `a container reads the same full or empty`() {
         val owner = UUID.randomUUID()

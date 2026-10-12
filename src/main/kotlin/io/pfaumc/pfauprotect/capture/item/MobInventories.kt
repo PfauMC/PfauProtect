@@ -1,6 +1,5 @@
 package io.pfaumc.pfauprotect.capture.item
 
-import org.bukkit.Material
 import com.destroystokyo.paper.event.entity.EntityAddToWorldEvent
 import io.papermc.paper.event.entity.EntityCompostItemEvent
 import io.pfaumc.pfauprotect.capture.block.SlotChange
@@ -442,7 +441,7 @@ class MobInventories(
 /**
  * A seed set down into the empty cell over farmland. A composter filling up under a farmer's seeds raises
  * the same event, and booked as a planting every seed it took landed on the composter's position as well
- * as in its slot, never to leave it (D84).
+ * as in its slot, never to leave it.
  */
 internal fun planting(before: net.minecraft.world.level.block.state.BlockState, after: net.minecraft.world.level.block.state.BlockState): Boolean =
     before.isAir && !after.isAir

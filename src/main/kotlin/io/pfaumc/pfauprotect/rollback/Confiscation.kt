@@ -156,7 +156,7 @@ internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
         }
     }
     // What nobody has any more cannot be taken back from anybody. What a carrier set as blocks this same
-    // rollback takes away is back already (O13).
+    // rollback takes away is back already.
     val undone = tally.undone.toHashSet()
     return merged(owed).filter { it.qty > 0 && it.taker !is Vanished }.mapNotNull { item ->
         val carrier = item.taker as? Carrier ?: return@mapNotNull item
@@ -227,7 +227,7 @@ internal fun stashesOf(ledger: RocksItemLog, player: UUID, formId: Long, since: 
 }
 
 /**
- * Where the loot went from the shulker boxes among `stashes` that were broken since (D102): a box set down
+ * Where the loot went from the shulker boxes among `stashes` that were broken since: a box set down
  * again is a container like any other, and a box left lying is a pile to take the loot out of. A box back
  * in the carrier's own hands is emptied there. Off the region thread: it reads the ledger.
  */
@@ -278,7 +278,7 @@ private fun wholePile(pile: UUID, rowsOf: (ItemEntityRef) -> List<LedgerEntry>):
 }
 
 /**
- * Where everything that fell out of a killed player is now (SPEC-v7 §11): who picked it up, what still
+ * Where everything that fell out of a killed player is now: who picked it up, what still
  * lies there, what is gone for good. The victim's own hands are left out: what they picked up again they
  * have.
  */
@@ -323,7 +323,7 @@ internal fun merged(owed: List<Owed>): List<Owed> =
     }
 
 /**
- * Takes back what a rollback put back from whoever carried it off (SPEC-v7 §9). A player's slots are
+ * Takes back what a rollback put back from whoever carried it off. A player's slots are
  * written only by their pass, so what is taken from them leaves a reason for it, the way a `/clear`
  * does; an ender chest nobody has open is not something the pass reads, and is written directly. A
  * player who is offline owes it until they join. A pile still lying is taken where it lies.
@@ -371,11 +371,9 @@ class Confiscations(
         // What went between the read and the take — a pile no longer there, what its taker used up and put
         // nowhere to be found — is gone for good like a burned pile, and given out of nothing the same way,
         // so every birth marked below was given back one way or the other.
-        take(
-            owed.filter { it.taker !is Vanished }, actor, sender,
-            gone = { formId, n -> give(victim, formId, n, actor, sender, slots[formId].orEmpty()) },
-        ) { formId, n -> give(victim, formId, n, actor, sender, slots[formId].orEmpty()) }
-        for (gone in owed.filter { it.taker is Vanished }) give(victim, gone.formId, gone.qty, actor, sender, slots[gone.formId].orEmpty())
+        val back = { formId: Long, n: Int -> give(victim, formId, n, actor, sender, slots[formId].orEmpty()) }
+        take(owed.filter { it.taker !is Vanished }, actor, sender, gone = back, taken = back)
+        for (gone in owed.filter { it.taker is Vanished }) back(gone.formId, gone.qty)
         // The piles' births marked as given back. Nothing moves, so no posting is written: only the mark.
         val form = owed.firstNotNullOfOrNull { ledger.form(it.formId) } ?: return
         if (births.isNotEmpty()) sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, form, null, 1, System.currentTimeMillis(), actor = actor, reverts = births)))
@@ -439,12 +437,12 @@ class Confiscations(
     // Out of nothing into a player's hands: what fits goes in now, through the pass as a reason for the
     // gain; what does not, at their next join.
     private fun give(player: UUID, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList()) {
+        val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) } }
         val online = Bukkit.getPlayer(player)
         if (online == null) {
-            Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) }
+            owe()
             return
         }
-        val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) } }
         online.scheduler.run(plugin, { toPlayer(online, formId, qty, actor, sender, slots) }) { owe() } ?: owe()
     }
 
@@ -518,7 +516,7 @@ class Confiscations(
     }
 
     /**
-     * What a carrier no longer held, out of the shulker boxes they packed it into and left lying (D102),
+     * What a carrier no longer held, out of the shulker boxes they packed it into and left lying,
      * each on the thread of the region it lies in; then what they made of it.
      */
     private fun fromBoxes(item: Owed, need: Int, actor: UUID?, sender: CommandSender?, gone: (Long, Int) -> Unit, taken: (Long, Int) -> Unit) {

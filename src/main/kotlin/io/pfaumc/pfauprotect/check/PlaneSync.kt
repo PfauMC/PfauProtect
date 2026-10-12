@@ -74,17 +74,10 @@ data class PlaneReport(
 private enum class Outcome { CHECKED, SETTLING, UNREADABLE, UNRECORDED, OVERDRAWN }
 
 /**
- * The third self-check. The transaction invariant catches a movement that lost half of itself and
- * reconciliation catches what a player is holding that the ledger never heard of; neither can see a
- * change recorded in one plane and absent from the other, which from inside each plane on its own is
- * perfectly consistent.
- *
- * The debt this looks for has one shape: a position that lost its block while the item plane was never
- * told, so the item plane still holds the form of a block that is not there. The side holding the debt
- * is the item plane, so that is the side walked, and the block plane is only ever asked about a
- * position the item plane has something to say about. The other direction is not a question worth
- * asking: the item plane deliberately books no liquid, no fire, no portal, no growth and no creative
- * placement, so a block standing where it holds nothing is the ordinary state of most of a world.
+ * Finds positions where the block plane says the block is gone while the item plane still books an item
+ * there, a miss neither plane can see on its own. Only that direction is walked, from the item plane's
+ * postings: the item plane books no liquid, fire, portal, growth or creative placement, so a block
+ * standing where nothing is booked is the ordinary state of most of a world.
  */
 class PlaneSync(private val ledger: RocksItemLog, private val blocks: BlockLogs) {
 
@@ -102,13 +95,9 @@ class PlaneSync(private val ledger: RocksItemLog, private val blocks: BlockLogs)
     private fun settle(position: BlockPostings, now: Long, gaps: MutableList<PlaneGap>): Outcome {
         val at = position.at
         if (at == null || position.unreadable > 0) return Outcome.UNREADABLE
-        var fact = 0
-        var inferred = 0
-        var newest = 0L
-        for (entry in position.entries) {
-            if (entry.confidence == Confidence.FACT) fact += entry.qty else inferred += entry.qty
-            newest = maxOf(newest, entry.timestamp)
-        }
+        val fact = position.entries.filter { it.confidence == Confidence.FACT }.sumOf { it.qty }
+        val inferred = position.entries.filter { it.confidence != Confidence.FACT }.sumOf { it.qty }
+        val newest = position.entries.maxOfOrNull { it.timestamp } ?: 0L
         // Added into one number an inferred write-off cancels a confirmed credit and the position reads
         // as settled, which is a fact written off by a guess: each total has to stand or fall on its own.
         if (fact == 0 && inferred == 0) return Outcome.CHECKED
@@ -118,7 +107,7 @@ class PlaneSync(private val ledger: RocksItemLog, private val blocks: BlockLogs)
         // was booked here and the credit somewhere else or nowhere — and that is the opposite fault. Unless
         // a block already stood there when the block plane first saw the position: a house built before the
         // plugin gives up its planks to the first blast with no credit to set them against, and a map put
-        // under it read as thousands of faults a pass (O24).
+        // under it read as thousands of faults a pass.
         if (fact <= 0 && inferred <= 0) {
             val first = log.oldestAt(at.x, at.y, at.z) ?: return Outcome.OVERDRAWN
             val before = ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, first.stateBefore) ?: return Outcome.UNREADABLE

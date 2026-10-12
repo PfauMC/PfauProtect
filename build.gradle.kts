@@ -79,37 +79,20 @@ bukkit {
     // The command itself is registered through Brigadier at runtime, so plugin.yml only has to
     // declare the permission that gates it.
     permissions {
-        register("pfauprotect.lookup") {
-            description = "Read the item ledger for a block"
-            default = BukkitPluginDescription.Permission.Default.OP
-        }
-        register("pfauprotect.inspect") {
-            description = "Toggle the inspector and read the ledger by clicking blocks"
-            default = BukkitPluginDescription.Permission.Default.OP
-        }
-        register("pfauprotect.verify") {
-            description = "Run the self-checks now instead of waiting for their schedules"
-            default = BukkitPluginDescription.Permission.Default.OP
-        }
-        register("pfauprotect.reconcile") {
-            description = "Compare what a player is carrying against the ledger"
-            default = BukkitPluginDescription.Permission.Default.OP
-        }
-        register("pfauprotect.purge") {
-            description = "Delete history older than an age, keeping what every balance needs"
-            default = BukkitPluginDescription.Permission.Default.OP
-        }
-        register("pfauprotect.status") {
-            description = "See how big the bases are and what waits to be written"
-            default = BukkitPluginDescription.Permission.Default.OP
-        }
-        register("pfauprotect.teleport") {
-            description = "Teleport to where a lookup line happened by clicking its mark"
-            default = BukkitPluginDescription.Permission.Default.OP
-        }
-        register("pfauprotect.rollback") {
-            description = "Preview and apply rollbacks of what the ledger recorded"
-            default = BukkitPluginDescription.Permission.Default.OP
+        mapOf(
+            "lookup" to "Read the item ledger for a block",
+            "inspect" to "Toggle the inspector and read the ledger by clicking blocks",
+            "verify" to "Run the self-checks now instead of waiting for their schedules",
+            "reconcile" to "Compare what a player is carrying against the ledger",
+            "purge" to "Delete history older than an age, keeping what every balance needs",
+            "status" to "See how big the bases are and what waits to be written",
+            "teleport" to "Teleport to where a lookup line happened by clicking its mark",
+            "rollback" to "Preview and apply rollbacks of what the ledger recorded",
+        ).forEach { (name, text) ->
+            register("pfauprotect.$name") {
+                description = text
+                default = BukkitPluginDescription.Permission.Default.OP
+            }
         }
     }
 }

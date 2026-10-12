@@ -85,7 +85,7 @@ internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>, turf: (Block
     val first = kept.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, rows) -> rows.minWith(ROW_ORDER) }
     // What the world did after an earlier rollback had put the position back is the world's, not part of
     // the grief: grass a restored wall stands on going to dirt. Walked past, it took a second rollback
-    // back to the grass (D78).
+    // back to the grass.
     val undone = (kept + nature).filter { it.cause == Cause.ROLLBACK }.groupBy { Triple(it.x, it.y, it.z) }
         .mapValues { (_, rows) -> rows.maxWith(ROW_ORDER) }
     fun after(row: BlockRow, at: Triple<Int, Int, Int>) = first[at]?.let { ROW_ORDER.compare(row, it) > 0 } == true
@@ -147,9 +147,9 @@ class Settled(val back: Step?, val conflict: Boolean)
 /**
  * A position the window opens on in the middle of the players' work, standing again as it did before they
  * first touched it, is done: undone from the window's start it would get back their own TNT, their own
- * burnt walls. A house an earlier rollback had put back got 153 blocks of dynamite from a later one (D108).
+ * burnt walls. A house an earlier rollback had put back got 153 blocks of dynamite from a later one.
  * A wall or a pane is that block only in the shape it had: the same diorite wall, joined to air after a
- * second blast on a street the griefer had blown up before, read as standing as before him (D120).
+ * second blast on a street the griefer had blown up before, read as standing as before him.
  */
 fun settle(standing: String, steps: List<Step>, origin: String?): Settled =
     if (origin != null && sameBlock(standing, origin) && !reshaped(standing, origin)) Settled(null, conflict = false)
@@ -178,7 +178,7 @@ private fun sameBlock(a: String, b: String): Boolean {
  *
  * Water and lava are one block whatever their level: a flow becomes a source by itself between two
  * sources, with no row, and the walk that met that source where its row had left a flow stopped there
- * and put the source back, which drowned the house a sponge had already dried (D109).
+ * and put the source back, which drowned the house a sponge had already dried.
  */
 fun settle(standing: String, steps: List<Step>): Settled {
     var state = standing
@@ -267,7 +267,7 @@ internal fun bucketOf(ledger: RocksItemLog, row: EntityRow): Bucketed? {
  * Everything a rollback does at one position: its block rows newest first, its slot postings, and the
  * item plane's side of the breaks among them — what the position gave up, whose transaction also says
  * what fell out of it. `entities` are the entities whose story starts here; `dropped`, the items the
- * position dropped when something other than a hand broke it (SPEC-v6 §2.5).
+ * position dropped when something other than a hand broke it.
  */
 class PositionPlan(
     val at: WorldBlock,
@@ -287,7 +287,7 @@ sealed interface Reading
 // `positions` is set where the refusal is the position limit, which a smaller radius gets under.
 class Refused(val reason: String, val positions: Int? = null) : Reading
 
-// `deaths` are players killed by those the filter names: what fell out of them goes back to them (SPEC-v7 §11).
+// `deaths` are players killed by those the filter names: what fell out of them goes back to them.
 class Planned(
     val world: UUID,
     val chunks: List<ChunkPlan>,
@@ -464,7 +464,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     // Read off the region threads with the rest of the plan; a window from the beginning has nothing before it.
     // A position somebody else changed inside the window is not one that stands as the players found it,
     // whatever it holds: leaves a command put back after the griefer's earlier fire, burnt by him again, were
-    // left as air (D112's bot run).
+    // left as air.
     private fun origins(
         log: BlockLog, world: UUID, rows: List<BlockRow>, foreign: List<BlockRow>, fromTs: Long, keepsRow: (BlockRow) -> Boolean,
     ): Map<WorldBlock, String> {
@@ -592,7 +592,7 @@ private val LEAF_DISTANCE = Regex("(?<=[\\[,])distance=\\d+")
 
 /**
  * A block as it stands with no signal in it: put back lit, a comparator, a wire or an observer fired whatever
- * stood beside it before it settled, and a machine the rollback put together set off again (D100). The
+ * stood beside it before it settled, and a machine the rollback put together set off again. The
  * neighbours' pass after the blocks powers what is really powered. A lever, a button and a plate are on or off
  * by themselves, and their own rows put that back; a dispenser's trigger is left too, or one beside a lever an
  * owner left on would fire.
@@ -601,7 +601,7 @@ internal fun quiet(state: String): String {
     val name = state.substringBefore('[')
     if (name == "minecraft:lever" || name.endsWith("_button") || name.endsWith("_pressure_plate")) return state
     // A leaf's distance is its neighbours' to count, as a signal is: a leaf that decayed is written down at
-    // distance 7, and put back so it decayed again (D112). Put back at 1, it counts anew on its next tick.
+    // distance 7, and put back so it decayed again. Put back at 1, it counts anew on its next tick.
     if (name.endsWith("_leaves") && "persistent=false" in state) return state.replace(LEAF_DISTANCE, "distance=1")
     val torch = name == "minecraft:redstone_torch" || name == "minecraft:redstone_wall_torch"
     return state.replace("powered=true", "powered=false").replace(SIGNAL_POWER, "power=0")
