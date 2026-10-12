@@ -786,15 +786,10 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     /**
-     * Both store-side self-checks, run to the end rather than on their own schedules. The writer runs
-     * on a thread of its own, so anything it has not written yet is missing from what a check would
-     * read, which on a hand-run check is the difference between a real finding and the last thing the
-     * tester did.
-     *
-     * `judgeRecent` gives up the settle window the periodic pass keeps. The window is there because
-     * the two planes are written by two threads and a position read between them disagrees with itself
-     * for a moment; giving it up is what makes a check worth running straight after an action, at the
-     * price of the odd race reported as a finding.
+     * Both store-side self-checks, run to the end once every writer has caught up, so a hand-run check
+     * does not report the last thing the tester did as a finding. `judgeRecent` gives up the settle
+     * window, which lets a check run straight after an action at the price of the odd race between the
+     * two planes' writers reported as a finding.
      */
     private fun verify(source: CommandSourceStack, judgeRecent: Boolean): Int {
         val running = this.running ?: return notReady(source)
@@ -802,6 +797,7 @@ class PfauProtectPlugin : JavaPlugin() {
         sender.say("Running both self-checks to the end; this reads the whole journal.")
         offThread(sender, "the self-checks failed", "The self-checks failed; the server log has the details.") {
             running.ledger.drain()
+            for (world in running.blocks.worlds) running.blocks.get(world)?.drain()
             checkLedger(running.ledger, VERIFY_ROUNDS, sender::say)
             checkPlanes(running.planes, VERIFY_ROUNDS, judgeRecent, sender::say)
         }
