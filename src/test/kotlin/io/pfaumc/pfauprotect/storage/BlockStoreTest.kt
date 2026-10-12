@@ -1,22 +1,26 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.BothPlanes
+import io.pfaumc.pfauprotect.T0
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
+import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntityKind
-import io.pfaumc.pfauprotect.attribution.behind
-import org.junit.jupiter.api.AfterEach
+import io.pfaumc.pfauprotect.model.PlayerInv
+import io.pfaumc.pfauprotect.model.Transfer
+import io.pfaumc.pfauprotect.model.Void
+import org.rocksdb.RocksDBException
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.UUID
-
-private const val T0 = 1_700_000_000_000L
 
 private const val AIR = "minecraft:air"
 private const val STONE = "minecraft:stone"
@@ -24,28 +28,8 @@ private const val DIRT = "minecraft:dirt"
 private const val WATER = "minecraft:water"
 private const val STAIRS = "minecraft:oak_stairs[facing=north]"
 
-class BlockStoreTest {
-    private val world = UUID.fromString("00000000-0000-4000-8000-000000000001")
-    private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
-
-    private lateinit var root: Path
-    private lateinit var shared: RocksItemLog
-    private lateinit var logs: BlockLogs
-    private lateinit var log: BlockLog
-
-    @BeforeEach
-    fun open(@TempDir tempDir: Path) {
-        root = tempDir.resolve("blocks")
-        shared = RocksItemLog(tempDir.resolve("items"))
-        logs = BlockLogs(root, shared)
-        log = logs.open(world)
-    }
-
-    @AfterEach
-    fun closeAll() {
-        logs.close()
-        shared.close()
-    }
+class BlockStoreTest : BothPlanes() {
+    private val root: Path get() = dir.resolve("blocks")
 
     private fun placed(
         x: Int,
@@ -74,9 +58,8 @@ class BlockStoreTest {
         log = logs.open(world)
     }
 
-    // A world's base keeps its memtable inside the ledger's cache, under the one bound the plugin's native
-    // memory has: rows written to the world alone, with every state they name already interned in the
-    // ledger, still show in the ledger's cache. A base with a cache of its own would leave it as it was.
+    // Rows written to the world alone, with every state they name already interned in the ledger, still
+    // show in the ledger's cache.
     @Test
     fun `a world base keeps its memtable inside the ledger's cache`() {
         log.submit(listOf(BlockChange(0, 64, 0, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
@@ -203,8 +186,7 @@ class BlockStoreTest {
         assertEquals(stateOf(DIRT), log.standingAt(2, 64, 2).row?.stateAfter)
     }
 
-    // A rollback acts on everything it read, so a row it could not read and a walk that stopped on its
-    // budget are both said rather than left out of the answer.
+    // A rollback acts on everything it read.
     @Test
     fun `a rollback window counts what it could not read and says when it ran out`() {
         log.submit(listOf(placed(2, 64, 2, before = AIR, after = STONE, ts = T0)))
@@ -225,7 +207,6 @@ class BlockStoreTest {
     // touched without walking the world; it keeps to the window and says when its budget ran out.
     @Test
     fun `the actor index answers where a player changed blocks in a window`() {
-        val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
         log.submit(listOf(placed(1, 64, 1, ts = T0)))
         log.submit(listOf(placed(2, 64, 1, ts = T0 + 10), placed(500, 70, -500, ts = T0 + 10)))
         log.submit(listOf(placed(3, 64, 1, ts = T0 + 20).copy(actor = bob)))
@@ -240,8 +221,6 @@ class BlockStoreTest {
         assertTrue(log.touchedBy(UUID.randomUUID(), 0, Long.MAX_VALUE, 100).positions.isEmpty())
     }
 
-    // A killed mob is kept whole: what it was, who did it, its NBT byte for byte and what fell out of it.
-    // It is found where it stood, by position and by chunk, and through the index by whoever did it.
     @Test
     fun `an entity row keeps everything and is found like a block row`() {
         val cow = UUID.randomUUID()
@@ -272,7 +251,6 @@ class BlockStoreTest {
         assertEquals(setOf(listOf(5, 64, 6)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
     }
 
-    // How it died and what dealt the blow come back as they went in; a row without them reads as before.
     @Test
     fun `an entity death keeps its damage type and what dealt it`() {
         val sheep = UUID.randomUUID()
@@ -300,7 +278,6 @@ class BlockStoreTest {
         assertNull(plain.via)
     }
 
-    // A base from before the entity plane has every block row and no entity family; it opens and gets one.
     @Test
     fun `a base from before the entity plane opens and gains it`() {
         log.submit(listOf(placed(8, 64, 8, ts = T0)))
@@ -330,6 +307,112 @@ class BlockStoreTest {
         log = logs.open(world)
 
         assertEquals(setOf(listOf(7, 64, 7)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
+    }
+
+    // Every reopen flushes what was written since to a file of its own, enough of them for the rows to be
+    // compacted, and the newest entities stay in the memtable: the purge has to walk all of it, chunk after
+    // chunk, across the prefix extractor both families have.
+    @Test
+    fun `a purge reaches every chunk, on disk and in memory`() {
+        val cutoff = T0 + 100
+        val spots = (0 until 40).map { listOf(it * 112 - 2000, 64, it * 48 - 500) }
+        fun reopen() {
+            log.drain()
+            logs.close(world)
+            log = logs.open(world)
+        }
+        fun entity(at: List<Int>, ts: Long) =
+            EntityChange(at[0], at[1] + 1, at[2], EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:cow", UUID.randomUUID(), ts, actor = alice)
+
+        for (half in spots.chunked(spots.size / 2)) {
+            log.submit(half.map { (x, y, z) -> placed(x, y, z, ts = T0) })
+            reopen()
+        }
+        log.submit(spots.map { entity(it, T0) })
+        reopen()
+        log.submit(spots.filterIndexed { i, _ -> i % 3 != 2 }.map { (x, y, z) -> placed(x, y, z, ts = T0 + 10) })
+        reopen()
+        log.submit(spots.filterIndexed { i, _ -> i % 3 != 1 }.map { (x, y, z) -> placed(x, y, z, ts = T0 + 200) })
+        reopen()
+        log.submit(spots.filterIndexed { i, _ -> i % 3 == 2 }.map { entity(it, T0 + 200) })
+        log.drain()
+
+        // A position with a row after the cutoff loses every old row; one without keeps its newest old row.
+        val purgedRows = spots.indices.sumOf { listOf(2, 1, 1)[it % 3] }
+        assertEquals(purgedRows to spots.size, log.purgeBefore(cutoff, dryRun = true))
+        assertEquals(purgedRows to spots.size, log.purgeBefore(cutoff, dryRun = false))
+        reopen()
+
+        for ((i, at) in spots.withIndex()) {
+            val (x, y, z) = at
+            val kept = if (i % 3 == 1) T0 + 10 else T0 + 200
+            assertEquals(listOf(kept), log.at(x, y, z).map { it.timestamp }, "rows at $at")
+            val entities = if (i % 3 == 2) listOf(T0 + 200) else emptyList()
+            assertEquals(entities, log.entitiesAt(x, y + 1, z, 0, Long.MAX_VALUE, 100).rows.map { it.timestamp }, "entities at $at")
+        }
+        assertEquals(0 to 0, log.purgeBefore(cutoff, dryRun = true))
+    }
+
+    // The ledger's writer meets a player in a transaction it then has to drop. A block writer has already
+    // been handed that player's number by then, so the number has to be on disk whatever became of the
+    // transaction, and after a restart still name the same player.
+    @Test
+    fun `a player first met in a dropped transaction keeps the number a block row names`() {
+        val form = byteArrayOf(1, 2, 3)
+        shared.submit(
+            listOf(
+                Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 0), Void, form, null, 1, T0),
+                // Above any world, so this posting has no key and the whole transaction is dropped.
+                Transfer(Cause.CONTAINER_ADD, Void, Container(world, 0, 99_999, 0, 0), form, null, 1, T0),
+            )
+        )
+        shared.drain()
+        log.submit(listOf(placed(3, 64, 3).copy(actor = bob)))
+        log.drain()
+
+        logs.close()
+        shared.close()
+        openPlanes()
+
+        assertEquals(bob, log.at(3, 64, 3).single().actor)
+    }
+
+    // A block the checksum rejects ends a walk exactly as the last row does, and an answer cut short there
+    // would pass for the whole history of the place.
+    @Test
+    fun `a walk over a damaged file fails rather than answering short`() {
+        log.submit((0 until 200).map { placed(it, 64, 0, ts = T0 + it) })
+        log.drain()
+        // The reopen flushes the rows from the log into a table file.
+        logs.close(world)
+        logs.open(world)
+        logs.close(world)
+        damageTables(root.resolve(world.toString()), "rows")
+        log = logs.open(world)
+
+        assertThrows(RocksDBException::class.java) { log.inChunk(0, 0) }
+        assertThrows(RocksDBException::class.java) { log.at(0, 64, 0) }
+        assertThrows(RocksDBException::class.java) { log.purgeBefore(T0 + 1_000, dryRun = true) }
+    }
+
+    @Test
+    fun `no world base opens once the bases are closed`() {
+        logs.close()
+
+        assertThrows(IllegalStateException::class.java) { logs.open(UUID.randomUUID()) }
+    }
+
+    // The cache and the memtable budget are the ledger's, lent to every base. A base still open when the
+    // ledger goes keeps reading through them, and they are freed only once that base has closed too.
+    @Test
+    fun `a base still open when the ledger closes keeps the cache it reads through`() {
+        log.submit(listOf(placed(1, 64, 1)))
+        log.drain()
+
+        shared.close()
+
+        assertEquals(1, log.at(1, 64, 1).size)
+        assertThrows(IllegalStateException::class.java) { logs.open(UUID.randomUUID()) }
     }
 
     @Test

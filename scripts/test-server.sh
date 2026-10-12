@@ -31,11 +31,9 @@ start)
     # Live checks read what the plugin says in English; a server of players gets Russian by default.
     # PPT_LANG=ru starts it in Russian, to check the Russian texts.
     mkdir -p run/plugins/PfauProtect
-    if [ -f run/plugins/PfauProtect/config.yml ]; then
-        sed -i "s/^language: .*/language: ${PPT_LANG:-en}/" run/plugins/PfauProtect/config.yml
-    else
-        echo "language: ${PPT_LANG:-en}" >run/plugins/PfauProtect/config.yml
-    fi
+    cfg=run/plugins/PfauProtect/config.yml
+    [ -f "$cfg" ] || echo "language: ${PPT_LANG:-en}" >"$cfg"
+    sed -i.bak "s/^language: .*/language: ${PPT_LANG:-en}/" "$cfg" && rm -f "$cfg.bak"
     [ -f run/eula.txt ] || echo "eula=true" >run/eula.txt
     [ -f run/server.properties ] || cat >run/server.properties <<'EOF'
 online-mode=false

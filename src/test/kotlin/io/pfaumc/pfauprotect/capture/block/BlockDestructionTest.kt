@@ -1,10 +1,13 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.worldStub
+import io.pfaumc.pfauprotect.disabledPlugin
+import io.pfaumc.pfauprotect.BothPlanes
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
 import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.storage.BlockChange
-import io.pfaumc.pfauprotect.storage.BlockLog
-import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
@@ -15,11 +18,8 @@ import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.capture.item.NestedItems
-import io.pfaumc.pfauprotect.check.PlaneGap
-import io.pfaumc.pfauprotect.check.PlaneSync
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
-import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.check.SETTLE_MILLIS
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.stub
@@ -40,7 +40,6 @@ import net.minecraft.world.level.block.state.properties.DoubleBlockHalf
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.TreeType
-import org.bukkit.World
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
@@ -65,8 +64,6 @@ import org.bukkit.event.block.BlockFormEvent
 import org.bukkit.event.block.EntityBlockFormEvent
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.world.StructureGrowEvent
-import org.bukkit.plugin.Plugin
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -77,9 +74,6 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
-import java.lang.reflect.Proxy
-import java.nio.file.Path
 import java.util.UUID
 
 private const val AIR = "minecraft:air"
@@ -98,10 +92,8 @@ private const val STICKY_HEAD = "minecraft:piston_head[facing=east,short=false,t
 private const val WHITE_BED_HEAD = "minecraft:white_bed[facing=east,occupied=false,part=head]"
 private const val WHITE_BED_FOOT = "minecraft:white_bed[facing=east,occupied=false,part=foot]"
 
-class BlockDestructionTest {
-    private val world = UUID.fromString("00000000-0000-4000-8000-000000000003")
-    private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
-    private val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
+class BlockDestructionTest : BothPlanes() {
+    override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000003")
     // The first varint of a form is the item type, which is what decides whether the form remembered
     // at a position still belongs to the block standing in it.
     private val bedShell = byteArrayOf(7)
@@ -115,9 +107,7 @@ class BlockDestructionTest {
     private val now = System.currentTimeMillis()
     private val longAgo = now - 10 * SETTLE_MILLIS
 
-    private lateinit var shared: RocksItemLog
-    private lateinit var logs: BlockLogs
-    private lateinit var log: BlockLog
+    private val codec by lazy { ItemFormCodec(shared.registries, ServerRegistries.access) }
 
     private val spawned = ArrayList<Transfer>()
     private val coalescer = TickCoalescer(spawned::add)
@@ -125,8 +115,8 @@ class BlockDestructionTest {
     private val origins = SpawnOrigins(coalescer) { clock }
     private val entityOrigins = EntityOrigins()
 
-    // A getter and not a field: touching `Blocks` before the bootstrap in `open` throws out of the
-    // class initializer, and a field is initialized before it.
+    // A getter and not a field: touching `Blocks` before `bootstrap` throws out of the class
+    // initializer, and a field is initialized before it.
     private val bedHead
         get() = Blocks.BED.white().defaultBlockState()
             .setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.EAST)
@@ -134,17 +124,8 @@ class BlockDestructionTest {
             .asBlockData()
 
     @BeforeEach
-    fun open(@TempDir tempDir: Path) {
+    fun bootstrap() {
         ServerRegistries.access
-        shared = RocksItemLog(tempDir.resolve("items"))
-        logs = BlockLogs(tempDir.resolve("blocks"), shared)
-        log = logs.open(world)
-    }
-
-    @AfterEach
-    fun closeAll() {
-        logs.close()
-        shared.close()
     }
 
     private fun doorHalf(half: DoubleBlockHalf) = Blocks.OAK_DOOR.defaultBlockState()
@@ -162,24 +143,25 @@ class BlockDestructionTest {
         neighbours: Map<BlockFace, Block> = emptyMap(),
         drops: Collection<org.bukkit.inventory.ItemStack> = emptyList(),
         state: org.bukkit.block.BlockState? = null,
-    ) =
-        Proxy.newProxyInstance(Block::class.java.classLoader, arrayOf(Block::class.java)) { _, method, args ->
-            val stubWorld = stub(World::class.java, mapOf("getUID" to world))
-            when (method.name) {
-                "getWorld" -> stubWorld
-                "getLocation" -> Location(stubWorld, x.toDouble(), y.toDouble(), z.toDouble())
-                "getDrops" -> drops
-                "getState" -> state
-                "getBlockData" -> data
-                "getRelative" -> neighbours[args[0] as BlockFace]
-                "getX" -> x
-                "getY" -> y
-                "getZ" -> z
-                "equals" -> (args[0] as? Block)?.let { it.x == x && it.y == y && it.z == z } == true
-                "hashCode" -> (x * 31 + y) * 31 + z
-                else -> null
-            }
-        } as Block
+    ): Block {
+        val stubWorld = worldStub(world)
+        return stub(
+            Block::class.java,
+            mapOf(
+                "getWorld" to stubWorld,
+                "getLocation" to { _: Array<out Any?> -> Location(stubWorld, x.toDouble(), y.toDouble(), z.toDouble()) },
+                "getDrops" to drops,
+                "getState" to state,
+                "getBlockData" to data,
+                "getRelative" to { args: Array<out Any?> -> neighbours[args[0] as BlockFace] },
+                "getX" to x,
+                "getY" to y,
+                "getZ" to z,
+                "equals" to { args: Array<out Any?> -> (args[0] as? Block)?.let { it.x == x && it.y == y && it.z == z } == true },
+                "hashCode" to (x * 31 + y) * 31 + z,
+            ),
+        )
+    }
 
     private fun handlers() = BlockDestructionListener::class.java.declaredMethods
         .mapNotNull { method -> method.getAnnotation(EventHandler::class.java)?.let { method to it } }
@@ -190,11 +172,11 @@ class BlockDestructionTest {
         later: (Location, () -> Unit) -> Unit = { _, _ -> },
     ) = BlockDestructionListener(
         // Disabled, so a read-back is never queued: there is no region scheduler to queue it on.
-        plugin = stub(Plugin::class.java, mapOf("isEnabled" to false)),
+        plugin = disabledPlugin(),
         registries = shared.registries,
         logs = logs,
         attribution = attribution,
-        codec = ItemFormCodec(shared.registries, ServerRegistries.access),
+        codec = codec,
         origins = origins,
         entities = entityOrigins,
         placed = shared,
@@ -211,7 +193,7 @@ class BlockDestructionTest {
         .get(listener) as GrowClaims
 
     private fun structureGrow(blocks: MutableList<BlockState>, bonemeal: Boolean): StructureGrowEvent {
-        val grown = stub(World::class.java, mapOf("getUID" to world))
+        val grown = worldStub(world)
         return StructureGrowEvent(Location(grown, 0.0, 64.0, 0.0), TreeType.TREE, bonemeal, null, blocks)
     }
 
@@ -320,11 +302,6 @@ class BlockDestructionTest {
         assertEquals(Cause.BLK_FROST_WALKER, entityFormCause(EntityType.PLAYER))
     }
 
-    /**
-     * A wither breaks blocks with its head and throws a skull that explodes, and the skull is an
-     * entity of its own. Two causes for one entity means a lookup filtered by cause finds half of the
-     * incident, so the entity answers with the same cause wherever it turns up.
-     */
     @Test
     fun `an entity answers with one cause in both the explosion and the change it makes`() {
         assertEquals(Cause.BLK_WITHER, explosionCause(EntityType.WITHER_SKULL))
@@ -510,11 +487,6 @@ class BlockDestructionTest {
         }
     }
 
-    /**
-     * A block that turned into another block was not destroyed and dropped nothing, so a write-off
-     * would invent a loss. The ledger's shape for a thing that becomes another thing without leaving
-     * is the one an item changed in place takes.
-     */
     @Test
     fun `a change in place is the old form leaving and the new form arriving`() {
         val at = WorldBlock(world, 3, 64, 3)
@@ -530,9 +502,6 @@ class BlockDestructionTest {
         assertArrayEquals(grassForm, arrived.form)
         assertEquals(now, arrived.timestamp)
 
-        // Both halves are facts: the exchange was watched, and only the name on it was worked out.
-        // Marked as guesses they would sit in the bucket the cross-check never lets cancel the credit,
-        // and a position that changed hands correctly would read as a hole for ever.
         assertEquals(Confidence.FACT, left.confidence)
         assertEquals(Confidence.FACT, arrived.confidence)
         assertEquals(alice, arrived.actor)
@@ -551,8 +520,6 @@ class BlockDestructionTest {
         val torch = Blocks.TORCH.defaultBlockState().asBlockData()
         val dirt = Blocks.DIRT.defaultBlockState().asBlockData()
 
-        // A form the position remembers only outranks the bare shell where it is the same item, so the
-        // named one is the shell itself with something else written on it.
         val namedTorch = releasedBy(listener, at, torch, AIR).single().form + 1
         for (empty in listOf(AIR, SOURCE_WATER, "minecraft:fire[age=3]", "minecraft:nether_portal[axis=x]")) {
             val off = releasedBy(listener, at, torch, empty, namedTorch)
@@ -585,12 +552,6 @@ class BlockDestructionTest {
         assertEquals(emptyList<Transfer>(), releasedBy(listener, at, bedHead, SHULKER_BOX))
     }
 
-    /**
-     * Three positions the item plane was told about. Two of them went on holding a block an item was
-     * made into, and written off they would be a loss nobody suffered; left unsaid they would keep the
-     * credit for ever where the cross-check cannot see it, since what stands there is not one of the
-     * states that back no item. Only the third really emptied.
-     */
     @Test
     fun `a position that took another block on keeps its credit and only an emptied one loses it`() {
         val sapling = WorldBlock(world, 9, 64, 9)
@@ -633,9 +594,7 @@ class BlockDestructionTest {
         assertEquals(1, shared.holderEntries(dirt, 0, Long.MAX_VALUE).sumOf { it.qty })
         assertEquals(0, shared.holderEntries(torch, 0, Long.MAX_VALUE).sumOf { it.qty })
 
-        val report = PlaneSync(shared, logs).pass(100, now)
-
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
+        val report = assertPlanesAgree(now)
         assertEquals(3, report.checked)
         assertEquals(0, report.overdrawn)
         assertEquals(emptyList<String>(), shared.sweep(100).gaps)
@@ -654,10 +613,6 @@ class BlockDestructionTest {
         val witnessed = wroteOff(at, torchForm, Cause.BLK_TNT, Attributed(bob, Confidence.FACT), now)
         val nobody = wroteOff(at, torchForm, Cause.BLK_LIQUID_DESTROY, null, now)
 
-        // The disappearance was watched in all three; only the name on it was worked out, and a
-        // posting has nowhere to say so. Carrying the doubt across would put a confirmed credit and a
-        // guessed write-off in the two buckets the cross-check keeps apart and never lets cancel, so
-        // every position that settled correctly would read as a hole.
         for (posting in listOf(guessed, witnessed, nobody)) {
             assertEquals(Confidence.FACT, posting.confidence)
             assertEquals(at, posting.from)
@@ -667,9 +622,6 @@ class BlockDestructionTest {
         assertNull(nobody.actor)
     }
 
-    // A placement credits the position as a fact, and the cross-check never lets the two buckets
-    // cancel, so a write-off reporting itself as a guess would leave every position it settled
-    // standing as a hole no matter how correctly it was settled.
     @Test
     fun `a position settled by a guessed culprit is not left standing as a hole`() {
         val at = WorldBlock(world, 7, 64, 7)
@@ -683,9 +635,7 @@ class BlockDestructionTest {
         shared.submit(wroteOff(at, torchForm, Cause.BLK_FADE, Attributed(bob, Confidence.INFERRED), longAgo + 1))
         drainBoth()
 
-        val report = PlaneSync(shared, logs).pass(100, now)
-
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
+        assertPlanesAgree(now)
         assertEquals(0, shared.holderEntries(at, 0, Long.MAX_VALUE).sumOf { it.qty })
     }
 
@@ -796,13 +746,6 @@ class BlockDestructionTest {
         assertFalse(claims.claims(spread))
     }
 
-    /**
-     * The server places the captured snapshots gated on the fertilize event alone wherever that event
-     * fires, and the cancel link from the structure event runs one way, so a tree filed from the
-     * structure event would stand in the journal after a plugin refused the fertilize event and left
-     * no tree in the world. A dispenser's bone meal raises the structure event declaring itself not to
-     * be bone meal and naming no player, so the flag cannot tell it from a tree that grew alone.
-     */
     @Test
     fun `a tree is claimed however it grew, and the fertilize event behind it takes the claim`() {
         val listener = listener()
@@ -922,11 +865,6 @@ class BlockDestructionTest {
         }
     }
 
-    /**
-     * `EntityBlockFormEvent` declares no handler list of its own, so the server delivers it to the
-     * `BlockFormEvent` handlers. A second method taking it would be registered against that same list
-     * and every snow golem trail and every frost walker step would be journalled twice.
-     */
     @Test
     fun `an entity forming a block is taken by the one handler that already receives it`() {
         assertThrows(NoSuchMethodException::class.java) {
@@ -986,9 +924,7 @@ class BlockDestructionTest {
             foot[1].stateAfter,
         )
 
-        val report = PlaneSync(shared, logs).pass(100, now)
-
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
+        val report = assertPlanesAgree(now)
         assertEquals(1, report.checked)
         assertEquals(0, report.overdrawn)
     }
@@ -1008,8 +944,7 @@ class BlockDestructionTest {
         assertNull(row.actor)
         assertEquals(Confidence.FACT, row.confidence)
 
-        val report = PlaneSync(shared, logs).pass(100, now)
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
+        val report = assertPlanesAgree(now)
         assertEquals(1, report.checked)
     }
 
@@ -1031,12 +966,6 @@ class BlockDestructionTest {
         assertFalse(pistonDestroys(Blocks.OAK_SLAB.defaultBlockState().asBlockData()))
     }
 
-    /**
-     * The piston's own two positions, which no piston event mentions. Both are derived rather than
-     * read: an extending piston has not put its head down while the event runs, a retracting one that
-     * pulls a block has already taken it away, and the base of a retracting sticky piston is the moving
-     * block by then.
-     */
     @Test
     fun `the head and the base of a piston are states of their own`() {
         assertEquals(PISTON_HEAD, pistonHead(Direction.EAST, sticky = false).asString)
@@ -1060,7 +989,6 @@ class BlockDestructionTest {
         assertEquals(to, transfer.to)
         assertEquals(Kind.TRANSFER, transfer.kind)
         assertEquals(1, transfer.qty)
-        // The movement was watched; only a name on it could ever have been worked out.
         assertEquals(Confidence.FACT, transfer.confidence)
         assertArrayEquals(dirtForm, transfer.form)
         assertNull(transfer.actor)
@@ -1085,7 +1013,6 @@ class BlockDestructionTest {
         assertEquals(at, handed.from)
         assertEquals(to, handed.to)
         assertArrayEquals(named, handed.form)
-        // The same position with nowhere to hand it to writes it off, and that is the whole difference.
         assertEquals(Void, releasedBy(listener, at, dirt, AIR, named).single().to)
     }
 
@@ -1150,9 +1077,7 @@ class BlockDestructionTest {
         assertEquals(mapOf(shared.formId(dirtForm) to 1, shared.formId(grassForm) to 0), holding)
         assertEquals(shared.formId(grassForm), shared.holderEntries(last, 0, Long.MAX_VALUE).single().itemFormId)
 
-        val report = PlaneSync(shared, logs).pass(100, now)
-
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
+        val report = assertPlanesAgree(now)
         assertEquals(3, report.checked)
         assertEquals(0, report.overdrawn)
         assertEquals(emptyList<String>(), shared.sweep(100).gaps)
@@ -1204,16 +1129,14 @@ class BlockDestructionTest {
         assertEquals(0, shared.holderEntries(from, 0, Long.MAX_VALUE).sumOf { it.qty })
         assertEquals(1, shared.holderEntries(to, 0, Long.MAX_VALUE).sumOf { it.qty })
 
-        val report = PlaneSync(shared, logs).pass(100, now)
-
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
+        val report = assertPlanesAgree(now)
         assertEquals(2, report.checked)
         assertEquals(emptyList<String>(), shared.sweep(100).gaps)
     }
 
     private fun fallingStub(entity: UUID, x: Double, y: Double, z: Double) = stub(
         FallingBlock::class.java,
-        mapOf("getUniqueId" to entity, "getLocation" to Location(stub(World::class.java, mapOf("getUID" to world)), x, y, z)),
+        mapOf("getUniqueId" to entity, "getLocation" to Location(worldStub(world), x, y, z)),
     )
 
     @Test
@@ -1224,8 +1147,6 @@ class BlockDestructionTest {
         val listener = listener(attribution, { written += it }) { _, task -> nextTick += task }
         val entity = UUID.fromString("00000000-0000-4000-8000-0000000000f1")
         val from = WorldBlock(world, 2, 70, 2)
-        // A form the position remembers only outranks the bare shell where it is the same item, so the
-        // named one is the sand itself with something else written on it.
         val sand = Blocks.SAND.defaultBlockState().asBlockData()
         val named = releasedBy(listener, from, sand, AIR).single().form + 1
         heldAt(2, 70, 2, named)
@@ -1247,14 +1168,12 @@ class BlockDestructionTest {
         assertEquals(bob, off.actor)
         // What the position was holding is what it gives back.
         assertArrayEquals(named, off.form)
-        // The flight was taken, so a second removal of the same entity has nothing left to write off.
         assertNull(attribution.landed(entity))
 
         shared.submit(listOf(off))
         drainBoth()
         assertEquals(0, shared.holderEntries(from, 0, Long.MAX_VALUE).sumOf { it.qty })
-        val report = PlaneSync(shared, logs).pass(100, now)
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
+        assertPlanesAgree(now)
         assertEquals(emptyList<String>(), shared.sweep(100).gaps)
     }
 
@@ -1297,7 +1216,7 @@ class BlockDestructionTest {
     fun `a vine stem is the vine it was put down as`() {
         val listener = listener()
         val at = WorldBlock(world, 3, 64, 3)
-        val vine = ItemFormCodec(shared.registries, ServerRegistries.access).encode(NmsItemStack(Items.TWISTING_VINES)).form
+        val vine = codec.encode(NmsItemStack(Items.TWISTING_VINES)).form
         val tip = Blocks.TWISTING_VINES.defaultBlockState().asBlockData()
         val stem = Blocks.TWISTING_VINES_PLANT.defaultBlockState().asBlockData()
 
@@ -1377,10 +1296,8 @@ class BlockDestructionTest {
             BlockFace.EAST,
         ) { null }
 
-        // The head the piston reached and the foot it never touched, both emptied and neither moved.
         assertEquals(listOf(WorldBlock(world, 2, 64, 0), WorldBlock(world, 1, 64, 0)), emptied.take(2).map { it.at })
         assertTrue(emptied.take(2).all { it.after == AIR && it.went == null })
-        // The stone is pushed rather than broken, so it names where it went and fills the next position.
         assertEquals(WorldBlock(world, 4, 64, 0), emptied.last().went)
         assertEquals(listOf(WorldBlock(world, 4, 64, 0)), filled.map { it.at })
     }
@@ -1391,10 +1308,10 @@ class BlockDestructionTest {
         val block = blockStub(5, 64, 7, Blocks.CACTUS.defaultBlockState().asBlockData(), drops = listOf(cactus))
         val breaker = UUID.randomUUID()
 
-        expectDrops(origins, ItemFormCodec(shared.registries, ServerRegistries.access), block, Cause.BLK_FADE, breaker)
+        expectDrops(origins, codec, block, Cause.BLK_FADE, breaker)
 
         val entity = UUID.randomUUID()
-        val key = ItemFormCodec(shared.registries, ServerRegistries.access).encodeOrNull(cactus)!!.key
+        val key = codec.encodeOrNull(cactus)!!.key
         assertEquals(1, origins.claim(entity, Spot(world, 5.2, 64.0, 7.4), key, 1))
 
         coalescer.flush()
@@ -1416,7 +1333,6 @@ class BlockDestructionTest {
         fun box(item: net.minecraft.world.item.Item, count: Int) = NmsItemStack(Items.SHULKER_BOX).apply {
             set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(NmsItemStack(item, count))))
         }
-        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
         val diamonds = box(Items.DIAMOND, 5)
         val stone = box(Items.STONE, 64)
         val first = UUID.randomUUID()
@@ -1439,7 +1355,6 @@ class BlockDestructionTest {
         val diamondDrop = diamonds.copy()
         assertEquals(first, origins.ownerFor(diamondDrop, spot))
         NestedItems.mark(diamondDrop, first)
-        // Each name is handed out once.
         assertNull(origins.ownerFor(diamonds.copy(), spot))
 
         assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(stoneDrop).key, 1))
@@ -1451,7 +1366,6 @@ class BlockDestructionTest {
     // its contents were just packed under.
     @Test
     fun `a box used before is given the name its contents were packed under`() {
-        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
         val packed = UUID.randomUUID()
         val box = NmsItemStack(Items.SHULKER_BOX).apply {
             set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(NmsItemStack(Items.DIAMOND, 5))))
@@ -1464,7 +1378,6 @@ class BlockDestructionTest {
         )
         val spot = Spot(world, 5.2, 64.0, 7.4)
 
-        // The drop still carries the old name; the new one wins.
         val spawned = box.copy()
         assertEquals(packed, origins.ownerFor(spawned, spot))
         NestedItems.mark(spawned, packed)
@@ -1487,7 +1400,7 @@ class BlockDestructionTest {
 
         listener().onBlockDestroy(BlockDestroyEvent(block, Blocks.AIR.defaultBlockState().asBlockData(), data, 0, true))
 
-        val key = ItemFormCodec(shared.registries, ServerRegistries.access).encodeOrNull(cactus)!!.key
+        val key = codec.encodeOrNull(cactus)!!.key
         assertEquals(1, origins.claim(UUID.randomUUID(), Spot(world, 5.3, 64.0, 7.6), key, 1))
     }
 
@@ -1499,7 +1412,6 @@ class BlockDestructionTest {
         val inventory = stub(org.bukkit.inventory.Inventory::class.java, mapOf("getContents" to arrayOf(null, diamonds)))
         val barrel = stub(org.bukkit.block.Barrel::class.java, mapOf("getSnapshotInventory" to inventory))
         val block = blockStub(5, 64, 7, Blocks.BARREL.defaultBlockState().asBlockData(), state = barrel)
-        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
 
         expectDrops(origins, codec, block, Cause.BLK_CREEPER, alice)
 
@@ -1517,7 +1429,7 @@ class BlockDestructionTest {
     fun `a block that drops nothing leaves nothing past the tick`() {
         val block = blockStub(5, 64, 7, Blocks.GLASS.defaultBlockState().asBlockData())
 
-        expectDrops(origins, ItemFormCodec(shared.registries, ServerRegistries.access), block, Cause.BLK_FADE, null)
+        expectDrops(origins, codec, block, Cause.BLK_FADE, null)
         origins.sweep()
         clock += 1_000
         origins.sweep()

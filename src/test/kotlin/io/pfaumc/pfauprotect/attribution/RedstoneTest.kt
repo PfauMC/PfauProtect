@@ -1,4 +1,8 @@
 package io.pfaumc.pfauprotect.attribution
+import io.pfaumc.pfauprotect.T0
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
+import io.pfaumc.pfauprotect.world
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.model.Cause
@@ -21,10 +25,7 @@ import java.nio.file.Path
 import java.util.UUID
 
 class RedstoneTest {
-    private val world = UUID.fromString("00000000-0000-4000-8000-000000000001")
-    private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
-    private val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
-    private var clock = 1_700_000_000_000L
+    private var clock = T0
     private val energy = Energy { clock }
 
     private fun at(x: Int, y: Int = 0, z: Int = 0) = WorldBlock(world, x, y, z)

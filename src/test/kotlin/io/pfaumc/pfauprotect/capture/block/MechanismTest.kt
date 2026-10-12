@@ -1,18 +1,16 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.worldStub
+import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
-import io.pfaumc.pfauprotect.storage.ItemFormCodec
-import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
-import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
-import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.NoPlacedForms
-import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.capture.item.Stack
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.stub
+import io.pfaumc.pfauprotect.testCodec
 import net.minecraft.core.Direction
 import net.minecraft.core.component.DataComponents
 import net.minecraft.network.chat.Component
@@ -21,7 +19,6 @@ import net.minecraft.world.WorldlyContainer
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import org.bukkit.Material
-import org.bukkit.World
 import org.bukkit.block.Block
 import org.bukkit.block.Furnace
 import org.bukkit.event.block.BlockCookEvent
@@ -30,7 +27,6 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import java.util.UUID
@@ -40,12 +36,8 @@ import org.bukkit.inventory.ItemStack as BukkitItemStack
 class MechanismTest {
     private val world = UUID.randomUUID()
 
-    private lateinit var codec: ItemFormCodec
-
-    @BeforeAll
-    fun loadServerRegistries() {
-        codec = ItemFormCodec(Registries(MemoryRegistryStore()), ServerRegistries.access)
-    }
+    // Eager: building the codec brings the registries up, and most tests touch `Items` without it.
+    private val codec = testCodec()
 
     private fun chest(size: Int = 27, fill: Map<Int, ItemStack> = emptyMap()) =
         SimpleContainer(size).apply {
@@ -56,11 +48,11 @@ class MechanismTest {
     private fun stone(count: Int = 1) = ItemStack(Items.STONE, count)
     private fun dirt(count: Int = 1) = ItemStack(Items.DIRT, count)
 
-    private fun held(name: String, count: Int) = Stack(ItemKey(name.toByteArray(), null), count)
+    private fun held(name: String, count: Int) = Stack(key(name), count)
 
     @Test
     fun `a dispense that placed its item is told apart from one that spent it`() {
-        val box = ItemKey("shulker_box".toByteArray(), null)
+        val box = key("shulker_box")
         val spent = listOf(SlotChange(4, box, 1, gain = false))
         val air = "minecraft:air"
         val shulker = "minecraft:shulker_box[facing=east]"
@@ -68,7 +60,7 @@ class MechanismTest {
         assertTrue(placedInFront(spent, air, shulker, Material.SHULKER_BOX, Material.SHULKER_BOX))
         assertFalse(placedInFront(spent, air, air, Material.AIR, Material.SHULKER_BOX))
         assertFalse(placedInFront(spent, air, "minecraft:stone", Material.STONE, Material.SHULKER_BOX))
-        val bucket = ItemKey("bucket".toByteArray(), null)
+        val bucket = key("bucket")
         assertFalse(
             placedInFront(
                 spent + SlotChange(4, bucket, 1, gain = true), air, "minecraft:water[level=0]", Material.AIR,
@@ -102,7 +94,6 @@ class MechanismTest {
         assertTrue(!change.gain)
     }
 
-    // A single bucket filled in place: the slot holds something else, which is one item changed.
     @Test
     fun `a bucket filled by a dispenser changes in its own slot`() {
         val before = listOf(held("bucket", 1))
@@ -112,8 +103,6 @@ class MechanismTest {
         assertEquals("water_bucket", String(changes[1].key.form))
     }
 
-    // One bottle out of a stack of them: the stack is one short and the water bottle turns up in a slot
-    // that did not hold it. Another slot already holding bottles is left alone.
     @Test
     fun `a bottle filled from a stack lands in another slot as the product`() {
         val before = listOf(held("glass_bottle", 4), null, held("glass_bottle", 2))
@@ -182,14 +171,14 @@ class MechanismTest {
         val coalescer = TickCoalescer(written::add)
         val from = Container(world, 1, 64, 1, 0)
         val to = Container(world, 1, 63, 1, 0)
-        val key = ItemKey("stone".toByteArray(), null)
-        repeat(5) { coalescer.add(from, to, Cause.HOPPER_PUSH, key, 1) }
-        coalescer.add(from, to, Cause.HOPPER_PUSH, ItemKey("dirt".toByteArray(), null), 2)
-        coalescer.add(to, from, Cause.HOPPER_PULL_CONTAINER, key, 3)
+        val stone = key("stone")
+        repeat(5) { coalescer.add(from, to, Cause.HOPPER_PUSH, stone, 1) }
+        coalescer.add(from, to, Cause.HOPPER_PUSH, key("dirt"), 2)
+        coalescer.add(to, from, Cause.HOPPER_PULL_CONTAINER, stone, 3)
         coalescer.flush()
 
         assertEquals(3, written.size)
-        val push = written.single { it.cause == Cause.HOPPER_PUSH && it.form.contentEquals(key.form) }
+        val push = written.single { it.cause == Cause.HOPPER_PUSH && it.form.contentEquals(stone.form) }
         assertEquals(5, push.qty)
         assertEquals(from, push.from)
         assertEquals(to, push.to)
@@ -201,7 +190,7 @@ class MechanismTest {
         val written = ArrayList<Transfer>()
         val coalescer = TickCoalescer(written::add)
         val holder = Container(world, 0, 0, 0, 0)
-        coalescer.add(holder, Void, Cause.HOPPER_PUSH, ItemKey("stone".toByteArray(), null), 1)
+        coalescer.add(holder, Void, Cause.HOPPER_PUSH, key("stone"), 1)
         coalescer.flush()
         coalescer.flush()
         assertEquals(1, written.size)
@@ -300,10 +289,10 @@ class MechanismTest {
 
     private fun furnaceBlock(): Block {
         val furnace = stub(Furnace::class.java)
-        val worldStub = stub(World::class.java, mapOf("getUID" to world))
+        val stubWorld = worldStub(world)
         return stub(
             Block::class.java,
-            mapOf("getWorld" to worldStub, "getX" to 7, "getY" to 65, "getZ" to -12, "getState" to furnace),
+            mapOf("getWorld" to stubWorld, "getX" to 7, "getY" to 65, "getZ" to -12, "getState" to furnace),
         )
     }
 

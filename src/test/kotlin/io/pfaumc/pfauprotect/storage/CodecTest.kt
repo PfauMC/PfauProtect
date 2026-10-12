@@ -1,9 +1,9 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.ledgerEntry
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
-import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.LedgerEntry
@@ -30,8 +30,8 @@ internal class MemoryRegistryStore : RegistryStore {
 
     override fun loadAll(): List<RegistryRow> = rows.toList()
 
-    override fun put(ns: RegistryNamespace, keyBytes: ByteArray, id: Int) {
-        rows += RegistryRow(ns, keyBytes, id)
+    override fun persist(rows: List<RegistryRow>) {
+        this.rows += rows
     }
 
     override fun nextId(ns: RegistryNamespace): Int {
@@ -213,7 +213,7 @@ class CodecTest {
     @Test
     fun `ordinary entry header byte is zero`() {
         assertEquals(0x00, EntryCodec.header(Kind.TRANSFER, Confidence.FACT))
-        val value = EntryCodec.value(entry(PlayerInv(playerA, 0), Void), registries)
+        val value = EntryCodec.value(ledgerEntry(PlayerInv(playerA, 0), Void), registries)
         assertEquals(0x00, value[0].toInt())
         assertEquals(0x20, EntryCodec.header(Kind.TRANSFER, Confidence.INFERRED))
         assertEquals(0x40, EntryCodec.header(Kind.MUTATE, Confidence.FACT))
@@ -229,7 +229,7 @@ class CodecTest {
         val holder = Container(worldA, 4, 70, 9, 2)
         val key = EntryCodec.key(holder, 7L, 8L, 0, registries)
         for (confidence in Confidence.entries) {
-            val value = EntryCodec.value(entry(holder, Void).copy(confidence = confidence, actor = playerA), registries)
+            val value = EntryCodec.value(ledgerEntry(holder, Void).copy(confidence = confidence, actor = playerA), registries)
             assertEquals(confidence, EntryCodec.decodeOrNull(key, value, registries)!!.confidence)
         }
     }
@@ -239,7 +239,7 @@ class CodecTest {
     @Test
     fun `an actor is written only when present and leaves older rows readable`() {
         val holder = Container(worldA, 4, 70, 9, 2)
-        val withActor = entry(holder, Void).copy(cause = Cause.LOOT_GENERATE, qty = 3, actor = playerA)
+        val withActor = ledgerEntry(holder, Void).copy(cause = Cause.LOOT_GENERATE, qty = 3, actor = playerA)
         val key = EntryCodec.key(holder, 7L, 8L, 0, registries)
         val value = EntryCodec.value(withActor, registries)
         assertEquals(0x10, value[0].toInt() and 0x10)
@@ -256,20 +256,17 @@ class CodecTest {
         val holder = PlayerInv(playerA, 0)
         val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
         for (version in 1..7) {
-            val value = EntryCodec.value(entry(holder, Void), registries)
+            val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
             value[0] = ((value[0].toInt() and 0xF8) or version).toByte()
             assertNull(EntryCodec.decodeOrNull(key, value, registries)) { "version $version was decoded" }
         }
     }
 
-    // A row cut short carries a version this build knows and still cannot be read. Decoding it walks
-    // off the end of the buffer, and a scan meets such a row without having chosen it, so throwing
-    // there ends the pass and every row after it goes unlooked-at instead of one being counted.
     @Test
     fun `a record too short to read is skipped rather than throwing`() {
         val holder = PlayerInv(playerA, 0)
         val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
-        val value = EntryCodec.value(entry(holder, Void), registries)
+        val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
         for (kept in 0 until value.size) {
             val torn = value.copyOf(kept)
             assertNull(EntryCodec.decodeOrNull(key, torn, registries)) { "$kept bytes of a record decoded" }
@@ -286,7 +283,7 @@ class CodecTest {
     fun `a cause with no name in this build decodes rather than stopping the scan`() {
         val holder = PlayerInv(playerA, 0)
         val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
-        val value = EntryCodec.value(entry(holder, Void), registries)
+        val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
         value[1] = 0xBE.toByte() // unused; pick another if a cause takes it
 
         val decoded = EntryCodec.decodeOrNull(key, value, registries)
@@ -467,21 +464,4 @@ class CodecTest {
         assertFalse(EntryCodec.key(container, 1L, 1L, 0, registries).startsWith(blockPrefix))
         assertTrue(EntryCodec.key(block, 1L, 1L, 0, registries).startsWith(blockPrefix))
     }
-
-    private fun entry(holder: Holder, counterparty: Holder) = LedgerEntry(
-        holder = holder,
-        timestamp = 1_700_000_000_000L,
-        txId = 7L,
-        kind = Kind.TRANSFER,
-        cause = Cause.PICKUP,
-        confidence = Confidence.FACT,
-        counterparty = counterparty,
-        itemFormId = 12L,
-        qty = 1,
-        damage = null,
-        actor = null,
-    )
-
-    private fun ByteArray.startsWith(prefix: ByteArray) =
-        size >= prefix.size && copyOf(prefix.size).contentEquals(prefix)
 }

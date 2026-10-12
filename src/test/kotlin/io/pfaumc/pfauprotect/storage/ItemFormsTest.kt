@@ -19,7 +19,6 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.io.TempDir
@@ -31,14 +30,11 @@ import net.minecraft.core.registries.Registries as VanillaRegistries
 class ItemFormsTest {
     private val registries = Registries(MemoryRegistryStore())
 
-    private lateinit var registryAccess: RegistryAccess
-    private lateinit var codec: ItemFormCodec
-
-    @BeforeAll
-    fun loadServerRegistries() {
-        registryAccess = ServerRegistries.access
+    // Eager: tests build stacks from `Items` before they reach the codec.
+    private val registryAccess: RegistryAccess = ServerRegistries.access
+    private val codec = run {
         fillTypeRegistries(registries)
-        codec = ItemFormCodec(registries, registryAccess)
+        ItemFormCodec(registries, registryAccess)
     }
 
     @Test

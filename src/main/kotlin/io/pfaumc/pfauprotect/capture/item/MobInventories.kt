@@ -40,7 +40,7 @@ import java.util.concurrent.ConcurrentHashMap
 import net.minecraft.world.entity.EquipmentSlot as NmsEquipmentSlot
 import net.minecraft.world.entity.npc.villager.Villager as NmsVillager
 
-private val MAIN_HAND = NmsEquipmentSlot.MAINHAND.ordinal
+internal val MAIN_HAND = NmsEquipmentSlot.MAINHAND.ordinal
 private val OFF_HAND = NmsEquipmentSlot.OFFHAND.ordinal
 
 // A mob's own pocket is booked past every number its equipment, a horse window and a placed entity use.
@@ -294,7 +294,7 @@ class MobInventories(
         for ((change, label) in explained) {
             if (label == null) continue
             val slot = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + change.slot)
-            label.placing?.let { placed.setFormAt(it.world, it.x, it.y, it.z, change.key.form) }
+            label.placing?.let { placed.setFormAt(it, change.key.form) }
             rows += row(change, slot, label.other, label.cause, timestamp, Confidence.FACT)
         }
         // A breeding names what both parents ate, and their food points moved for that as well.

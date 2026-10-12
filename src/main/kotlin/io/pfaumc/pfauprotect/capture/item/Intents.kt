@@ -105,7 +105,7 @@ class PlayerIntents {
         byPlayer.computeIfAbsent(player) { ConcurrentLinkedQueue() }.add(intent)
     }
 
-    /** Drains: an intent survives exactly one pass, and the pass it survives into is its last. */
+    /** Drains the queue: a pass sees each intent once, and a caller that wants one to linger adds it again. */
     fun take(player: UUID): List<Intent> {
         val queue = byPlayer[player] ?: return emptyList()
         return generateSequence(queue::poll).toList()
@@ -117,10 +117,10 @@ class PlayerIntents {
 }
 
 object Intents {
-    // The pass counts and the event explains. An edge the pass could not pair by itself is missing one
-    // end, and an intent that names that end supplies it; what nothing explains stays facing Void
-    // with the confidence it came with, because that row is the measure of the paths the capture does
-    // not cover yet and losing it would mean losing the only sign that they exist.
+    // An edge the pass could not pair by itself is missing one end, and an intent that names that end
+    // supplies it; what nothing explains stays facing Void with the confidence it came with, because
+    // that row is the measure of the paths the capture does not cover yet and losing it would mean
+    // losing the only sign that they exist.
     fun explain(
         edges: List<Edge>,
         intents: List<Intent>,
@@ -244,6 +244,6 @@ object Intents {
     private fun Intent.labels(edge: Edge, player: UUID) =
         shift == null && from == null && to == null && !recorded && matches(edge.key.form) &&
             (edge.from.heldBy(player) || edge.to.heldBy(player))
-
-    private fun Holder.heldBy(player: UUID) = this is PlayerHolder && uuid == player
 }
+
+internal fun Holder.heldBy(player: UUID) = this is PlayerHolder && uuid == player

@@ -137,14 +137,10 @@ internal fun leftBehind(state: NmsBlockState): NmsBlockState = state.fluidState.
 internal fun leftBehind(data: BlockData): BlockData = leftBehind((data as CraftBlockData).state).asBlockData()
 
 /**
- * What every capture that takes a block away seeds, a hand as much as an explosion, a piston or water.
- * The removal note is what a block giving way in the next tick or two finds; the placement note over
- * the same position is overwritten in the same breath and names what the removal leaves rather than
- * what stood there, so that whoever put the old block there stops answering for the position and
- * whoever emptied it never answers for what moves into the hole.
- *
- * A block standing in two positions is cleared in both, since the other half goes with it under no
- * event of its own.
+ * What every capture that takes a block away seeds, in both halves of a two-position block: a removal
+ * note for whatever gives way in the next tick or two, and a placement note naming what the removal
+ * leaves, so whoever put the old block there stops answering for the position and whoever emptied it
+ * never answers for what moves into the hole.
  */
 internal fun Attribution.cleared(block: Block, actor: UUID) {
     for (standing in listOfNotNull(block, otherHalfOf(block))) {
@@ -183,7 +179,6 @@ internal fun leavesHeldBy(log: Block, owned: (Block) -> Boolean = Bukkit::isOwne
     flood(log, depth = LEAF_REACH, withStart = false) { owned(it) && (it.blockData as? Leaves)?.isPersistent == false }
         .toList()
 
-// A portal's sheet, a log's leaves and a block's shaped neighbours are all found through the six faces.
 internal val SIX_FACES = listOf(
     BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN,
 )
@@ -301,16 +296,10 @@ private fun replacedBy(event: BlockPlaceEvent) =
     (event as? BlockMultiPlaceEvent)?.replacedBlockStates ?: listOf(event.blockReplacedState)
 
 /**
- * The attribution notes are seeded from the same handlers that write the rows, and behind the same
- * cancellation, which is the opposite of what an event needs whose observation outlives its own
- * refusal. Placing and breaking are not such events: a region protection plugin cancelling at NORMAL
- * or HIGH leaves the world exactly as it was, so there is nothing at that position to attribute to
- * anybody, and a note seeded ahead of the cancellation would spend its whole window offering the
- * refused player as the answer for whatever happens there next. Getting in early only earns its keep
- * where the thing being noted has already happened by the time the event can be refused.
- *
- * The server's own refusals come after it raises the event and are checked for the same reason: an
- * action that leaves the world as it was must neither be journalled nor lend its player to anything.
+ * Notes are seeded behind the handler's cancellation, not ahead of it: a placement or break a protection
+ * plugin cancels changes nothing, so an early note would offer the refused player for whatever happens
+ * there next. Early seeding is for changes already done when the event can still be refused. The
+ * server's own refusals, which come after the event, are checked for the same reason.
  */
 class BlockCaptureListener(
     private val logs: BlockLogs,
@@ -401,14 +390,14 @@ class BlockCaptureListener(
         attribution.cleared(block, actor)
         // One submit for the whole break, so every position of it shares an event id and they are
         // found together.
-        val changes = ArrayList<BlockChange>(3)
-        brokenRow(block, state, player, actor)?.let { changes += it }
-        // The other half is a direct neighbour, so the region ticking this block owns it too.
-        (otherHalfOf(block) as CraftBlock?)?.let { partner ->
-            brokenRow(partner, partner.blockState, player, actor, alongside = true)?.let { changes += it }
-        }
-        singledChestHalf(block, state, actor)?.let { changes += it }
-        log.submit(changes)
+        log.submit(
+            listOfNotNull(
+                brokenRow(block, state, player, actor),
+                // The other half is a direct neighbour, so the region ticking this block owns it too.
+                (otherHalfOf(block) as CraftBlock?)?.let { brokenRow(it, it.blockState, player, actor, alongside = true) },
+                singledChestHalf(block, state, actor),
+            )
+        )
     }
 
     private fun brokenRow(

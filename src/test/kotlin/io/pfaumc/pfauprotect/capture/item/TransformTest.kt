@@ -10,6 +10,7 @@ import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.capture.block.brewed
+import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.stub
 import org.bukkit.inventory.Inventory
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -27,7 +28,6 @@ class TransformTest {
     private val craft = Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
     private val anvil = Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
 
-    private fun key(name: String) = ItemKey(name.toByteArray(), null)
     private fun grid(slot: Int) = EntitySlot(player, slot)
     private fun table(slot: Int) = Container(world, 8, 70, 2, slot)
     private val cursor = PlayerCursor(player)
@@ -63,8 +63,6 @@ class TransformTest {
         assertEquals(listOf(Cause.ENCHANT_APPLY, Cause.ENCHANT_LAPIS_CONSUME, Cause.ENCHANT_APPLY), causes)
     }
 
-    // The ingredients leave for the Void and the result arrives out of it. Apart they are unrelated
-    // losses and an unexplained gain; together they are the recipe that was run.
     @Test
     fun `a craft gathers its ingredients and its result into one transaction`() {
         val moves = listOf(
@@ -104,9 +102,6 @@ class TransformTest {
         )
     }
 
-    // An open furnace smelts while the player watches. The smelt is written by the furnace's own
-    // listener; the pass that sees the slots change must not write it again out of nowhere, while what
-    // the player did in the same pass stays.
     @Test
     fun `a station changing its own slots is not the player's movement to write`() {
         val furnace = { slot: Int -> Container(world, 3, 64, 3, slot) }
@@ -125,7 +120,6 @@ class TransformTest {
     }
 
     // An empty map used from a stack stays where it was minus one, and the filled map lands beside it.
-    // The use names the change; the pass gathers both ends into one item changed in place.
     @Test
     fun `filling a map is one map changing and not a loss beside a birth`() {
         val fill = Shift(Cause.MAP_FILL, Cause.MAP_FILL, Kind.MUTATE)
@@ -185,9 +179,6 @@ class TransformTest {
         assertEquals(Cause.ANVIL_COMBINE, transaction.single().cause)
     }
 
-    // Both ends of a transformation face the Void because neither pairs with anything, and the pass
-    // marks anything unpaired as a guess. Together they are not a guess, and left marked as one they
-    // would swell the count of movements nothing could explain by one entry per craft.
     @Test
     fun `a transformation with both sides is witnessed rather than guessed`() {
         val moves = listOf(
@@ -200,8 +191,6 @@ class TransformTest {
         assertTrue(transaction.all { it.confidence == Confidence.FACT })
     }
 
-    // One side alone has nothing to corroborate it: a creative craft consumes nothing, and the lone
-    // arrival stays exactly as unexplained as the pass found it.
     @Test
     fun `a transformation with one side stays a guess`() {
         val moves = listOf(move(Void, cursor, "furnace", 1, Cause.CONTAINER_ADD))

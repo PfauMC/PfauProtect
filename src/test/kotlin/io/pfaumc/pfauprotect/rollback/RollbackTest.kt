@@ -1,5 +1,9 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.BothPlanes
+import io.pfaumc.pfauprotect.T0
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.command.Action
 import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.RowFilter
@@ -12,54 +16,27 @@ import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockRow
-import io.pfaumc.pfauprotect.storage.BlockLog
-import io.pfaumc.pfauprotect.storage.BlockLogs
-import io.pfaumc.pfauprotect.storage.RocksItemLog
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
 import io.pfaumc.pfauprotect.ServerRegistries
 import net.minecraft.world.SimpleContainer
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.item.Items
-import java.nio.file.Path
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
-private const val T0 = 1_700_000_000_000L
 private const val AIR = "minecraft:air"
 private const val STONE = "minecraft:stone"
 private const val DIRT = "minecraft:dirt"
 private const val LAVA = "minecraft:lava[level=0]"
 
-class RollbackTest {
-    private val world = UUID.fromString("00000000-0000-4000-8000-000000000006")
-    private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
-    private val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
+class RollbackTest : BothPlanes() {
+    override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000006")
     private val diamond = byteArrayOf(9)
-
-    private lateinit var shared: RocksItemLog
-    private lateinit var logs: BlockLogs
-    private lateinit var log: BlockLog
-
-    @BeforeEach
-    fun open(@TempDir dir: Path) {
-        shared = RocksItemLog(dir.resolve("items"))
-        logs = BlockLogs(dir.resolve("blocks"), shared)
-        log = logs.open(world)
-    }
-
-    @AfterEach
-    fun closeAll() {
-        logs.close()
-        shared.close()
-    }
 
     private fun step(before: String, after: String) = Step(before, after, null)
 
@@ -278,7 +255,6 @@ class RollbackTest {
         assertEquals(tnt, settle(STONE, position.steps.map { Step(it.before, STONE, null) }, position.origin).back?.before)
     }
 
-    // A wall the same block as before Alice first touched it, in another shape, is not as it was.
     @Test
     fun `a wall joined otherwise than at the origin is not as it was`() {
         val joined = "minecraft:diorite_wall[east=low,north=none,south=none,up=false,waterlogged=false,west=low]"
@@ -372,7 +348,6 @@ class RollbackTest {
         assertTrue(RowFilter(shared, LookupQuery(), emptySet(), emptySet()).keeps(log.at(1, 64, 1).last()))
     }
 
-    // Newest first, and a slot posting turned round: what left the chest goes back in.
     @Test
     fun `a position plans its rows newest first and turns its slot postings round`() {
         log.submit(listOf(BlockChange(5, 64, 5, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
@@ -503,8 +478,6 @@ class RollbackTest {
         assertEquals(54, putBack(chest, 1, diamonds, 200) { false }, "54 more fit, the rest has no room")
     }
 
-    // A lectern and a campfire are no containers, and a rollback still has to put their things back: the
-    // book onto the lectern, the food onto the campfire, one item a slot.
     @Test
     fun `a book goes back onto a lectern and food back onto a campfire`() {
         ServerRegistries.access
@@ -514,11 +487,9 @@ class RollbackTest {
 
         val campfire = net.minecraft.world.level.block.entity.CampfireBlockEntity(net.minecraft.core.BlockPos(2, 64, 1), net.minecraft.world.level.block.Blocks.CAMPFIRE.defaultBlockState())
         assertEquals(2, putBack(slotsOf(campfire)!!, 1, NmsItemStack(Items.BEEF), 2) { false })
-        // Its own slot first, then the first free one: one piece of food a slot.
         assertEquals(listOf(true, true, false, false), campfire.items.map { it.item == Items.BEEF })
     }
 
-    // What arrived is taken out again from wherever it lies by now, and no more than is there.
     @Test
     fun `a slot posting taken out is looked for in the whole chest`() {
         ServerRegistries.access
@@ -543,7 +514,6 @@ class RollbackTest {
         assertTrue(cube.chunks.flatMap { it.positions }.isEmpty())
     }
 
-    // A machine is put back with no signal in it, or it fires before it settles; a switch keeps its own state.
     @Test
     fun `a rollback puts redstone back with no signal in it`() {
         assertEquals("minecraft:comparator[facing=west,mode=subtract,powered=false]", quiet("minecraft:comparator[facing=west,mode=subtract,powered=true]"))
@@ -559,7 +529,6 @@ class RollbackTest {
         assertEquals("minecraft:stone", quiet("minecraft:stone"))
     }
 
-    // A preview bigger than what a player is shown shows the part around them, then other worlds.
     @Test
     fun `a preview shows the nearest ghosts first`() {
         ServerRegistries.access

@@ -1,18 +1,18 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.disabledPlugin
 import io.pfaumc.pfauprotect.NoPlacedForms
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.ItemEntityRef
-import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.storage.Registries
-import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.stub
+import io.pfaumc.pfauprotect.testCodec
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStackTemplate
 import net.minecraft.world.item.Items
@@ -21,7 +21,6 @@ import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Item
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityRemoveEvent
-import org.bukkit.plugin.Plugin
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -87,8 +86,6 @@ class WorldItemsTest {
         )
     }
 
-    // An explosion with nothing behind it arrives as CUSTOM, and calling that fire would be inventing
-    // the fire. It is still an end, and it is still written — as a guess, so it can be counted.
     @Test
     fun `a death nobody can name is still written and marked a guess`() {
         val unnamed = end(EntityRemoveEvent.Cause.DEATH, DamageCause.CUSTOM)
@@ -107,8 +104,6 @@ class WorldItemsTest {
         )
     }
 
-    // The last damage stays on an entity for the rest of its life, so an item that caught fire, lived
-    // through it and was killed later still reads as burnt unless its health is asked about too.
     @Test
     fun `damage an item survived does not name the death that comes later`() {
         assertEquals(
@@ -134,8 +129,6 @@ class WorldItemsTest {
         }
     }
 
-    // Health is whole and the hit is cut down to a whole number, so a hit that leaves less than one
-    // point is the end of the item.
     @Test
     fun `a hit is lethal when what it leaves rounds down to nothing`() {
         assertTrue(lethal(5, 5.0))
@@ -143,8 +136,6 @@ class WorldItemsTest {
         assertFalse(lethal(5, 3.9))
     }
 
-    // Only a death by damage spills what a box held; running out of time, the void and a kill take the
-    // contents down with it.
     @Test
     fun `only an item whose health ran out spills its contents`() {
         assertTrue(spills(EntityRemoveEvent.Cause.DEATH, 0))
@@ -153,7 +144,7 @@ class WorldItemsTest {
         assertFalse(spills(EntityRemoveEvent.Cause.DESPAWN, 5))
     }
 
-    private val codec by lazy { ItemFormCodec(Registries(MemoryRegistryStore()), ServerRegistries.access) }
+    private val codec by lazy { testCodec() }
 
     // `Items` cannot be touched before the registries are up, and the codec is what brings them up.
     private fun bundle(owner: UUID?) = codec.let { NmsItemStack(Items.BUNDLE) }.apply {
@@ -183,7 +174,7 @@ class WorldItemsTest {
         val entity = UUID.randomUUID()
         val origins = SpawnOrigins(coalescer)
         val capture = ContainerCaptureListener(
-            stub(Plugin::class.java, mapOf("isEnabled" to false)), {}, codec,
+            disabledPlugin(), {}, codec,
             Registries(MemoryRegistryStore()), origins, NoPlacedForms,
         )
         val item = stub(
@@ -214,9 +205,6 @@ class WorldItemsTest {
         assertEquals(0, mergedAmount(donor = 30, target = 80, targetMax = 99))
     }
 
-    // A drop out of the creative menu empties no slot, so the pass that was to write the birth in
-    // place of the silenced spawn finds nothing to write. Without this the entity is never born, and
-    // being picked up or destroyed later is a debit against a credit nobody made.
     @Test
     fun `a drop the pass could not spend is born anyway`() {
         val entity = UUID.randomUUID()

@@ -52,6 +52,21 @@ data class EntityRow(
     val via: String? = null,
 )
 
+private const val NEARBY_FLAG = 0x04
+private const val CONFIDENCE_FLAG = 0x08
+
+private fun confidenceBits(confidence: Confidence): Int = when (confidence) {
+    Confidence.INFERRED -> CONFIDENCE_FLAG
+    Confidence.NEARBY -> NEARBY_FLAG
+    Confidence.FACT -> 0
+}
+
+private fun confidenceOf(header: Int): Confidence = when {
+    header and NEARBY_FLAG != 0 -> Confidence.NEARBY
+    header and CONFIDENCE_FLAG != 0 -> Confidence.INFERRED
+    else -> Confidence.FACT
+}
+
 // The key is a block row's key — position, time, event, ordinal — so a walk of a chunk or a position
 // reads both planes the same way.
 object EntityCodec {
@@ -62,8 +77,6 @@ object EntityCodec {
     const val WITH_DEATH = 1
 
     private const val VERSION_MASK = 0x03
-    private const val NEARBY_FLAG = 0x04
-    private const val CONFIDENCE_FLAG = 0x08
     private const val ACTOR_FLAG = 0x10
     private const val BEFORE_FLAG = 0x20
     private const val AFTER_FLAG = 0x40
@@ -75,8 +88,7 @@ object EntityCodec {
         val death = deathId >= 0 || viaId >= 0
         w.byte(
             (if (death) WITH_DEATH else VERSION) or
-                (if (row.confidence == Confidence.INFERRED) CONFIDENCE_FLAG else 0) or
-                (if (row.confidence == Confidence.NEARBY) NEARBY_FLAG else 0) or
+                confidenceBits(row.confidence) or
                 (if (row.actor != null) ACTOR_FLAG else 0) or
                 (if (row.payloadBefore != null) BEFORE_FLAG else 0) or
                 (if (row.payloadAfter != null) AFTER_FLAG else 0) or
@@ -102,11 +114,7 @@ object EntityCodec {
 
     /** Null for a row this build cannot read, as a block row is. */
     fun decodeOrNull(key: ByteArray, value: ByteArray, names: Registries): EntityRow? =
-        try {
-            decode(key, value, names)
-        } catch (failure: IllegalArgumentException) {
-            null
-        }
+        nullOn<IllegalArgumentException, _> { decode(key, value, names) }
 
     private fun decode(key: ByteArray, value: ByteArray, names: Registries): EntityRow {
         fun typeOf(id: Int) = names.keyOf(RegistryNamespace.ENTITY_TYPE, id)
@@ -131,11 +139,7 @@ object EntityCodec {
             x = pos[0], y = pos[1], z = pos[2],
             timestamp = k.longBE(), eventId = k.longBE(), ordinal = k.byte(),
             kind = kind, cause = cause, type = type, uuid = uuid,
-            confidence = when {
-                header and NEARBY_FLAG != 0 -> Confidence.NEARBY
-                header and CONFIDENCE_FLAG != 0 -> Confidence.INFERRED
-                else -> Confidence.FACT
-            },
+            confidence = confidenceOf(header),
             actor = actor, payloadBefore = before, payloadAfter = after, drops = drops, death = death, via = via,
         )
     }
@@ -159,11 +163,9 @@ object BlockCodec {
     // a longer one is not.
     private const val MAX_STATE = 0xFFFF
 
-    // Two bits of version, the third taken by the witness flag: the version has only ever been zero, so
+    // Two bits of version, the third taken by the nearby flag: the version has only ever been zero, so
     // every row written before the flag existed reads as it always did.
     private const val VERSION_MASK = 0x03
-    private const val NEARBY_FLAG = 0x04
-    private const val CONFIDENCE_FLAG = 0x08
     private const val ACTOR_FLAG = 0x10
     private const val PAYLOAD_BEFORE_FLAG = 0x20
     private const val PAYLOAD_AFTER_FLAG = 0x40
@@ -220,11 +222,7 @@ object BlockCodec {
      * the scan that met it would otherwise have answered with.
      */
     fun decodeOrNull(key: ByteArray, value: ByteArray, names: IdLookup): BlockRow? =
-        try {
-            decode(key, value, names)
-        } catch (failure: IllegalArgumentException) {
-            null
-        }
+        nullOn<IllegalArgumentException, _> { decode(key, value, names) }
 
     fun decode(key: ByteArray, value: ByteArray, names: IdLookup): BlockRow {
         val v = ByteReader(value)
@@ -254,11 +252,7 @@ object BlockCodec {
             cause = cause,
             stateBefore = stateBefore,
             stateAfter = stateAfter,
-            confidence = when {
-                header and NEARBY_FLAG != 0 -> Confidence.NEARBY
-                header and CONFIDENCE_FLAG != 0 -> Confidence.INFERRED
-                else -> Confidence.FACT
-            },
+            confidence = confidenceOf(header),
             alongside = header and ALONGSIDE_FLAG != 0,
             actor = actor,
             payloadBefore = payloadBefore,
@@ -268,8 +262,7 @@ object BlockCodec {
 
     private fun header(row: BlockRow): Int =
         VERSION or
-            (if (row.confidence == Confidence.INFERRED) CONFIDENCE_FLAG else 0) or
-            (if (row.confidence == Confidence.NEARBY) NEARBY_FLAG else 0) or
+            confidenceBits(row.confidence) or
             (if (row.actor != null) ACTOR_FLAG else 0) or
             (if (row.payloadBefore != null) PAYLOAD_BEFORE_FLAG else 0) or
             (if (row.payloadAfter != null) PAYLOAD_AFTER_FLAG else 0) or

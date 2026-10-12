@@ -25,8 +25,6 @@ import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.ChatKind
 import io.pfaumc.pfauprotect.storage.ChatLog
-import io.pfaumc.pfauprotect.storage.EntityChange
-import io.pfaumc.pfauprotect.storage.SweepReport
 import io.pfaumc.pfauprotect.storage.WorldChange
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.event.ClickEvent
@@ -53,7 +51,6 @@ import io.pfaumc.pfauprotect.capture.item.MobInventories
 import io.pfaumc.pfauprotect.capture.item.MobItemListener
 import io.pfaumc.pfauprotect.capture.item.NestedCaptureListener
 import io.pfaumc.pfauprotect.attribution.Nudges
-import io.pfaumc.pfauprotect.check.PlaneReport
 import io.pfaumc.pfauprotect.check.PlaneSync
 import io.pfaumc.pfauprotect.capture.item.ProjectileListener
 import io.pfaumc.pfauprotect.check.Reconciliation
@@ -66,9 +63,9 @@ import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.capture.item.WorldItemListener
+import io.pfaumc.pfauprotect.storage.cleaningUpOnFailure
 import io.pfaumc.pfauprotect.storage.fillTypeRegistries
 import io.pfaumc.pfauprotect.check.heldForms
-import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.command.durationOrNull
 import io.pfaumc.pfauprotect.command.lookupTargetAt
 import io.pfaumc.pfauprotect.command.offThread
@@ -77,6 +74,7 @@ import io.pfaumc.pfauprotect.command.targetOr
 import io.pfaumc.pfauprotect.rollback.ChunkRollback
 import io.pfaumc.pfauprotect.rollback.Confiscations
 import io.pfaumc.pfauprotect.rollback.Rollbacks
+import io.pfaumc.pfauprotect.rollback.nameOrId
 import io.pfaumc.pfauprotect.capture.item.unspentDrop
 import net.minecraft.server.MinecraftServer
 import org.bukkit.Bukkit
@@ -155,10 +153,7 @@ private const val VERIFY_ROUNDS = 50
 private class Uncovered(private val ledger: RocksItemLog) {
     private val counts = ConcurrentHashMap<Cause, LongAdder>()
 
-    fun submit(transfer: Transfer) {
-        tally(transfer)
-        ledger.submit(transfer)
-    }
+    fun submit(transfer: Transfer) = submit(listOf(transfer))
 
     fun submit(transaction: List<Transfer>) {
         for (transfer in transaction) tally(transfer)
@@ -229,6 +224,12 @@ class PfauProtectPlugin : JavaPlugin() {
         saveDefaultConfig()
         Settings.load(config, logger)
         val ledger = RocksItemLog(dataFolder.toPath().resolve("ledger"))
+        // onDisable closes what `running` holds, and until it is set that is nothing: the ledger would keep
+        // its lock file and its writer, and the next enable could not open it.
+        cleaningUpOnFailure({ if (running == null) ledger.close() }) { enable(ledger) }
+    }
+
+    private fun enable(ledger: RocksItemLog) {
         val energy = Energy()
         val nudges = Nudges()
         val touches = HandTouches()
@@ -258,8 +259,6 @@ class PfauProtectPlugin : JavaPlugin() {
         ) { at, task -> server.regionScheduler.run(this, at) { task() } }
         val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)
-        // Held before anything that can fail, so a failure on the way up still closes the ledger on
-        // the way back down.
         val worldItems = WorldItemListener(codec, mechanisms, origins, capture, attribution, entities)
         val entityCapture = EntityCapture(
             blocks, origins, attribution, entities,
@@ -279,7 +278,7 @@ class PfauProtectPlugin : JavaPlugin() {
             lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks), rollbacks, chat,
         )
         this.running = running
-        ledger.staged { fillTypeRegistries(ledger.registries) }
+        ledger.registries.batched { fillTypeRegistries(ledger.registries) }
         server.pluginManager.registerEvents(WorldBaseListener(blocks), this)
         // Enabling after startup, every world is already loaded and none of them will ever raise the
         // load event again.
@@ -359,7 +358,7 @@ class PfauProtectPlugin : JavaPlugin() {
         }
         every(SWEEP_MINUTES) { logPass { checkLedger(ledger, 1, it) } }
         every(PLANE_MINUTES) { if (isEnabled) logPass { checkPlanes(running.planes, 1, false, it) } }
-        every(RECONCILE_MINUTES) { reconcileEveryone(running.reconciliation, codec) }
+        every(RECONCILE_MINUTES) { reconcileEveryone() }
         server.asyncScheduler.runAtFixedRate(this, { reportUncovered(uncovered) }, 1, 1, TimeUnit.DAYS)
         warnAboutSilencedHoppers()
         registerCommand(CommandBrackets(this, blocks, codec, ledger, uncovered::submit))
@@ -421,11 +420,8 @@ class PfauProtectPlugin : JavaPlugin() {
     // A gap means one end of a movement was written and the other was not, which is a hole in the
     // capture rather than anything a player did. The periodic pass is one round, reported as it is found
     // rather than once the ledger is already being read in anger; /pp verify runs rounds to the end.
-    // Says whether it found anything.
     private fun checkLedger(ledger: RocksItemLog, rounds: Int, say: (String) -> Unit): Boolean {
-        val reports = buildList<SweepReport> {
-            do add(ledger.sweep(SWEEP_ENTRIES)) while (size < rounds && !last().reachedEnd)
-        }
+        val reports = inRounds(rounds, { it.reachedEnd }) { ledger.sweep(SWEEP_ENTRIES) }
         val checked = reports.sumOf { it.checked }
         val unreadable = reports.sumOf { it.unreadable }
         val gaps = reports.flatMap { it.gaps }
@@ -436,22 +432,19 @@ class PfauProtectPlugin : JavaPlugin() {
         val whole = rounds > 1
         if (!whole && !found && !(reachedEnd && checked > 0)) return false
         say("Transaction invariant: $checked entries, ${gaps.size} gaps, $unreadable unreadable.")
-        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) say("  gap: $gap")
-        if (gaps.size > SWEEP_GAPS_LOGGED) say("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
+        sayGaps(gaps, say) { "  gap: $it" }
         if (whole && !reachedEnd) say("  stopped on the round limit; run it again to cover the rest.")
         return found
     }
 
     // A position where the two planes disagree is a change that reached one of them and not the other,
     // which from inside either plane on its own reads as perfectly consistent. That is a hole in the
-    // capture rather than anything a player did. Says whether it found anything.
+    // capture rather than anything a player did.
     private fun checkPlanes(planes: PlaneSync, rounds: Int, judgeRecent: Boolean, say: (String) -> Unit): Boolean {
         // Reading as though a settle window's worth of time had already passed is what lets a position
         // touched a moment ago be judged at all.
         val now = System.currentTimeMillis() + if (judgeRecent) SETTLE_MILLIS else 0
-        val reports = buildList<PlaneReport> {
-            do add(planes.pass(PLANE_POSTINGS, now)) while (size < rounds && !last().reachedEnd)
-        }
+        val reports = inRounds(rounds, { it.reachedEnd }) { planes.pass(PLANE_POSTINGS, now) }
         val checked = reports.sumOf { it.checked }
         val unrecorded = reports.sumOf { it.unrecorded }
         val settling = reports.sumOf { it.settling }
@@ -472,19 +465,24 @@ class PfauProtectPlugin : JavaPlugin() {
                 "$unrecorded the block plane never recorded, $settling too recent to judge, " +
                 "$unreadable unreadable."
         )
-        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) {
+        sayGaps(gaps, say) { gap ->
             val world = server.getWorld(gap.at.world)?.name ?: gap.at.world.toString()
-            say(
-                "  gap in $world at ${gap.at.x} ${gap.at.y} ${gap.at.z}: ${gap.standing} stands there, " +
-                    "the item plane holds ${gap.fact} confirmed and ${gap.inferred} inferred"
-            )
+            "  gap in $world at ${gap.at.x} ${gap.at.y} ${gap.at.z}: ${gap.standing} stands there, " +
+                "the item plane holds ${gap.fact} confirmed and ${gap.inferred} inferred"
         }
-        if (gaps.size > SWEEP_GAPS_LOGGED) say("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
         if (whole && settling > 0 && !judgeRecent) {
             say("  $settling positions were touched too recently; 'verify recent' judges them too.")
         }
         if (whole && !reachedEnd) say("  stopped on the round limit; run it again to cover the rest.")
         return found
+    }
+
+    private inline fun <R> inRounds(rounds: Int, reachedEnd: (R) -> Boolean, round: () -> R): List<R> =
+        buildList { do add(round()) while (size < rounds && !reachedEnd(last())) }
+
+    private inline fun <T> sayGaps(gaps: List<T>, say: (String) -> Unit, line: (T) -> String) {
+        for (gap in gaps.take(SWEEP_GAPS_LOGGED)) say(line(gap))
+        if (gaps.size > SWEEP_GAPS_LOGGED) say("  ... and ${gaps.size - SWEEP_GAPS_LOGGED} more")
     }
 
     // With the move event switched off the server stops telling anyone that a hopper moved anything,
@@ -716,11 +714,7 @@ class PfauProtectPlugin : JavaPlugin() {
     // Another plugin may veto a row before it is written; nobody listening, nothing is asked.
     private fun preLog(world: UUID, change: WorldChange): Boolean {
         if (PfauProtectPreLogEvent.getHandlerList().registeredListeners.isEmpty()) return true
-        val cause = when (change) {
-            is BlockChange -> change.cause
-            is EntityChange -> change.cause
-        }
-        val event = PfauProtectPreLogEvent(world, change.x, change.y, change.z, cause.name, change.actor, !server.isPrimaryThread)
+        val event = PfauProtectPreLogEvent(world, change.x, change.y, change.z, change.cause.name, change.actor, !server.isPrimaryThread)
         server.pluginManager.callEvent(event)
         return !event.isCancelled
     }
@@ -747,7 +741,7 @@ class PfauProtectPlugin : JavaPlugin() {
             if (lines.isEmpty()) return@runNow sender.say("Nothing said or run matches.")
             sender.sendMessage(Ui.text(tr("PfauProtect · chat and commands", "PfauProtect · чат и команды"), Ui.FAINT))
             for (line in lines) {
-                val who = Ui.text(server.getOfflinePlayer(line.player).name ?: line.player.toString(), Ui.WHO)
+                val who = Ui.text(nameOrId(line.player), Ui.WHO)
                 val what = when (line.kind) {
                     ChatKind.CHAT -> Component.text().append(who).append(Ui.text(": " + line.text)).build()
                     ChatKind.COMMAND -> Component.text().append(who).append(Ui.text(" " + line.text, Ui.CHANGED)).build()
@@ -821,19 +815,13 @@ class PfauProtectPlugin : JavaPlugin() {
             return 0
         }
         val sender = source.sender
-        val reconciliation = running.reconciliation
-        compare(target, running.codec, reconciliation) { report(sender, target, it, reconciliation) }
+        compare(target) { report(sender, target, it, running.reconciliation) }
         return Command.SINGLE_SUCCESS
     }
 
     // The slots may only be read on the region that ticks the player, and RocksDB has no business
     // running out there, so the two halves of a reconciliation are two hops instead of one task.
-    private fun compare(
-        player: Player,
-        codec: ItemFormCodec,
-        reconciliation: Reconciliation,
-        andThen: (List<Mismatch>) -> Unit,
-    ) {
+    private fun compare(player: Player, andThen: (List<Mismatch>) -> Unit) {
         val running = this.running ?: return
         player.scheduler.run(this, {
             // The pass is the only writer for a player's own slots and it runs a tick behind the
@@ -841,12 +829,12 @@ class PfauProtectPlugin : JavaPlugin() {
             // told about the last thing the player did. Running the pass first is what makes the two
             // sides the same moment; without it every recent movement reads as a difference.
             running.capture.recompute(player)
-            val held = heldForms(player, codec)
+            val held = heldForms(player, running.codec)
             server.asyncScheduler.runNow(this) {
                 // The writer runs on a thread of its own, and what it has not written yet is missing
                 // from the balance the comparison is about to read.
                 running.ledger.drain()
-                andThen(reconciliation.compare(player.uniqueId, held))
+                andThen(running.reconciliation.compare(player.uniqueId, held))
             }
         }, null)
     }
@@ -877,10 +865,11 @@ class PfauProtectPlugin : JavaPlugin() {
     // A hole in the capture gives itself away by being systematic: the same form, the same direction,
     // on many players at once. That shape only shows on the flow of live data, so the pass runs on
     // everyone and says nothing about the players who balance.
-    private fun reconcileEveryone(reconciliation: Reconciliation, codec: ItemFormCodec) {
+    private fun reconcileEveryone() {
+        val reconciliation = running?.reconciliation ?: return
         if (!isEnabled) return
         for (player in server.onlinePlayers) {
-            compare(player, codec, reconciliation) { mismatches ->
+            compare(player) { mismatches ->
                 if (mismatches.isNotEmpty()) {
                     logger.info(
                         "reconcile ${player.name}: " +

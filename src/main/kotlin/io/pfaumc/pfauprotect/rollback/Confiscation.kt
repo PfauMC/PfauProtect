@@ -145,9 +145,7 @@ internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
     val led = tally.traces.mapNotNullTo(HashSet()) { (it.lead as? ItemEntityRef)?.uuid }
     for (pile in tally.piles.toSet() - led) owed += wholePile(pile, rowsOf)
     val restored = tally.restored.toHashSet()
-    val seen = HashSet<Long>()
-    for (loss in tally.breaks) {
-        if (!seen.add(loss.txId)) continue
+    for (loss in tally.breaks.distinctBy { it.txId }) {
         val whole = ledger.transactionEntries(loss)
         val gave = whole.filter { it.holder is WorldBlock && it.qty < 0 }.map { it.holder as WorldBlock }
         if (!restored.containsAll(gave)) continue
@@ -171,9 +169,7 @@ internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
 /** How many of the item a player set as blocks since then, at positions among `undone`. */
 internal fun placedInto(ledger: RocksItemLog, player: UUID, formId: Long, since: Long, undone: Set<WorldBlock>): Int {
     if (since <= 0 || undone.isEmpty()) return 0
-    return listOf(PlayerInv(player, 0), PlayerEquip(player, 0)).flatMap {
-        ledger.holderPage(it, since, Long.MAX_VALUE, limit = STASH_ROWS).entries
-    }.filter { it.itemFormId == formId && it.qty < 0 && it.counterparty in undone }.sumOf { -it.qty }
+    return ownRows(ledger, since, PlayerInv(player, 0), PlayerEquip(player, 0)).filter { it.itemFormId == formId && it.qty < 0 && it.counterparty in undone }.sumOf { -it.qty }
 }
 
 // The ways a player makes one item out of others at a bench, whose result lands in their hands.
@@ -186,9 +182,7 @@ private val MAKING = setOf(Cause.CRAFT_RESULT, Cause.SMELT, Cause.STONECUTTER, C
  */
 internal fun conversionsOf(ledger: RocksItemLog, player: UUID, formId: Long, since: Long): List<Conversion> {
     if (since <= 0) return emptyList()
-    val gains = listOf(PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player)).flatMap {
-        ledger.holderPage(it, since, Long.MAX_VALUE, limit = STASH_ROWS).entries
-    }.filter { it.qty > 0 }
+    val gains = ownRows(ledger, since, PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player)).filter { it.qty > 0 }
     val made = gains.flatMap { gain ->
         when {
             gain.cause in MAKING -> listOf(gain)
@@ -208,15 +202,16 @@ internal fun conversionsOf(ledger: RocksItemLog, player: UUID, formId: Long, sin
 // Enough of a player's slot history to find where they put things in one rollback's window.
 private const val STASH_ROWS = 4096
 
+private fun ownRows(ledger: RocksItemLog, since: Long, vararg holders: Holder, reverse: Boolean = false): List<LedgerEntry> =
+    holders.flatMap { ledger.holderPage(it, since, Long.MAX_VALUE, reverse = reverse, limit = STASH_ROWS).entries }
+
 /**
  * The containers a player put this item into since then, newest first, by their own slots' rows: what
  * left their hands into a container. Their own chest, a barrel, a shulker box standing as a block.
  */
 internal fun stashesOf(ledger: RocksItemLog, player: UUID, formId: Long, since: Long): List<Container> {
     if (since <= 0) return emptyList()
-    val rows = listOf(PlayerInv(player, 0), PlayerEnder(player, 0)).flatMap {
-        ledger.holderPage(it, since, Long.MAX_VALUE, reverse = true, limit = STASH_ROWS).entries
-    }
+    val rows = ownRows(ledger, since, PlayerInv(player, 0), PlayerEnder(player, 0), reverse = true)
     return rows.asSequence()
         .filter { it.itemFormId == formId && it.qty < 0 }
         .sortedByDescending { it.timestamp }
@@ -340,7 +335,7 @@ class Confiscations(
     // Players one by one; piles together, since there can be dozens of them and none has a name.
     fun describe(owed: List<Owed>): String {
         val players = owed.filter { it.taker is Carrier }.groupBy { it.taker as Carrier }.map { (taker, all) ->
-            val who = (Bukkit.getOfflinePlayer(taker.player).name ?: taker.player.toString()) +
+            val who = nameOrId(taker.player) +
                 if (Bukkit.getPlayer(taker.player) == null) " (offline, at their next join)" else ""
             "$who: ${amounts(all)}"
         }
@@ -410,11 +405,10 @@ class Confiscations(
                     // A player who leaves between the two is owed it instead, whether they left before the
                     // task was queued (a null task) or after. What they hold no more is looked for in what
                     // they put it into.
+                    val oweLater = { Bukkit.getAsyncScheduler().runNow(plugin) { oweAll() } }
                     player.scheduler.run(plugin, {
                         fromPlayer(player, all, actor, sender, gone = gone, taken = taken) { item, left -> fromStashes(item, left, actor, sender, gone, taken) }
-                    }) {
-                        Bukkit.getAsyncScheduler().runNow(plugin) { oweAll() }
-                    } ?: Bukkit.getAsyncScheduler().runNow(plugin) { oweAll() }
+                    }) { oweLater() } ?: oweLater()
                 }
                 // Looking an entity up by its uuid is a tick thread's business, and the pile may lie in any
                 // region; the global one may ask, and the pile's own scheduler does the rest.
@@ -493,8 +487,10 @@ class Confiscations(
                     for (slot in 0 until slots.size) {
                         if (got >= left) break
                         val here = slots.get(slot)
-                        if (here.isEmpty || !codec.encode(here).form.contentEquals(form)) continue
-                        val damage = codec.encode(here).damage
+                        if (here.isEmpty) continue
+                        val encoded = codec.encode(here)
+                        if (!encoded.form.contentEquals(form)) continue
+                        val damage = encoded.damage
                         val n = minOf(left - got, here.count)
                         slots.set(slot, if (n == here.count) net.minecraft.world.item.ItemStack.EMPTY else here.copyWithCount(here.count - n))
                         rows += Transfer(Cause.ROLLBACK, stash.copy(slot = slot), Void, form, damage, n, now, actor = actor)

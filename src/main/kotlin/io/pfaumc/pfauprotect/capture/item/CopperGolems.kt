@@ -19,13 +19,11 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 // Close enough to the chest to be opening it: the game's own reach for the interaction is under two
-// blocks from the golem's middle.
+// blocks from the golem's middle, and three leave a margin over it.
 private const val GOLEM_REACH_SQUARED = 3.0 * 3.0
 
 // How long a chosen chest is watched for, walk included, before it is given up as never reached.
 private const val GOLEM_WATCH_TICKS = 1200
-
-private val MAINHAND = net.minecraft.world.entity.EquipmentSlot.MAINHAND.ordinal
 
 /**
  * What a copper golem carries between chests. It takes one stack of up to sixteen from the first slot
@@ -103,11 +101,11 @@ class CopperGolemListener(
         // hand drops it, and the drop is filed as that.
         val slots = golemSlots(previous, now, form, took, moved)
         if (slots.isEmpty()) return
-        val hand = EntitySlot(golem.uniqueId, MAINHAND)
+        val hand = EntitySlot(golem.uniqueId, MAIN_HAND)
         val timestamp = System.currentTimeMillis()
         val key = (if (took) after else before)!!.key
         val rows = slots.map { (slot, qty) -> golemRow(took, slot, hand, key, qty, timestamp) }
-        if (took) bookHeld(golem, MAINHAND, form) else if (after == null) unbookHeld(golem, MAINHAND)
+        if (took) bookHeld(golem, MAIN_HAND, form) else if (after == null) unbookHeld(golem, MAIN_HAND)
         sink(rows)
     }
 

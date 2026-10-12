@@ -1,11 +1,11 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.FormKey
-import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerEnder
@@ -21,7 +21,6 @@ class DiffTest {
     private val world = UUID.randomUUID()
     private val player = UUID.randomUUID()
 
-    private fun key(name: String, damage: Int? = null) = ItemKey(name.toByteArray(), damage)
     private fun stack(name: String, count: Int, damage: Int? = null) = Stack(key(name, damage), count)
     private fun chest(slot: Int) = Container(world, 10, 64, -3, slot)
     private fun edge(from: Holder, to: Holder) = Edge(from, to, key("stone"), 1, Confidence.FACT)
@@ -46,8 +45,7 @@ class DiffTest {
         assertTrue(edges.none { it.from != Void && it.to != Void }, "a station half was married off: $edges")
     }
 
-    // The same two snapshots without the station named: the pairing marries a loss to the gain and the
-    // second tool is left to vanish on its own. This is what the case above exists to prevent.
+    // What the case above exists to prevent.
     @Test
     fun `without the station named the merge reads as a move and a disappearance`() {
         val edges = Netting.diff(
@@ -246,7 +244,6 @@ class DiffTest {
         assertEquals(listOf(Edge(Void, bag(0), key("cobble"), 3, Confidence.INFERRED)), edges)
     }
 
-    // A loss nobody claimed is still married to a gain of its form: that is the ordinary move.
     @Test
     fun `what no intent claimed is still paired loss to gain`() {
         val placed = WorldBlock(world, 10, 65, -3)
@@ -367,8 +364,6 @@ class DiffTest {
         )
     }
 
-    // What changed while nobody watched, slot by slot: a stack moved between two slots unseen is a move,
-    // and only what one form gained or lost overall comes from or goes to nowhere.
     @Test
     fun `an unseen change is written where it shows and a move as a move`() {
         val diamond = FormKey("diamond".toByteArray())
@@ -376,7 +371,7 @@ class DiffTest {
         val slot3 = PlayerInv(player, 3)
         val slot7 = PlayerInv(player, 7)
         fun rows(live: Map<Holder, Map<FormKey, Int>>, booked: Map<Holder, Map<FormKey, Int>>) =
-            loadDifferences(live, booked).map { Triple(it.from, it.to, it.qty) }
+            loadDifferences(live, booked, 0L).map { Triple(it.from, it.to, it.qty) }
 
         assertEquals(listOf(Triple(slot0, slot7, 5)), rows(mapOf(slot7 to mapOf(diamond to 5)), mapOf(slot0 to mapOf(diamond to 5))))
         assertEquals(emptyList<Triple<Holder, Holder, Int>>(), rows(mapOf(slot0 to mapOf(diamond to 5)), mapOf(slot0 to mapOf(diamond to 5))))

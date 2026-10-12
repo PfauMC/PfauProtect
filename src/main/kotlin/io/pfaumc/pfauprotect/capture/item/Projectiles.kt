@@ -108,7 +108,7 @@ class ProjectileListener(
     fun onPickup(event: PlayerPickupArrowEvent) {
         val arrow = event.arrow
         val encoded = codec.encodeOrNull(event.item.itemStack) ?: return
-        val from = if (unmark(arrow)) EntitySlot(arrow.uniqueId, 0) else Void
+        val from = carriedBy(arrow)
         val returning = arrow is Trident && arrow.loyaltyLevel > 0 && arrow.hasDealtDamage()
         val cause = if (returning) Cause.TRIDENT_LOYALTY_RETURN else Cause.PROJ_PICKUP
         capture.intend(event.player, Intent(cause, from = from, form = encoded.form, qty = encoded.count))
@@ -120,7 +120,7 @@ class ProjectileListener(
         val arrow = event.entity as? AbstractArrow ?: return
         val item = event.itemDrop
         val encoded = codec.encodeOrNull(item.itemStack) ?: return
-        val from = if (unmark(arrow)) EntitySlot(arrow.uniqueId, 0) else Void
+        val from = carriedBy(arrow)
         origins.expect(item.uniqueId, from, Cause.TRIDENT_DROP, encoded.key, encoded.count)
     }
 
@@ -156,4 +156,6 @@ class ProjectileListener(
         container.remove(SHOT)
         return true
     }
+
+    private fun carriedBy(arrow: AbstractArrow): Holder = if (unmark(arrow)) EntitySlot(arrow.uniqueId, 0) else Void
 }

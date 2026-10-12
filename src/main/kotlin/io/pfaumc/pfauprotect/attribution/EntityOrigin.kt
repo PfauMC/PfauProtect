@@ -1,5 +1,4 @@
 package io.pfaumc.pfauprotect.attribution
-import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.capture.item.positionOf
 import org.bukkit.event.EventHandler

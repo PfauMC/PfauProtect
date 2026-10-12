@@ -1,14 +1,23 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.ServerRegistries
 import org.bukkit.event.inventory.InventoryType
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 
 class MenuTypeRegistryTest {
     private val menu = RegistryNamespace.MENU_TYPE
+
+    // InventoryType and the type registries reach into vanilla's, and a class whose static init finds them
+    // unbootstrapped stays broken for every test after it in the run.
+    @BeforeEach
+    fun bootstrap() {
+        ServerRegistries.access
+    }
 
     @Test
     fun `a menu is keyed by the name of its type and not by its ordinal`(@TempDir dir: Path) {
@@ -21,8 +30,6 @@ class MenuTypeRegistryTest {
         }
     }
 
-    // The number a row was written under has to keep meaning the same menu after a restart, which is
-    // the whole reason the ordinal was given up: the number on disk outlives the run that minted it.
     @Test
     fun `a menu number survives a close and a reopen`(@TempDir dir: Path) {
         val stored = RocksItemLog(dir).use { log ->
@@ -42,7 +49,7 @@ class MenuTypeRegistryTest {
     @Test
     fun `every inventory type fits the space and gets a number of its own`(@TempDir dir: Path) {
         RocksItemLog(dir).use { log ->
-            log.staged { fillTypeRegistries(log.registries) }
+            log.registries.batched { fillTypeRegistries(log.registries) }
 
             val ids = InventoryType.entries.map { log.registries.lookupKey(menu, it.name) }
             assertTrue(ids.none { it == null }, "an inventory type went unregistered")

@@ -119,10 +119,10 @@ class CommandListener(
     // @p and @r over-name; a reason left on a player the command skipped explains nothing,
     // unless that player had an unexplained gain of their own in the same pass.
     private fun targetsOf(sender: CommandSender, target: String?, executed: Boolean): List<Player> = when {
-        // Run through `execute as`, the command's own self is whoever that named.
-        executed && (target == null || target.startsWith("@")) -> Bukkit.getOnlinePlayers().toList()
-        target == null || target == "@s" -> listOfNotNull(sender as? Player)
-        target.startsWith("@") -> Bukkit.getOnlinePlayers().toList()
+        // Run through `execute as`, the command's own self is whoever that named, so even @s names
+        // every player online.
+        !executed && (target == null || target == "@s") -> listOfNotNull(sender as? Player)
+        target == null || target.startsWith("@") -> Bukkit.getOnlinePlayers().toList()
         else -> listOfNotNull(Bukkit.getPlayerExact(target))
     }
 }

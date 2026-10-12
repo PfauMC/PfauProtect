@@ -22,15 +22,20 @@ class LookupTest {
 
     @Test
     fun `short and long parameter names mean the same thing`() {
-        assertEquals(parseLookupQuery("u:Steve").copy(words = ""), parseLookupQuery("user:Steve").copy(words = ""))
-        assertEquals(parseLookupQuery("t:2h").copy(words = ""), parseLookupQuery("time:2h").copy(words = ""))
-        assertEquals(parseLookupQuery("r:10").copy(words = ""), parseLookupQuery("radius:10").copy(words = ""))
-        assertEquals(parseLookupQuery("a:container").copy(words = ""), parseLookupQuery("action:container").copy(words = ""))
-        assertEquals(parseLookupQuery("b:diamond").copy(words = ""), parseLookupQuery("item:diamond").copy(words = ""))
-        assertEquals(parseLookupQuery("i:diamond").copy(words = ""), parseLookupQuery("include:diamond").copy(words = ""))
-        assertEquals(parseLookupQuery("items:diamond").copy(words = ""), parseLookupQuery("include:diamond").copy(words = ""))
-        assertEquals(parseLookupQuery("e:dirt").copy(words = ""), parseLookupQuery("exclude:dirt").copy(words = ""))
-        assertEquals(parseLookupQuery("l:25").copy(words = ""), parseLookupQuery("rows:25").copy(words = ""))
+        val spellings = listOf(
+            "u:Steve" to "user:Steve",
+            "t:2h" to "time:2h",
+            "r:10" to "radius:10",
+            "a:container" to "action:container",
+            "b:diamond" to "item:diamond",
+            "i:diamond" to "include:diamond",
+            "items:diamond" to "include:diamond",
+            "e:dirt" to "exclude:dirt",
+            "l:25" to "rows:25",
+        )
+        for ((short, long) in spellings) {
+            assertEquals(parseLookupQuery(short).copy(words = ""), parseLookupQuery(long).copy(words = ""), "$short vs $long")
+        }
     }
 
     @Test
@@ -106,15 +111,17 @@ class LookupTest {
         assertTrue(parseLookupQuery("r:global").global)
         assertTrue(parseLookupQuery("r:#global").global)
         assertTrue(parseLookupQuery("r:none").global)
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("r:${io.pfaumc.pfauprotect.Settings.maxRadius + 1}") }
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("r:-5") }
+        for (query in listOf("r:${io.pfaumc.pfauprotect.Settings.maxRadius + 1}", "r:-5")) {
+            assertThrows(CommandSyntaxException::class.java, { parseLookupQuery(query) }, query)
+        }
     }
 
     @Test
     fun `row counts stay inside the readable range`() {
         assertEquals(50, parseLookupQuery("rows:50").limit)
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("rows:0") }
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("rows:${MAX_LIMIT + 1}") }
+        for (query in listOf("rows:0", "rows:${MAX_LIMIT + 1}")) {
+            assertThrows(CommandSyntaxException::class.java, { parseLookupQuery(query) }, query)
+        }
     }
 
     @Test
@@ -157,15 +164,11 @@ class LookupTest {
 
     @Test
     fun `malformed parameters are refused instead of ignored`() {
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("Steve") }
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("z:1") }
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("u:") }
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("a:chatter") }
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery(":10") }
+        for (query in listOf("Steve", "z:1", "u:", "a:chatter", ":10")) {
+            assertThrows(CommandSyntaxException::class.java, { parseLookupQuery(query) }, query)
+        }
     }
 
-    // The block plane's causes only became worth offering as filters once something wrote them: an
-    // empty answer from a filter that sounds certain reads as "nothing happened there".
     @Test
     fun `the block plane is reachable by name and every block cause is under one of the filters`() {
         val blockRange = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT + Cause.BLK_SHAPE +
@@ -230,6 +233,7 @@ class LookupTest {
         val event = EventRef(4711, 10, -60, -42, 1_700_000_000_123L)
         assertEquals(event, parseLookupQuery(event.toString()).event)
         assertEquals(null, EventRef.parse("4711"))
+        assertEquals(null, EventRef.parse("4711@10,x,-60,-42@1700000000123"))
     }
 
     // The page buttons ask the same words again about the same place, at the page they go to.

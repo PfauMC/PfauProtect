@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.check
+import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.storage.FormKey
@@ -20,8 +21,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.UUID
-
-private const val T0 = 1_700_000_000_000L
 
 class ReconcileTest {
     private val world = UUID.fromString("00000000-0000-4000-8000-000000000011")

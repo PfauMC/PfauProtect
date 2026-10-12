@@ -1,8 +1,8 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.ItemEntityRef
-import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerCursor
@@ -20,7 +20,6 @@ class BundleNamingTest {
     private val player = UUID.randomUUID()
     private val owner = UUID.randomUUID()
 
-    private fun key(name: String) = ItemKey(name.toByteArray(), null)
     private val unnamed = key("bundle")
     private val named = key("bundle#owner")
     private val gold = key("gold_ingot")

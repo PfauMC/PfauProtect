@@ -50,8 +50,12 @@ class RegistryRow(val ns: RegistryNamespace, val keyBytes: ByteArray, val id: In
 
 interface RegistryStore {
     fun loadAll(): List<RegistryRow>
-    fun put(ns: RegistryNamespace, keyBytes: ByteArray, id: Int)
+
+    // The next number of the namespace, held in memory only; `persist` is what makes it stick.
     fun nextId(ns: RegistryNamespace): Int
+
+    // The rows and the counters past them, durable before this returns.
+    fun persist(rows: List<RegistryRow>)
 }
 
 // Lookups run on any thread. Minting does not: it is a read-modify-write of a persisted counter, and
@@ -88,11 +92,39 @@ class Registries(private val store: RegistryStore) : IdResolver, IdLookup {
 
     override fun uuid(ns: RegistryNamespace, id: Int) = uuidOf(ns, id)
 
+    // The numbers a batch has minted and not yet written, seen only by the thread running it: every other
+    // thread misses them in `ids` and waits in `assign` until the batch is on disk.
+    private var batch: LinkedHashMap<Pair<RegistryNamespace, String>, Int>? = null
+
+    /**
+     * Mints whatever `body` asks for in one synced write instead of one apiece, which is what a fill of
+     * thousands of keys needs. The lock is held throughout, so nothing else mints meanwhile. What was
+     * minted is written even when `body` fails: every number in it is whole.
+     */
+    @Synchronized
+    fun <T> batched(body: () -> T): T {
+        val minted = LinkedHashMap<Pair<RegistryNamespace, String>, Int>()
+        batch = minted
+        return try {
+            body()
+        } finally {
+            batch = null
+            publish(minted)
+        }
+    }
+
+    private fun publish(minted: Map<Pair<RegistryNamespace, String>, Int>) {
+        if (minted.isEmpty()) return
+        store.persist(minted.map { (name, id) -> RegistryRow(name.first, keyBytes(name.first, name.second), id) })
+        for ((name, id) in minted) remember(name.first, name.second, id)
+    }
+
     // Checked before the counter is consumed: a rejected assignment that had already bumped the
     // persisted counter would push every later attempt further out of range.
     @Synchronized
     private fun assign(ns: RegistryNamespace, key: String): Int {
         ids.getValue(ns)[key]?.let { return it }
+        batch?.get(ns to key)?.let { return it }
         val used = size(ns)
         if (used > ns.maxId) {
             throw IllegalStateException("registry $ns is full: $used ids used, max ${ns.maxId}")
@@ -101,8 +133,11 @@ class Registries(private val store: RegistryStore) : IdResolver, IdLookup {
         if (id < 0 || id > ns.maxId) {
             throw IllegalStateException("registry $ns is full: id $id exceeds max ${ns.maxId}, size $used")
         }
-        store.put(ns, keyBytes(ns, key), id)
-        remember(ns, key, id)
+        batch?.let {
+            it[ns to key] = id
+            return id
+        }
+        publish(mapOf((ns to key) to id))
         return id
     }
 

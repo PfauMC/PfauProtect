@@ -1,25 +1,19 @@
 package io.pfaumc.pfauprotect.check
+import io.pfaumc.pfauprotect.BothPlanes
+import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.storage.BlockChange
-import io.pfaumc.pfauprotect.storage.BlockLog
-import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.EntryCodec
 import io.pfaumc.pfauprotect.model.PlayerInv
-import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.storage.rawEdit
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
-import java.nio.file.Path
 import java.util.UUID
 
 private const val AIR = "minecraft:air"
@@ -27,44 +21,24 @@ private const val STONE = "minecraft:stone"
 private const val WATER = "minecraft:water[level=0]"
 private const val WATERLOGGED = "minecraft:oak_slab[type=bottom,waterlogged=true]"
 
-class PlaneSyncTest {
-    private val world = UUID.fromString("00000000-0000-4000-8000-000000000001")
+class PlaneSyncTest : BothPlanes() {
     private val unopened = UUID.fromString("00000000-0000-4000-8000-000000000002")
-    private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
     private val stoneForm = byteArrayOf(1, 2, 3)
 
     private val now = System.currentTimeMillis()
     private val longAgo = now - 10 * SETTLE_MILLIS
 
-    private lateinit var dir: Path
-    private lateinit var shared: RocksItemLog
-    private lateinit var logs: BlockLogs
-    private lateinit var log: BlockLog
     private lateinit var sync: PlaneSync
 
-    @BeforeEach
-    fun open(@TempDir tempDir: Path) {
-        dir = tempDir
-        openAll()
-    }
-
-    @AfterEach
-    fun closeAll() {
-        logs.close()
-        shared.close()
-    }
-
-    private fun openAll() {
-        shared = RocksItemLog(dir.resolve("items"))
-        logs = BlockLogs(dir.resolve("blocks"), shared)
-        log = logs.open(world)
+    override fun openPlanes() {
+        super.openPlanes()
         sync = PlaneSync(shared, logs)
     }
 
     private fun reopen() {
         logs.close()
         shared.close()
-        openAll()
+        openPlanes()
     }
 
     // The item plane takes the position over: a placement books the item onto the block it became.
@@ -145,7 +119,7 @@ class PlaneSyncTest {
         logs.close()
         shared.close()
         rawEdit(dir.resolve("items")) { raw, family -> raw.put(family("entries"), key, value) }
-        openAll()
+        openPlanes()
     }
 
     @Test

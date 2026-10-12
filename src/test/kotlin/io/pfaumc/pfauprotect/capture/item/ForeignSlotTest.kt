@@ -1,17 +1,17 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.worldStub
+import io.pfaumc.pfauprotect.disabledPlugin
 import io.pfaumc.pfauprotect.model.Container
-import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.storage.Registries
-import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.NoPlacedForms
 import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Transfer
+import io.pfaumc.pfauprotect.testCodec
 import org.bukkit.Material
-import org.bukkit.World
 import org.bukkit.block.Block
 import org.bukkit.entity.Player
 import org.bukkit.event.inventory.ClickType
@@ -23,28 +23,19 @@ import org.bukkit.inventory.BlockInventoryHolder
 import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.InventoryView
 import org.bukkit.inventory.PlayerInventory
-import org.bukkit.plugin.Plugin
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.TestInstance
 import java.util.UUID
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
 // A furnace fills its result slot on its own listener, under the baseline of whoever has it open.
 // Taking the ingots out has to read as taking them out of the furnace, not as ingots from nowhere
 // and a furnace that still holds them.
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ForeignSlotTest {
     private val player = UUID.fromString("00000000-0000-4000-8000-0000000000f1")
     private val world = UUID.fromString("00000000-0000-4000-8000-0000000000f2")
 
-    private lateinit var codec: ItemFormCodec
-
-    @BeforeAll
-    fun loadServerRegistries() {
-        codec = ItemFormCodec(Registries(MemoryRegistryStore()), ServerRegistries.access)
-    }
+    private val codec by lazy { testCodec() }
 
     @Test
     fun `taking what the furnace made is a removal from the furnace`() {
@@ -77,7 +68,7 @@ class ForeignSlotTest {
         )
         val written = ArrayList<List<Transfer>>()
         val listener = ContainerCaptureListener(
-            stub(Plugin::class.java, mapOf("isEnabled" to false)), written::add, codec,
+            disabledPlugin(), written::add, codec,
             Registries(MemoryRegistryStore()), SpawnOrigins(TickCoalescer { }), NoPlacedForms,
         )
 
@@ -102,7 +93,7 @@ class ForeignSlotTest {
     private fun inventoryStub(slots: Array<BukkitItemStack?>): Inventory {
         val block = stub(
             Block::class.java,
-            mapOf("getWorld" to stub(World::class.java, mapOf("getUID" to world)), "getX" to 1, "getY" to 2, "getZ" to 3),
+            mapOf("getWorld" to worldStub(world), "getX" to 1, "getY" to 2, "getZ" to 3),
         )
         return stub(
             Inventory::class.java,

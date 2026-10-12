@@ -18,7 +18,7 @@ lookup:
   max-radius: 200
 
 rollback:
-  # The most positions one rollback puts back; a larger one is refused and has to be cut by time.
+  # The most positions one rollback puts back; a larger one is refused and has to be cut by radius or time.
   max-positions: 131072
 
 mobs:

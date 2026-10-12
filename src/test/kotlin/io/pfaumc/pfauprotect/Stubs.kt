@@ -2,6 +2,8 @@ package io.pfaumc.pfauprotect
 
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.PlacedForms
+import org.bukkit.World
+import org.bukkit.plugin.Plugin
 import java.lang.reflect.Proxy
 import java.util.UUID
 
@@ -23,6 +25,10 @@ internal fun <T : Any> stub(type: Class<T>, answers: Map<String, Any?> = emptyMa
         }
     } as T
 }
+
+internal fun worldStub(uid: UUID): World = stub(World::class.java, mapOf("getUID" to uid))
+
+internal fun disabledPlugin(): Plugin = stub(Plugin::class.java, mapOf("isEnabled" to false))
 
 internal object NoPlacedForms : PlacedForms {
     override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = null

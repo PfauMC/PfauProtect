@@ -109,11 +109,11 @@ internal const val TRANSFORMED = "transform/"
 /**
  * Whether a death nobody stands behind is still worth a row: a mob somebody had a hand in, or one that is
  * part of its place and not one of a crowd. A farm's cows dying in its lava or the zombies a night spawned
- * are nobody's grief, and a row for each would bury what is. `crowd` is [Settings.crowd]: as many of one
+ * are nobody's grief, and a row for each would bury what is. A crowd is [Settings.crowd]: as many of one
  * kind in one chunk as a farm keeps, a cow kitchen, an iron farm, a chicken cooker.
  */
-internal fun worthRecording(touched: Boolean, keepsItsPlace: Boolean, sameKindInChunk: Int, crowd: Int): Boolean =
-    touched || keepsItsPlace && sameKindInChunk < crowd
+internal fun worthRecording(touched: Boolean, keepsItsPlace: Boolean, sameKindInChunk: Int): Boolean =
+    touched || keepsItsPlace && sameKindInChunk < Settings.crowd
 
 /**
  * The whole NBT of an entity as it is now, the way the server saves it. Forced, so a mob that is dying and
@@ -403,14 +403,10 @@ class EntityCapture(
         val summoner = entities.summonerOf(entity.uniqueId)
         val culprit = summoner?.let { Culprit(found.cause, it.copy(confidence = Confidence.INFERRED)) } ?: found
         val touched = entity.persistentDataContainer.has(TOUCHED)
-        // The crowd is only counted for a mob that might be one of it. Crammed to death is a crowd by
-        // definition, however few of them the cramming has left by the time this one goes.
-        val crowd = when {
-            touched -> 0
-            entity.lastDamageCause?.cause == DamageCause.CRAMMING -> Settings.crowd
-            else -> entity.location.chunk.entities.count { it.type == entity.type }
-        }
-        val worth = summoner != null || worthRecording(touched, keepsItsPlace((entity as CraftEntity).handle), crowd, Settings.crowd)
+        // Crammed to death is a crowd by definition, however few of them the cramming has left by the
+        // time this one goes.
+        val crammed = entity.lastDamageCause?.cause == DamageCause.CRAMMING
+        val worth = summoner != null || worthAlone(entity, touched, crammed)
         if (!worth && around.isEmpty()) return
         removed(entity, culprit, deathOf(event.damageSource), around, worth)
     }
@@ -453,15 +449,22 @@ class EntityCapture(
 
     private fun transformed(old: Entity, heirs: List<Entity>, reason: TransformReason, by: Attributed?) {
         val touched = old.persistentDataContainer.has(TOUCHED)
-        if (by.culprit() == null) {
-            val crowd = if (touched) 0 else old.location.chunk.entities.count { it.type == old.type }
-            if (!worthRecording(touched, keepsItsPlace((old as CraftEntity).handle), crowd, Settings.crowd)) return
-        }
+        if (by.culprit() == null && !worthAlone(old, touched)) return
         removed(old, Culprit(Cause.MOB_TRANSFORM, by), "$TRANSFORMED${reason.name.lowercase()}" to null)
         for (heir in heirs) {
             if (touched) touch(heir)
             created(heir, Cause.MOB_TRANSFORM, by, mark = false)
         }
+    }
+
+    // The crowd is only counted for a mob that might be one of it.
+    private fun worthAlone(entity: Entity, touched: Boolean, crammed: Boolean = false): Boolean {
+        val crowd = when {
+            touched -> 0
+            crammed -> Settings.crowd
+            else -> entity.location.chunk.entities.count { it.type == entity.type }
+        }
+        return worthRecording(touched, keepsItsPlace((entity as CraftEntity).handle), crowd)
     }
 
     private fun touch(entity: Entity) {

@@ -338,9 +338,8 @@ data class EventRef(val id: Long, val x: Int, val y: Int, val z: Int, val at: Lo
         fun parse(value: String): EventRef? {
             val parts = value.split('@')
             if (parts.size != 3) return null
-            val xyz = parts[1].split(',').mapNotNull { it.toIntOrNull() }
-            if (xyz.size != 3) return null
-            return EventRef(parts[0].toLongOrNull() ?: return null, xyz[0], xyz[1], xyz[2], parts[2].toLongOrNull() ?: return null)
+            val (x, y, z) = positionOrNull(parts[1]) ?: return null
+            return EventRef(parts[0].toLongOrNull() ?: return null, x, y, z, parts[2].toLongOrNull() ?: return null)
         }
     }
 }
@@ -479,7 +478,7 @@ private fun causes(reader: StringReader, valueStart: Int, value: String): Set<Ca
 }
 
 private fun positionOrNull(value: String): Triple<Int, Int, Int>? =
-    value.split(',').mapNotNull { it.toIntOrNull() }.takeIf { it.size == 3 }?.let { (x, y, z) -> Triple(x, y, z) }
+    value.split(',').takeIf { it.size == 3 }?.map { it.toIntOrNull() ?: return null }?.let { (x, y, z) -> Triple(x, y, z) }
 
 private fun yesNoOrNull(value: String): Boolean? = when (value.lowercase()) {
     "yes", "true", "y", "1" -> true
@@ -593,9 +592,7 @@ internal class RowFilter(
     // An entity row answers to its entity type for `include:` and `exclude:`, the way a block row answers
     // to its blocks.
     fun keeps(row: EntityRow): Boolean {
-        if (!caused(row.cause) || amount != null || event != null && row.eventId != event) return false
-        if (users.isNotEmpty() && (row.actor !in users || rollback && row.confidence == Confidence.NEARBY)) return false
-        if (row.actor != null && row.actor in excludedUsers) return false
+        if (!keepsActed(row.cause, row.eventId, row.actor, row.confidence)) return false
         return (included.isEmpty() || row.type in included) && row.type !in excluded
     }
 
@@ -603,9 +600,7 @@ internal class RowFilter(
     // between; naming an item that no block is made of therefore hides the whole plane, which is what
     // a reader asking for one item wants.
     fun keeps(row: BlockRow): Boolean {
-        if (!caused(row.cause) || amount != null || event != null && row.eventId != event) return false
-        if (users.isNotEmpty() && (row.actor !in users || rollback && row.confidence == Confidence.NEARBY)) return false
-        if (row.actor != null && row.actor in excludedUsers) return false
+        if (!keepsActed(row.cause, row.eventId, row.actor, row.confidence)) return false
         val named = setOf(stateName(ledger, row.stateBefore), stateName(ledger, row.stateAfter))
         return (included.isEmpty() || named.any { it in included }) && named.none { it in excluded }
     }
@@ -615,6 +610,12 @@ internal class RowFilter(
     // rollback wrote none. A lookup shows them only when asked: there is one for every fence beside every
     // block that changed.
     private val all = query.all
+
+    private fun keepsActed(cause: Cause, eventId: Long, actor: UUID?, confidence: Confidence): Boolean {
+        if (!caused(cause) || amount != null || event != null && eventId != event) return false
+        if (users.isNotEmpty() && (actor !in users || rollback && confidence == Confidence.NEARBY)) return false
+        return actor == null || actor !in excludedUsers
+    }
 
     private fun caused(cause: Cause): Boolean {
         if (cause == Cause.BLK_SHAPE) {
@@ -849,6 +850,7 @@ class Lookups(
             target.block != null -> Component.text().append(Ui.block(target.block)).append(Ui.text(" $xyz")).build()
             else -> Ui.text(xyz)
         }
+        if (blocks.get(target.world) == null) sender.say("This world's block log is not open.")
         answer(sender, items + changes, page.complete, where, query, target)
     }
 
@@ -1252,7 +1254,7 @@ class Lookups(
         // The whole state is what makes a row restorable and is noise in a list, so it waits for a hover,
         // with which half of a door or a bed it was: two rows of one are otherwise the same row twice.
         val details = listOfNotNull(
-            "${stateOf(row.stateBefore)} → ${stateOf(row.stateAfter)}",
+            "${stateOf(ledger, row.stateBefore)} → ${stateOf(ledger, row.stateAfter)}",
             tr("the other half", "вторая половина").takeIf { row.alongside },
             tr("with contents", "с содержимым").takeIf { (row.payloadBefore != null || row.payloadAfter != null) && signOf(row) == null },
         )
@@ -1333,8 +1335,6 @@ class Lookups(
         }
         return sides.takeIf { it.isNotEmpty() }?.joinToString(" / ")
     }
-
-    private fun stateOf(id: Int): String = stateOf(ledger, id)
 
     private fun menuName(id: Int): String =
         ledger.registries.keyOf(RegistryNamespace.MENU_TYPE, id)?.lowercase() ?: "type $id"

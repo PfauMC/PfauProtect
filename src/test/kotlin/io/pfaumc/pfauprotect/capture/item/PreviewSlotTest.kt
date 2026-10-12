@@ -49,8 +49,6 @@ class PreviewSlotTest {
         assertEquals(2, previewSlot(stub(CartographyInventory::class.java, mapOf("getSize" to 3))))
     }
 
-    // A furnace output holds a real item that stands there until it is taken, and hiding it would lose
-    // every smelted stack sitting in a furnace nobody has emptied.
     @Test
     fun `a menu that stores its output hides nothing`() {
         assertNull(previewSlot(stub(FurnaceInventory::class.java, mapOf("getSize" to 3))))
@@ -100,7 +98,6 @@ class PreviewSlotTest {
         assertEquals(Cause.TRADE_RESULT, shift.result)
     }
 
-    // A mob gives up the booked item out of the slot that took the same form, whichever it was.
     @Test
     fun `a dropped form comes out of the slot that booked it`() {
         val held = mapOf(0 to "sword".toByteArray(), 5 to "gold_ingot".toByteArray())
@@ -140,7 +137,6 @@ class PreviewSlotTest {
         assertNull(claimHeld(emptyMap(), null, "oak_boat".toByteArray()))
     }
 
-    // The saddle a click books and the saddle the window takes out are one slot.
     @Test
     fun `a horse window names its slots the way its equipment does`() {
         assertEquals(net.minecraft.world.entity.EquipmentSlot.SADDLE.ordinal, horseSlot(0))

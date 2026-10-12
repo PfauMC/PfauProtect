@@ -94,8 +94,8 @@ object Placement {
 }
 
 // Mechanisms move a single item at a time: a minecart hopper crossing a line of hoppers, or a
-// dropper on a clock, would otherwise write a transaction per item. Movements sharing both ends and
-// the form are one movement within the tick they happen in.
+// dropper on a clock, would otherwise write a transaction per item. Movements sharing both ends, the
+// item, the cause, the actor and the confidence are one movement within the tick they happen in.
 class TickCoalescer(private val sink: (Transfer) -> Unit) {
     private data class Pending(
         val from: Holder,

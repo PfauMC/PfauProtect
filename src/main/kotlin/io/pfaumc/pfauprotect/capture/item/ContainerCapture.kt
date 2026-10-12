@@ -162,11 +162,9 @@ object Netting {
         after: Snapshot,
         intents: List<Intent> = emptyList(),
         player: UUID? = null,
-        // Slots whose losses and gains must not be married to each other. Pairing is by form and the
-        // form carries no wear, so a station that hands back the same kind of item — a grindstone
-        // merging two worn tools, a cartography table copying a map — looks from here like the very
-        // item moving out of the station, and the transformation collapses into an ordinary move plus
-        // one unexplained disappearance.
+        // Slots whose losses and gains must not be married to each other: a station that hands back the
+        // same form must not pair with its own input, or the transformation collapses into a plain move
+        // plus a vanish.
         unpaired: Set<Holder> = emptySet(),
     ): List<Edge> {
         val losses = ArrayList<Delta>()
@@ -225,18 +223,11 @@ object Netting {
         return edges
     }
 
-    // An intent that names a counterparty is claiming part of what the pass found, and it has to claim
-    // it before anything is paired: otherwise a loss and an unrelated gain of the same form net into a
-    // movement that never happened and both real movements lose their row. What the intent may claim
-    // is bounded by what the diff found — the event saw what it meant to do, the pass sees what was
-    // applied, and on numbers the pass wins.
+    // An intent that names a counterparty claims its share of the diff before anything is paired, or a
+    // loss and an unrelated gain of the same form net into a movement that never happened.
     //
-    // One thing this cannot recover, and must not try to: when both movements land in the same slot —
-    // place a cobblestone out of the held stack and pick one straight back up into it — the slot reads
-    // the same before and after and the snapshot holds no evidence that anything happened. Writing it
-    // from the intent's own word instead trades a claim that holds for one that does not: an intent
-    // names only its far end, so it cannot say which slot, and in creative a placement consumes
-    // nothing at all, so the debit would be invented and the player would stop balancing.
+    // Two opposite movements in the same slot leave no trace in the snapshot and are not recovered from
+    // the intent's word: it cannot say which slot, and in creative a placement consumes nothing at all.
     private fun claim(deltas: List<Delta>, intents: List<Intent>, player: UUID?, loss: Boolean) {
         for (intent in intents) {
             if (!intent.aims(loss)) continue
@@ -351,10 +342,8 @@ internal fun shiftOf(top: Inventory): Shift? = when (top) {
         ?: Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
     is AnvilInventory -> Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
     is GrindstoneInventory -> Shift(Cause.GRINDSTONE, Cause.GRINDSTONE, Kind.MUTATE)
-    // The station itself names which of the two smithing recipes matched, and it only names it while
-    // the click is still being delivered: taking the result reruns the match against the emptied
-    // inputs, finds nothing and forgets the recipe. So this may be read here and never from the
-    // deferred pass.
+    // The matched recipe is only readable while the click is delivered, so it is read here and never in
+    // the deferred pass.
     // ponytail: a plugin may register a SmithingRecipe that is neither, and it books as a transform;
     // splitting that out needs a cause the dictionary does not have yet.
     is SmithingInventory -> {
@@ -405,13 +394,9 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
             else -> rest += listOf(move)
         }
     }
-    // The pass had to guess at these ends because neither of them pairs with anything — that is what
-    // facing the Void means. Both sides together are not a guess: the event named the station and both
-    // of its reasons, which is as much as any click is ever witnessed by. Left INFERRED they would be
-    // counted as movements nothing could explain, and every craft would enlarge the very number that
-    // measures what the capture still cannot see.
-    //
-    // One side alone stays a guess. A creative craft that consumes nothing has nothing to corroborate.
+    // Both sides together name the station and both of its reasons, so they are FACT. A lone side stays
+    // INFERRED: a creative craft that consumes nothing has nothing to corroborate it. Left INFERRED, every
+    // ordinary craft would count as unexplained.
     if (transformed.size > 1) {
         rest += transformed.map { it.copy(confidence = Confidence.FACT) }
     } else if (transformed.isNotEmpty()) {
@@ -423,8 +408,6 @@ internal fun transactions(moves: List<Move>, shift: Shift?): List<List<Move>> {
 // Long enough for every row about the moment of a reading to have left the writer's queue.
 private const val RECONCILE_DELAY_SECONDS = 2L
 
-internal class LoadDifference(val from: Holder, val to: Holder, val form: ByteArray, val qty: Int)
-
 /**
  * Where a difference between a player's slots and the ledger shows, slot by slot. Within a form, a
  * slot booked more than it holds and one holding more than it was booked are a move nobody saw, and
@@ -434,13 +417,14 @@ internal class LoadDifference(val from: Holder, val to: Holder, val form: ByteAr
 internal fun loadDifferences(
     live: Map<Holder, Map<FormKey, Int>>,
     booked: Map<Holder, Map<FormKey, Int>>,
-): List<LoadDifference> {
+    at: Long,
+): List<Transfer> {
     fun ArrayDeque<Pair<Holder, Int>>.spend(qty: Int) {
         val (holder, left) = removeFirst()
         if (left > qty) addFirst(holder to left - qty)
     }
     val forms = (live.values.flatMap { it.keys } + booked.values.flatMap { it.keys }).toSet()
-    val differences = ArrayList<LoadDifference>()
+    val differences = ArrayList<Transfer>()
     for (form in forms) {
         val excess = (live.keys + booked.keys).associateWith { holder ->
             (live[holder]?.get(form) ?: 0) - (booked[holder]?.get(form) ?: 0)
@@ -452,7 +436,16 @@ internal fun loadDifferences(
             val (to, wanted) = over.firstOrNull() ?: (Void to Int.MAX_VALUE)
             val (from, spare) = short.firstOrNull() ?: (Void to Int.MAX_VALUE)
             val qty = minOf(wanted, spare)
-            differences += LoadDifference(from, to, form.form, qty)
+            differences += Transfer(
+                cause = Cause.INVENTORY_LOAD,
+                from = from,
+                to = to,
+                form = form.form,
+                damage = null,
+                qty = qty,
+                timestamp = at,
+                confidence = Confidence.INFERRED,
+            )
             if (over.isNotEmpty()) over.spend(qty)
             if (short.isNotEmpty()) short.spend(qty)
         }
@@ -460,7 +453,7 @@ internal fun loadDifferences(
     return differences
 }
 
-internal fun transferOf(move: Move, timestamp: Long, kind: Kind = Kind.TRANSFER): Transfer = Transfer(
+internal fun transferOf(move: Move, timestamp: Long, kind: Kind): Transfer = Transfer(
     cause = move.cause,
     from = move.from,
     to = move.to,
@@ -546,23 +539,11 @@ class ContainerCaptureListener(
         plugin.server.asyncScheduler.runNow(plugin) {
             val id = player.uniqueId
             val own = listOf(PlayerInv(id, 0), PlayerEquip(id, 0), PlayerCursor(id), PlayerEnder(id, 0))
-            written(loadDifferences(live, booked(own, at)), at)
+            written(loadDifferences(live, booked(own, at), at))
         }
     }
 
-    private fun written(differences: List<LoadDifference>, at: Long) {
-        val rows = differences.map { difference ->
-            Transfer(
-                cause = Cause.INVENTORY_LOAD,
-                from = difference.from,
-                to = difference.to,
-                form = difference.form,
-                damage = null,
-                qty = difference.qty,
-                timestamp = at,
-                confidence = Confidence.INFERRED,
-            )
-        }
+    private fun written(rows: List<Transfer>) {
         if (rows.isNotEmpty()) sink(rows)
     }
 
@@ -585,7 +566,7 @@ class ContainerCaptureListener(
         val at = System.currentTimeMillis()
         if (!plugin.isEnabled) return
         plugin.server.asyncScheduler.runDelayed(plugin, {
-            written(loadDifferences(live, booked(positions.toList(), at)), at)
+            written(loadDifferences(live, booked(positions.toList(), at), at))
         }, RECONCILE_DELAY_SECONDS, TimeUnit.SECONDS)
     }
 
@@ -794,8 +775,7 @@ class ContainerCaptureListener(
     fun onUseMap(event: PlayerInteractEvent) {
         if (!event.action.isRightClick || event.item?.type != Material.MAP) return
         if (event.useItemInHand() == Event.Result.DENY) return
-        val shift = Shift(Cause.MAP_FILL, Cause.MAP_FILL, Kind.MUTATE)
-        intend(event.player, Intent(shift.consume, shift = shift))
+        intend(event.player, mutation(Cause.MAP_FILL))
     }
 
     // Signing turns a writable book into a written one in the slot it is held in, driven by a packet
@@ -805,8 +785,7 @@ class ContainerCaptureListener(
     fun onEditBook(event: PlayerEditBookEvent) {
         // A plain page edit changes the form too: the pages are part of what a book and quill is.
         val cause = if (event.isSigning) Cause.BOOK_SIGN else Cause.BOOK_EDIT
-        val shift = Shift(cause, cause, Kind.MUTATE)
-        intend(event.player, Intent(shift.consume, shift = shift))
+        intend(event.player, mutation(cause))
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -901,8 +880,7 @@ class ContainerCaptureListener(
         // into another, in the same slot.
         val type = event.brokenItem.type
         if (type == Material.CARROT_ON_A_STICK || type == Material.WARPED_FUNGUS_ON_A_STICK) {
-            val shift = Shift(Cause.TRANSMUTE_ON_BREAK, Cause.TRANSMUTE_ON_BREAK, Kind.MUTATE)
-            intend(event.player, Intent(shift.consume, shift = shift))
+            intend(event.player, mutation(Cause.TRANSMUTE_ON_BREAK))
             return
         }
         val form = codec.encodeOrNull(event.brokenItem)?.form ?: return
@@ -1150,7 +1128,7 @@ class ContainerCaptureListener(
         if (edges.isNotEmpty()) taken.filter { it.shift != null }.forEach(spent::add)
         val moves = Intents.explain(edges, taken, player.uniqueId, unspent, carried, used = spent::add) { form ->
             after.stacks.entries.firstOrNull { (holder, stack) ->
-                holder is PlayerHolder && holder.uuid == player.uniqueId && stack.key.form.contentEquals(form)
+                holder.heldBy(player.uniqueId) && stack.key.form.contentEquals(form)
             }?.key
         }
         for (group in transactions(withoutForeignEnds(moves, shift), shift)) {

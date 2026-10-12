@@ -71,6 +71,9 @@ class ByteWriter(initialCapacity: Int = 32) {
     fun toByteArray(): ByteArray = buf.copyOf(len)
 }
 
+internal inline fun <reified E : Exception, T> nullOn(read: () -> T): T? =
+    try { read() } catch (failure: Exception) { if (failure is E) null else throw failure }
+
 class ByteReader(private val buf: ByteArray) {
     private var pos = 0
 
@@ -195,7 +198,7 @@ fun interface IdLookup {
 object EntryCodec {
     const val VERSION = 0
 
-    // Fixed width rather than a varint: the registry caps a world number at 0xFFFF anyway, and a
+    // Fixed width rather than a varint: the registry caps a world number below 0xFFFF anyway, and a
     // varint would make the length of everything after it depend on how many worlds the server has.
     const val WORLD_NO_SIZE = 2
 
@@ -267,11 +270,7 @@ object EntryCodec {
     // version. A scan walks rows it did not choose, and one bad row taken as a throw ends the whole
     // pass instead of being counted and stepped over.
     fun decodeOrNull(key: ByteArray, value: ByteArray, names: IdLookup): LedgerEntry? =
-        try {
-            decodeEntry(key, value, names)
-        } catch (failure: Exception) {
-            null
-        }
+        nullOn<Exception, _> { decodeEntry(key, value, names) }
 
     private fun decodeEntry(key: ByteArray, value: ByteArray, names: IdLookup): LedgerEntry? {
         val v = ByteReader(value)

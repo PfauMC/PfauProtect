@@ -1,5 +1,8 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.T0
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.ItemEntityRef
@@ -17,12 +20,8 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.UUID
 
-private const val T0 = 1_700_000_000_000L
-
 class ConfiscationTest {
     private val world = UUID.fromString("00000000-0000-4000-8000-000000000007")
-    private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
-    private val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
     private val diamond = byteArrayOf(9)
     private val stone = byteArrayOf(3)
     private val chest = Container(world, 1, 64, 1, 0)
@@ -219,7 +218,6 @@ class ConfiscationTest {
         val back = restitutionFor(ledger, death).associate { it.taker to it.qty }
         assertEquals(mapOf(Carrier(bob) to 2, Vanished(burned.uuid) to 2), back)
 
-        // Given back once, the births are marked and a second rollback owes her nothing.
         ledger.submit(Transfer(Cause.ROLLBACK, Void, Void, diamond, null, 1, T0 + 2, reverts = pileBirths(ledger, death).values.flatten()))
         ledger.drain()
         assertTrue(restitutionFor(ledger, death).isEmpty())

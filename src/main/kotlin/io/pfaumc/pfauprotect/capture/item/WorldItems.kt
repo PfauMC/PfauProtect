@@ -129,13 +129,13 @@ internal fun unspentDrop(pending: TickCoalescer, intent: Intent, qty: Int, creat
     pending.add(Void, entity, Cause.ITEM_SPAWN, ItemKey(form, null), qty, confidence = Confidence.INFERRED)
 }
 
+// The pickup delay that means never, which is what makes an item a display rather than a thing.
+private const val NEVER_PICKED_UP = 32767
+
 // The whole life of an item lying in the world: one funnel it is born through, one net that catches
 // every way it stops existing. Both ends are written without exception, which is what makes the
 // balance of an item entity closed by construction — an entity that does not balance is then a hole
 // in the capture and not a rounding error, and the holes can be counted.
-// The pickup delay that means never, which is what makes an item a display rather than a thing.
-private const val NEVER_PICKED_UP = 32767
-
 class WorldItemListener(
     private val codec: ItemFormCodec,
     private val pending: TickCoalescer,

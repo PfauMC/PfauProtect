@@ -22,7 +22,6 @@ import org.rocksdb.LRUCache
 import org.rocksdb.Options
 import org.rocksdb.ReadOptions
 import org.rocksdb.RocksDB
-import org.rocksdb.Slice
 import org.rocksdb.WriteBatch
 import org.rocksdb.WriteBufferManager
 import org.rocksdb.WriteOptions
@@ -31,6 +30,7 @@ import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.Cause
 import java.nio.file.Path
 import java.util.UUID
+import java.util.concurrent.BlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -57,6 +57,12 @@ interface PlacedForms {
     fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray)
     fun clearFormAt(world: UUID, x: Int, y: Int, z: Int)
     fun clearFormsAt(positions: List<WorldBlock>)
+
+    fun formAt(at: WorldBlock): ByteArray? = formAt(at.world, at.x, at.y, at.z)
+
+    fun setFormAt(at: WorldBlock, form: ByteArray) = setFormAt(at.world, at.x, at.y, at.z, form)
+
+    fun clearFormAt(at: WorldBlock) = clearFormAt(at.world, at.x, at.y, at.z)
 }
 
 // A row this build cannot decode is not a row without gaps: it is a row nobody looked at. Counting
@@ -160,35 +166,42 @@ internal val LOGGER: Logger = Logger.getLogger("PfauProtect")
 
 internal fun longBytes(v: Long): ByteArray = ByteWriter(8).longBE(v).toByteArray()
 
+internal fun RocksDB.readCounter(cf: ColumnFamilyHandle, key: ByteArray): Long =
+    get(cf, key)?.let { ByteReader(it).longBE() } ?: 0L
+
+internal fun openingOptions(writeBuffers: WriteBufferManager): DBOptions = DBOptions()
+    .setCreateIfMissing(true)
+    .setCreateMissingColumnFamilies(true)
+    .setWriteBufferManager(writeBuffers)
+
+// The handles before the database that issued them; the options are the caller's to free after both.
+internal fun RocksDB.closeWithHandles(handles: List<ColumnFamilyHandle>) {
+    handles.forEach { it.close() }
+    close()
+}
+
 // Cheap compression while a level is still being rewritten, and the slow thorough one once it has
 // settled at the bottom and will be read far more often than it is written.
 internal fun compressed() = ColumnFamilyOptions()
     .setCompressionType(CompressionType.LZ4_COMPRESSION)
     .setBottommostCompressionType(CompressionType.ZSTD_COMPRESSION)
 
-// The smallest key that sorts after everything under `prefix`. A prefix of nothing but 0xFF bytes
-// has none, and neither layout can produce one: an item key opens with a holder type, which is never
-// 0xFF, and a block key opens with a Z-code that would have to sit eight million chunks out, well
-// past any world border.
+// The smallest key that sorts after everything under `prefix`. A prefix of nothing but 0xFF bytes has
+// none, and an item key cannot produce one: it opens with a holder type, which is never 0xFF.
 internal fun afterPrefix(prefix: ByteArray): ByteArray {
-    for (i in prefix.indices.reversed()) {
-        if (prefix[i] != 0xFF.toByte()) {
-            val end = prefix.copyOf(i + 1)
-            end[i]++
-            return end
-        }
-    }
-    throw IllegalArgumentException("a prefix of nothing but 0xFF bytes has no key after it")
+    val last = prefix.indexOfLast { it != 0xFF.toByte() }
+    require(last >= 0) { "a prefix of nothing but 0xFF bytes has no key after it" }
+    return prefix.copyOf(last + 1).also { it[last]++ }
 }
 
 // Index and filter blocks live in the cache too: outside it a table reader keeps them for as long as
-// its file is open, and they grow with the data with nothing to bound them.
+// its file is open, and they grow with the data with nothing to bound them. They go into the cache's
+// high-priority pool, ahead of data blocks, since evicting an index costs a read on every lookup.
 internal fun tableIn(cache: Cache, filter: Filter? = null): BlockBasedTableConfig =
     BlockBasedTableConfig()
         .setBlockCache(cache)
         .setCacheIndexAndFilterBlocks(true)
-        // The newest files are read the most, and evicting their index would cost a read per lookup.
-        .setPinL0FilterAndIndexBlocksInCache(true)
+        .setCacheIndexAndFilterBlocksWithHighPriority(true)
         .also { table -> filter?.let { table.setFilterPolicy(it) } }
 
 // Refusing a database that is already open, or failing to open it, has to hand the natives back with
@@ -199,7 +212,7 @@ internal inline fun <T> cleaningUpOnFailure(cleanup: () -> Unit, body: () -> T):
     try {
         body()
     } catch (failure: Throwable) {
-        runCatching { cleanup() }
+        runCatching { cleanup() }.onFailure(failure::addSuppressed)
         throw failure
     }
 
@@ -207,7 +220,12 @@ internal inline fun <T> cleaningUpOnFailure(cleanup: () -> Unit, body: () -> T):
 // back untouched. Null means there is nothing to refuse: no database, or one from before the schema was
 // stamped.
 internal fun storedSchema(path: String, metaCf: ByteArray, key: ByteArray): Long? = Options().use { probe ->
+    // Every database has a CURRENT file naming its manifest, so a directory without one holds none. The
+    // listing cannot answer that: the Java binding drops its error and hands back an empty list, for a
+    // database it failed to read as much as for none at all.
+    if (!Files.exists(Path.of(path, "CURRENT"))) return null
     val existing = RocksDB.listColumnFamilies(probe, path)
+    check(existing.isNotEmpty()) { "the database at $path exists but its column families could not be read" }
     val metaIndex = existing.indexOfFirst { it.contentEquals(metaCf) }
     if (metaIndex < 0) return null
     val handles = ArrayList<ColumnFamilyHandle>()
@@ -225,57 +243,50 @@ internal fun storedSchema(path: String, metaCf: ByteArray, key: ByteArray): Long
     }
 }
 
-// Padded rather than the upper bound: seeking backwards has to start from a key that still belongs
-// to this prefix, or the prefix filter is asked about the wrong one and finds nothing.
+// Padded rather than the key after the prefix: a backward seek lands on the last key at or before its
+// target, and the key after the prefix may itself be a key, one that already belongs to the next prefix.
 internal fun lastUnder(prefix: ByteArray): ByteArray =
     ByteWriter(prefix.size + KEY_TAIL_PAD)
         .bytes(prefix)
         .bytes(ByteArray(KEY_TAIL_PAD) { 0xFF.toByte() })
         .toByteArray()
 
-// The bounds keep the walk inside the prefix, which under a prefix extractor is the only way to do it:
-// an iterator in prefix mode may not be carried past the prefix it was seeked into, and a seek to the
-// key just after the prefix lands in the next prefix, where the filter answers with nothing at all.
-// The slices have to outlive the iterator. `action` returns false to stop.
+internal fun ByteArray.startsWith(prefix: ByteArray): Boolean =
+    size >= prefix.size && java.util.Arrays.equals(this, 0, prefix.size, prefix, 0, prefix.size)
+
+// In a family with a prefix extractor RocksDB defines a prefix-mode walk only inside the extractor prefix
+// it was seeked into, and says the same of a seek key and its bounds; a walk here may span many extractor
+// prefixes, start from the first key or run backwards, and total order with no bounds is defined for all
+// of it. `action` returns false to stop.
 internal inline fun RocksDB.forEachUnder(
     cf: ColumnFamilyHandle,
     prefix: ByteArray,
-    extractorSize: Int,
     reverse: Boolean,
     from: ByteArray? = null,
     action: (ByteArray, ByteArray) -> Boolean,
 ) {
-    val lower = Slice(prefix)
-    val upper = Slice(afterPrefix(prefix))
-    try {
-        ReadOptions()
-            .setIterateLowerBound(lower)
-            .setIterateUpperBound(upper)
-            // A prefix shorter than the extractor spreads its rows over many extractor prefixes, so no
-            // seek key can stand for all of them. A prefix exactly as long as the extractor is no better
-            // off: its upper bound is the first key of the next extractor prefix, and an upper bound
-            // outside the prefix seeked into leaves what an iterator in prefix mode returns undefined.
-            // Either way the walk has to leave prefix mode. A longer prefix keeps the extractor bytes it
-            // shares with its own bound and stays in it.
-            .setTotalOrderSeek(prefix.size <= extractorSize)
-            .use { options ->
-                newIterator(cf, options).use { iter ->
-                    when {
-                        reverse -> iter.seekForPrev(lastUnder(prefix))
-                        from != null -> iter.seek(from)
-                        else -> iter.seekToFirst()
-                    }
-                    while (iter.isValid) {
-                        if (!action(iter.key(), iter.value())) return
-                        if (reverse) iter.prev() else iter.next()
-                    }
-                }
+    ReadOptions().setTotalOrderSeek(true).use { options ->
+        newIterator(cf, options).use { iter ->
+            if (reverse) iter.seekForPrev(lastUnder(prefix)) else iter.seek(from ?: prefix)
+            while (iter.isValid) {
+                val key = iter.key()
+                if (!key.startsWith(prefix)) break
+                if (!action(key, iter.value())) return
+                if (reverse) iter.prev() else iter.next()
             }
-    } finally {
-        lower.close()
-        upper.close()
+            // An I/O error or a corrupt block ends the walk exactly as the last row does, and only the
+            // status tells the two apart; a partial answer must not pass for a whole one.
+            iter.status()
+        }
     }
 }
+
+// Every row of a family in key order: every key starts with the empty prefix.
+internal inline fun RocksDB.forEachRow(cf: ColumnFamilyHandle, action: (ByteArray, ByteArray) -> Unit) =
+    forEachUnder(cf, ByteArray(0), reverse = false) { key, value ->
+        action(key, value)
+        true
+    }
 
 // How many rows a walk over a whole family writes per batch: a purge, a base being indexed.
 private const val WALK_BATCH_ROWS = 10_000
@@ -308,7 +319,7 @@ internal class ChunkedBatch(private val db: RocksDB, private val options: WriteO
 // What the writer of either base has been handed, what it has written, and why it stopped if it did.
 // `writer` and `unit` name them in the errors: the ledger writer and its transfers, a block writer and
 // its submissions.
-internal class WriterProgress(private val writer: String, private val unit: String, private val queue: Collection<*>) {
+internal class WriterProgress<T>(private val writer: String, private val unit: String, private val queue: BlockingQueue<T>) {
     val submitted = AtomicLong()
     val written = AtomicLong()
 
@@ -334,6 +345,34 @@ internal class WriterProgress(private val writer: String, private val unit: Stri
     private fun failIfStopped() {
         failure?.let { throw IllegalStateException("$writer writer stopped and ${queue.size} $unit are unwritten", it) }
     }
+
+    // The loop both writers run: a batch at a time until `finished` says an empty queue is the end, with the
+    // log fsynced once a second. `beforeEach` runs after every wait, whether anything came or not. A failure
+    // stops the writer for good and is kept for `drain` to report.
+    fun run(db: RocksDB, finished: () -> Boolean, beforeEach: () -> Unit = {}, write: (List<T>) -> Unit) {
+        var lastFlush = System.nanoTime()
+        try {
+            while (true) {
+                val first = queue.poll(WRITER_POLL_MILLIS, TimeUnit.MILLISECONDS)
+                beforeEach()
+                if (first == null && finished()) return
+                if (first != null) {
+                    val batched = ArrayList<T>(MAX_BATCH)
+                    batched += first
+                    queue.drainTo(batched, MAX_BATCH - 1)
+                    write(batched)
+                    written.addAndGet(batched.size.toLong())
+                }
+                if (System.nanoTime() - lastFlush >= WAL_FLUSH_INTERVAL_NANOS) {
+                    db.flushWal(true)
+                    lastFlush = System.nanoTime()
+                }
+            }
+        } catch (failure: Throwable) {
+            this.failure = failure
+            LOGGER.log(Level.SEVERE, "$writer writer stopped, ${queue.size} $unit are unwritten and further ones are dropped", failure)
+        }
+    }
 }
 
 class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
@@ -342,13 +381,39 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         RocksDB.loadLibrary()
     }
 
-    // Lent to every world's base for as long as it is open, and the world bases close before this one.
-    internal val blockCache = LRUCache(BLOCK_CACHE_BYTES)
+    // Lent to every world's base for as long as it is open. The pool is the native default's half for
+    // index and filter blocks, which RocksJava's one-argument constructor leaves at nothing.
+    internal val blockCache = LRUCache(BLOCK_CACHE_BYTES, -1, false, 0.5)
     internal val writeBuffers = WriteBufferManager(MEMTABLE_BYTES, blockCache)
-    private val dbOptions = DBOptions()
-        .setCreateIfMissing(true)
-        .setCreateMissingColumnFamilies(true)
-        .setWriteBufferManager(writeBuffers)
+
+    // Every base built on the cache and the memtable budget holds them until its own options are freed,
+    // and one that failed to close still holds them; freeing them earlier is a use after free in native
+    // code. So they go when the ledger and the last borrower are both done, whichever is later.
+    private val lendingLock = Any()
+    private var borrowers = 0
+    private var lending = true
+
+    internal fun borrowShared() = synchronized(lendingLock) {
+        check(lending) { "the ledger is closed" }
+        borrowers++
+    }
+
+    internal fun returnShared() = synchronized(lendingLock) {
+        borrowers--
+        if (!lending && borrowers == 0) freeShared()
+    }
+
+    private fun stopLending() = synchronized(lendingLock) {
+        lending = false
+        if (borrowers == 0) freeShared()
+        else LOGGER.log(Level.WARNING, "the block cache stays allocated for $borrowers world bases still open")
+    }
+
+    private fun freeShared() {
+        writeBuffers.close()
+        blockCache.close()
+    }
+    private val dbOptions = openingOptions(writeBuffers)
     private val bloom = BloomFilter(BLOOM_BITS_PER_KEY)
 
     // Every family we ever ask for a single row by key wants the filter; the ones we only ever walk
@@ -375,14 +440,13 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     private val writeOptions = WriteOptions()
 
-    // A number minted outside the writer thread is minted for another database to name, and that
-    // database flushes its own log on a timer of its own. Write order alone does not survive a crash:
-    // the row citing the number can reach the disk while the interning that produced it is still in
-    // this log, and on restart the counter has rewound and hands the same number to a different value,
-    // so the surviving row decodes to something it never named. Fsyncing here is what orders the two.
-    // The ledger's own writes owe nothing of the sort — a row and the counter that named it share one
-    // batch in one database — and interning is a first-encounter cost, with the startup fill a single
-    // batch, so the flush is paid once per new value rather than once per row.
+    // A registry number or a payload may be named by another database, and that database flushes its
+    // own log on a timer of its own. Write order alone does not survive a crash: the row citing the
+    // number can reach the disk while the interning that produced it is still in this log, and on
+    // restart the counter has rewound and hands the same number to a different value, so the surviving
+    // row decodes to something it never named. Fsyncing here is what orders the two. Interning is a
+    // first-encounter cost, with the startup fill a single batch, so the flush is paid once per new value
+    // rather than once per row.
     private val syncWriteOptions = WriteOptions().setSync(true)
 
     private val cfHandles = ArrayList<ColumnFamilyHandle>()
@@ -440,9 +504,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     // ids, and the counter is not shared otherwise.
     private val writing = java.util.concurrent.locks.ReentrantLock()
 
-    // A staging session belongs to the thread that opened it: two threads sharing one batch would be
-    // writing into the same native object, and a bulk fill is the only caller that opens one.
-    private val stagingBatch = ThreadLocal<WriteBatch?>()
     private var nextTxId: Long = 0
     private val registryCounters = ConcurrentHashMap<RegistryNamespace, Long>()
 
@@ -489,8 +550,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
         failClosed {
             if (stored != SCHEMA_VERSION) db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
-            nextTxId = readCounter(META_TX_ID)
-            for (ns in RegistryNamespace.entries) registryCounters[ns] = readCounter(registryCounterKey(ns))
+            nextTxId = db.readCounter(metaCf, META_TX_ID)
+            for (ns in RegistryNamespace.entries) registryCounters[ns] = db.readCounter(metaCf, registryCounterKey(ns))
         }
     }
 
@@ -517,8 +578,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             registries.load()
             forms.load()
             payloads.load()
+            writerThread.start()
         }
-        writerThread.start()
     }
 
     private inline fun <T> failClosed(body: () -> T): T = cleaningUpOnFailure({ closeNatives() }, body)
@@ -626,19 +687,15 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                 // A posting whose form cannot be read has no opening to stand for it, and deleting it would
                 // take its holder's balance with it: it stays.
                 val readable = HashMap<Long, Boolean>()
-                db.newIterator(entriesCf, wholeCfRead).use { iter ->
-                    iter.seekToFirst()
-                    while (iter.isValid) {
-                        val entry = EntryCodec.decodeOrNull(iter.key(), iter.value(), registries)
-                        if (entry != null && entry.timestamp < cutoff && readable.getOrPut(entry.itemFormId) { form(entry.itemFormId) != null }) {
-                            held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
-                            deleted++
-                            if (!dryRun) {
-                                batch.delete(entriesCf, iter.key())
-                                batch.delete(txCf, longBytes(entry.txId))
-                            }
+                db.forEachRow(entriesCf) { key, value ->
+                    val entry = EntryCodec.decodeOrNull(key, value, registries)
+                    if (entry != null && entry.timestamp < cutoff && readable.getOrPut(entry.itemFormId) { form(entry.itemFormId) != null }) {
+                        held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
+                        deleted++
+                        if (!dryRun) {
+                            batch.delete(entriesCf, key)
+                            batch.delete(txCf, longBytes(entry.txId))
                         }
-                        iter.next()
                     }
                 }
                 val openings = held.filterValues { it != 0 }.map { (key, qty) ->
@@ -748,7 +805,12 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             } else {
                 iter.seek(cursor)
                 if (iter.isValid && iter.key().contentEquals(cursor)) iter.next()
-                if (!iter.isValid) iter.seekToFirst()
+                if (!iter.isValid) {
+                    // Wrapping round on an error would restart every pass at the first key and never
+                    // check anything past the damage.
+                    iter.status()
+                    iter.seekToFirst()
+                }
             }
             // Unreadable rows spend the budget too: a stretch of them the length of a year would
             // otherwise be walked in a single pass, on the thread that asked for one pass worth.
@@ -764,6 +826,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                 last = key
                 iter.next()
             }
+            iter.status()
             reachedEnd = !iter.isValid
         }
         if (reachedEnd || last == null) db.delete(metaCf, META_SWEEP_CURSOR) else db.put(metaCf, META_SWEEP_CURSOR, last)
@@ -850,13 +913,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         if (closed) return emptyList()
         val prefix = ByteWriter(16).uuid(player).toByteArray()
         val found = ArrayList<OwedItem>()
-        db.newIterator(confiscationsCf).use { iter ->
-            iter.seek(prefix)
-            while (iter.isValid && iter.key().copyOf(prefix.size).contentEquals(prefix)) {
-                val value = ByteReader(iter.value())
-                found += OwedItem(iter.key(), value.varLong(), value.varInt(), if (value.byte() == 1) value.uuid() else null)
-                iter.next()
-            }
+        db.forEachUnder(confiscationsCf, prefix, reverse = false) { key, bytes ->
+            val value = ByteReader(bytes)
+            found += OwedItem(key, value.varLong(), value.varInt(), if (value.byte() == 1) value.uuid() else null)
+            true
         }
         found
     }
@@ -959,8 +1019,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     }
 
     private fun closeNatives() {
-        cfHandles.forEach { it.close() }
-        db.close()
+        db.closeWithHandles(cfHandles)
         closeOptions()
     }
 
@@ -974,71 +1033,53 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         // The table configs hold these, so they may only go once nothing can reach them.
         bloom.close()
         dbOptions.close()
-        writeBuffers.close()
-        blockCache.close()
+        stopLending()
     }
 
     override fun loadAll(): List<RegistryRow> = dbLock.read {
         val rows = ArrayList<RegistryRow>()
         if (closed) return rows
-        db.newIterator(registryCf, wholeCfRead).use { iter ->
-            iter.seekToFirst()
-            while (iter.isValid) {
-                val key = iter.key()
-                val ns = RegistryNamespace.byId(key[0].toInt() and 0xFF)
-                if (ns != null) rows += RegistryRow(ns, key.copyOfRange(1, key.size), ByteReader(iter.value()).varInt())
-                iter.next()
-            }
+        // Loaded in part, the registry would mint fresh numbers over names it still holds on disk, so a
+        // walk that meets an error throws rather than ending early.
+        db.forEachRow(registryCf) { key, value ->
+            val ns = RegistryNamespace.byId(key[0].toInt() and 0xFF)
+            if (ns != null) rows += RegistryRow(ns, key.copyOfRange(1, key.size), ByteReader(value).varInt())
         }
         rows
-    }
-
-    override fun put(ns: RegistryNamespace, keyBytes: ByteArray, id: Int) {
-        val key = ByteWriter(1 + keyBytes.size).byte(ns.id).bytes(keyBytes).toByteArray()
-        stage { it.put(registryCf, key, ByteWriter(5).varInt(id).toByteArray()) }
     }
 
     override fun nextId(ns: RegistryNamespace): Int {
         val id = registryCounters.getValue(ns)
         registryCounters[ns] = id + 1
-        stage { it.put(metaCf, registryCounterKey(ns), longBytes(id + 1)) }
         return id.toInt()
     }
 
-    private fun runWriter() {
-        var lastFlush = System.nanoTime()
-        try {
-            while (true) {
-                val first = queue.poll(WRITER_POLL_MILLIS, TimeUnit.MILLISECONDS)
-                val notes = ArrayList<NoteWrite>()
-                noteQueue.drainTo(notes)
-                if (notes.isNotEmpty()) {
-                    writeNotes(notes)
-                    progress.written.addAndGet(notes.size.toLong())
-                }
-                if (first == null && !running && noteQueue.isEmpty()) return
-                if (first != null) {
-                    val batched = ArrayList<List<Transfer>>(MAX_BATCH)
-                    batched += first
-                    queue.drainTo(batched, MAX_BATCH - 1)
-                    writing.withLock { writeAll(batched) }
-                    progress.written.addAndGet(batched.size.toLong())
-                }
-                if (System.nanoTime() - lastFlush >= WAL_FLUSH_INTERVAL_NANOS) {
-                    db.flushWal(true)
-                    lastFlush = System.nanoTime()
-                }
-            }
-        } catch (failure: Throwable) {
-            progress.failure = failure
-            running = false
-            LOGGER.log(
-                Level.SEVERE,
-                "ledger writer stopped, ${queue.size} transfers are unwritten and further ones are dropped",
-                failure,
-            )
+    // Never into the writer's batch, even on the writer thread: a player first seen by the writer is
+    // named by a block row the moment a block writer finds the number, long before that batch is written,
+    // and a transaction rolled out of it would take the row along while the number stays handed out.
+    // Called under the registry's lock, so each counter written is the highest yet.
+    override fun persist(rows: List<RegistryRow>) = writeSynced { batch ->
+        for (row in rows) {
+            val key = ByteWriter(1 + row.keyBytes.size).byte(row.ns.id).bytes(row.keyBytes).toByteArray()
+            batch.put(registryCf, key, ByteWriter(5).varInt(row.id).toByteArray())
+        }
+        for (ns in rows.mapTo(HashSet()) { it.ns }) {
+            batch.put(metaCf, registryCounterKey(ns), longBytes(registryCounters.getValue(ns)))
         }
     }
+
+    private fun runWriter() = progress.run(
+        db,
+        finished = { !running && noteQueue.isEmpty() },
+        beforeEach = {
+            val notes = ArrayList<NoteWrite>()
+            noteQueue.drainTo(notes)
+            if (notes.isNotEmpty()) {
+                writeNotes(notes)
+                progress.written.addAndGet(notes.size.toLong())
+            }
+        },
+    ) { writing.withLock { writeAll(it) } }
 
     // One movement that cannot be encoded is a bug in the capture; every movement after it is not.
     // Letting the first one stop the writer turns a single bad row into a ledger that silently records
@@ -1127,8 +1168,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                 for (step in 0 until MAX_UNDO_DEPTH) {
                     val prefix = longBytes(giver)
                     iter.seek(prefix)
+                    // A chain cut short by an error flips the parity of everything after it.
+                    if (!iter.isValid) iter.status()
                     val key = if (iter.isValid) iter.key() else null
-                    if (key == null || key.size < prefix.size || !key.copyOf(prefix.size).contentEquals(prefix)) {
+                    if (key == null || !key.startsWith(prefix)) {
                         ended = true
                         break
                     }
@@ -1179,7 +1222,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         reverse: Boolean,
         from: ByteArray? = null,
         action: (ByteArray, ByteArray) -> Boolean,
-    ) = db.forEachUnder(entriesCf, prefix, EntryCodec.CHUNK_PREFIX_SIZE, reverse, from, action)
+    ) = db.forEachUnder(entriesCf, prefix, reverse, from, action)
 
     // Each call brings back at most `limit` entries under its own prefix, so a region scan gives every
     // chunk the same allowance rather than letting the first one it walks spend the whole budget.
@@ -1208,48 +1251,21 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         return EntryPage(found.take(limit), found.size <= limit, unreadable)
     }
 
-    // A fill that mints thousands of numbers in a row would otherwise pay a write apiece. The batch is
-    // written even when the body fails: what it holds is already whole, every row alongside the
-    // counter that named it, and the numbers it minted are already being handed out in memory.
-    fun <T> staged(body: () -> T): T = dbLock.read {
+    // An interned row must land in the same batch as the counter that named it, or a crash in between
+    // hands the same number out twice. The writer's forms go into its own batch, with the rows that name
+    // them; anything else is written and fsynced on its own before its number is handed out.
+    private fun stage(write: (WriteBatch) -> Unit) {
+        if (Thread.currentThread() === writerThread) pendingBatch?.let { return write(it) }
+        writeSynced(write)
+    }
+
+    private fun writeSynced(fill: (WriteBatch) -> Unit) = dbLock.read {
         check(!closed) { "the ledger is closed" }
         WriteBatch().use { batch ->
-            stagingBatch.set(batch)
-            try {
-                val result = body()
-                db.write(syncWriteOptions, batch)
-                result
-            } catch (failure: Throwable) {
-                // Written even so, but its own failure is kept quiet: the reason the body stopped is
-                // the one worth reporting, and losing it to a storage error hides the ceiling that
-                // was actually hit.
-                runCatching { db.write(syncWriteOptions, batch) }
-                throw failure
-            } finally {
-                stagingBatch.remove()
-            }
+            fill(batch)
+            db.write(syncWriteOptions, batch)
         }
     }
-
-    // Registry and form rows must land in the same batch as the counter that named them, or a crash
-    // in between hands the same number out twice. Startup registry fills run before the writer has a
-    // batch open, so they go into the session the caller opened, or into a batch of their own.
-    private fun stage(write: (WriteBatch) -> Unit) {
-        val pending = if (Thread.currentThread() === writerThread) pendingBatch else stagingBatch.get()
-        if (pending != null) {
-            write(pending)
-            return
-        }
-        dbLock.read {
-            check(!closed) { "the ledger is closed" }
-            WriteBatch().use { batch ->
-                write(batch)
-                db.write(syncWriteOptions, batch)
-            }
-        }
-    }
-
-    private fun readCounter(key: ByteArray): Long = db.get(metaCf, key)?.let { ByteReader(it).longBE() } ?: 0L
 
     private fun registryCounterKey(ns: RegistryNamespace): ByteArray = "reg:${ns.id}".toByteArray()
 
@@ -1261,29 +1277,26 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         private var nextId: Long = 0
 
         fun load() {
-            nextId = readCounter(counterKey)
-            db.newIterator(cf, wholeCfRead).use { iter ->
-                iter.seekToFirst()
-                while (iter.isValid) {
-                    remember(ByteReader(iter.key()).longBE(), iter.value())
-                    iter.next()
-                }
-            }
+            nextId = db.readCounter(metaCf, counterKey)
+            db.forEachRow(cf) { key, value -> remember(ByteReader(key).longBE(), value) }
         }
 
         // Minting is a read-modify-write of the counter, and the block plane interns from a writer
         // thread of its own, so two threads reaching a value neither has seen would hand out one
         // number twice and file two different things under it.
+        // Handed out only once staged: a write that failed would otherwise leave the number cached, and
+        // the next row to name the value would cite a number nothing was written under. The number is
+        // spent either way, as a failed write promises nothing about whether it landed.
         @Synchronized
         fun idOf(value: ByteArray): Long {
             idByValue[FormKey(value)]?.let { return it }
             val id = nextId++
-            remember(id, value)
-            minted.get()?.add(id)
             stage {
                 it.put(cf, longBytes(id), value)
                 it.put(metaCf, counterKey, longBytes(nextId))
             }
+            remember(id, value)
+            minted.get()?.add(id)
             return id
         }
 

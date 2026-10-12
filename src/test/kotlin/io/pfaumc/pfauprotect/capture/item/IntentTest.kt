@@ -1,11 +1,11 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
-import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerHolder
 import io.pfaumc.pfauprotect.model.PlayerInv
@@ -23,7 +23,6 @@ class IntentTest {
     private val ground = ItemEntityRef(UUID.randomUUID())
     private val placed = WorldBlock(world, 10, 65, -3)
 
-    private fun key(name: String) = ItemKey(name.toByteArray(), null)
     private fun bag(slot: Int) = PlayerInv(player, slot)
 
     private fun lost(name: String, qty: Int, from: Holder = bag(0)) =

@@ -17,7 +17,6 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import java.util.UUID
@@ -25,12 +24,10 @@ import java.util.UUID
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class NestedItemsTest {
     private val registries = Registries(MemoryRegistryStore())
-    private lateinit var codec: ItemFormCodec
-
-    @BeforeAll
-    fun loadServerRegistries() {
+    // Eager: building the codec brings the registries up, and most tests touch `Items` without it.
+    private val codec = run {
         fillTypeRegistries(registries)
-        codec = ItemFormCodec(registries, ServerRegistries.access)
+        ItemFormCodec(registries, ServerRegistries.access)
     }
 
     private fun shulker(vararg items: Pair<Int, ItemStack>): ItemStack {

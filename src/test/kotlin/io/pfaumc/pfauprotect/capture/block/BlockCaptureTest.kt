@@ -1,15 +1,16 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.worldStub
+import io.pfaumc.pfauprotect.BothPlanes
+import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.attribution.Attribution
+import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.storage.BlockChange
-import io.pfaumc.pfauprotect.storage.BlockLog
-import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
-import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.attribution.behind
+import io.pfaumc.pfauprotect.rollback.slotsOf
 import io.pfaumc.pfauprotect.stub
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
@@ -29,7 +30,6 @@ import net.minecraft.world.level.block.state.properties.BedPart
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf
 import net.minecraft.world.level.block.state.properties.Half
-import org.bukkit.World
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
@@ -41,53 +41,34 @@ import org.bukkit.event.EventPriority
 import org.bukkit.event.block.BlockBreakEvent
 import org.bukkit.event.block.BlockPlaceEvent
 import org.bukkit.inventory.EquipmentSlot
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
-import java.lang.reflect.Proxy
-import java.nio.file.Path
 import java.util.UUID
 
 private const val SOURCE_WATER = "minecraft:water[level=0]"
 private const val AIR = "minecraft:air"
 
-class BlockCaptureTest {
-    private val world = UUID.fromString("00000000-0000-4000-8000-000000000002")
-    private val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
-    private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
+class BlockCaptureTest : BothPlanes() {
+    override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000002")
 
     private lateinit var registries: RegistryAccess
-    private lateinit var shared: RocksItemLog
-    private lateinit var logs: BlockLogs
-    private lateinit var log: BlockLog
     private lateinit var attribution: Attribution
 
-    // A getter and not a field: touching `Blocks` before the bootstrap in `open` throws out of the
+    // A getter and not a field: touching `Blocks` before the bootstrap in `bootstrap` throws out of the
     // class initializer, and a field is initialized before it.
     private val signState get() = Blocks.OAK_SIGN.defaultBlockState()
 
     @BeforeEach
-    fun open(@TempDir tempDir: Path) {
+    fun bootstrap() {
         registries = ServerRegistries.access
-        shared = RocksItemLog(tempDir.resolve("items"))
-        logs = BlockLogs(tempDir.resolve("blocks"), shared)
-        log = logs.open(world)
         attribution = Attribution(shared.registries, logs)
-    }
-
-    @AfterEach
-    fun closeAll() {
-        logs.close()
-        shared.close()
     }
 
     private fun stateOf(blockData: String): Int? =
@@ -115,7 +96,7 @@ class BlockCaptureTest {
     private fun blockStub(at: BlockPos, data: BlockData, relative: Block? = null): Block = stub(
         Block::class.java,
         mapOf(
-            "getWorld" to stub(World::class.java, mapOf("getUID" to world)),
+            "getWorld" to worldStub(world),
             "getX" to at.x,
             "getY" to at.y,
             "getZ" to at.z,
@@ -181,8 +162,7 @@ class BlockCaptureTest {
             SOURCE_WATER,
             after(Blocks.OAK_STAIRS.defaultBlockState().setValue(BlockStateProperties.WATERLOGGED, true)),
         )
-        // Neither of these carries a waterlogged property, and both stand in a water source all the
-        // same.
+        // Neither of these carries a waterlogged property.
         assertEquals(SOURCE_WATER, after(Blocks.KELP.defaultBlockState()))
         assertEquals(SOURCE_WATER, after(Blocks.KELP_PLANT.defaultBlockState()))
         assertEquals(SOURCE_WATER, after(Blocks.SEAGRASS.defaultBlockState()))
@@ -207,21 +187,20 @@ class BlockCaptureTest {
 
     // A block in a world made of a map: whatever is not in it is air, and a neighbour is asked for by
     // position like `CraftBlock` does, so two routes to one position meet as one block.
-    private fun blockIn(blocks: Map<BlockPos, NmsBlockState>, at: BlockPos): Block =
-        Proxy.newProxyInstance(Block::class.java.classLoader, arrayOf(Block::class.java)) { _, method, args ->
-            when (method.name) {
-                "getBlockData" -> (blocks[at] ?: Blocks.AIR.defaultBlockState()).asBlockData()
-                "getRelative" -> (args[0] as BlockFace).let {
-                    blockIn(blocks, at.offset(it.modX, it.modY, it.modZ))
-                }
-                "getX" -> at.x
-                "getY" -> at.y
-                "getZ" -> at.z
-                "equals" -> (args[0] as? Block)?.let { it.x == at.x && it.y == at.y && it.z == at.z } == true
-                "hashCode" -> at.hashCode()
-                else -> null
-            }
-        } as Block
+    private fun blockIn(blocks: Map<BlockPos, NmsBlockState>, at: BlockPos): Block = stub(
+        Block::class.java,
+        mapOf(
+            "getBlockData" to { _: Array<out Any?> -> (blocks[at] ?: Blocks.AIR.defaultBlockState()).asBlockData() },
+            "getRelative" to { args: Array<out Any?> ->
+                (args[0] as BlockFace).let { blockIn(blocks, at.offset(it.modX, it.modY, it.modZ)) }
+            },
+            "getX" to at.x,
+            "getY" to at.y,
+            "getZ" to at.z,
+            "equals" to { args: Array<out Any?> -> (args[0] as? Block)?.let { it.x == at.x && it.y == at.y && it.z == at.z } == true },
+            "hashCode" to at.hashCode(),
+        ),
+    )
 
     // Lava poured on a roof at x 0, run east over the edge, down the wall and on along the ground. From
     // the ground the walk climbs back to the bucket; a source below where it starts is never one it
@@ -428,8 +407,6 @@ class BlockCaptureTest {
         )
         attribution.cleared(blockStub(foot, door, relative = head), bob)
 
-        // The position holds whatever the break left, so the player who put the door there is no
-        // longer the one who answers for it and the one who took it away answers for air alone.
         assertNull(attribution.placerAt(standing, door.asString))
         assertEquals(bob, attribution.placerAt(standing, AIR)?.actor)
         assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 63, 5))?.actor)
@@ -454,7 +431,6 @@ class BlockCaptureTest {
 
         assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 65, 5))?.actor)
         assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 66, 5))?.actor)
-        // The door may yet stand; who put it there still answers for it.
         assertEquals(alice, attribution.placerAt(WorldBlock(world, foot.x, foot.y, foot.z), door.asString)?.actor)
     }
 
@@ -471,7 +447,6 @@ class BlockCaptureTest {
 
         assertEquals(alice, attribution.placerAt(above, tnt.asString)?.actor)
         assertNull(attribution.supportRemoverAt(WorldBlock(world, 5, 66, 5)))
-        // The break itself is still noted where it happened.
         assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 63, 5))?.actor)
     }
 
@@ -483,8 +458,8 @@ class BlockCaptureTest {
         val campfire = net.minecraft.world.level.block.entity.CampfireBlockEntity(BlockPos(2, 64, 1), Blocks.CAMPFIRE.defaultBlockState())
         campfire.items[2] = NmsItemStack(Items.BEEF)
 
-        assertEquals(listOf(Items.WRITABLE_BOOK), heldStacks(lectern)!!.map { it.item })
-        assertEquals(listOf(true, true, false, true), heldStacks(campfire)!!.map { it.isEmpty })
-        assertNull(heldStacks(SignBlockEntity(BlockPos(3, 64, 1), Blocks.OAK_SIGN.defaultBlockState())))
+        assertEquals(listOf(Items.WRITABLE_BOOK), slotsOf(lectern)!!.let { s -> List(s.size) { s.get(it).item } })
+        assertEquals(listOf(true, true, false, true), slotsOf(campfire)!!.let { s -> List(s.size) { s.get(it).isEmpty } })
+        assertNull(slotsOf(SignBlockEntity(BlockPos(3, 64, 1), Blocks.OAK_SIGN.defaultBlockState())))
     }
 }

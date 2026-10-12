@@ -104,7 +104,9 @@ private const val PLACE_FLAGS = SHAPE_FLAGS or Block.UPDATE_KNOWN_SHAPE
 
 // How long a preview waits for `apply`. The world goes on changing under it, so apply reads it all
 // again; this only bounds how stale the question can be.
-private const val PENDING_MILLIS = 5 * 60_000L
+internal const val PENDING_MILLIS = 5 * 60_000L
+
+internal fun nameOrId(uuid: UUID): String = Bukkit.getOfflinePlayer(uuid).name ?: uuid.toString()
 
 // A chunk task that never runs — its world unloaded under it — would hold the one rollback slot for
 // good. Past this a running rollback is taken as lost and the slot handed on.
@@ -276,9 +278,10 @@ private val DYING = listOf(
 private const val CAMPFIRE_COOK_TICKS = 600
 
 /**
- * A block's item slots, as a rollback puts things into them and takes them out. A container is its own;
- * a lectern keeps its book behind a container of its own, which sets the book and the lectern's state
- * together; a campfire keeps its food in a list no container wraps, one item a slot.
+ * A block's item slots, as capture reads them and a rollback puts things into them and takes them out. A
+ * container is its own; a lectern keeps its book behind a container of its own, which sets the book and the
+ * lectern's state together; a campfire keeps its food in a list no container wraps, one item a slot. The
+ * item plane books all of them to the block as `Container` slots.
  */
 internal interface Slots {
     val size: Int
@@ -320,6 +323,8 @@ internal fun slotsOf(entity: BlockEntity?): Slots? = when (entity) {
     is CampfireBlockEntity -> CampfireSlots(entity)
     else -> null
 }
+
+private fun owned(level: ServerLevel, pos: BlockPos) = Bukkit.isOwnedByCurrentRegion(level.world, pos.x shr 4, pos.z shr 4)
 
 /**
  * Puts back (`qty` above zero) or takes out (below zero) one slot posting: in its own slot first, then
@@ -393,7 +398,7 @@ class ChunkRollback(
             when {
                 was.block is LiquidBlock && !was.fluidState.isSource && positions[i].steps.isNotEmpty() -> listOf(spots[i] to was)
                 !removed -> emptyList()
-                else -> ranFrom(spots[i], level::getBlockState) { Bukkit.isOwnedByCurrentRegion(level.world, it.x shr 4, it.z shr 4) }
+                else -> ranFrom(spots[i], level::getBlockState) { owned(level, it) }
             }
         }
         for ((pos, _) in drained) level.setBlock(pos, Blocks.AIR.defaultBlockState(), PLACE_FLAGS)
@@ -532,7 +537,6 @@ class ChunkRollback(
      */
     fun drainLeft(level: ServerLevel, chunk: ChunkPlan) {
         if (chunk.positions.isEmpty()) return
-        val owned = { pos: BlockPos -> Bukkit.isOwnedByCurrentRegion(level.world, pos.x shr 4, pos.z shr 4) }
         val low = maxOf(level.minY, chunk.positions.minOf { it.at.y } - DRAIN_SPAN)
         val high = minOf(level.maxY - 1, chunk.positions.maxOf { it.at.y } + DRAIN_SPAN)
         val seen = HashSet<BlockPos>()
@@ -541,7 +545,7 @@ class ChunkRollback(
             for (y in low..high) {
                 val pos = BlockPos(x, y, z)
                 if (pos in seen || !running(level.getBlockState(pos))) continue
-                val (flow, fed) = flowFrom(pos, level, owned, seen)
+                val (flow, fed) = flowFrom(pos, level, seen)
                 if (!fed) orphaned.putAll(flow)
             }
         }
@@ -554,7 +558,7 @@ class ChunkRollback(
     // The running liquid joined to `start`, and whether a source of it touches any of it. One too big to walk is
     // taken as fed.
     private fun flowFrom(
-        start: BlockPos, level: ServerLevel, owned: (BlockPos) -> Boolean, seen: MutableSet<BlockPos>,
+        start: BlockPos, level: ServerLevel, seen: MutableSet<BlockPos>,
     ): Pair<Map<BlockPos, net.minecraft.world.level.block.state.BlockState>, Boolean> {
         val fluid = level.getBlockState(start).fluidState.type
         val flow = LinkedHashMap<BlockPos, net.minecraft.world.level.block.state.BlockState>()
@@ -567,7 +571,7 @@ class ChunkRollback(
             for (direction in Direction.entries) {
                 val near = at.relative(direction)
                 // Another region's block cannot be read here, and a source may stand there: left as fed.
-                if (!owned(near)) return flow to true
+                if (!owned(level, near)) return flow to true
                 val state = level.getBlockState(near)
                 if (!state.fluidState.type.isSame(fluid)) continue
                 if (state.fluidState.isSource) fed = true
@@ -591,7 +595,7 @@ class ChunkRollback(
         val out = LinkedHashMap<BlockPos, Standing>()
         for (spot in back) for (pos in BlockPos.betweenClosed(spot.offset(-DOUSE_REACH, -DOUSE_REACH, -DOUSE_REACH), spot.offset(DOUSE_REACH, DOUSE_REACH, DOUSE_REACH))) {
             if (pos in out) continue
-            if (!Bukkit.isOwnedByCurrentRegion(level.world, pos.x shr 4, pos.z shr 4)) continue
+            if (!owned(level, pos)) continue
             val state = level.getBlockState(pos)
             if (state.block !is BaseFireBlock) continue
             val below = level.getBlockState(pos.below())
@@ -620,7 +624,7 @@ class ChunkRollback(
                     tally.piles += plan.drops
                 }
                 tally.entitiesTaken++
-                if (apply) tally.jobs += EntityJob(alive) { taken -> takeAway(alive, plan, actor, taken) }
+                if (apply) tally.jobs += EntityJob(alive) { takeAway(alive, plan, actor) }
             }
             EntityKind.REMOVED -> {
                 if (alive != null) return run { tally.entitiesAlready++ }
@@ -674,7 +678,7 @@ class ChunkRollback(
 
     // On the entity's own thread. Its slots go with it, and the capture writes them off as it does for
     // any entity taken out of the world.
-    private fun takeAway(entity: Entity, plan: EntityPlan, actor: UUID?, tally: Tally) {
+    private fun takeAway(entity: Entity, plan: EntityPlan, actor: UUID?) {
         if (!entity.isValid) return
         val before = snapshotOf((entity as CraftEntity).handle)
         forget(entity.uniqueId)
@@ -766,7 +770,7 @@ class ChunkRollback(
             val state = level.getBlockState(pos)
             for (face in Direction.entries) {
                 val near = pos.relative(face)
-                if (near in planned || !Bukkit.isOwnedByCurrentRegion(level.world, near.x shr 4, near.z shr 4)) continue
+                if (near in planned || !owned(level, near)) continue
                 if (shapeKeysOf(level.getBlockState(near).asBlockData().asString.substringBefore('[')).isNotEmpty()) continue
                 level.neighborShapeChanged(face.opposite, near, pos, state, SHAPE_FLAGS, Block.UPDATE_LIMIT - 1)
             }
@@ -827,7 +831,7 @@ class Rollbacks(
     private val stopping = java.util.concurrent.atomic.AtomicBoolean()
     private val reader = RollbackReader(ledger, blocks)
     // The blocks each player sees as a preview of theirs would put them.
-    val ghosts = Ghosts(plugin, PENDING_MILLIS)
+    val ghosts = Ghosts(plugin)
 
     fun preview(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
         refusalOf(query)?.let {
@@ -901,10 +905,9 @@ class Rollbacks(
                 for (world in blocks.worlds) blocks.get(world)?.drain()
                 val now = System.currentTimeMillis()
                 val event = query.event
-                // One event: a second either side of it, around where it happened. What came after is a
-                // later change and stops it, as in any window that ends in the past.
+                // One event: a second either side of it, around where it happened. A window that ends in the
+                // past, an event's or a span's, treats what came after as somebody's later change, which stops it.
                 val from = event?.let { it.at - EVENT_MILLIS } ?: (now - query.secondsBack!! * 1000)
-                // A span that stops in the past: what came after is somebody's later change and stops it.
                 val to = event?.let { it.at + EVENT_MILLIS } ?: query.secondsUntil?.let { now - it * 1000 } ?: now
                 val radius = if (event != null) query.radius ?: EVENT_RADIUS else query.radius
                 val at = if (event != null) LookupTarget(target.world, event.x, event.y, event.z, "event ${event.id} at ${event.x} ${event.y} ${event.z}") else target
@@ -1116,13 +1119,13 @@ class Rollbacks(
         for (death in total.deaths.distinctBy { it.eventId to it.uuid }) {
             val back = restitutionFor(ledger, death)
             if (back.isEmpty()) continue
-            val victim = Bukkit.getOfflinePlayer(death.uuid).name ?: death.uuid.toString()
+            val victim = nameOrId(death.uuid)
             sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
             if (apply) confiscations.restore(death.uuid, back, actor, sender, pileBirths(ledger, death).values.flatten(), fellFrom(ledger, death))
         }
         // A mob let out of a bucket is no longer in it: the bucket with the mob for the one it was before.
         for (bucket in total.buckets) {
-            val who = Bukkit.getOfflinePlayer(bucket.player).name ?: bucket.player.toString()
+            val who = nameOrId(bucket.player)
             val swap = "${confiscations.name(bucket.withMob)} from $who for ${confiscations.name(bucket.empty)}"
             if (!apply) {
                 sender.sayNamed("  would swap back $swap.")

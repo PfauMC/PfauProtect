@@ -1,9 +1,9 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.ItemEntityRef
-import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -20,8 +20,8 @@ class SpawnOriginsTest {
     private val origins = SpawnOrigins(coalescer) { clock }
 
     private val dropper = Container(world, 4, 70, 8, 2)
-    private val honeycomb = ItemKey("honeycomb".toByteArray(), null)
-    private val stone = ItemKey("stone".toByteArray(), null)
+    private val honeycomb = key("honeycomb")
+    private val stone = key("stone")
     private val at = Spot(world, 4.0, 70.0, 8.0)
 
     private fun rows(): List<Transfer> {
@@ -50,7 +50,7 @@ class SpawnOriginsTest {
         val beef = UUID.randomUUID()
         val leather = UUID.randomUUID()
         val stranger = UUID.randomUUID()
-        val leatherKey = ItemKey("leather".toByteArray(), null)
+        val leatherKey = key("leather")
         origins.expect(Void, Cause.MOB_DROP, stone, at, 1, tag = cow)
         origins.expect(Void, Cause.MOB_DROP, leatherKey, at, 1, tag = cow)
         origins.expect(dropper, Cause.DROPPER_EJECT, honeycomb, at, 1)
@@ -67,7 +67,7 @@ class SpawnOriginsTest {
     // the whole stack, and an exact note at the same spot is served first.
     @Test
     fun `a note made from a loot roll takes whatever of its form lands`() {
-        val carrot = ItemKey("carrot".toByteArray(), null)
+        val carrot = key("carrot")
         origins.expect(Void, Cause.BLK_MOB_GRIEF, carrot, at, 2, rolled = true)
         origins.expect(dropper, Cause.CONTAINER_BREAK_DROP, carrot, at, 1)
 
@@ -77,7 +77,7 @@ class SpawnOriginsTest {
 
     @Test
     fun `a note for any form takes what no other note names`() {
-        val vine = ItemKey("twisting_vines".toByteArray(), null)
+        val vine = key("twisting_vines")
         origins.expect(dropper, Cause.CONTAINER_BREAK_DROP, vine, at, 1)
         origins.expectAny(Void, Cause.BLK_FADE, at, null)
 
@@ -99,10 +99,9 @@ class SpawnOriginsTest {
         assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1, thrower = player))
     }
 
-    // Only what falls in the same tick: a stranger's item dropped by the block a tick later is not its drop.
     @Test
     fun `a note for any form takes nothing a tick later`() {
-        val vine = ItemKey("twisting_vines".toByteArray(), null)
+        val vine = key("twisting_vines")
         origins.expectAny(Void, Cause.BLK_FADE, at, null)
 
         clock += 60
@@ -113,7 +112,7 @@ class SpawnOriginsTest {
     // cart holds it in, and the dispenser counts the item gone out. A block's drop is never a cart.
     @Test
     fun `a cart a dispenser put down takes the note left for its item`() {
-        val cart = ItemKey("minecart".toByteArray(), null)
+        val cart = key("minecart")
         val held = EntitySlot(UUID.randomUUID(), 16)
         origins.expectAny(Void, Cause.BLK_FADE, at, null)
         assertFalse(origins.claimInto(held, at, cart))
@@ -243,7 +242,6 @@ class SpawnOriginsTest {
         assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1))
     }
 
-    // A blast read off by its own row claims nothing of the next one along the street.
     @Test
     fun `an event read off leaves the next one's drops to it`() {
         val first = Any()

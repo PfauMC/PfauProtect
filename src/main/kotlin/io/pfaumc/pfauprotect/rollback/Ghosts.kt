@@ -37,7 +37,7 @@ internal fun nearest(ghosts: List<Ghost>, world: UUID, x: Double, y: Double, z: 
  * whenever the server tells it about that block again: a chunk it did not have yet or sent anew after the
  * player went away and came back, a click on the block. Each time it is shown again.
  */
-class Ghosts(private val plugin: Plugin, private val expiryMillis: Long) : Listener {
+class Ghosts(private val plugin: Plugin) : Listener {
     // A class rather than the bare map for its identity: an expiry removes only the preview it was set
     // for, and a second preview of the same blocks is an equal map.
     private class Shown(val byChunk: Map<Pair<UUID, Long>, List<Ghost>>)
@@ -60,7 +60,7 @@ class Ghosts(private val plugin: Plugin, private val expiryMillis: Long) : Liste
         )
         Bukkit.getAsyncScheduler().runDelayed(plugin, {
             if (shown.remove(player.uniqueId, mine)) restore(player, mine)
-        }, expiryMillis, TimeUnit.MILLISECONDS)
+        }, PENDING_MILLIS, TimeUnit.MILLISECONDS)
     }
 
     fun hide(player: Player) {

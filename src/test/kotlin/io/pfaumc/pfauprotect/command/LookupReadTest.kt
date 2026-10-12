@@ -1,7 +1,9 @@
 package io.pfaumc.pfauprotect.command
+import io.pfaumc.pfauprotect.BothPlanes
+import io.pfaumc.pfauprotect.T0
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.storage.BlockChange
-import io.pfaumc.pfauprotect.storage.BlockLog
-import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
@@ -11,13 +13,11 @@ import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.PlayerInv
-import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.ServerRegistries
+import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.attribution.behind
-import io.pfaumc.pfauprotect.capture.item.mutation
 import io.pfaumc.pfauprotect.capture.block.payloadOf
 import io.pfaumc.pfauprotect.capture.block.wroteOff
 import net.minecraft.core.BlockPos
@@ -28,49 +28,27 @@ import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.entity.SignBlockEntity
 import net.minecraft.world.level.block.entity.SignTextSlot
 import org.bukkit.command.CommandSender
-import org.junit.jupiter.api.AfterEach
+import org.bukkit.plugin.Plugin
 import net.kyori.adventure.text.Component as AdventureComponent
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
-import java.lang.reflect.Proxy
-import java.nio.file.Path
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
-private const val T0 = 1_700_000_000_000L
 private const val AIR = "minecraft:air"
 private const val STONE = "minecraft:stone"
 
 // Both planes are read through the one command a moderator has. A block plane nothing can read is a
 // block plane nobody can check, which is how a whole class of capture went unverified before.
-class LookupReadTest {
+class LookupReadTest : BothPlanes() {
     // A line names the game's things through its registries, which have to be up before anything reads them.
     init {
         ServerRegistries.access
     }
 
-    private val world = UUID.fromString("00000000-0000-4000-8000-000000000005")
+    override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000005")
     private val stone = byteArrayOf(3)
-
-    private lateinit var shared: RocksItemLog
-    private lateinit var logs: BlockLogs
-    private lateinit var log: BlockLog
-
-    @BeforeEach
-    fun open(@TempDir dir: Path) {
-        shared = RocksItemLog(dir.resolve("items"))
-        logs = BlockLogs(dir.resolve("blocks"), shared)
-        log = logs.open(world)
-    }
-
-    @AfterEach
-    fun closeAll() {
-        logs.close()
-        shared.close()
-    }
 
     private fun said(
         query: LookupQuery = LookupQuery(),
@@ -82,18 +60,20 @@ class LookupReadTest {
         players: Map<String, UUID> = emptyMap(),
     ): List<String> {
         val lines = ArrayList<String>()
-        val sender = Proxy.newProxyInstance(
-            CommandSender::class.java.classLoader,
-            arrayOf(CommandSender::class.java),
-        ) { _, method, args ->
-            if (method.name == "sendMessage") args?.forEach { if (it is String) lines += it else if (it is AdventureComponent) lines += flat(it) }
-            null
-        } as CommandSender
         val names = players.entries.associate { (name, id) -> id to name }
-        Lookups(stubPlugin(), shared, logs, codec, players::get, names::get)
-            .report(sender, LookupTarget(world, x, y, z, "stone at $x $y $z"), query)
+        Lookups(stub(Plugin::class.java), shared, logs, codec, players::get, names::get)
+            .report(senderInto(lines), LookupTarget(world, x, y, z, "stone at $x $y $z"), query)
         return lines
     }
+
+    private fun senderInto(lines: MutableList<String>) = stub(
+        CommandSender::class.java,
+        mapOf(
+            "sendMessage" to { args: Array<out Any?> ->
+                args.forEach { if (it is String) lines += it else if (it is AdventureComponent) lines += flat(it) }
+            },
+        ),
+    )
 
     // A line as text with what it shows on hover in braces and the game's names as their keys, so a test
     // reads what a player can find on the line without a client to translate it.
@@ -109,12 +89,6 @@ class LookupReadTest {
         }
         walk(component)
     }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun stubPlugin() = Proxy.newProxyInstance(
-        org.bukkit.plugin.Plugin::class.java.classLoader,
-        arrayOf(org.bukkit.plugin.Plugin::class.java),
-    ) { _, _, _ -> null } as org.bukkit.plugin.Plugin
 
     // Pages count folded runs, so the rows are folded before they are cut: ten blasts are one run on page
     // one, and the placement before them is page two rather than lost between the pages.
@@ -154,9 +128,6 @@ class LookupReadTest {
         )
     }
 
-    // Both halves of a mutation face the Void, so a reader who is not told they are one event sees an
-    // item destroyed and an unrelated item created at the same instant — the very reading the shared
-    // transaction exists to deny.
     @Test
     fun `a mutation says the item changed in place`() {
         val anvil = Container(world, 10, 64, -3, 0)
@@ -198,7 +169,6 @@ class LookupReadTest {
     // A cow killed where somebody is standing is part of what happened there, and so is who did it.
     @Test
     fun `an entity row reads beside the block rows and answers to its type`() {
-        val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
         log.submit(
             listOf(
                 io.pfaumc.pfauprotect.storage.EntityChange(
@@ -222,9 +192,6 @@ class LookupReadTest {
         assertTrue(said().any { it.contains("  nobody  ") }, "${said()}")
     }
 
-    // A region scan reads whole chunks, so it answers with rows a radius does not cover. The block
-    // plane filters itself to the box, and two planes disagreeing about what one radius means inside
-    // one answer reads as rows appearing and vanishing for no reason.
     @Test
     fun `a radius holds the item plane to the same box as the block plane`() {
         val inside = WorldBlock(world, 11, 64, -4)
@@ -241,8 +208,6 @@ class LookupReadTest {
         assertTrue(lines.none { it.contains("14 64 -12") }, "$lines")
     }
 
-    // One explosion is one transaction over a whole crater. Answering a question about one position
-    // with every other position it took out is worse than answering with the row that was asked for.
     @Test
     fun `a transaction far too big for one position is not pulled in behind it`() {
         val here = WorldBlock(world, 10, 64, -3)
@@ -348,8 +313,6 @@ class LookupReadTest {
     // are read by whose they are, and only theirs.
     @Test
     fun `a player lookup reads their own slots and their crafting grid and nobody else's`() {
-        val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
-        val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
         val chest = Container(world, 1, 64, 1, 0)
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 3), stone, null, 5, T0))
         shared.submit(Transfer(Cause.CRAFT_CONSUME, EntitySlot(alice, 1), Void, stone, null, 8, T0 + 1))
@@ -433,17 +396,11 @@ class LookupReadTest {
         shared.drain()
 
         val lines = ArrayList<String>()
-        val sender = Proxy.newProxyInstance(
-            CommandSender::class.java.classLoader,
-            arrayOf(CommandSender::class.java),
-        ) { _, method, args ->
-            if (method.name == "sendMessage") args?.forEach { if (it is String) lines += it else if (it is AdventureComponent) lines += flat(it) }
-            null
-        } as CommandSender
-        Lookups(stubPlugin(), shared, logs)
-            .report(sender, LookupTarget(other, 1, 64, 1, "stone at 1 64 1"), LookupQuery())
+        Lookups(stub(Plugin::class.java), shared, logs)
+            .report(senderInto(lines), LookupTarget(other, 1, 64, 1, "stone at 1 64 1"), LookupQuery())
 
         assertTrue(lines.any { it.contains("placed") }, "$lines")
+        assertTrue(lines.any { it.contains("block log is not open") }, "$lines")
     }
 
     @Test

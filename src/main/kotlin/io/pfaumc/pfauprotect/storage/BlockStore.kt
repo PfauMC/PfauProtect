@@ -5,8 +5,6 @@ import io.pfaumc.pfauprotect.model.EntityKind
 import org.rocksdb.BloomFilter
 import org.rocksdb.ColumnFamilyDescriptor
 import org.rocksdb.ColumnFamilyHandle
-import org.rocksdb.DBOptions
-import org.rocksdb.ReadOptions
 import org.rocksdb.RocksDB
 import org.rocksdb.WriteBatch
 import org.rocksdb.WriteOptions
@@ -15,7 +13,6 @@ import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import java.util.logging.Level
 import kotlin.concurrent.read
@@ -26,6 +23,7 @@ sealed interface WorldChange {
     val x: Int
     val y: Int
     val z: Int
+    val cause: Cause
     val actor: UUID?
 }
 
@@ -38,7 +36,7 @@ data class EntityChange(
     override val y: Int,
     override val z: Int,
     val kind: EntityKind,
-    val cause: Cause,
+    override val cause: Cause,
     val type: String,
     val uuid: UUID,
     val timestamp: Long = System.currentTimeMillis(),
@@ -61,7 +59,7 @@ data class BlockChange(
     override val z: Int,
     val before: String?,
     val after: String?,
-    val cause: Cause,
+    override val cause: Cause,
     val timestamp: Long = System.currentTimeMillis(),
     val confidence: Confidence = Confidence.FACT,
     val alongside: Boolean = false,
@@ -109,6 +107,8 @@ private val META_SCHEMA_KEY = "schema".toByteArray()
 private val META_EVENT_ID = "event_id".toByteArray()
 private val META_LAST_TS = "last_ts".toByteArray()
 
+private fun timeAt(key: ByteArray, offset: Int): Long = ByteReader(key).also { it.bytes(offset) }.longBE()
+
 // One world's block history. The world number is not in the key because the database is the world,
 // which is what makes deleting a world a matter of deleting a directory: registry numbers are never
 // reused, so rows of a world that is gone could otherwise only be got rid of by a range delete.
@@ -123,11 +123,13 @@ class BlockLog(
     // Asked of every change before it is accepted: false drops it, as another plugin may ask.
     private val keeps: (WorldChange) -> Boolean = { true },
 ) : AutoCloseable {
+    // Before the options that take them, and given back once those are freed.
+    init {
+        shared.borrowShared()
+    }
+
     // The ledger's cache and memtable budget, so a world loaded is not another bound of its own.
-    private val dbOptions = DBOptions()
-        .setCreateIfMissing(true)
-        .setCreateMissingColumnFamilies(true)
-        .setWriteBufferManager(shared.writeBuffers)
+    private val dbOptions = openingOptions(shared.writeBuffers)
     private val bloom = BloomFilter(BLOOM_BITS_PER_KEY)
     private val filteredTable = tableIn(shared.blockCache, bloom)
 
@@ -208,8 +210,8 @@ class BlockLog(
         cleaningUpOnFailure({ closeNatives() }) {
             if (stored == INDEXED_FROM) indexActors()
             if (stored != BLOCK_SCHEMA_VERSION) db.put(metaCf, META_SCHEMA_KEY, longBytes(BLOCK_SCHEMA_VERSION))
-            nextEventId = readCounter(META_EVENT_ID)
-            lastTs = readCounter(META_LAST_TS)
+            nextEventId = db.readCounter(metaCf, META_EVENT_ID)
+            lastTs = db.readCounter(metaCf, META_LAST_TS)
         }
     }
 
@@ -217,21 +219,12 @@ class BlockLog(
     // has one: a crash halfway through leaves the old stamp, and the next open starts again, writing the
     // same keys over themselves.
     private fun indexActors() {
-        ReadOptions().setTotalOrderSeek(true).use { options ->
-            db.newIterator(rowsCf, options).use { iter ->
-                ChunkedBatch(db, writeOptions).use { batch ->
-                    iter.seekToFirst()
-                    while (iter.isValid) {
-                        val key = iter.key()
-                        val actor = BlockCodec.actorNumberOf(iter.value())
-                        if (actor != null && key.size == BlockCodec.KEY_SIZE) {
-                            batch.put(byActorCf, actorKey(actor, key), NOTHING)
-                        }
-                        iter.next()
-                    }
-                    batch.flush()
-                }
+        ChunkedBatch(db, writeOptions).use { batch ->
+            db.forEachRow(rowsCf) { key, value ->
+                val actor = BlockCodec.actorNumberOf(value)
+                if (actor != null && key.size == BlockCodec.KEY_SIZE) batch.put(byActorCf, actorKey(actor, key), NOTHING)
             }
+            batch.flush()
         }
     }
 
@@ -248,45 +241,23 @@ class BlockLog(
             fun delete(cf: ColumnFamilyHandle, key: ByteArray) {
                 if (!dryRun) batch.delete(cf, key)
             }
-            fun timeOf(key: ByteArray, at: Int) = ByteReader(key.copyOfRange(at, at + 8)).longBE()
-            db.newIterator(rowsCf).use { iter ->
-                iter.seekToFirst()
-                var position: ByteArray? = null
-                var held: ByteArray? = null
-                while (iter.isValid) {
-                    val key = iter.key()
-                    val here = key.copyOfRange(0, Zcode.SIZE)
-                    if (position == null || !here.contentEquals(position)) {
-                        position = here
-                        held = null
-                    }
-                    if (timeOf(key, Zcode.SIZE) < cutoff) {
-                        // The one before it is no longer the newest old row of the position.
-                        held?.let { delete(rowsCf, it); rows++ }
-                        held = key.copyOf()
-                    } else if (held != null) {
-                        delete(rowsCf, held)
-                        rows++
-                        held = null
-                    }
-                    iter.next()
+            var position: ByteArray? = null
+            var held: ByteArray? = null
+            db.forEachRow(rowsCf) { key, _ ->
+                val here = key.copyOfRange(0, Zcode.SIZE)
+                if (!here.contentEquals(position)) {
+                    position = here
+                    held = null
                 }
+                // Any later row of the position, old or not, means the one held is no longer its newest old row.
+                held?.let { delete(rowsCf, it); rows++ }
+                held = key.takeIf { timeAt(it, Zcode.SIZE) < cutoff }
             }
-            db.newIterator(byActorCf).use { iter ->
-                iter.seekToFirst()
-                while (iter.isValid) {
-                    if (timeOf(iter.key(), 4 + Zcode.SIZE) < cutoff) delete(byActorCf, iter.key())
-                    iter.next()
-                }
-            }
-            db.newIterator(entitiesCf).use { iter ->
-                iter.seekToFirst()
-                while (iter.isValid) {
-                    if (timeOf(iter.key(), Zcode.SIZE) < cutoff) {
-                        delete(entitiesCf, iter.key())
-                        entities++
-                    }
-                    iter.next()
+            db.forEachRow(byActorCf) { key, _ -> if (timeAt(key, 4 + Zcode.SIZE) < cutoff) delete(byActorCf, key) }
+            db.forEachRow(entitiesCf) { key, _ ->
+                if (timeAt(key, Zcode.SIZE) < cutoff) {
+                    delete(entitiesCf, key)
+                    entities++
                 }
             }
             batch.flush()
@@ -306,9 +277,8 @@ class BlockLog(
         val start = ByteWriter(12).bytes(prefix).longBE(fromTs).toByteArray()
         val positions = HashSet<List<Int>>()
         var walked = 0
-        // The index has no prefix extractor, so there is no prefix mode to leave.
-        db.forEachUnder(byActorCf, prefix, extractorSize = 0, reverse = false, from = start) { key, _ ->
-            val ts = ByteReader(key).also { it.bytes(prefix.size) }.longBE()
+        db.forEachUnder(byActorCf, prefix, reverse = false, from = start) { key, _ ->
+            val ts = timeAt(key, prefix.size)
             if (ts > toTs) return@forEachUnder false
             if (walked++ >= budget) return ActorTouches(positions, false)
             positions += Zcode.decode(key, ACTOR_KEY_SIZE - Zcode.SIZE).toList()
@@ -332,7 +302,7 @@ class BlockLog(
         Thread(::runWriter, "pfauprotect-block-writer-${dir.fileName}").apply { isDaemon = true }
 
     init {
-        writerThread.start()
+        cleaningUpOnFailure({ closeNatives() }) { writerThread.start() }
     }
 
     /**
@@ -344,14 +314,7 @@ class BlockLog(
     fun submit(written: List<WorldChange>): Boolean {
         // What the owner turned off in config.yml is never written at all.
         val off = io.pfaumc.pfauprotect.Settings.disabledCauses
-        val changes = written.filter {
-            val on = when (it) {
-                is BlockChange -> it.cause !in off
-                is EntityChange -> it.cause !in off
-                else -> true
-            }
-            on && keeps(it)
-        }
+        val changes = written.filter { it.cause !in off && keeps(it) }
         // Not `closed`: that is only set once the writer has been joined, and from the moment the
         // writer stops there is nobody left to take the queue. A change accepted in between would be
         // counted as submitted, sit in the queue and never be written, and `drain` would not wait for
@@ -462,7 +425,7 @@ class BlockLog(
             val row = decode(key, value)
             // The key alone says where and when, so a window and a box are asked of it, decoded or not.
             val at = if (key.size >= BlockCodec.KEY_SIZE) Zcode.decode(key) else null
-            val ts = if (at != null) ByteReader(key).also { it.bytes(Zcode.SIZE) }.longBE() else null
+            val ts = if (at != null) timeAt(key, Zcode.SIZE) else null
             when {
                 row == null -> unreadable++
                 ts != null && ts in fromTs..toTs && within(at!![0], at[1], at[2]) -> rows += row
@@ -573,36 +536,9 @@ class BlockLog(
         reverse: Boolean,
         cf: ColumnFamilyHandle = rowsCf,
         action: (ByteArray, ByteArray) -> Boolean,
-    ) = db.forEachUnder(cf, prefix, Zcode.CHUNK_PREFIX_SIZE, reverse, action = action)
+    ) = db.forEachUnder(cf, prefix, reverse, action = action)
 
-    private fun runWriter() {
-        var lastFlush = System.nanoTime()
-        try {
-            while (true) {
-                val first = queue.poll(WRITER_POLL_MILLIS, TimeUnit.MILLISECONDS)
-                if (first == null && !running) return
-                if (first != null) {
-                    val batched = ArrayList<List<WorldChange>>(MAX_BATCH)
-                    batched += first
-                    queue.drainTo(batched, MAX_BATCH - 1)
-                    writeAll(batched)
-                    progress.written.addAndGet(batched.size.toLong())
-                }
-                if (System.nanoTime() - lastFlush >= WAL_FLUSH_INTERVAL_NANOS) {
-                    db.flushWal(true)
-                    lastFlush = System.nanoTime()
-                }
-            }
-        } catch (failure: Throwable) {
-            progress.failure = failure
-            running = false
-            LOGGER.log(
-                Level.SEVERE,
-                "block writer stopped, ${queue.size} submissions are unwritten and further ones are dropped",
-                failure,
-            )
-        }
-    }
+    private fun runWriter() = progress.run(db, finished = { !running }, write = ::writeAll)
 
     // A change that cannot be written is dropped on its own, as a movement is in the ledger's writeAll.
     private fun writeAll(submissions: List<List<WorldChange>>) {
@@ -719,17 +655,14 @@ class BlockLog(
         var ts = 0L
         forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse = true) { key, _ ->
             if (key.size < BlockCodec.KEY_SIZE) return@forEachUnder true
-            val reader = ByteReader(key)
-            reader.bytes(Zcode.SIZE)
-            ts = reader.longBE()
+            ts = timeAt(key, Zcode.SIZE)
             false
         }
         return ts
     }
 
     private fun closeNatives() {
-        cfHandles.forEach { it.close() }
-        db.close()
+        db.closeWithHandles(cfHandles)
         closeOptions()
     }
 
@@ -742,9 +675,8 @@ class BlockLog(
         // the ledger's to close.
         bloom.close()
         dbOptions.close()
+        shared.returnShared()
     }
-
-    private fun readCounter(key: ByteArray): Long = db.get(metaCf, key)?.let { ByteReader(it).longBE() } ?: 0L
 }
 
 // One database per world, each in a directory named after it.
@@ -759,8 +691,14 @@ class BlockLogs(
 ) : AutoCloseable {
     private val logs = ConcurrentHashMap<UUID, BlockLog>()
 
-    fun open(world: UUID): BlockLog =
-        logs.computeIfAbsent(world) { BlockLog(dirOf(it), shared, { changes -> watch(it, changes) }) { change -> keeps(it, change) } }
+    // A world loaded once the bases have started to close would get one that nothing ever closes.
+    private var closed = false
+
+    @Synchronized
+    fun open(world: UUID): BlockLog {
+        check(!closed) { "the world bases are closed" }
+        return logs.computeIfAbsent(world) { BlockLog(dirOf(it), shared, { changes -> watch(it, changes) }) { change -> keeps(it, change) } }
+    }
 
     fun get(world: UUID): BlockLog? = logs[world]
 
@@ -768,13 +706,16 @@ class BlockLogs(
 
     val size: Int get() = logs.size
 
+    @Synchronized
     fun close(world: UUID) {
         logs.remove(world)?.close()
     }
 
     // One world whose close throws still holds its own lock file, and stopping there would leave every
     // world after it holding one too, so the next start finds databases it cannot open.
+    @Synchronized
     fun closeAll() {
+        closed = true
         for (world in logs.keys.toList()) {
             runCatching { close(world) }.onFailure {
                 LOGGER.log(Level.SEVERE, "the block log of world $world did not close", it)

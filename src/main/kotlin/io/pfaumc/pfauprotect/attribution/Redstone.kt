@@ -93,19 +93,12 @@ class Energy(private val now: () -> Long = System::currentTimeMillis) {
      */
     fun near(centres: Collection<WorldBlock>, reach: Int = ENERGY_REACH): Attributed? {
         val now = now()
-        var best: Note? = null
-        for (centre in centres) {
-            for (here in cube(centre, reach)) {
-                val note = notes[here] ?: continue
-                if (now - note.at > ENERGY_MILLIS) continue
-                if (best == null || note.at > best.at ||
-                    (note.at == best.at && note.by.confidence.id < best.by.confidence.id)
-                ) {
-                    best = note
-                }
-            }
-        }
-        return best?.by
+        return centres.asSequence()
+            .flatMap { cube(it, reach) }
+            .mapNotNull { notes[it] }
+            .filter { now - it.at <= ENERGY_MILLIS }
+            .maxWithOrNull(compareBy<Note> { it.at }.thenByDescending { it.by.confidence.id })
+            ?.by
     }
 
     fun near(at: WorldBlock, reach: Int = ENERGY_REACH): Attributed? = near(listOf(at), reach)
@@ -305,7 +298,7 @@ class RedstoneListener(
     private val logs: BlockLogs,
     private val entities: EntityOrigins,
     private val nudges: Nudges,
-    private val attribution: Attribution? = null,
+    private val attribution: Attribution,
 ) : Listener {
     private class Pressed(val at: WorldBlock, val by: Attributed, val nanos: Long)
 
@@ -341,7 +334,7 @@ class RedstoneListener(
      * and the griefer's rollback left the crater. A switch pressed by hand stays the presser's.
      */
     private fun trapOf(block: Block, at: WorldBlock, event: PlayerInteractEvent): Attributed? {
-        if (event.action != Action.PHYSICAL || attribution == null) return null
+        if (event.action != Action.PHYSICAL) return null
         if (!Tag.PRESSURE_PLATES.isTagged(block.type) && block.type != Material.TRIPWIRE) return null
         // A player stands on a plate for many ticks and each raises this; only the one that presses it sets
         // anything off, and only that one is worth the journal's seek on this thread.

@@ -1,4 +1,7 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.T0
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
@@ -16,6 +19,7 @@ import io.pfaumc.pfauprotect.capture.block.cleared
 import io.pfaumc.pfauprotect.capture.block.moved
 import io.pfaumc.pfauprotect.command.namesUser
 import io.pfaumc.pfauprotect.command.wholeTransactions
+import io.pfaumc.pfauprotect.world
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -32,12 +36,7 @@ import org.rocksdb.RocksDB
 import java.nio.file.Path
 import java.util.UUID
 
-private const val T0 = 1_700_000_000_000L
-
 class StorageTest {
-    private val world = UUID.fromString("00000000-0000-4000-8000-000000000001")
-    private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
-    private val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
     private val chest = Container(world, 100, 64, -200, 0)
     private val chestUpperSlot = Container(world, 100, 64, -200, 5)
     private val aliceInv = PlayerInv(alice, 9)
@@ -367,7 +366,6 @@ class StorageTest {
         assertEquals(setOf(theft.ref), log.compensated(listOf(theft.ref)).keys)
     }
 
-    // Owed by a player who was offline, kept until it is taken, and only that player's.
     @Test
     fun `items owed to a rollback are kept per player until forgiven`() {
         log.owe(alice, 7, 5, bob)
@@ -509,8 +507,6 @@ class StorageTest {
         assertNull(log.formAt(world, 1, 2, 3))
     }
 
-    // Two positions one block apart must not read as one, and a form put down where another stood
-    // replaces it rather than joining it.
     @Test
     fun `each position keeps its own form`() {
         val world = UUID.randomUUID()
@@ -543,15 +539,11 @@ class StorageTest {
 
         val forms = log.formsAt(listOf(here, next, bare, elsewhere))
 
-        // A position holding nothing is left out rather than answered with a hole, and every answer
-        // belongs to the position it was asked about.
         assertEquals(setOf(here, next), forms.keys)
         assertArrayEquals(pickaxe, forms[here])
         assertArrayEquals(torch, forms[next])
         assertEquals(emptyMap<WorldBlock, ByteArray>(), log.formsAt(emptyList()))
 
-        // Every position named goes, not merely the first of them, and one holding nothing costs the
-        // rest of the set nothing.
         log.clearFormsAt(listOf(here, bare, also))
 
         assertNull(log.formAt(world, 1, 2, 3))
@@ -560,7 +552,6 @@ class StorageTest {
         assertEquals(setOf(next), log.formsAt(listOf(here, next, bare, also)).keys)
     }
 
-    // The two tables are addressed by the same position and must not be able to read each other.
     @Test
     fun `the form of a position and the name of its container are kept apart`() {
         val world = UUID.randomUUID()
@@ -749,7 +740,6 @@ class StorageTest {
         assertEquals(listOf(-1, 1), whole.map { it.qty })
         assertEquals(setOf(alice), whole.map { it.actor }.toSet())
 
-        // Reachable from either end, not just the one the investigation happened to start at.
         val fromEntity = log.holderEntries(dropped, 0, Long.MAX_VALUE).single()
         assertEquals(whole.toSet(), log.transactionEntries(fromEntity).toSet())
     }
@@ -958,7 +948,6 @@ class StorageTest {
         assertEquals(byPosition, wholeTransactions(log, byPosition))
     }
 
-    // Nothing came out, so there is nothing to bring back and no second read to pay for.
     @Test
     fun `expanding a break that dropped nothing adds no rows`() {
         val position = WorldBlock(world, 13, 65, 34)
@@ -969,7 +958,6 @@ class StorageTest {
         assertEquals(byPosition, wholeTransactions(log, byPosition))
     }
 
-    // What each holder held at the cutoff stays as one opening, written with the deletes it stands for.
     @Test
     fun `a purge leaves each holder its balance at the cutoff`() {
         fun balance() = listOf(chest, aliceInv).associateWith { h -> log.holderEntries(h, 0, Long.MAX_VALUE, limit = 1000).sumOf { it.qty } }

@@ -164,7 +164,10 @@ class MobItemListener(
     private val bartered = ThreadLocal<Marked?>()
     private val unleashed = ThreadLocal<Marked?>()
 
-    private fun ThreadLocal<Marked?>.now(entity: Entity) = get()?.let { it.entity == entity.uniqueId && it.tick == Bukkit.getCurrentTick() } == true
+    private fun ThreadLocal<Marked?>.current(entity: Entity): Marked? =
+        get()?.takeIf { it.entity == entity.uniqueId && it.tick == Bukkit.getCurrentTick() }
+
+    private fun ThreadLocal<Marked?>.now(entity: Entity) = current(entity) != null
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onShear(event: PlayerShearEntityEvent) {
@@ -304,7 +307,7 @@ class MobItemListener(
         // is a guess, and the uncovered tally is where a guess belongs.
         val guessed = entity is LivingEntity && from == Void && cause == Cause.MOB_THROW_ITEM
         val confidence = if (guessed) Confidence.INFERRED else Confidence.FACT
-        val actor = handled.get()?.takeIf { it.entity == entity.uniqueId && it.tick == Bukkit.getCurrentTick() }?.actor
+        val actor = handled.current(entity)?.actor
         origins.expect(item.uniqueId, from, cause, encoded.key, encoded.count, actor, confidence, tag = entity.uniqueId)
     }
 

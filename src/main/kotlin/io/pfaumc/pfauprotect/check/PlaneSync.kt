@@ -6,7 +6,6 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.attribution.inferred
 // The states that can stand in a position without an item ever having been made into one. A block row
 // stores a number standing for the whole state string, and the check has to be answerable against a
 // database at rest, where there is no server to ask what a state is, so this is a set of strings

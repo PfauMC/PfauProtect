@@ -177,10 +177,10 @@ class ItemUseListener(
         if (live.item is BottleItem) return capture.intend(player, mutation(Cause.BOTTLE_FILL))
         // A sulfur cube's bucket holds no water, so letting the cube out raises no bucket event.
         if ((live.item as? MobBucketItem)?.content == Fluids.EMPTY) return capture.intend(player, mutation(Cause.BUCKET_RELEASE_MOB))
-        val target = event.clickedBlock?.type
+        val block = event.clickedBlock
+        val target = block?.type
         // Water poured onto dirt makes mud and leaves the bottle; a compass on a lodestone becomes a
         // lodestone compass, in the slot or beside it.
-        val block = event.clickedBlock
         if (live.item is PotionItem && block != null &&
             (block as CraftBlock).blockState.`is`(BlockTags.CONVERTIBLE_TO_MUD)
         ) return capture.intend(player, mutation(Cause.BOTTLE_EMPTY))

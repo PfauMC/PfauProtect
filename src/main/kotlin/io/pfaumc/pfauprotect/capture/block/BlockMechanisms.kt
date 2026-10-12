@@ -42,7 +42,6 @@ import org.bukkit.block.Campfire
 import org.bukkit.block.Furnace
 import org.bukkit.block.ShulkerBox
 import org.bukkit.block.data.Levelled
-import org.bukkit.craftbukkit.block.data.CraftBlockData
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -88,45 +87,34 @@ data class Spot(val world: UUID, val x: Double, val y: Double, val z: Double)
 
 internal fun spotOf(at: Location) = Spot(at.world.uid, at.x, at.y, at.z)
 
-// A position gives back the item it took over, and the block alone cannot say what that was: a named
-// box, an enchanted head and a plain chest all answer with the bare item, so the two rows at one
-// position would name different forms. What was put down is remembered while it stands, and is
-// trusted only while the position still holds that same item — a block that arrived without being
-// placed, pushed in by a piston or grown out of dirt, would otherwise be given back as whatever stood
-// there before.
-// A block with no item form of its own answers with nothing, and for a block nobody put down — fire,
-// a liquid, a portal — that is the whole answer. Where something was put down it is not: a potted
-// plant, a candle cake and a stem that has grown its fruit all back an item nowhere in the registry
-// while standing on a position the ledger credited, and giving nothing back there would leave that
-// credit behind for ever, where no self-check reaches it.
-// A door, a bed, a tall plant and an extended piston stand in two positions but are paid for once,
-// and the credit goes to the half the placement event names. The breaker may strike either half, and
-// the debit belongs where the credit is: booked against the struck half instead, it leaves the
-// credited half holding a block that is gone while the other gives up one it never got. Each plane
-// stays consistent read on its own, so nothing short of the cross-check between them ever notices.
-// Where neither half was paid for — a plant the world generated — there is no credit to find and the
-// struck half is as good an answer as any.
+// A two-position block is paid for once, on the half the placement event names, and the debit belongs
+// where the credit is whichever half the breaker struck; otherwise one half keeps a block that is gone
+// and the other gives up one it never got, which only the cross-check between the planes would notice.
 internal fun paidHalf(
     struck: WorldBlock,
     partner: WorldBlock?,
     remembered: (WorldBlock) -> ByteArray?,
 ): WorldBlock = partner?.takeIf { remembered(struck) == null && remembered(it) != null } ?: struck
 
+// The block alone answers with the bare item, so what was put down is remembered and trusted only while
+// the position still holds that item; a block pushed or grown in would otherwise be given back as what
+// stood there before. A block with no item form of its own still gives back what was put down: a potted
+// plant or a candle cake would otherwise leave its credit behind for ever.
 internal fun gaveBack(remembered: ByteArray?, shell: ByteArray?): ByteArray? {
     if (remembered == null) return shell
     if (shell == null) return remembered
     return if (itemTypeIdOf(remembered) == itemTypeIdOf(shell)) remembered else shell
 }
 
-// A block that puts an item into the world explains itself before that item exists: the event
-// carrying the reason fires first and the entity carrying the uuid appears inside the same call. A
-// note bridges the two, and a note nobody claims is dropped rather than guessed at.
 // How long the items that came out of an event are kept for the event's row to name them.
 private const val WITNESS_MILLIS = 10_000L
 
 // How long a note waits for its spawn at the least, whatever the sweeps say.
 private const val NOTE_MILLIS = 1_000L
 
+// A block that puts an item into the world explains itself before that item exists: the event
+// carrying the reason fires first and the entity carrying the uuid appears inside the same call. A
+// note bridges the two, and a note nobody claims is dropped rather than guessed at.
 class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> Long = System::currentTimeMillis) {
     private class Note(
         // Null when the movement is written by whoever filed the note. Breaking a block already
@@ -200,14 +188,9 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
     /** The name a box that has just appeared here has to carry, taken once. */
     @Synchronized
     fun ownerFor(stack: NmsItemStack, at: Spot): UUID? {
-        val boxes = boxes.iterator()
-        while (boxes.hasNext()) {
-            val box = boxes.next()
-            if (!near(box.at, at) || !sameBox(box.stack, stack)) continue
-            boxes.remove()
-            return box.owner
-        }
-        return null
+        val box = boxes.firstOrNull { near(it.at, at) && sameBox(it.stack, stack) } ?: return null
+        boxes.remove(box)
+        return box.owner
     }
 
     // `reach` is how far from its block the item may land. An explosion gathers what it breaks into
@@ -581,12 +564,10 @@ class BlockMechanismListener(
         })
     }
 
-    // What a hand's placement writes, from the dispenser's slot: the position takes the item over, and a
-    // shulker box's contents move from the item's name into the block's slots.
     private fun placedFromDispenser(block: Block, change: SlotChange, front: Block, spent: NmsItemStack, actor: UUID?) {
         val at = positionOf(front)
         val timestamp = System.currentTimeMillis()
-        placed.setFormAt(at.world, at.x, at.y, at.z, change.key.form)
+        placed.setFormAt(at, change.key.form)
         val moves = arrayListOf(
             Transfer(
                 cause = Cause.DISPENSER_BEHAVIOR,
@@ -654,7 +635,7 @@ class BlockMechanismListener(
         // a half left alone would go on naming a block that stands nowhere.
         forget(broken.at)
         broken.partner?.let(::forget)
-        gaveBack(remembered, codec.shellOf((state.blockData as CraftBlockData).state.block))?.let {
+        gaveBack(remembered, codec.shellOf(state.blockData))?.let {
             transaction += Transfer(
                 cause = Cause.BLOCK_DROP,
                 from = position,
@@ -763,9 +744,9 @@ class BlockMechanismListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onCrafterCraft(event: CrafterCraftEvent) {
         val block = event.block
-        val inventory = (block.getState(false) as? ContainerBlock)?.inventory ?: return
-        for (slot in 0 until inventory.size) {
-            val key = key(inventory.getItem(slot)) ?: continue
+        val contents = contentsOf(block) ?: return
+        for ((slot, stack) in contents.withIndex()) {
+            val key = stack?.key ?: continue
             pending.add(containerAt(block, slot), Void, Cause.CRAFTER_CONSUME, key, 1)
         }
     }
@@ -855,9 +836,9 @@ class BlockMechanismListener(
         return broken?.takeIf { it.at == positionOf(block) }
     }
 
-    private fun rememberedAt(at: WorldBlock) = placed.formAt(at.world, at.x, at.y, at.z)
+    private fun rememberedAt(at: WorldBlock) = placed.formAt(at)
 
-    private fun forget(at: WorldBlock) = placed.clearFormAt(at.world, at.x, at.y, at.z)
+    private fun forget(at: WorldBlock) = placed.clearFormAt(at)
 
     private fun key(stack: BukkitItemStack?): ItemKey? = codec.encodeOrNull(stack)?.key
 }

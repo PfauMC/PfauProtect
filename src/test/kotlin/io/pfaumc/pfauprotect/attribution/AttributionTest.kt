@@ -1,21 +1,16 @@
 package io.pfaumc.pfauprotect.attribution
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
+import io.pfaumc.pfauprotect.BothPlanes
+import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.storage.BlockChange
-import io.pfaumc.pfauprotect.storage.BlockLog
-import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
-import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.WorldBlock
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
-import java.nio.file.Path
 import java.util.UUID
-
-private const val START = 1_700_000_000_000L
 
 private const val AIR = "minecraft:air"
 private const val TNT = "minecraft:tnt"
@@ -25,30 +20,9 @@ private const val SAND = "minecraft:sand"
 private const val CHEST_RIGHT = "minecraft:chest[facing=north,type=right]"
 private const val CHEST_SINGLE = "minecraft:chest[facing=north,type=single]"
 
-class AttributionTest {
-    private val world = UUID.fromString("00000000-0000-4000-8000-000000000001")
-    private val alice = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
-    private val bob = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
-
-    private lateinit var shared: RocksItemLog
-    private lateinit var logs: BlockLogs
-    private lateinit var log: BlockLog
-    private lateinit var attribution: Attribution
-    private var clock = START
-
-    @BeforeEach
-    fun open(@TempDir tempDir: Path) {
-        shared = RocksItemLog(tempDir.resolve("items"))
-        logs = BlockLogs(tempDir.resolve("blocks"), shared)
-        log = logs.open(world)
-        attribution = Attribution(shared.registries, logs) { clock }
-    }
-
-    @AfterEach
-    fun closeAll() {
-        logs.close()
-        shared.close()
-    }
+class AttributionTest : BothPlanes() {
+    private var clock = T0
+    private val attribution by lazy { Attribution(shared.registries, logs) { clock } }
 
     private fun at(x: Int, y: Int, z: Int) = WorldBlock(world, x, y, z)
 
@@ -69,7 +43,7 @@ class AttributionTest {
         before: String,
         after: String,
         actor: UUID?,
-        ts: Long = START,
+        ts: Long = T0,
         cause: Cause = Cause.BLK_PLAYER_PLACE,
         confidence: Confidence = Confidence.FACT,
     ) {
@@ -125,11 +99,11 @@ class AttributionTest {
     @Test
     fun `the journal names who emptied a wall a frame has only now noticed`() {
         val wall = at(10, 64, 10)
-        journalled(wall, STONE, AIR, bob, START, Cause.BLK_PLAYER_BREAK)
-        clock = START + 5_000
+        journalled(wall, STONE, AIR, bob, T0, Cause.BLK_PLAYER_BREAK)
+        clock = T0 + 5_000
         assertEquals(bob, attribution.journalRemoverAt(wall)?.actor)
         assertEquals(Confidence.INFERRED, attribution.journalRemoverAt(wall)?.confidence)
-        clock = START + HANGING_MILLIS + 1
+        clock = T0 + HANGING_MILLIS + 1
         assertNull(attribution.journalRemoverAt(wall))
     }
 
@@ -170,7 +144,7 @@ class AttributionTest {
         val burnt = at(11, 64, 10)
         journalled(burnt, "minecraft:oak_planks", fire, bob, cause = Cause.BLK_FIRE_BURN)
         assertEquals(bob, attribution.journalPlacerAt(burnt, fire, FIRING_CAUSES)?.actor)
-        journalled(burnt, fire, AIR, alice, START + 1, Cause.BLK_PLAYER_BREAK)
+        journalled(burnt, fire, AIR, alice, T0 + 1, Cause.BLK_PLAYER_BREAK)
         assertNull(attribution.journalPlacerAt(burnt, fire, FIRING_CAUSES))
     }
 
@@ -187,9 +161,9 @@ class AttributionTest {
     @Test
     fun `the journal rung stops at what stands there today`() {
         val here = at(10, 64, 10)
-        journalled(here, AIR, TNT, alice, START)
-        journalled(here, TNT, AIR, bob, START + 1, Cause.BLK_PLAYER_BREAK)
-        journalled(here, AIR, STONE, bob, START + 2)
+        journalled(here, AIR, TNT, alice, T0)
+        journalled(here, TNT, AIR, bob, T0 + 1, Cause.BLK_PLAYER_BREAK)
+        journalled(here, AIR, STONE, bob, T0 + 2)
 
         assertNull(attribution.journalPlacerAt(here, TNT))
         assertEquals(bob, attribution.journalPlacerAt(here, STONE)?.actor)
@@ -217,19 +191,19 @@ class AttributionTest {
     @Test
     fun `the journal refuses a row that did not put the block there`() {
         val broken = at(10, 64, 10)
-        journalled(broken, AIR, CHEST_RIGHT, alice, START)
-        journalled(broken, CHEST_RIGHT, CHEST_SINGLE, bob, START + 1, Cause.BLK_PLAYER_BREAK)
+        journalled(broken, AIR, CHEST_RIGHT, alice, T0)
+        journalled(broken, CHEST_RIGHT, CHEST_SINGLE, bob, T0 + 1, Cause.BLK_PLAYER_BREAK)
         assertNull(attribution.journalPlacerAt(broken, CHEST_SINGLE))
 
         val rewritten = at(20, 64, 20)
-        journalled(rewritten, AIR, CHEST_RIGHT, alice, START)
-        journalled(rewritten, CHEST_RIGHT, CHEST_SINGLE, bob, START + 1)
+        journalled(rewritten, AIR, CHEST_RIGHT, alice, T0)
+        journalled(rewritten, CHEST_RIGHT, CHEST_SINGLE, bob, T0 + 1)
         assertNull(attribution.journalPlacerAt(rewritten, CHEST_SINGLE))
 
         // A block that arrived by landing was put down by nobody standing here, and the actor of such
         // a row was himself worked out. One guess is not made to carry another.
         val landed = at(30, 64, 30)
-        journalled(landed, AIR, TNT, bob, START, Cause.BLK_FALL_LAND)
+        journalled(landed, AIR, TNT, bob, T0, Cause.BLK_FALL_LAND)
         assertNull(attribution.journalPlacerAt(landed, TNT))
     }
 
@@ -369,7 +343,7 @@ class AttributionTest {
         clock += FELLED_MILLIS
         assertNull(attribution.fellerOf(at(2, 70, 0)))
         attribution.sweep()
-        asOf(START) { assertNull(attribution.fellerOf(at(2, 70, 0))) }
+        asOf(T0) { assertNull(attribution.fellerOf(at(2, 70, 0))) }
     }
 
     @Test
@@ -407,7 +381,7 @@ class AttributionTest {
         attribution.tookOff(entity, Falling(here, SAND, null))
         clock += FLIGHT_MILLIS + 1
         attribution.sweep()
-        asOf(START) {
+        asOf(T0) {
             assertNull(attribution.placerAt(here, TNT))
             assertNull(attribution.removerAt(here))
             assertNull(attribution.landed(entity))
@@ -429,14 +403,14 @@ class AttributionTest {
 
         clock += NOTE_MILLIS + FLIGHT_MILLIS
         attribution.sweepRemovals()
-        asOf(START) {
+        asOf(T0) {
             assertNull(attribution.removerAt(here))
             assertEquals(alice, attribution.placerAt(here, TNT)?.actor)
             assertEquals(alice, attribution.flying(entity)?.actor)
         }
 
         attribution.sweep()
-        asOf(START) {
+        asOf(T0) {
             assertNull(attribution.placerAt(here, TNT))
             assertNull(attribution.flying(entity))
         }
@@ -454,7 +428,6 @@ class AttributionTest {
         // A reach that does not span the shape answers with whoever is inside it, not with nobody.
         assertEquals(alice, attribution.builderNear(spawn, 2)?.actor)
         assertNull(attribution.builderNear(spawn, 1))
-        // Worked out, never witnessed.
         assertEquals(Confidence.INFERRED, attribution.builderNear(spawn, 3)?.confidence)
     }
 
@@ -468,7 +441,7 @@ class AttributionTest {
 
     @Test
     fun `an entity carries the player it came from until it is gone`() {
-        var clock = START
+        var clock = T0
         val origins = EntityOrigins { clock }
         val wither = UUID.randomUUID()
 
@@ -493,6 +466,6 @@ class AttributionTest {
         assertNull(origins.summonerOf(golem))
 
         origins.sweep()
-        asOf(START) { assertNull(origins.summonerOf(golem)) }
+        asOf(T0) { assertNull(origins.summonerOf(golem)) }
     }
 }

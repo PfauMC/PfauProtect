@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.rollback
 
 import io.pfaumc.pfauprotect.attribution.flowing
+import io.pfaumc.pfauprotect.capture.block.FIRES
 import io.pfaumc.pfauprotect.capture.block.reshaped
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
@@ -121,16 +122,14 @@ internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>, turf: (Block
 // leaves the plain one behind.
 private val AIRS = setOf("minecraft:air", "minecraft:cave_air", "minecraft:void_air")
 
-// Fire goes out by itself, under a row nobody answers for, or under the hand of whoever puts it out.
-private val FIRES = setOf("minecraft:fire", "minecraft:soul_fire")
-
 /**
  * The block a state string is of, with the properties dropped and every air read as one. Liquid that
  * ran in is air too: its arrival has no row, and lava that filled a burnt-out house is no later change.
  * So is fire: a plank that burnt to fire and then to nothing goes back all the same.
  */
-internal fun blockOf(state: String): String =
-    state.substringBefore('[').let { if (it in AIRS || passing(state)) "minecraft:air" else it }
+internal fun blockOf(state: String): String = if (passing(state)) "minecraft:air" else nameOf(state)
+
+private fun nameOf(state: String): String = state.substringBefore('[').let { if (it in AIRS) "minecraft:air" else it }
 
 /**
  * Fire and running liquid: what a rollback reads as air and puts back as air. A fire lit again would burn
@@ -152,15 +151,10 @@ class Settled(val back: Step?, val conflict: Boolean)
  * second blast on a street the griefer had blown up before, read as standing as before him.
  */
 fun settle(standing: String, steps: List<Step>, origin: String?): Settled =
-    if (origin != null && sameBlock(standing, origin) && !reshaped(standing, origin)) Settled(null, conflict = false)
+    // The block itself, with fire and running liquid kept as what they are: air a break left is not the
+    // running water the stone was put into, and taking one for the other would skip the stone's break.
+    if (origin != null && nameOf(standing) == nameOf(origin) && !reshaped(standing, origin)) Settled(null, conflict = false)
     else settle(standing, steps)
-
-// The block itself, with fire and running liquid kept as what they are: air a break left is not the running
-// water the stone was put into, and taking one for the other would skip the stone's break.
-private fun sameBlock(a: String, b: String): Boolean {
-    val name = { s: String -> s.substringBefore('[').let { if (it in AIRS) "minecraft:air" else it } }
-    return name(a) == name(b)
-}
 
 /**
  * Undoes the rows of one position, newest first, from what stands there now. A row whose `after` is
@@ -299,11 +293,11 @@ class Planned(
 }
 
 // The block and entity rows of one rollback's read, gathered window by window against one walk budget:
-// the rows it undoes (`takesRow`), the nature it walks past, and the changes somebody else made.
+// the rows it undoes (those it keeps, except a liquid's flow), the nature it walks past, and the changes
+// somebody else made.
 private class Collected(
     private val keepsRow: (BlockRow) -> Boolean,
     private val keepsEntity: (EntityRow) -> Boolean,
-    private val takesRow: (BlockRow) -> Boolean,
 ) {
     val rows = ArrayList<BlockRow>()
     val nature = ArrayList<BlockRow>()
@@ -317,7 +311,7 @@ private class Collected(
         if (!window.complete) return false
         budget -= window.walked
         unreadable += window.unreadable
-        window.rows.filterTo(rows, takesRow)
+        window.rows.filterTo(rows) { keepsRow(it) && it.cause != Cause.BLK_LIQUID_FLOW }
         window.rows.filterTo(nature) { passable(it) && !keepsRow(it) }
         window.rows.filterTo(foreign) { !keepsRow(it) && !passable(it) }
         val read = entities(budget)
@@ -359,7 +353,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         val inBox = { bx: Int, by: Int, bz: Int ->
             bx in (x - radius)..(x + radius) && (column || by in (y - radius)..(y + radius)) && bz in (z - radius)..(z + radius)
         }
-        val read = Collected(keepsRow, keepsEntity) { keepsRow(it) && it.cause != Cause.BLK_LIQUID_FLOW }
+        val read = Collected(keepsRow, keepsEntity)
         for (cx in ((x - radius) shr 4)..((x + radius) shr 4)) {
             for (cz in ((z - radius) shr 4)..((z + radius) shr 4)) {
                 val window = log.windowInChunk(cx, cz, fromTs, toTs, read.budget, inBox)
@@ -442,7 +436,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     ): Reading {
         val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
         if (positions.size > io.pfaumc.pfauprotect.Settings.maxRollbackPositions) return tooMany(positions.size)
-        val read = Collected(keepsRow, keepsEntity) { keepsRow(it) && it.cause != Cause.BLK_LIQUID_FLOW }
+        val read = Collected(keepsRow, keepsEntity)
         val slots = ArrayList<LedgerEntry>()
         val losses = ArrayList<LedgerEntry>()
         for (at in positions) {
@@ -496,7 +490,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         var unnamed = 0
         // Newest first by the counters, not by the clock: within a position the time never goes back,
         // but the event number is what the store promises.
-        for (row in rows.sortedWith(compareByDescending<BlockRow> { it.eventId }.thenByDescending { it.ordinal })) {
+        for (row in rows.sortedWith(ROW_ORDER.reversed())) {
             val before = state(row.stateBefore)
             val after = state(row.stateAfter)
             val payload = row.payloadBefore?.let { ledger.payload(it) }

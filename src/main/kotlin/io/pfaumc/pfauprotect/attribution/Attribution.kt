@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.attribution
 import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.Registries
@@ -114,10 +115,8 @@ data class Falling(
  * Who is behind a block change the event itself will not name. A player puts down TNT and walks away;
  * a week later somebody else lights it, and the explosion names nobody.
  *
- * Two rungs sit here, and they are reached for separately. The tracker covers the ordinary delay
- * between a thing being noted and being collected and costs nothing but a map lookup, so it is what
- * an ordinary call gets. The journal covers the horizon the tracker has no business holding, at the
- * price of a seek, and has a name of its own so that nobody reaches it without meaning to.
+ * Two rungs sit here: the tracker, a map lookup, is what an ordinary call gets; the journal costs a
+ * seek and has a name of its own so that nobody reaches it without meaning to.
  *
  * Nothing here writes a row and nothing here edits one. A row rewritten after the fact is
  * indistinguishable from one written correctly the first time, and in a plane with no second witness
@@ -176,18 +175,15 @@ class Attribution(
      * says: its cause, and that the position did not already hold this block before it. The newest
      * row of a position is what stands in it today, so a row that fails either test answers with
      * nobody rather than with the row behind it.
-     *
-     * A dispenser's row may name a player who was only near it, and the answer stays that and no more.
      */
     fun journalPlacerAt(at: WorldBlock, standing: String, causes: Set<Cause> = PLACING_CAUSES): Attributed? {
-        val row = blocks.get(at.world)?.standingAt(at.x, at.y, at.z)?.row ?: return null
+        val row = newestRowAt(at) ?: return null
         if (row.cause !in causes) return null
         val after = registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) ?: return null
         val before = registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore) ?: return null
         val block = blockNameOf(standing)
         if (blockNameOf(after) != block || blockNameOf(before) == block && !flowing(before)) return null
-        val confidence = if (row.confidence == Confidence.NEARBY) Confidence.NEARBY else Confidence.INFERRED
-        return row.actor?.let { Attributed(it, confidence) }
+        return journalActorOf(row)
     }
 
     /**
@@ -206,7 +202,7 @@ class Attribution(
 
     /**
      * Who took away the support under a block that has just given way. One primitive feeds falling
-     * sand, a torch or a sign losing its wall, and a hanging entity being knocked down. The six faces
+     * sand and a torch or a sign losing its wall. The six faces
      * are what carries support and are searched first; a corner neighbour counts as a hit, which is a
      * guess and reads as one. Within either ring the most recent removal is the answer.
      */
@@ -261,8 +257,15 @@ class Attribution(
      * per hanging entity that falls, so it may be asked on a region thread.
      */
     fun journalRemoverAt(at: WorldBlock, within: Long = HANGING_MILLIS): Attributed? {
-        val row = blocks.get(at.world)?.standingAt(at.x, at.y, at.z)?.row ?: return null
+        val row = newestRowAt(at) ?: return null
         if (now() - row.timestamp > within) return null
+        return journalActorOf(row)
+    }
+
+    private fun newestRowAt(at: WorldBlock): BlockRow? = blocks.get(at.world)?.standingAt(at.x, at.y, at.z)?.row
+
+    // A row may name a player who was only near the block, and the answer stays that and no more.
+    private fun journalActorOf(row: BlockRow): Attributed? {
         val confidence = if (row.confidence == Confidence.NEARBY) Confidence.NEARBY else Confidence.INFERRED
         return row.actor?.let { Attributed(it, confidence) }
     }
@@ -304,9 +307,9 @@ class Attribution(
      * note left standing here can never be read as a valid one. Minutes apart is often enough.
      */
     fun sweep() {
+        sweepRemovals()
         val now = now()
         placements.values.removeIf { now - it.at > NOTE_MILLIS }
-        removals.values.removeIf { now - it.at > SUPPORT_MILLIS }
         flights.values.removeIf { now - it.at > FLIGHT_MILLIS }
         felled.values.removeIf { now - it.at > FELLED_MILLIS }
         kills.values.removeIf { now - it.at > KILL_MILLIS }
@@ -342,11 +345,10 @@ internal const val ORIGIN_MILLIS = 6 * 60 * 60 * 1000L
  * wither, a golem and a silverfish are summoned rather than born, and the server names none of them
  * on the event that destroys a block: without this rung every one of them reads as nobody.
  *
- * In memory only, and deliberately. An entity that outlived a restart is answered with nobody rather
- * than with a guess: reading an origin back would need a plane for entities the ledger does not have,
- * and deriving one from the block journal would name the wrong wither the first time two of them
- * stood in one world. A summon is also not a placement — nothing is written down at the moment an
- * entity appears — so there is nothing here for the journal rung to fall back on.
+ * In memory only, and deliberately: an entity that outlived a restart is answered with nobody rather
+ * than with a guess, because deriving an origin from the block journal would name the wrong wither the
+ * first time two of them stood in one world. A summon is not a placement either, so the journal holds
+ * nothing for this rung to fall back on.
  */
 class EntityOrigins(private val now: () -> Long = System::currentTimeMillis) {
     private class Note(val actor: UUID, val at: Long, val confidence: Confidence)
