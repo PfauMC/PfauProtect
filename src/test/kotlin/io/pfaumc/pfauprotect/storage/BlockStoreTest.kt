@@ -49,9 +49,6 @@ class BlockStoreTest : BothPlanes() {
         actor = alice,
     )
 
-    private fun stateOf(blockData: String): Int? =
-        shared.registries.lookupKey(RegistryNamespace.BLOCK_STATE, blockData)
-
     private fun writeRawRow(key: ByteArray, value: ByteArray) {
         logs.close(world)
         rawEdit(root.resolve(world.toString())) { raw, family -> raw.put(family("rows"), key, value) }

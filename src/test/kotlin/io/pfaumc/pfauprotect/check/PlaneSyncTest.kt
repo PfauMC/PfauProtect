@@ -110,11 +110,6 @@ class PlaneSyncTest : BothPlanes() {
         blockRow(x, y, z, STONE, AIR, ts)
     }
 
-    private fun drainBoth() {
-        log.drain()
-        shared.drain()
-    }
-
     private fun writeRawEntry(key: ByteArray, value: ByteArray) {
         logs.close()
         shared.close()

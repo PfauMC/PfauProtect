@@ -24,9 +24,7 @@ object Texts {
     // What is left once a sentence is in Russian: names of places and of rows, which come in from many
     // sentences and every lookup line.
     private fun words(text: String): String {
-        var out = text
-        for ((pattern, russian) in WORDS) out = pattern.replace(out, russian)
-        return out
+        return WORDS.fold(text) { out, (pattern, russian) -> pattern.replace(out, russian) }
     }
 
     private fun r(pattern: String) = Regex(pattern)

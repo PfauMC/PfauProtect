@@ -53,7 +53,6 @@ class Inspector(private val lookups: Lookups) : Listener {
         return before != null && before.first == what && now - before.second < REPEAT_MILLIS
     }
 
-    // A click on an entity asks about the entity: a frame, a stand, a donkey, a villager.
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     fun onInteractEntity(event: PlayerInteractEntityEvent) {
         if (event.player.uniqueId !in enabled || event.hand != EquipmentSlot.HAND) return

@@ -71,9 +71,6 @@ class BlockCaptureTest : BothPlanes() {
         attribution = Attribution(shared.registries, logs)
     }
 
-    private fun stateOf(blockData: String): Int? =
-        shared.registries.lookupKey(RegistryNamespace.BLOCK_STATE, blockData)
-
     private fun sign(at: BlockPos, line: String): SignBlockEntity =
         SignBlockEntity(at, signState).apply { setText(getText(SignTextSlot.FRONT).asMutable().setLine(0, Component.literal(line)).asImmutable(), SignTextSlot.FRONT) }
 

@@ -15,9 +15,7 @@ import org.bukkit.event.server.ServerCommandEvent
 
 // How many of the player's own ticks a command's reason waits for the change it explains. The server
 // applies a command to a player in another region a tick or two after it is heard, and a pass can run
-// in between. Counted from the moment the reason reaches the player's thread and in that region's
-// ticks: a quarter of a second, counted from hearing, ran out right after a join, when the region
-// takes longer than that over a single tick, and the command's change was written as nobody's.
+// in between. Counted in that region's ticks, not time: see `Intent.untilTick`.
 internal const val COMMAND_LINGER_TICKS = 5
 
 // How long the item a full inventory throws out may take to land: a teleport earlier in the batch has to

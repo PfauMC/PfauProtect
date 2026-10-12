@@ -836,9 +836,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
      * Each pass picks up where the last one stopped, unloaded chunks and all.
      *
      * The budget is counted in rows but spent at a position boundary: half of a position's postings
-     * balance to something the position never held. A pass resumes past the last position it settled
-     * rather than at its last row, so a posting that lands on a settled position waits for the next
-     * cycle instead of coming back alone.
+     * balance to something the position never held.
      */
     fun blockPostings(limit: Int): BlockPostingsPage = dbLock.read {
         if (closed || limit <= 0) return BlockPostingsPage(emptyList(), false)
@@ -962,8 +960,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         for (at in positions) putNote(FORMS, at.world, at.x, at.y, at.z, null)
     }
 
-    // Both tables hold a note about what a block position is carrying while it stands there, so they
-    // are read, written and cleared the same way and differ only in which family they land in.
     private fun note(family: Int, world: UUID, x: Int, y: Int, z: Int): ByteArray? {
         pendingNotes[NoteKey(family, world, x, y, z)]?.let { return it.value }
         return dbLock.read {

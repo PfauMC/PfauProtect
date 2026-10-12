@@ -133,9 +133,8 @@ internal fun unspentDrop(pending: TickCoalescer, intent: Intent, qty: Int, creat
 private const val NEVER_PICKED_UP = 32767
 
 // The whole life of an item lying in the world: one funnel it is born through, one net that catches
-// every way it stops existing. Both ends are written without exception, which is what makes the
-// balance of an item entity closed by construction — an entity that does not balance is then a hole
-// in the capture and not a rounding error, and the holes can be counted.
+// every way it stops existing, so an entity that does not balance is a hole in the capture and not a
+// rounding error.
 class WorldItemListener(
     private val codec: ItemFormCodec,
     private val pending: TickCoalescer,
@@ -259,9 +258,8 @@ class WorldItemListener(
     // second. The stacks are still untouched here, and how much of the donor actually crosses is
     // decided after the event by how much room the survivor has left.
     //
-    // The row looks like bookkeeping between two entities holding the same thing, and it is written
-    // anyway because the donor's thrower is not carried across. Afterwards this row is the only thing
-    // left saying where half the pile came from.
+    // Written although both hold the same thing: the donor's thrower is not carried across, so this row
+    // is the only one left saying where half the pile came from.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onMerge(event: ItemMergeEvent) {
         val donor = event.entity

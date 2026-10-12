@@ -14,11 +14,6 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
-/**
- * How the plugin draws what it says: a few colours that each mean one thing, the time as how long ago,
- * names of the game's things in the reader's own client language, and a click where a reader would
- * otherwise retype a command.
- */
 object Ui {
     // Who did it, what it was done to, and everything around them that only qualifies.
     val WHO: TextColor = NamedTextColor.AQUA

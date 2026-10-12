@@ -425,10 +425,9 @@ class BlockLog(
             val row = decode(key, value)
             // The key alone says where and when, so a window and a box are asked of it, decoded or not.
             val at = if (key.size >= BlockCodec.KEY_SIZE) Zcode.decode(key) else null
-            val ts = if (at != null) timeAt(key, Zcode.SIZE) else null
             when {
                 row == null -> unreadable++
-                ts != null && ts in fromTs..toTs && within(at!![0], at[1], at[2]) -> rows += row
+                at != null && timeAt(key, Zcode.SIZE) in fromTs..toTs && within(at[0], at[1], at[2]) -> rows += row
             }
             true
         }

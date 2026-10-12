@@ -759,7 +759,6 @@ class PfauProtectPlugin : JavaPlugin() {
         return Command.SINGLE_SUCCESS
     }
 
-    /** How the plugin is doing: how big its bases are, what waits to be written, what it could not explain. */
     private fun status(source: CommandSourceStack): Int {
         val running = this.running ?: return notReady(source)
         val sender = source.sender
@@ -837,9 +836,6 @@ class PfauProtectPlugin : JavaPlugin() {
         }, null)
     }
 
-    // Whatever a player was already carrying on the day the ledger was opened is a difference that
-    // never goes away and never grows: a constant offset, not a leak. What is worth reading is a
-    // difference that moves.
     private fun report(
         sender: CommandSender,
         player: Player,
@@ -884,7 +880,6 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 }
 
-/** The service other plugins load; see [PfauProtectApi]. */
 private class Api(private val running: Running) : PfauProtectApi {
     override fun lookup(at: Location, words: String): CompletableFuture<List<String>> {
         val lines = Collections.synchronizedList(ArrayList<String>())

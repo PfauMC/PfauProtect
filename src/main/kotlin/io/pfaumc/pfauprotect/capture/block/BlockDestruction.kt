@@ -880,7 +880,7 @@ class BlockDestructionListener(
         val entity = event.ignitingEntity
         if (player == null && entity != null) {
             val by = behindChange(entity) ?: return
-            if (by.confidence != Confidence.NEARBY) attribution.placed(positionOf(block), lit, by.actor)
+            by.culprit()?.let { attribution.placed(positionOf(block), lit, it) }
             readBack(listOf(block), by.inferred(), Cause.BLK_FIRE_SPREAD)
             return
         }
@@ -888,7 +888,7 @@ class BlockDestructionListener(
             // Lava sets fire on a random tick, and nothing else announces the fire it puts down.
             if (event.cause != BlockIgniteEvent.IgniteCause.LAVA) return
             val by = event.ignitingBlock?.let(::pouredBy)
-            if (by != null && by.confidence != Confidence.NEARBY) attribution.placed(positionOf(block), lit, by.actor)
+            by.culprit()?.let { attribution.placed(positionOf(block), lit, it) }
             changed(block, block.blockData, lit, Cause.BLK_FIRE_SPREAD, by)
             return
         }
@@ -921,10 +921,10 @@ class BlockDestructionListener(
     private fun takenUp(source: CraftBlock) {
         val state = source.blockState
         if (state.block !is LiquidBlock || !state.fluidState.isSource) return
-        val by = pouredBy(source)?.takeIf { it.confidence != Confidence.NEARBY } ?: return
+        val by = pouredBy(source).culprit() ?: return
         val world = source.world
         val run = ranFrom(source.position, source.level::getBlockState) { Bukkit.isOwnedByCurrentRegion(world, it.x shr 4, it.z shr 4) }
-        for ((at, ran) in run) attribution.placed(WorldBlock(world.uid, at.x, at.y, at.z), ran.asBlockData().asString, by.actor)
+        for ((at, ran) in run) attribution.placed(WorldBlock(world.uid, at.x, at.y, at.z), ran.asBlockData().asString, by)
     }
 
     /**
@@ -968,7 +968,7 @@ class BlockDestructionListener(
         // fire it leapt from is on the event. The find is written forward onto this position, as the
         // carry does, so an arbitrarily long chain stays attributed while no note covers more than a step.
         val leapt = if (blockNameOf(after) in FIRES) fireStartedBy(event.source) else null
-        if (leapt != null && leapt.confidence != Confidence.NEARBY) attribution.placed(at, after, leapt.actor)
+        leapt.culprit()?.let { attribution.placed(at, after, it) }
         // A block burnt away in this very tick, with fire leaping straight into the air it left: the burn's
         // read-back files the block to fire. A row of the spread's own here would settle the position and
         // the read-back would drop the block, which a rollback then never puts back.
@@ -996,7 +996,7 @@ class BlockDestructionListener(
         val at = positionOf(fire)
         attribution.placerAt(at, FIRE)?.let { return it }
         val found = attribution.journalPlacerAt(at, FIRE, FIRING_CAUSES) ?: return null
-        if (found.confidence != Confidence.NEARBY) attribution.placed(at, FIRE, found.actor)
+        found.culprit()?.let { attribution.placed(at, FIRE, it) }
         return found
     }
 
@@ -1114,13 +1114,12 @@ class BlockDestructionListener(
         val at = positionOf(liquid)
         val standing = liquid.blockData.asString
         attribution.placerAt(at, standing)?.let { return it }
-        // Its own flow row first: lava that ran far from its bucket is past any walk back to the source, and
-        // 6595 fires it set on a real map were nobody's.
+        // Its own flow row first: lava that ran far from its bucket is past any walk back to the source.
         val found = attribution.journalPlacerAt(at, standing, FLOWING_CAUSES)
             ?: sourcesOf(liquid).firstNotNullOfOrNull {
                 attribution.journalPlacerAt(positionOf(it), it.blockData.asString, POURING_CAUSES)
             } ?: return null
-        if (found.confidence != Confidence.NEARBY) attribution.placed(at, standing, found.actor)
+        found.culprit()?.let { attribution.placed(at, standing, it) }
         return found
     }
 
@@ -1288,7 +1287,6 @@ class BlockDestructionListener(
         // A player named on the event witnessed it; nothing here was worked out.
         val by = event.player?.let { Attributed(it.uniqueId, Confidence.FACT) }
         // Settled on the global region, a tick later; filing reads the world, so it goes to the tree's own.
-        // Run in place it failed Folia's thread check and the tree went unrecorded.
         val at = blocks.firstOrNull()?.location
         growing.claim(blocks) {
             if (at != null && plugin.isEnabled) plugin.server.regionScheduler.execute(plugin, at) { grew(sites, Cause.BLK_GROW, by, timestamp) }
@@ -1347,8 +1345,7 @@ class BlockDestructionListener(
     /**
      * What a change here does to the blocks beside it: the sides bars or a fence join, a stair's corner, a
      * wall's height. The server rewrites them with no event, so the neighbours are read now and again a tick
-     * later, and each that changed gets a row on whoever changed this block. Without it bars beside a plank
-     * that burnt were filed as joining air when the TNT took them, and the rollback put them back so.
+     * later, and each that changed gets a row on whoever changed this block.
      */
     private fun watchShapes(block: CraftBlock) {
         val at = positionOf(block)
@@ -1386,8 +1383,7 @@ class BlockDestructionListener(
 
     /**
      * A shaped block filed by a capture while what a change beside it made of it still waits for its read:
-     * that goes first, up to the state the capture found. A fence let go by a plank that burnt and blown up
-     * by TNT in the same tick was read back as air, and its blast row named it already let go.
+     * that goes first, up to the state the capture found.
      */
     private fun shapeFirst(log: BlockLog, at: WorldBlock, block: Block, found: BlockData) {
         val watch = shapeWatches.remove(at) ?: return
@@ -1890,8 +1886,7 @@ class BlockDestructionListener(
         // Here and not in the read-back: the items are already in the world by then, and a note that
         // arrives after the spawn it explains is a note nobody can claim.
         if (expectsDrops) dropsOf(block, cause, by)
-        // The log is still standing here, and by the read-back it is not: a wall of stripped wood burnt
-        // away read as air there, and the leaves it held decayed on nobody.
+        // The log is still standing here, and by the read-back it is not.
         by.culprit()?.let { attribution.givingWay(block, it); attribution.felledBy(block, it) }
         plugin.server.regionScheduler.execute(plugin, block.world, block.x shr 4, block.z shr 4) {
             readBacks.done(at)
@@ -1929,9 +1924,8 @@ class BlockDestructionListener(
         // Asked here first because a row filed in this same tick is still on its way to the journal.
         if (readBacks.settled(at)) return true
         val row = log.standingAt(at.x, at.y, at.z).row ?: return false
-        // That same change, filed a moment ago: one filed an hour before is another change, after which
-        // something that writes no row put the block back. A lantern CoreProtect had hung up again fell
-        // under the next blast with no row, and the rollback left it down.
+        // That same change, filed a moment ago: one filed long before is another change, after which
+        // something that writes no row put the block back.
         if (System.currentTimeMillis() - row.timestamp > FILED_MILLIS) return false
         return registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore) == before &&
             registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) == after

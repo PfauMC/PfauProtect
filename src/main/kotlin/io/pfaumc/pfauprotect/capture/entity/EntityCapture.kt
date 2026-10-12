@@ -391,9 +391,8 @@ class EntityCapture(
         val entity = event.entity
         if (entity is Player) return
         val lit = alight.remove(entity.uniqueId)
-        // A mob a player brought into the world that dies of nothing anybody did is still theirs: the griefer's
-        // sheep fell off the roof he let them loose on, and their wool and mutton lay there after his rollback
-        // had taken the rest of the flock away.
+        // A mob a player brought into the world that dies of nothing anybody did is still theirs, or its drops
+        // outlive a rollback of them.
         val found = culpritOf(entity, Cause.ENTITY_KILLED, lit)
         // A sculk catalyst nearby blooms off this death, and the sculk is whoever stands behind it.
         found.by.culprit()?.let { attribution.killed(positionOf(entity.location.block), it) }

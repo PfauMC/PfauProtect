@@ -74,14 +74,14 @@ class Intent(
     // the player's drop intent, because the top inventory is snapshotted first and is therefore
     // offered every intent ahead of the player's own slots.
     internal fun explains(end: Holder, form: ByteArray, player: UUID?, carried: (Nested) -> Boolean = { false }) =
-        (end is PlayerHolder && end.uuid == player || end is Nested && carried(end)) &&
+        (player != null && end.heldBy(player) || end is Nested && carried(end)) &&
             (holder == null || holder == end) && matches(form)
 
     // A recorded movement that names neither end is still not a label: read as one it would emit the
     // very row it was left to suppress. Anything else has to name the far end to have something to
     // say about a loss or a gain at all.
     internal fun aims(loss: Boolean) =
-        if (recorded && from == null && to == null) true else (if (loss) to else from) != null
+        recorded && from == null && to == null || (if (loss) to else from) != null
 
     internal fun matches(form: ByteArray) = this.form == null || this.form.contentEquals(form)
 }
@@ -117,10 +117,8 @@ class PlayerIntents {
 }
 
 object Intents {
-    // An edge the pass could not pair by itself is missing one end, and an intent that names that end
-    // supplies it; what nothing explains stays facing Void with the confidence it came with, because
-    // that row is the measure of the paths the capture does not cover yet and losing it would mean
-    // losing the only sign that they exist.
+    // An intent supplies the missing end of an edge the pass could not pair. What nothing explains stays
+    // facing Void with its confidence: that row is the only sign of paths the capture does not cover yet.
     fun explain(
         edges: List<Edge>,
         intents: List<Intent>,
@@ -175,10 +173,9 @@ object Intents {
                 }
             }
         }
-        // Two opposite movements of one form into one slot cancel before the pass can see them, and
-        // `Netting.claim` says why neither half may be written alone. The pair is safe where the half
-        // is not: run through one and the same holder the two rows move the player's own total by zero
-        // whichever holder that turns out to be, while the two far ends each get the row they are owed.
+        // Two opposite movements of one form into one slot cancel before the pass sees them, and
+        // `Netting.claim` says why neither half may be written alone. Run through one holder, the pair
+        // moves the player's total by zero while each far end still gets its row.
         for (out in intents.indices) {
             val outgoing = intents[out]
             val to = outgoing.to ?: continue

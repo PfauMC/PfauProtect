@@ -277,9 +277,11 @@ private fun wholePile(pile: UUID, rowsOf: (ItemEntityRef) -> List<LedgerEntry>):
  * lies there, what is gone for good. The victim's own hands are left out: what they picked up again they
  * have.
  */
-internal fun restitutionFor(ledger: RocksItemLog, death: EntityRow): List<Owed> =
-    merged(death.drops.filter { it !in restituted(ledger, death) }.flatMap { wholePile(it, pileRows(ledger)) })
+internal fun restitutionFor(ledger: RocksItemLog, death: EntityRow): List<Owed> {
+    val gone = restituted(ledger, death)
+    return merged(death.drops.filter { it !in gone }.flatMap { wholePile(it, pileRows(ledger)) })
         .filter { it.qty > 0 && it.taker != Carrier(death.uuid) }
+}
 
 /**
  * The births of the piles that fell out of a killed player, by pile: what a rollback that gave the

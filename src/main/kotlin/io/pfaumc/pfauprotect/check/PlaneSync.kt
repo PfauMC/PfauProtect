@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.check
 
+import io.pfaumc.pfauprotect.attribution.blockNameOf
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.BlockPostings
 import io.pfaumc.pfauprotect.model.Confidence
@@ -35,7 +36,7 @@ private val BACKS_NO_ITEM = setOf(
  * whether a write-off was owed — and an answer that differed between the two would read as debt in one
  * plane for every change the other let through.
  */
-internal fun emptied(state: String) = state.substringBefore('[') in BACKS_NO_ITEM
+internal fun emptied(state: String) = blockNameOf(state) in BACKS_NO_ITEM
 
 // The two planes are written by two writer threads and the item side goes through a tick coalescer,
 // so for a while after a break the block plane already says air while the item plane still holds the

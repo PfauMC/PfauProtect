@@ -262,11 +262,6 @@ class BlockDestructionTest : BothPlanes() {
 
     private fun stateAfter(row: BlockRow) = shared.registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter)
 
-    private fun drainBoth() {
-        log.drain()
-        shared.drain()
-    }
-
     @Test
     fun `an explosion is named by what set it off, and by the block itself where no entity did`() {
         assertEquals(Cause.BLK_TNT, explosionCause(EntityType.TNT))

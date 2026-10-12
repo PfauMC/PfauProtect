@@ -204,7 +204,7 @@ object EntryCodec {
 
     // Every key that addresses a position opens with the holder type, a fixed-width world number and
     // the chunk part of the position, so a chunk is a fixed-length prefix and the store can size a
-    // prefix extractor for it. Widening the world number to two bytes is what buys the fixed length.
+    // prefix extractor for it.
     const val CHUNK_PREFIX_SIZE = 1 + WORLD_NO_SIZE + Zcode.CHUNK_PREFIX_SIZE
 
     // The identity of a position ends here and the time follows it, so the rows of one position are a

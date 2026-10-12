@@ -144,7 +144,6 @@ data class LedgerEntry(
     val ref: PostingRef get() = PostingRef(txId, ordinal)
 }
 
-// One posting of the ledger by where it sits: its transaction and its place among the postings of it.
 data class PostingRef(val txId: Long, val ordinal: Int)
 
 class Transfer(

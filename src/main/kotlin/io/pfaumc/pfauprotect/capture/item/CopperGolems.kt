@@ -90,7 +90,8 @@ class CopperGolemListener(
         val after = codec.encodeOrNull(change.newItem())
         val target = targets[golem.uniqueId] ?: return
         val took = after != null && (before == null || !before.form.contentEquals(after.form))
-        val form = (if (took) after else before)?.form ?: return
+        val side = (if (took) after else before) ?: return
+        val form = side.form
         val moved = if (took) after!!.count else before!!.count - (after?.takeIf { it.form.contentEquals(form) }?.count ?: 0)
         if (moved <= 0) return
         val now = contents(target.block) ?: return
@@ -103,7 +104,7 @@ class CopperGolemListener(
         if (slots.isEmpty()) return
         val hand = EntitySlot(golem.uniqueId, MAIN_HAND)
         val timestamp = System.currentTimeMillis()
-        val key = (if (took) after else before)!!.key
+        val key = side.key
         val rows = slots.map { (slot, qty) -> golemRow(took, slot, hand, key, qty, timestamp) }
         if (took) bookHeld(golem, MAIN_HAND, form) else if (after == null) unbookHeld(golem, MAIN_HAND)
         sink(rows)

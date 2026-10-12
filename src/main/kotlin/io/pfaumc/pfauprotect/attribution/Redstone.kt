@@ -326,8 +326,7 @@ class RedstoneListener(
 
     /**
      * A plate or a tripwire somebody else put down, stepped on: a trap, and what it sets off is the one who
-     * laid it. The griefer's mines under the street went off as the owner's, who walked over the plate,
-     * and the griefer's rollback left the crater. A switch pressed by hand stays the presser's.
+     * laid it. A switch pressed by hand stays the presser's.
      */
     private fun trapOf(block: Block, at: WorldBlock, event: PlayerInteractEvent): Attributed? {
         if (event.action != Action.PHYSICAL) return null

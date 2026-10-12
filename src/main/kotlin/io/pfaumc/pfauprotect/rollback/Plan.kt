@@ -146,9 +146,7 @@ class Settled(val back: Step?, val conflict: Boolean)
 /**
  * A position the window opens on in the middle of the players' work, standing again as it did before they
  * first touched it, is done: undone from the window's start it would get back their own TNT, their own
- * burnt walls. A house an earlier rollback had put back got 153 blocks of dynamite from a later one.
- * A wall or a pane is that block only in the shape it had: the same diorite wall, joined to air after a
- * second blast on a street the griefer had blown up before, read as standing as before him.
+ * burnt walls. A wall or a pane is that block only in the shape it had.
  */
 fun settle(standing: String, steps: List<Step>, origin: String?): Settled =
     // The block itself, with fire and running liquid kept as what they are: air a break left is not the
@@ -525,7 +523,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         for ((uuid, story) in stories.groupBy { it.uuid }) {
             val oldest = story.minWith(compareBy<EntityRow> { it.eventId }.thenBy { it.ordinal })
             val before = oldest.payloadBefore?.let { ledger.payload(it) }
-            if (oldest.payloadBefore != null && before == null || oldest.kind != EntityKind.CREATED && before == null) {
+            if (before == null && (oldest.payloadBefore != null || oldest.kind != EntityKind.CREATED)) {
                 unnamed++
                 continue
             }

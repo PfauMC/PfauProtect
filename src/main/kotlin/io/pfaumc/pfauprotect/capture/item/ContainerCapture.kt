@@ -547,8 +547,7 @@ class ContainerCaptureListener(
      * A container is compared with the ledger once a player is done with it, after the pass that
      * wrote what the player did there. The one check that sees what reached into it with nobody
      * watching — a plugin, an editor, a mob the capture does not know — and what it finds is written,
-     * as a guess, the way a player's own slots are at the join. The ledger is read a moment later, so
-     * rows about the moment of the reading have had time to land.
+     * as a guess, the way a player's own slots are at the join.
      */
     private fun reconcileContainer(top: Inventory) {
         val holders = containerHolders(top) ?: return
@@ -1046,7 +1045,7 @@ class ContainerCaptureListener(
 
     // What the click event knows and the diff cannot work out: a swap, a hotbar key, a double-click
     // gathering from everywhere, a piece of armour going on or coming off. Anything it cannot name is
-    // left unlabelled on purpose, and `causeOf` reads the reason off the holders as it always has.
+    // left unlabelled on purpose, and `causeOf` reads the reason off the holders.
     private fun clickCause(event: InventoryClickEvent): Cause? {
         // The offhand key never shows up in the action; it is only ever visible as the click itself.
         if (event.click == ClickType.SWAP_OFFHAND) return Cause.OFFHAND_SWAP

@@ -14,6 +14,7 @@ import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.storage.Registries
+import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -77,6 +78,14 @@ abstract class BothPlanes {
         logs = BlockLogs(dir.resolve("blocks"), shared)
         log = logs.open(world)
     }
+
+    protected fun drainBoth() {
+        log.drain()
+        shared.drain()
+    }
+
+    protected fun stateOf(blockData: String): Int? =
+        shared.registries.lookupKey(RegistryNamespace.BLOCK_STATE, blockData)
 
     protected fun assertPlanesAgree(now: Long): PlaneReport {
         val report = PlaneSync(shared, logs).pass(100, now)

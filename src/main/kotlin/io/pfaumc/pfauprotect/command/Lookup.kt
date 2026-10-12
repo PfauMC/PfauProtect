@@ -87,10 +87,8 @@ private const val MAX_FETCH = 4096
 // How many rows of a container's position `action:steal` reads for who put it down.
 private const val PLACER_READ = 200
 
-// Accepted spellings and completions come from one table on purpose: when they were two lists, a
-// spelling the parser accepted still had to be repeated by hand to be suggested, and they drifted.
-// The first key is the one that gets suggested; the rest are silent aliases, so completion stays
-// readable while the short forms typed from muscle memory keep working.
+// Spellings and completions come from one table so they cannot drift. The first key is suggested;
+// the rest are silent aliases.
 internal enum class Param(vararg val keys: String) {
     USER("user", "u", "users"),
     PLAYER("player", "p"),
@@ -281,13 +279,11 @@ data class LookupQuery(
     val rolledBack: Boolean? = null,
     val amount: IntRange? = null,
     val steal: Boolean = false,
-    // How many rows of each cause and player, rather than the rows.
     val count: Boolean = false,
     // One event and nothing else: a click on a lookup line fills it in.
     val event: EventRef? = null,
     // Text a chat line or a command has to hold, for /pp chat.
     val filter: String? = null,
-    // Every row on a line of its own, rather than a run of the same thing as one line.
     val all: Boolean = false,
     val at: Triple<Int, Int, Int>? = null,
     // The words it was asked with, which the page buttons ask again.
@@ -744,11 +740,9 @@ private fun times(n: Int): Component = if (n > 1) Ui.text(" ×$n", Ui.MUTED) els
 private fun row(vararg parts: Component?): Component =
     Component.join(JoinConfiguration.separator(Component.text("  ")), parts.filterNotNull().filter { it != Component.empty() })
 
-// A break says two things at once: the position gave up what it was made of, and an item came out of
-// it. Only the position end carries coordinates, so a reader standing there sees the debit and
-// nothing of what it turned into. The transaction is what joins the two, and asking for it costs a
-// point read per shown row instead of a second copy of every drop in the position index — which
-// would also be a lie a second later, once the item has drifted, merged or been picked up.
+// A break debits the position and credits an item, but only the position end carries coordinates.
+// The transaction joins the two at a point read per shown row; a copy of every drop in the position
+// index would go stale once the item drifts, merges or is picked up.
 internal fun wholeTransactions(ledger: RocksItemLog, entries: List<LedgerEntry>): List<LedgerEntry> {
     val shown = LinkedHashSet(entries)
     // An ordinary movement names both of its ends on the single row the position holds, so its other

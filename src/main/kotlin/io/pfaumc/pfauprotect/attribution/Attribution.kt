@@ -84,7 +84,7 @@ internal fun cube(at: WorldBlock, reach: Int): Sequence<WorldBlock> = sequence {
  * air it ran into to anything that reads a position back, and a source poured into it was put down.
  */
 internal fun flowing(state: String): Boolean =
-    state.substringBefore('[') in LIQUIDS && "level=" in state && "level=0]" !in state
+    blockNameOf(state) in LIQUIDS && "level=" in state && "level=0]" !in state
 
 /**
  * Somebody worked out rather than somebody witnessed. Whatever this file works out is `INFERRED`, or

@@ -396,7 +396,7 @@ class ChunkRollback(
             val removed = was.block is LiquidBlock && was.fluidState.isSource &&
                 targets[i].let { it != null && it != was.asBlockData().asString }
             when {
-                was.block is LiquidBlock && !was.fluidState.isSource && positions[i].steps.isNotEmpty() -> listOf(spots[i] to was)
+                running(was) && positions[i].steps.isNotEmpty() -> listOf(spots[i] to was)
                 !removed -> emptyList()
                 else -> ranFrom(spots[i], level::getBlockState) { owned(level, it) }
             }

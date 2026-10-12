@@ -101,7 +101,7 @@ tasks.test {
     useJUnitPlatform()
 }
 
-// Reads a copy of the ledger offline for the bot's scenarios; scripts/ledger-rows.sh takes the copy.
+// Reads a copy of the ledger offline; scripts/ledger-rows.sh takes the copy.
 tasks.register<JavaExec>("ledgerRows") {
     classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("io.pfaumc.pfauprotect.tools.LedgerRowsKt")

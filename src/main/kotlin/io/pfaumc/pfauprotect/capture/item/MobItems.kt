@@ -120,7 +120,6 @@ internal fun wornThrough(item: BukkitItemStack, damage: Int): Boolean {
     return stack.isDamageableItem && stack.damageValue + damage >= stack.maxDamage
 }
 
-/** Which booked slot a dropped form came out of. */
 internal fun heldSlotOf(held: Map<Int, ByteArray>, form: ByteArray): Int? =
     held.entries.firstOrNull { it.value.contentEquals(form) }?.key
 
@@ -245,9 +244,7 @@ class MobItemListener(
         val actor = ((event as? HangingBreakByEntityEvent)?.remover as? Player)?.uniqueId
         val entity = event.entity
         // A frame or a painting nobody put down from an item — summoned, older than the plugin, or the world's
-        // own — books no item of itself, and its drop came out as a birth nobody explained, tied to no removal:
-        // a rollback put the frame back and left its item with whoever broke it. What lands by it now is its
-        // own item.
+        // own — books no item of itself, so what lands by it is its own item, not a birth nobody explained.
         if (ENTITY_ITEM_SLOT !in heldBy(entity)) {
             origins.expectAny(Void, Cause.ENTITY_BREAK_DROP, spotOf(entity.location), actor, tag = entity.uniqueId)
         }

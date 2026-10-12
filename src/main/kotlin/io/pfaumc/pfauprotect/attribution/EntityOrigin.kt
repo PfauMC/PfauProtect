@@ -68,8 +68,7 @@ class EntityOriginListener(
 
     /**
      * An end crystal goes off at the first blow, and the blast is whoever struck it: by hand, with an arrow,
-     * or with another crystal's blast that somebody set off. The griefer's crystal on the roof went off as
-     * nobody's, and his rollback left the hole.
+     * or with another crystal's blast that somebody set off.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onStrike(event: EntityDamageByEntityEvent) {

@@ -763,10 +763,8 @@ class BlockMechanismListener(
         key(result)?.let { origins.expect(Void, Cause.CAMPFIRE_COOK_DROP, it, spotOf(block.location), result.amount) }
     }
 
-    // A furnace changes one item into another with nobody watching, so there is no pass to count it
-    // and no intent to leave: both halves are known here and are written on the spot. They face the
-    // Void and share a transaction, which is what says the ingot is what became of the ore rather
-    // than an arrival that happens to follow a disappearance.
+    // No pass counts a smelt and no intent waits for it, so both halves are written here, facing the
+    // Void in one transaction: that is what says the ingot became of the ore.
     private fun smelted(event: BlockCookEvent) {
         val block = event.block
         if (block.getState(false) !is Furnace) return
@@ -815,7 +813,6 @@ class BlockMechanismListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onShearBlock(event: PlayerShearBlockEvent) {
         val block = event.block
-        // A hive gives its honeycomb, a pumpkin its seeds as it is carved.
         val hive = block.type == Material.BEEHIVE || block.type == Material.BEE_NEST
         val cause = if (hive) Cause.BEEHIVE_HARVEST else Cause.BLOCK_INTERACT_DROP
         val actor = event.player.uniqueId
