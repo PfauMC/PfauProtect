@@ -4,13 +4,11 @@ import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
-import io.pfaumc.pfauprotect.capture.block.Difference
 import io.pfaumc.pfauprotect.capture.block.Standing
 import io.pfaumc.pfauprotect.command.EventRef
 import io.pfaumc.pfauprotect.command.parseLookupQuery
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
-import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Void
@@ -95,6 +93,11 @@ class RollbackRulesTest {
         assertSame(burnt, settled.back)
         assertFalse(settled.conflict)
         assertTrue(settle(LAVA, listOf(burnt)).conflict)
+        // Her water ran in, became a source by itself between two others, and her sponge drank it twice
+        // over: the source the walk meets where her row left a flow is the same water.
+        val drunk = settle(AIR, listOf(step("minecraft:water[level=0]", AIR), step("minecraft:water[level=0]", AIR), step(AIR, "minecraft:water[level=3]")))
+        assertEquals(AIR, drunk.back?.before)
+        assertFalse(drunk.conflict)
     }
 
     // The griefer's fire took the plank and went out by itself, which is nobody's row; the plank goes back.
@@ -137,6 +140,15 @@ class RollbackRulesTest {
     }
 
     @Test
+    fun `a wall joined otherwise than at the origin is not as it was`() {
+        val joined = "minecraft:diorite_wall[east=low,north=none,south=none,up=false,waterlogged=false,west=low]"
+        val loose = "minecraft:diorite_wall[east=low,north=none,south=none,up=true,waterlogged=false,west=none]"
+        val steps = listOf(step(joined, loose))
+        assertEquals(joined, settle(loose, steps, joined).back?.before)
+        assertNull(settle(joined, steps, joined).back)
+    }
+
+    @Test
     fun `the airs are one`() {
         val dug = step(STONE, AIR)
         assertSame(dug, settle("minecraft:cave_air", listOf(dug)).back)
@@ -166,7 +178,7 @@ class RollbackRulesTest {
         val given = listOf(PostingRef(7, 0), PostingRef(7, 1))
         val back = GivenBack().apply { postings += given; marker = diamond }
         val chest = Blocks.CHEST.defaultBlockState()
-        fun difference() = Difference(world, Cause.ROLLBACK, Cause.ROLLBACK, Cause.ROLLBACK, Kind.TRANSFER, alice, T0)
+        fun difference() = rollbackDifference(world, alice, T0)
 
         val nothing = difference().apply { add(1, 64, 1, Standing(chest, null, listOf(null)), Standing(chest, null, listOf(null))) }
         val mark = givenBackRows(nothing, back, alice).single()
@@ -178,7 +190,11 @@ class RollbackRulesTest {
         val filled = difference().apply { add(1, 64, 1, Standing(chest, null, listOf(null)), Standing(chest, null, listOf(stack))) }
         val rows = givenBackRows(filled, back, alice)
         assertEquals(listOf(Container(world, 1, 64, 1, 0)), rows.map { it.to })
+        assertTrue(rows.all { it.cause == Cause.ROLLBACK && it.from == Void && it.qty == 7 }, "$rows")
         assertEquals(given, rows.flatMap { it.reverts })
+
+        val dug = difference().apply { add(1, 64, 2, Standing(Blocks.STONE.defaultBlockState(), null, null), Standing(Blocks.AIR.defaultBlockState(), null, null)) }
+        assertEquals(listOf(Cause.ROLLBACK), dug.rows.map { it.cause })
     }
 
     // A stolen stack goes back into the slot it left; when somebody has filled that slot since, it goes

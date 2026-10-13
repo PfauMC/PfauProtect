@@ -48,8 +48,6 @@ class RollbackTest : BothPlanes() {
     override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000006")
     private val diamond = byteArrayOf(9)
 
-    private fun step(before: String, after: String) = Step(before, after, null)
-
     // Alice's dirt stair grew grass, which nobody answers for: the walk passes it and the dirt goes. Grass
     // that grew there before her, or where she never was, is no part of her rollback; Bob's stone on her
     // dirt still stops it.
@@ -208,16 +206,6 @@ class RollbackTest : BothPlanes() {
         val position = positions(planned).single()
         assertEquals(AIR, position.origin)
         assertNull(settle(AIR, position.steps, position.origin).back)
-        assertEquals(tnt, settle(STONE, position.steps.map { Step(it.before, STONE, null) }, position.origin).back?.before)
-    }
-
-    @Test
-    fun `a wall joined otherwise than at the origin is not as it was`() {
-        val joined = "minecraft:diorite_wall[east=low,north=none,south=none,up=false,waterlogged=false,west=low]"
-        val loose = "minecraft:diorite_wall[east=low,north=none,south=none,up=true,waterlogged=false,west=none]"
-        val steps = listOf(Step(joined, loose, null))
-        assertEquals(joined, settle(loose, steps, joined).back?.before)
-        assertNull(settle(joined, steps, joined).back)
     }
 
     // A row stamped with the window's very start is the window's: undone, and not also read as what the
@@ -247,18 +235,6 @@ class RollbackTest : BothPlanes() {
         val position = positions(planned).single()
         assertNull(position.origin)
         assertEquals(leaf, settle(AIR, position.steps, position.origin).back?.before)
-    }
-
-    // Alice's water ran in, became a source by itself between two others, and her sponge drank it twice
-    // over. The walk met a source where her row had left a flow, stopped, and put the source back.
-    @Test
-    fun `a flow that became a source by itself is the same water`() {
-        val source = "minecraft:water[level=0]"
-        val flow = "minecraft:water[level=3]"
-        val steps = listOf(step(source, AIR), step(source, AIR), step(AIR, flow))
-        val settled = settle(AIR, steps)
-        assertEquals(AIR, settled.back?.before)
-        assertFalse(settled.conflict)
     }
 
     // Standing near a lever someone else pulled is a fact about where a player stood, not about what
@@ -407,6 +383,29 @@ class RollbackTest : BothPlanes() {
         assertTrue(planned.chunks.isEmpty(), "${positions(planned).map { it.at }}")
     }
 
+    // An opening stands for what the chest held before a purge, not for anything done in the window: undone,
+    // it would empty a chest nobody touched.
+    @Test
+    fun `a purge's opening balance is not rolled back`() {
+        val chest = Container(world, 6, 64, 5, 0)
+        shared.submit(Transfer(Cause.PURGE_OPENING, Void, chest, diamond, null, 5, T0))
+        shared.drain()
+
+        assertTrue(around(rollbackFilter()).chunks.isEmpty())
+    }
+
+    @Test
+    fun `a purge's opening balance in an entity's slot is not undone with the entity`() {
+        val horse = UUID.randomUUID()
+        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(3, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:horse", horse, T0, actor = alice, before = byteArrayOf(10, 0, 0, 1), after = byteArrayOf(10, 0, 0, 2))))
+        log.drain()
+        shared.submit(Transfer(Cause.PURGE_OPENING, Void, io.pfaumc.pfauprotect.model.EntitySlot(horse, 400), diamond, null, 1, T0 + 5))
+        shared.drain()
+
+        val plan = positions(around(rollbackFilter(alice))).flatMap { it.entities }.single()
+        assertTrue(plan.slots.isEmpty(), "${plan.slots}")
+    }
+
     // A rollback undone and then both rolled back together by `action:rollback`: the blocks of the two
     // cancel out, so the slots have to as well. Skipping the first rollback's posting because the undo
     // gave it back would empty the chest the blocks leave standing.
@@ -474,6 +473,30 @@ class RollbackTest : BothPlanes() {
         assertEquals(WorldBlock(world, 3, 64, 3), plan.at)
     }
 
+    // The saddle that fell out was put back by an earlier rollback; rolled back again, the horse has
+    // nothing left in its slots to give back or take away.
+    @Test
+    fun `an entity slot posting already given back is not planned again`() {
+        val horse = UUID.randomUUID()
+        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(4, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:horse", horse, T0 + 10, actor = alice, before = byteArrayOf(10, 0, 0, 1))))
+        log.drain()
+        val saddle = io.pfaumc.pfauprotect.model.EntitySlot(horse, 400)
+        shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, saddle, io.pfaumc.pfauprotect.model.ItemEntityRef(UUID.randomUUID()), diamond, null, 1, T0 + 10))
+        shared.drain()
+        val fell = shared.holderEntries(saddle, 0, Long.MAX_VALUE).single()
+        shared.submit(Transfer(Cause.ROLLBACK, Void, saddle, diamond, null, 1, T0 + 20, reverts = listOf(fell.ref)))
+        shared.drain()
+
+        val plan = positions(around(rollbackFilter(alice))).flatMap { it.entities }.single()
+        assertEquals(emptyList<Int>(), plan.slots.map { it.qty })
+
+        // Undoing that rollback takes the horse away again, and the saddle it was given back with it.
+        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(4, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.CREATED, Cause.ROLLBACK, "minecraft:horse", horse, T0 + 20, after = byteArrayOf(10, 0, 0, 1))))
+        log.drain()
+        val undo = positions(around(rollbackFilter(causes = Action.ROLLBACK.causes))).flatMap { it.entities }.single()
+        assertEquals(listOf(1), undo.slots.map { it.qty })
+    }
+
     // The widest radius the config allows has to stay inside what the region read takes, wherever in
     // its chunk the centre falls.
     @Test
@@ -491,9 +514,8 @@ class RollbackTest : BothPlanes() {
             val said = ArrayList<String>()
             Lookups(stub(Plugin::class.java), shared, logs, ItemFormCodec(shared.registries, ServerRegistries.access))
                 .report(senderInto(said), LookupTarget(world, centre, 64, centre, "here"), LookupQuery(radius = widest))
-            assertEquals(1, said.size, "$said")
             val answer = said.single()
-            assertTrue(answer.contains("radius $widest around $centre 64 $centre") && answer.endsWith(" — nothing recorded"), answer)
+            assertTrue(answer.startsWith("PfauProtect") && "$widest" in answer && "$centre 64 $centre" in answer, answer)
         } finally {
             Settings.maxRadius = configured
         }

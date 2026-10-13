@@ -516,7 +516,12 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             if (!page.complete) return tooMuch()
             if (page.unreadable > 0) return unreadable(page.unreadable)
             val owed = ledger.compensated(page.entries.map { it.ref })
-            val slots = page.entries.filter { it.ref !in owed }
+            // An earlier rollback's postings put the slots back as the NBT already holds them; only a run that
+            // undoes that rollback, and so keeps its entity row, undoes them too.
+            val undoingRollback = story.any { it.cause == Cause.ROLLBACK }
+            val slots = page.entries.filter {
+                it.ref !in owed && it.cause != Cause.PURGE_OPENING && (undoingRollback || it.cause != Cause.ROLLBACK)
+            }
             val at = WorldBlock(world, oldest.x, oldest.y, oldest.z)
             val removals = story.filter { it.kind == EntityKind.REMOVED }
             // What fell out of it when it went, and what a hand took off it in passing: shorn wool.

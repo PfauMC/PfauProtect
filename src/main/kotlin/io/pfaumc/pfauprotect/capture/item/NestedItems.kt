@@ -125,8 +125,8 @@ class NestedCaptureListener(
         // The loot table of a shulker copies a fixed handful of components onto the dropped item and
         // the name is not one of them, so it is written back here or the chain ends at the break.
         for (dropped in event.items) {
-            if (!Tag.ITEMS_SHULKER_BOXES.isTagged(dropped.itemStack.type)) continue
             val stack = CraftItemStack.asNMSCopy(dropped.itemStack)
+            if (!NestedItems.isShulkerBox(stack)) continue
             NestedItems.mark(stack, owner)
             dropped.itemStack = CraftItemStack.asBukkitCopy(stack)
         }

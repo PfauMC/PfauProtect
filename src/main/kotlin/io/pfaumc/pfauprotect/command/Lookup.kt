@@ -556,7 +556,9 @@ internal fun stateOf(ledger: RocksItemLog, id: Int): String =
  *
  * A rollback holds two more rules. A player named by `user:` answers for what they did or what was
  * worked out to be theirs, never for having stood near it. And a rollback's own rows are left alone
- * unless asked for by name: a second, narrower rollback would otherwise undo the first one.
+ * unless asked for by name: a second, narrower rollback would otherwise undo the first one. A purge's
+ * opening balances are never rolled back: they stand for what a holder held before the purge, not for
+ * anything done in the window.
  */
 internal class RowFilter(
     private val ledger: RocksItemLog,
@@ -608,7 +610,7 @@ internal class RowFilter(
         if (cause == Cause.BLK_SHAPE) {
             return if (rollback) causes?.contains(Cause.ROLLBACK) != true else all || causes?.contains(cause) == true
         }
-        return causes?.contains(cause) ?: (!rollback || cause != Cause.ROLLBACK)
+        return causes?.contains(cause) ?: (!rollback || cause != Cause.ROLLBACK && cause != Cause.PURGE_OPENING)
     }
 }
 

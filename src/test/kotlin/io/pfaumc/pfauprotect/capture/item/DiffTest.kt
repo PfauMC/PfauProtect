@@ -3,6 +3,7 @@ import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.FormKey
@@ -96,41 +97,46 @@ class DiffTest {
     @Test
     fun `the cause of an edge follows the ends it connects`() {
         val ender = PlayerEnder(player, 0)
-        assertEquals(Cause.CONTAINER_ADD, causeOf(edge(bag(0), chest(0))))
-        assertEquals(Cause.CONTAINER_ADD, causeOf(edge(bag(0), ender)))
-        assertEquals(Cause.CONTAINER_REMOVE, causeOf(edge(chest(0), bag(0))))
-        assertEquals(Cause.CONTAINER_REMOVE, causeOf(edge(ender, bag(0))))
-        assertEquals(Cause.CURSOR_PLACE, causeOf(edge(cursor, bag(0))))
-        assertEquals(Cause.CURSOR_TAKE, causeOf(edge(bag(0), cursor)))
-        // A chest's side names the click, not the cursor's.
-        assertEquals(Cause.CONTAINER_REMOVE, causeOf(edge(chest(0), cursor)))
-        assertEquals(Cause.CONTAINER_ADD, causeOf(edge(cursor, chest(0))))
-        assertEquals(Cause.QUICK_MOVE, causeOf(edge(bag(0), bag(1))))
+        val mob = EntitySlot(UUID.randomUUID(), 0)
         val inside = Nested(UUID.randomUUID(), 0)
-        assertEquals(Cause.BUNDLE_INSERT, causeOf(edge(bag(0), inside)))
-        assertEquals(Cause.BUNDLE_EXTRACT, causeOf(edge(inside, chest(0))))
+        val cases = listOf(
+            edge(bag(0), ender) to Cause.CONTAINER_ADD,
+            edge(mob, bag(0)) to Cause.CONTAINER_REMOVE,
+            edge(cursor, bag(0)) to Cause.CURSOR_PLACE,
+            edge(bag(0), cursor) to Cause.CURSOR_TAKE,
+            edge(bag(0), bag(1)) to Cause.QUICK_MOVE,
+            // A container's side names the click, not the cursor's.
+            edge(chest(0), cursor) to Cause.CONTAINER_REMOVE,
+            edge(cursor, mob) to Cause.CONTAINER_ADD,
+            // Going into or out of a bundle wins over the container on the other end.
+            edge(chest(0), inside) to Cause.BUNDLE_INSERT,
+            edge(inside, chest(0)) to Cause.BUNDLE_EXTRACT,
+        )
+        for ((edge, cause) in cases) assertEquals(cause, causeOf(edge), "${edge.from} -> ${edge.to}")
     }
 
+    // Unclaimed, the loss would pair with the picked-up gain and leave the gain in bag 1 out of nowhere.
     @Test
-    fun `an intent claims its share before an unrelated gain can be married to the loss`() {
+    fun `intents claim their share before the rest is paired loss to gain`() {
         val entity = ItemEntityRef(UUID.randomUUID())
         val placed = WorldBlock(world, 10, 65, -3)
         val intents = listOf(
             Intent(Cause.BLOCK_PLACE, to = placed, qty = 1),
-            Intent(Cause.PICKUP, from = entity, qty = 3),
+            Intent(Cause.PICKUP, from = entity, qty = 3, holder = bag(9)),
         )
         val edges = Netting.diff(
             seen(bag(0) to stack("cobble", 5)),
-            seen(bag(0) to stack("cobble", 4), bag(9) to stack("cobble", 3)),
+            seen(bag(0) to stack("cobble", 1), bag(1) to stack("cobble", 3), bag(9) to stack("cobble", 3)),
             intents,
             player,
         )
         assertEquals(
-            listOf(
+            setOf(
                 Move(bag(0), placed, key("cobble"), 1, Cause.BLOCK_PLACE, Confidence.FACT),
+                Move(bag(0), bag(1), key("cobble"), 3, Cause.QUICK_MOVE, Confidence.FACT),
                 Move(entity, bag(9), key("cobble"), 3, Cause.PICKUP, Confidence.FACT),
             ),
-            Intents.explain(edges, intents, player),
+            Intents.explain(edges, intents, player).toSet(),
         )
     }
 
@@ -157,25 +163,6 @@ class DiffTest {
     }
 
     @Test
-    fun `what no intent claimed is still paired loss to gain`() {
-        val placed = WorldBlock(world, 10, 65, -3)
-        val intents = listOf(Intent(Cause.BLOCK_PLACE, to = placed, qty = 1))
-        val edges = Netting.diff(
-            seen(bag(0) to stack("cobble", 5)),
-            seen(bag(0) to stack("cobble", 1), bag(1) to stack("cobble", 3)),
-            intents,
-            player,
-        )
-        assertEquals(
-            setOf(
-                Edge(bag(0), bag(1), key("cobble"), 3, Confidence.FACT),
-                Edge(bag(0), Void, key("cobble"), 1, Confidence.INFERRED),
-            ),
-            edges.toSet(),
-        )
-    }
-
-    @Test
     fun `a bundle that stays in view still moves what goes in and out of it`() {
         val bundle = UUID.randomUUID()
         val empty = seen(
@@ -198,31 +185,72 @@ class DiffTest {
         )
     }
 
+    // Ten and five taken out of two slots and booked out of a third, as the copper golem's were once:
+    // two slots hold less than the ledger says, the third more by as much.
     @Test
-    fun `an unseen change is written where it shows and a move as a move`() {
+    fun `an unseen move out of two slots is written as two moves`() {
         val diamond = FormKey("diamond".toByteArray())
-        val slot0 = PlayerInv(player, 0)
-        val slot3 = PlayerInv(player, 3)
-        val slot7 = PlayerInv(player, 7)
-        fun rows(live: Map<Holder, Map<FormKey, Int>>, booked: Map<Holder, Map<FormKey, Int>>) =
-            loadDifferences(live, booked, 0L).map { Triple(it.from, it.to, it.qty) }
+        val rows = loadDifferences(
+            mapOf(bag(0) to mapOf(diamond to 15)),
+            mapOf(bag(3) to mapOf(diamond to 10), bag(7) to mapOf(diamond to 5)),
+            0L,
+        ).map { Triple(it.from, it.to, it.qty) }
+        assertEquals(listOf(Triple(bag(3), bag(0), 10), Triple(bag(7), bag(0), 5)), rows)
+    }
 
-        assertEquals(listOf(Triple(slot0, slot7, 5)), rows(mapOf(slot7 to mapOf(diamond to 5)), mapOf(slot0 to mapOf(diamond to 5))))
-        assertEquals(emptyList<Triple<Holder, Holder, Int>>(), rows(mapOf(slot0 to mapOf(diamond to 5)), mapOf(slot0 to mapOf(diamond to 5))))
+    @Test
+    fun `an unseen change brings every slot to what it holds and pairs what it can`() {
+        val random = Random(11)
+        val forms = listOf("diamond", "stone").map { FormKey(it.toByteArray()) }
+        val slots: List<Holder> = (0..4).map { bag(it) }
+        fun reading() = slots.filter { random.nextBoolean() }.associateWith { _ ->
+            forms.filter { random.nextBoolean() }.associateWith { random.nextInt(0, 9) }
+        }
+
+        repeat(200) { round ->
+            val live = reading()
+            val booked = reading()
+            val rows = loadDifferences(live, booked, 0L)
+            val context = "round $round: live $live, booked $booked"
+
+            assertTrue(rows.all { it.qty > 0 && it.cause == Cause.INVENTORY_LOAD && it.confidence == Confidence.INFERRED }, context)
+            for (form in forms) {
+                val mine = rows.filter { FormKey(it.form) == form }
+                for (slot in slots) {
+                    val gap = (live[slot]?.get(form) ?: 0) - (booked[slot]?.get(form) ?: 0)
+                    val net = mine.filter { it.to == slot }.sumOf { it.qty } - mine.filter { it.from == slot }.sumOf { it.qty }
+                    assertEquals(gap, net, "$slot, $context")
+                }
+                // A slot short and another over is a move: only one side of a form may face the Void.
+                assertTrue(mine.none { it.from == Void } || mine.none { it.to == Void }, context)
+            }
+        }
+    }
+
+    // A death that already wrote its row out of bag(1) is the only reason that can speak for bag(1); a
+    // drop that could have come from either slot must leave it to the death, or bag(0)'s loss is married
+    // to an unrelated gain and the drop is left with nothing to explain.
+    @Test
+    fun `an intent pinned to its slot and already written claims that slot before a free one`() {
+        val stone = "stone".toByteArray()
+        val pile = ItemEntityRef(UUID.randomUUID())
+        val intents = listOf(
+            Intent(Cause.DROP_FROM_HAND, to = pile, form = stone, qty = 1),
+            Intent(Cause.DEATH_DROP, form = stone, qty = 1, recorded = true, holder = bag(1)),
+        )
+        val edges = Netting.diff(
+            seen(bag(1) to stack("stone", 1), bag(0) to stack("stone", 1)),
+            seen(bag(5) to stack("stone", 1)),
+            intents,
+            player,
+        )
 
         assertEquals(
-            listOf(Triple(Void, slot7, 2)),
-            rows(mapOf(slot0 to mapOf(diamond to 5), slot7 to mapOf(diamond to 2)), mapOf(slot0 to mapOf(diamond to 5))),
-        )
-        assertEquals(
-            setOf(Triple(slot0, slot7, 4), Triple(slot0, Void, 1)),
-            rows(mapOf(slot7 to mapOf(diamond to 4)), mapOf(slot0 to mapOf(diamond to 5))).toSet(),
-        )
-        // Ten and five taken out of two slots and booked out of a third, as the copper golem's were once:
-        // two slots hold less than the ledger says, the third more by as much.
-        assertEquals(
-            listOf(Triple(slot3, slot0, 10), Triple(slot7, slot0, 5)),
-            rows(mapOf(slot0 to mapOf(diamond to 15)), mapOf(slot3 to mapOf(diamond to 10), slot7 to mapOf(diamond to 5))),
+            setOf(
+                Move(bag(0), pile, key("stone"), 1, Cause.DROP_FROM_HAND, Confidence.FACT),
+                Move(Void, bag(5), key("stone"), 1, Cause.DIRECT_NEW_ITEM, Confidence.INFERRED),
+            ),
+            Intents.explain(edges, intents, player).toSet(),
         )
     }
 
@@ -287,6 +315,11 @@ class DiffTest {
             // Splitting an edge between intents and naming its far end must leave every slot's balance as it was.
             assertTrue(moves.all { it.qty > 0 }, "$moves, $context")
             assertEquals(expected.filterValues { it != 0 }, net(moves.map { Triple(it.from, it.to, String(it.key.form) to it.qty) }), "$moves, $context")
+
+            // Only an end nothing named is a guess: a pair was seen on both sides, an intent named the far end.
+            assertTrue(edges.all { (it.confidence == Confidence.INFERRED) == (it.from == Void || it.to == Void) }, context)
+            val unexplained = setOf(Cause.ITEM_VANISHED, Cause.DIRECT_NEW_ITEM)
+            assertTrue(moves.all { (it.confidence == Confidence.INFERRED) == (it.cause in unexplained) }, "$moves, $context")
 
             val paired = edges.filter { it.from != Void && it.to != Void }
             assertTrue(paired.none { it.from in unpaired || it.to in unpaired }, "unpaired $unpaired, $context")

@@ -223,8 +223,11 @@ object Netting {
     //
     // Two opposite movements in the same slot leave no trace in the snapshot and are not recovered from
     // the intent's word: it cannot say which slot, and in creative a placement consumes nothing at all.
+    //
+    // An intent whose movement is already written claims first, as Intents.pick prefers it: claimed in
+    // arrival order, a free intent could take the one slot such an intent is pinned to.
     private fun claim(deltas: List<Delta>, intents: List<Intent>, player: UUID?, carried: (Nested) -> Boolean, loss: Boolean) {
-        for (intent in intents) {
+        for (intent in intents.sortedByDescending { it.recorded }) {
             if (!intent.aims(loss)) continue
             var left = intent.qty ?: Int.MAX_VALUE
             for (delta in deltas) {

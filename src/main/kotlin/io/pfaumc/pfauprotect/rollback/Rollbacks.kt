@@ -421,6 +421,9 @@ internal fun putBack(slots: Slots, slot: Int, template: NmsItemStack, qty: Int, 
     return abs(qty) - left
 }
 
+internal fun rollbackDifference(world: UUID, actor: UUID?, timestamp: Long) =
+    Difference(world, Cause.ROLLBACK, Cause.ROLLBACK, Cause.ROLLBACK, Kind.TRANSFER, actor, timestamp)
+
 internal fun givenBackRows(difference: Difference, given: GivenBack, actor: UUID?): List<Transfer> = when {
     difference.moved -> difference.transfers(given.postings)
     given.postings.isEmpty() -> emptyList()
@@ -535,7 +538,7 @@ class ChunkRollback(
         for (plan in positions) for (entity in plan.entities) entity(level, entity, actor, apply, tally)
         for (plan in positions) if (plan.at in tally.restored) tally.piles += plan.dropped
         if (!apply) return tally
-        val difference = Difference(world, Cause.ROLLBACK, Cause.ROLLBACK, Cause.ROLLBACK, Kind.TRANSFER, actor, System.currentTimeMillis())
+        val difference = rollbackDifference(world, actor, System.currentTimeMillis())
         // A position of the plan that was only doused is one row, written here with the rest of the plan.
         val dousedAt = doused.mapTo(HashSet()) { it.first }
         positions.forEachIndexed { i, plan ->

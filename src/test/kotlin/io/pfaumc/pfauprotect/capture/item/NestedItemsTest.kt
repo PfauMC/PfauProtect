@@ -18,6 +18,7 @@ import io.pfaumc.pfauprotect.worldStub
 import org.bukkit.block.Block
 import org.bukkit.block.ShulkerBox
 import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.entity.Item
 import org.bukkit.entity.Player
 import org.bukkit.event.block.BlockDropItemEvent
 import org.bukkit.inventory.Inventory
@@ -38,6 +39,8 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import java.util.UUID
 
 @ExtendWith(Vanilla::class)
@@ -90,18 +93,13 @@ class NestedItemsTest {
         assertTrue(NestedItems.contents(ItemStack(Items.DIAMOND, 4)).isEmpty())
     }
 
-    @Test
-    fun `a container reads the same full or empty`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun `a container reads the same full or empty`(isShulker: Boolean) {
         val owner = UUID.randomUUID()
-        val full = shulker(0 to ItemStack(Items.DIAMOND, 4)).also { NestedItems.mark(it, owner) }
-        val empty = shulker().also { NestedItems.mark(it, owner) }
-        assertArrayEquals(form(empty), form(full))
-    }
-
-    @Test
-    fun `a bundle is emptied out of its form the same way`() {
-        val full = bundle(ItemStack(Items.DIAMOND, 4))
-        val empty = ItemStack(Items.BUNDLE)
+        val full = if (isShulker) shulker(0 to ItemStack(Items.DIAMOND, 4)) else bundle(ItemStack(Items.DIAMOND, 4))
+        val empty = if (isShulker) shulker() else ItemStack(Items.BUNDLE)
+        for (stack in listOf(full, empty)) NestedItems.mark(stack, owner)
         assertArrayEquals(form(empty), form(full))
     }
 
@@ -138,10 +136,19 @@ class NestedItemsTest {
                     ),
                 ),
             )
-            val breaker = stub(Player::class.java, mapOf("getUniqueId" to UUID.randomUUID()))
+            val breaker = UUID.randomUUID()
+            val player = stub(Player::class.java, mapOf("getUniqueId" to breaker))
+            var droppedStack = CraftItemStack.asBukkitCopy(shulker())
+            val dropped = stub(
+                Item::class.java,
+                mapOf(
+                    "getItemStack" to { _: Array<out Any?> -> droppedStack },
+                    "setItemStack" to { args: Array<out Any?> -> droppedStack = args[0] as org.bukkit.inventory.ItemStack; null },
+                ),
+            )
             val rows = ArrayList<Transfer>()
             val coalescer = TickCoalescer(rows::add)
-            NestedCaptureListener(log, codec, coalescer).onBreak(BlockDropItemEvent(block, state, breaker, emptyList()))
+            NestedCaptureListener(log, codec, coalescer).onBreak(BlockDropItemEvent(block, state, player, mutableListOf(dropped)))
             coalescer.flush()
 
             assertEquals(
@@ -152,7 +159,9 @@ class NestedItemsTest {
                 rows.map { Triple(it.from, it.to, it.qty) to it.cause }.toSet(),
             )
             assertEquals(2, rows.size)
+            assertTrue(rows.all { it.actor == breaker }, "$rows")
             assertNull(log.ownerAt(world, 4, 70, -2))
+            assertEquals(owner, NestedItems.ownerOf(CraftItemStack.asNMSCopy(droppedStack)))
         }
     }
 }
