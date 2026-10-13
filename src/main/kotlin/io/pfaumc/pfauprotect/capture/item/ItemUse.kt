@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.storage.nmsView
 import io.papermc.paper.event.player.PlayerChangeBeaconEffectEvent
 import io.papermc.paper.event.player.PlayerPickItemEvent
 import io.papermc.paper.event.player.PlayerSwapWithEquipmentSlotEvent
@@ -34,7 +35,6 @@ import net.minecraft.world.item.SpawnEggItem
 import net.minecraft.world.item.WritableBookItem
 import org.bukkit.GameMode
 import org.bukkit.Material
-import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.craftbukkit.util.CraftMagicNumbers
 import org.bukkit.entity.Allay
 import org.bukkit.entity.Animals
@@ -164,7 +164,7 @@ class ItemUseListener(
     fun onUse(event: PlayerInteractEvent) {
         if (!event.action.isRightClick || event.useItemInHand() == Event.Result.DENY) return
         val stack = event.item ?: return
-        val live = CraftItemStack.asNMSCopy(stack)
+        val live = nmsView(stack)
         if (live.isEmpty) return
         val player = event.player
         // Water from a source or a hive, a bottle at a time, beside the stack the bottle came from.
@@ -191,7 +191,7 @@ class ItemUseListener(
     fun onUseOnEntity(event: PlayerInteractEntityEvent) {
         val player = event.player
         val stack = player.inventory.getItem(event.hand)
-        val live = CraftItemStack.asNMSCopy(stack)
+        val live = nmsView(stack)
         if (live.isEmpty) return
         val entity = event.rightClicked
         // A frame and a stand hold what they are given, and their own events say where.
@@ -223,7 +223,7 @@ class ItemUseListener(
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onBucketEmpty(event: PlayerBucketEmptyEvent) {
-        val release = CraftItemStack.asNMSCopy(event.player.inventory.getItem(event.hand)).item is MobBucketItem
+        val release = nmsView(event.player.inventory.getItem(event.hand)).item is MobBucketItem
         capture.intend(event.player, mutation(if (release) Cause.BUCKET_RELEASE_MOB else Cause.BUCKET_EMPTY))
     }
 

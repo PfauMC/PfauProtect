@@ -203,24 +203,19 @@ class HolderListener(
         placed(player, event.entity, event.itemStack ?: return, event.hand ?: return)
     }
 
-    private fun placed(player: Player, entity: Entity, stack: BukkitItemStack, hand: EquipmentSlot) {
+    private fun placed(player: Player, entity: Entity, stack: BukkitItemStack, hand: EquipmentSlot?, slot: Int = ENTITY_ITEM_SLOT) {
         if (player.gameMode == GameMode.CREATIVE) return
         val form = codec.encodeOrNull(stack)?.form ?: return
-        bookHeld(entity, ENTITY_ITEM_SLOT, form)
-        val to = EntitySlot(entity.uniqueId, ENTITY_ITEM_SLOT)
-        capture.intend(player, Intent(Cause.PLACE_ENTITY_ITEM, to = to, form = form, qty = 1, holder = capture.handSlot(player, hand)))
+        bookHeld(entity, slot, form)
+        val to = EntitySlot(entity.uniqueId, slot)
+        capture.intend(player, Intent(Cause.PLACE_ENTITY_ITEM, to = to, form = form, qty = 1, holder = hand?.let { capture.handSlot(player, it) }))
     }
 
     // Taking the item back out drops it as an entity, and the drop is where it comes out of the frame.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onFrame(event: PlayerItemFrameChangeEvent) {
         if (event.action != PlayerItemFrameChangeEvent.ItemFrameChangeAction.PLACE) return
-        val player = event.player
-        if (player.gameMode == GameMode.CREATIVE) return
-        val form = codec.encodeOrNull(event.itemStack)?.form ?: return
-        val frame = event.itemFrame
-        bookHeld(frame, 0, form)
-        capture.intend(player, Intent(Cause.PLACE_ENTITY_ITEM, to = EntitySlot(frame.uniqueId, 0), form = form, qty = 1))
+        placed(event.player, event.itemFrame, event.itemStack, hand = null, slot = 0)
     }
 
     // Which item a player held out to a mob, until the mob's equipment says what became of it.

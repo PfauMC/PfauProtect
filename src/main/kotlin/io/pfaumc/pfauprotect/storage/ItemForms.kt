@@ -30,13 +30,15 @@ class ItemKey(val form: ByteArray, val damage: Int?) {
     override fun equals(other: Any?): Boolean =
         other is ItemKey && damage == other.damage && form.contentEquals(other.form)
 
-    override fun hashCode(): Int = 31 * form.contentHashCode() + (damage?.hashCode() ?: 0)
+    private val hash = 31 * form.contentHashCode() + (damage?.hashCode() ?: 0)
+    override fun hashCode(): Int = hash
 }
 
 // Identity without the wear: a pickaxe is the same pickaxe at 1523 and at 1524.
 class FormKey(val form: ByteArray) {
     override fun equals(other: Any?): Boolean = other is FormKey && form.contentEquals(other.form)
-    override fun hashCode(): Int = form.contentHashCode()
+    private val hash = form.contentHashCode()
+    override fun hashCode(): Int = hash
 }
 
 data class EncodedItem(val form: ByteArray, val count: Int, val damage: Int?) {
@@ -73,6 +75,7 @@ class ItemFormCodec(
 
     // A registry id never changes once assigned, and the item's key string is built per slot otherwise.
     private val itemTypeIds = ConcurrentHashMap<Item, Int>()
+    private val componentTypeIds = ConcurrentHashMap<DataComponentType<*>, Int>()
 
     fun encodeOrNull(stack: BukkitItemStack?): EncodedItem? {
         if (stack == null) return null
@@ -181,10 +184,10 @@ class ItemFormCodec(
         ?: registries.idForKey(RegistryNamespace.ITEM_TYPE, BuiltInRegistries.ITEM.getKey(item).toString())
             .also { itemTypeIds[item] = it }
 
-    private fun componentTypeId(type: DataComponentType<*>): Int {
+    private fun componentTypeId(type: DataComponentType<*>): Int = componentTypeIds[type] ?: run {
         val key = BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type)
             ?: throw IllegalArgumentException("component type $type is not registered")
-        return registries.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, key.toString())
+        registries.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, key.toString()).also { componentTypeIds[type] = it }
     }
 
     // Registry.getValue would answer air for an unregistered key, get keeps the miss visible.

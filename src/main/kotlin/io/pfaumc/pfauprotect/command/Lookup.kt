@@ -19,6 +19,7 @@ import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.model.BLOCK_CAUSES
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.ENTITY_PLANE_CAUSES
 import io.pfaumc.pfauprotect.model.block
 import io.pfaumc.pfauprotect.rollback.spot
 import io.pfaumc.pfauprotect.model.Confidence
@@ -232,10 +233,8 @@ private val TRANSFORM_CAUSES = setOf(
 )
 
 // Everything the entity plane writes, and what a player's hand does to a mob in the item plane.
-private val ENTITY_CAUSES = setOf(
-    Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.ENTITY_CHANGED, Cause.ENTITY_LED, Cause.PLAYER_KILLED,
-    Cause.MOB_BRED, Cause.SPAWN_EGG_USE, Cause.BUCKET_CAPTURE_MOB, Cause.BUCKET_RELEASE_MOB, Cause.MOB_TRANSFORM,
-    Cause.PLACE_ENTITY_ITEM, Cause.FEED_MOB, Cause.TAME_MOB, Cause.EQUIP_MOB, Cause.SHEAR_MOB, Cause.DYE_MOB,
+private val ENTITY_CAUSES = ENTITY_PLANE_CAUSES + setOf(
+    Cause.FEED_MOB, Cause.TAME_MOB, Cause.EQUIP_MOB, Cause.SHEAR_MOB, Cause.DYE_MOB,
     Cause.NAME_TAG, Cause.LEASH_ATTACH, Cause.LEASH_DROP, Cause.GIVE_ITEM_TO_MOB, Cause.ARMOR_STAND_SWAP,
 )
 
@@ -920,10 +919,10 @@ class Lookups(
     }
 
     private fun lineOf(world: UUID, row: BlockRow, back: Boolean): Line {
-        val (sign, thing) = blockChange(row)
-        val same = "b ${row.cause} ${row.actor} ${row.confidence} $sign $thing"
+        val change = blockChange(row)
+        val same = "b ${row.cause} ${row.actor} ${row.confidence} ${change.sign} ${change.from} ${change.to}"
         return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp)) { _, rows, clickable ->
-            draw(world, row, rows, clickable)
+            draw(world, row, change, rows, clickable)
         }
     }
 
@@ -1168,24 +1167,22 @@ class Lookups(
         return row(Ui.ago(entry.timestamp), who(who, entry.confidence), act, item(entry.itemFormId, amount), flow, at)
     }
 
-    private fun blockChange(row: BlockRow): Pair<String, String> {
+    /** [to] is set only when a block turned into another one, rather than appearing, going or changing state. */
+    private class BlockChange(val sign: String, val from: String, val to: String? = null)
+
+    private fun blockChange(row: BlockRow): BlockChange {
         val before = stateName(ledger, row.stateBefore)
         val after = stateName(ledger, row.stateAfter)
         return when {
-            before in AIRS && after !in AIRS -> "+" to after
-            after in AIRS && before !in AIRS -> "-" to before
-            else -> "~" to if (before == after) before else "$before>$after"
+            before in AIRS && after !in AIRS -> BlockChange("+", after)
+            after in AIRS && before !in AIRS -> BlockChange("-", before)
+            else -> BlockChange("~", before, after.takeIf { it != before })
         }
     }
 
-    private fun draw(world: UUID, row: BlockRow, rows: Int, clickable: Boolean): Component {
-        val (sign, named) = blockChange(row)
-        val thing = Component.text().color(Ui.THING)
-        if (">" in named) {
-            thing.append(Ui.block(named.substringBefore('>'))).append(Ui.text(" → ", Ui.FAINT)).append(Ui.block(named.substringAfter('>')))
-        } else {
-            thing.append(Ui.block(named))
-        }
+    private fun draw(world: UUID, row: BlockRow, change: BlockChange, rows: Int, clickable: Boolean): Component {
+        val thing = Component.text().color(Ui.THING).append(Ui.block(change.from))
+        if (change.to != null) thing.append(Ui.text(" → ", Ui.FAINT)).append(Ui.block(change.to))
         thing.append(times(rows))
         // The whole state is what makes a row restorable and is noise in a list, so it waits for a hover,
         // with which half of a door or a bed it was: two rows of one are otherwise the same row twice.
@@ -1200,7 +1197,7 @@ class Lookups(
             else -> signOf(row)?.let { Ui.text(it, Ui.MUTED) }
         }
         return row(
-            Ui.ago(row.timestamp), who(row.actor, row.confidence, pressed?.second), act(sign, row.cause),
+            Ui.ago(row.timestamp), who(row.actor, row.confidence, pressed?.second), act(change.sign, row.cause),
             Ui.hover(thing.build(), *details.toTypedArray()), extra, Ui.place(world, row.x, row.y, row.z, clickable),
         )
     }
@@ -1304,7 +1301,7 @@ class Lookups(
         is Container -> Ui.hover(Ui.text(tr("container", "контейнер"), Ui.MUTED), "${holder.x} ${holder.y} ${holder.z}", tr("slot ${holder.slot}", "слот ${holder.slot}"))
         is WorldBlock -> Ui.hover(Ui.text(tr("block", "блок"), Ui.MUTED), "${holder.x} ${holder.y} ${holder.z}")
         // A crafting grid is the player's own entity slot, and a name reads better than their uuid.
-        is EntitySlot -> nameOf(holder.uuid)?.let { Ui.hover(Ui.text(it, Ui.WHO), tr("crafting grid, slot ${holder.slot}", "сетка крафта, слот ${holder.slot}")) }
+        is EntitySlot -> knownName(holder.uuid)?.let { Ui.hover(Ui.text(it, Ui.WHO), tr("crafting grid, slot ${holder.slot}", "сетка крафта, слот ${holder.slot}")) }
             ?: Ui.hover(Ui.text(tr("entity", "сущность"), Ui.MUTED), "${holder.uuid}", tr("slot ${holder.slot}", "слот ${holder.slot}"))
         is ItemEntityRef -> Ui.hover(Ui.text(tr("on the ground", "на земле"), Ui.MUTED), "${holder.uuid}")
         is Nested -> Ui.hover(Ui.text(tr("inside", "внутри"), Ui.MUTED), "${holder.ownerId} #${holder.index}")
@@ -1315,6 +1312,7 @@ class Lookups(
     // ponytail: never evicted, so a rename shows after a restart; a timed cache if that matters.
     private val names = ConcurrentHashMap<UUID, String>()
 
-    private fun playerName(uuid: UUID): String =
-        names[uuid] ?: nameOf(uuid)?.also { names[uuid] = it } ?: uuid.toString()
+    private fun knownName(uuid: UUID): String? = names[uuid] ?: nameOf(uuid)?.also { names[uuid] = it }
+
+    private fun playerName(uuid: UUID): String = knownName(uuid) ?: uuid.toString()
 }

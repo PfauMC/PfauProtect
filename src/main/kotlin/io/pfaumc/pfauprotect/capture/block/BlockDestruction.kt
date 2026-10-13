@@ -157,6 +157,7 @@ internal class Site(
     val went: WorldBlock? = null,
 ) {
     val at: WorldBlock = positionOf(block)
+    val beforeState: String = before.asString
 }
 
 // How long after a break its drops are named: they spawn in the call that breaks the block, or in the
@@ -570,7 +571,9 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
     // the journal whether this change is already there can be told no and file it a second time. A
     // ravager and a wither both raise their own event and then destroy the block, which is exactly
     // that pair, and the position goes negative on the item plane for it.
-    private val recent = ConcurrentHashMap<WorldBlock, Pair<String, Long>>()
+    private val recent = ConcurrentHashMap<WorldBlock, Filed>()
+
+    private class Filed(val before: String, val after: String, val at: Long)
 
     val isEmpty: Boolean get() = queued.isEmpty() && recent.isEmpty()
 
@@ -589,10 +592,11 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
     fun pending(at: WorldBlock): Boolean = queued[at]?.let { now() - it <= READ_BACK_MILLIS } == true
 
     fun filed(at: WorldBlock, before: String, after: String) {
-        recent[at] = "$before>$after" to now()
+        recent[at] = Filed(before, after, now())
     }
 
-    fun wasFiled(at: WorldBlock, before: String, after: String): Boolean = fresh(at) == "$before>$after"
+    fun wasFiled(at: WorldBlock, before: String, after: String): Boolean =
+        fresh(at)?.let { it.before == before && it.after == after } == true
 
     /**
      * Whether any capture has filed a change at this position within the tick, whatever the change was.
@@ -602,18 +606,18 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
      */
     fun settled(at: WorldBlock): Boolean = fresh(at) != null
 
-    private fun fresh(at: WorldBlock): String? {
-        val (change, filed) = recent[at] ?: return null
-        if (now() - filed > READ_BACK_MILLIS) {
+    private fun fresh(at: WorldBlock): Filed? {
+        val filed = recent[at] ?: return null
+        if (now() - filed.at > READ_BACK_MILLIS) {
             recent.remove(at)
             return null
         }
-        return change
+        return filed
     }
 
     fun sweep() {
         val cutoff = now() - READ_BACK_MILLIS
-        recent.values.removeIf { it.second < cutoff }
+        recent.values.removeIf { it.at < cutoff }
         queued.values.removeIf { it < cutoff }
     }
 }
@@ -916,9 +920,9 @@ class BlockDestructionListener(
         val by = event.ignitingBlock?.let(::fireStartedBy)
         // What the block leaves may be fire, and that fire may leap on before its row reaches the journal:
         // it is noted at once, as a fire that spread is. Left as air, the position never matches the note.
-        if (by != null && by.confidence != Confidence.NEARBY) {
+        by.culprit()?.let {
             val fire = BaseFireBlock.getState(block.level, block.position).asBlockData().asString
-            attribution.placed(positionOf(block), fire, by.actor)
+            attribution.placed(positionOf(block), fire, it)
         }
         defer(block, block.blockData, Cause.BLK_FIRE_BURN, by)
     }
@@ -1030,7 +1034,7 @@ class BlockDestructionListener(
         val by = attribution.carriedTo(positionOf(to), from.blockData.asString)
         if (!liquidDestroys((to as CraftBlock).blockState)) {
             // Only a flow somebody let out: the world's own springs are no story to tell.
-            if (to.type.isAir && by != null && by.confidence != Confidence.NEARBY) flowed(to, by)
+            if (to.type.isAir && by != null && by.culprit() != null) flowed(to, by)
             return
         }
         defer(to, to.blockData, Cause.BLK_LIQUID_DESTROY, by ?: pouredBy(from))
@@ -1158,7 +1162,7 @@ class BlockDestructionListener(
             val filedAs = touches.take(site.at) ?: return@mapNotNull null
             val data = site.block.blockData
             val now = data.asString
-            if (!handMade(site.before.asString, now)) {
+            if (!handMade(site.beforeState, now)) {
                 // The block is the same and only what its entity holds changed: a sign dyed or
                 // waxed, a spawner given an egg.
                 val was = marks[site.at]
@@ -1657,14 +1661,14 @@ class BlockDestructionListener(
         val rows = real + carried.filter { unfiled(it) && !commanded(it.block) }
         for (site in rows) shapeFirst(log, site.at, site.block, site.before)
         log.submit(rows.map { row(it, cause, by, timestamp) })
-        for (site in rows) readBacks.filed(site.at, site.before.asString, site.after)
-        val gone = real.filter { wentAway(it.before.asString, it.after) }
+        for (site in rows) readBacks.filed(site.at, site.beforeState, site.after)
+        val gone = real.filter { wentAway(it.beforeState, it.after) }
         if (gone.isEmpty()) return
         // A block that moved carries itself to the position it arrived in and drops nothing on the way,
         // and a position that was empty broke nothing: what stands there now arrived, and packing it
         // up as though it had been broken would empty a shulker box a dispenser has just put down.
         for (site in gone) {
-            if (site.went != null || !expectsDrops || emptied(site.before.asString)) continue
+            if (site.went != null || !expectsDrops || emptied(site.beforeState)) continue
             dropsOf(site.block, cause, by, packBox(site, by, timestamp), dropReach)
         }
         by.culprit()?.let { actor ->
@@ -1677,7 +1681,7 @@ class BlockDestructionListener(
         // stopped standing there: left behind, it answers for a block that is not the one there.
         // A position that was empty released nothing, and a form noted there now belongs to whatever
         // was just put in it: a dispenser's shulker box notes its form in the same tick this runs.
-        val releasing = gone.filter { !emptied(it.before.asString) }
+        val releasing = gone.filter { !emptied(it.beforeState) }
         if (releasing.isEmpty()) return
         val positions = releasing.map { it.at }
         val remembered = placed.takeFormsAt(positions)
@@ -1722,7 +1726,7 @@ class BlockDestructionListener(
     // out of and the physics behind it reads the same air — and the second row would declare as old
     // what the first had just made new.
     private fun unfiled(site: Site): Boolean {
-        val before = site.before.asString
+        val before = site.beforeState
         return handMade(before, site.after) && !readBacks.wasFiled(site.at, before, site.after)
     }
 
@@ -1736,7 +1740,7 @@ class BlockDestructionListener(
         x = site.at.x,
         y = site.at.y,
         z = site.at.z,
-        before = site.before.asString,
+        before = site.beforeState,
         after = site.after,
         cause = cause,
         timestamp = timestamp,

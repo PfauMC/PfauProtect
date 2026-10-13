@@ -510,7 +510,7 @@ class Confiscations(
                         val encoded = codec.encode(here)
                         if (!encoded.form.contentEquals(form)) continue
                         val n = minOf(left - got, here.count)
-                        slots.set(slot, if (n == here.count) net.minecraft.world.item.ItemStack.EMPTY else here.copyWithCount(here.count - n))
+                        slots.set(slot, if (n == here.count) NmsItemStack.EMPTY else here.copyWithCount(here.count - n))
                         rows += Transfer(Cause.ROLLBACK, stash.copy(slot = slot), Void, form, encoded.damage, n, now, actor = actor)
                         got += n
                     }

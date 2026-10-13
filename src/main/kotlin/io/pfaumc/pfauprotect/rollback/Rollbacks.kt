@@ -386,14 +386,15 @@ class ChunkRollback(
         val spots = positions.map { BlockPos(it.at.x, it.at.y, it.at.z) }
         val before = spots.map { standingAt(level, it, codec) }
         val touched = BooleanArray(positions.size)
-        val settles = positions.mapIndexed { i, plan -> settle(before[i].state.asBlockData().asString, plan.steps, plan.origin) }
+        val beforeStates = before.map { it.state.asBlockData().asString }
+        val settles = positions.mapIndexed { i, plan -> settle(beforeStates[i], plan.steps, plan.origin) }
         val targets = settles.map { settled -> settled.back?.before?.let { if (passing(it)) "minecraft:air" else quiet(it) } }
         // What a source being taken away had run into goes with it, before anything is put back, and so does a
         // flow the players' rows stand in: lava left running sets fire to the house the rollback puts back.
         val drained = if (!apply) emptyList() else positions.indices.flatMap { i ->
             val was = before[i].state
             val removed = was.block is LiquidBlock && was.fluidState.isSource &&
-                targets[i].let { it != null && it != was.asBlockData().asString }
+                targets[i].let { it != null && it != beforeStates[i] }
             when {
                 running(was) && positions[i].steps.isNotEmpty() -> listOf(spots[i] to was)
                 !removed -> emptyList()
@@ -404,7 +405,7 @@ class ChunkRollback(
         positions.forEachIndexed { i, plan ->
             val was = before[i]
             // A signal is the neighbours' to set, not the rollback's to put back or to count as a difference.
-            val standing = quiet(was.state.asBlockData().asString)
+            val standing = quiet(beforeStates[i])
             val settled = settles[i]
             if (settled.conflict) tally.conflicts++
             val back = settled.back

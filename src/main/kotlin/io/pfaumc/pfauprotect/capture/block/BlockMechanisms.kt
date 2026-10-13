@@ -254,8 +254,11 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
     //
     // Returns how much of the spawn a note accounted for; what is left over is a birth nobody
     // explained, and the caller books it as such rather than letting it pass unrecorded.
+    fun claim(entity: UUID, at: Spot, key: ItemKey, count: Int, thrower: UUID? = null): Int =
+        if (notes.isEmpty()) 0 else claimNoted(entity, at, key, count, thrower)
+
     @Synchronized
-    fun claim(entity: UUID, at: Spot, key: ItemKey, count: Int, thrower: UUID? = null): Int {
+    private fun claimNoted(entity: UUID, at: Spot, key: ItemKey, count: Int, thrower: UUID?): Int {
         val into = ItemEntityRef(entity)
         val now = clock()
         // A note that names the entity is exact, so it goes first: a note left at the same block for

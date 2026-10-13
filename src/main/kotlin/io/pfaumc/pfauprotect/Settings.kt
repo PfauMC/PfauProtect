@@ -2,6 +2,7 @@ package io.pfaumc.pfauprotect
 
 import io.pfaumc.pfauprotect.model.BLOCK_CAUSES
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.ENTITY_PLANE_CAUSES
 import org.bukkit.configuration.file.FileConfiguration
 import java.util.logging.Logger
 
@@ -41,9 +42,5 @@ object Settings {
 
     // The filter sits in the block store, so turning off a cause the item plane shares (a spawn egg, a
     // mob bucket) drops only its entity row.
-    private val BLOCK_PLANE: Set<Cause> = BLOCK_CAUSES + setOf(
-        Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.ENTITY_CHANGED, Cause.ENTITY_LED, Cause.MOB_BRED,
-        Cause.PLAYER_KILLED, Cause.MOB_TRANSFORM, Cause.SPAWN_EGG_USE, Cause.BUCKET_CAPTURE_MOB,
-        Cause.BUCKET_RELEASE_MOB, Cause.PLACE_ENTITY_ITEM,
-    )
+    private val BLOCK_PLANE: Set<Cause> = BLOCK_CAUSES + ENTITY_PLANE_CAUSES
 }

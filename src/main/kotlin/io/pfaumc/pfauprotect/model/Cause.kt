@@ -287,3 +287,10 @@ enum class Cause(val id: Int) {
 // the block causes that were numbered outside it.
 val BLOCK_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0xCA..0xEF }.toSet() +
     setOf(Cause.BLK_SIGN_EDIT, Cause.BLK_SHAPE, Cause.BLK_LIQUID_FLOW, Cause.BLK_PLUGIN)
+
+// What the entity plane writes, some of it shared with an item row of the same event.
+val ENTITY_PLANE_CAUSES: Set<Cause> = setOf(
+    Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.ENTITY_CHANGED, Cause.ENTITY_LED, Cause.MOB_BRED,
+    Cause.PLAYER_KILLED, Cause.MOB_TRANSFORM, Cause.SPAWN_EGG_USE, Cause.BUCKET_CAPTURE_MOB,
+    Cause.BUCKET_RELEASE_MOB, Cause.PLACE_ENTITY_ITEM,
+)

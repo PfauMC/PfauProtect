@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.storage.nmsView
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
@@ -78,7 +79,7 @@ internal fun packShulker(
     owners.clearOwnerAt(world, block.x, block.y, block.z)
     val inventory = box.inventory
     for (slot in 0 until inventory.size) {
-        val item = CraftItemStack.asNMSCopy(inventory.getItem(slot) ?: continue)
+        val item = nmsView(inventory.getItem(slot) ?: continue)
         if (!item.isEmpty) pack(slot, owner, item)
     }
     return owner
@@ -109,7 +110,7 @@ class NestedCaptureListener(
     fun onPlace(event: BlockPlaceEvent) {
         val block = event.block
         if (!Tag.SHULKER_BOXES.isTagged(block.type)) return
-        unpackShulker(owners, block, CraftItemStack.asNMSCopy(event.itemInHand)) { from, to, child ->
+        unpackShulker(owners, block, nmsView(event.itemInHand)) { from, to, child ->
             move(from, to, Cause.CONTAINER_PLACE_UNPACK, child, event.player)
         }
     }

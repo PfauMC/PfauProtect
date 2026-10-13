@@ -43,7 +43,6 @@ import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.craftbukkit.entity.CraftLivingEntity
 import org.bukkit.craftbukkit.inventory.CraftInventory
-import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
@@ -298,7 +297,7 @@ internal fun positionOf(block: Block) = WorldBlock(block.world.uid, block.x, blo
 // instead, and it decides that before the event fires, so the slot named here can disagree with the
 // one used.
 internal fun equipmentSlotOf(entity: LivingEntity, item: BukkitItemStack): Int =
-    (entity as CraftLivingEntity).handle.getEquipmentSlotForItem(CraftItemStack.asNMSCopy(item)).ordinal
+    (entity as CraftLivingEntity).handle.getEquipmentSlotForItem(nmsView(item)).ordinal
 
 internal fun playerHolders(uuid: UUID, inventory: PlayerInventory): (Int) -> Holder {
     val storageSize = inventory.storageContents.size
@@ -828,7 +827,7 @@ class ContainerCaptureListener(
     // of stew has no crafting remainder at all, and reading the wrong one loses the container.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onConsume(event: PlayerItemConsumeEvent) {
-        val eaten = CraftItemStack.asNMSCopy(event.item)
+        val eaten = nmsView(event.item)
         if (eaten.isEmpty) return
         val player = event.player
         val hand = handSlot(player, event.hand)
@@ -931,7 +930,7 @@ class ContainerCaptureListener(
         val holders = playerHolders(player.uniqueId, inventory)
         val held = ArrayList<Held>(inventory.size)
         for (slot in 0 until inventory.size) {
-            val live = CraftItemStack.asNMSCopy(inventory.getItem(slot) ?: continue)
+            val live = nmsView(inventory.getItem(slot) ?: continue)
             if (live.isEmpty) continue
             val encoded = codec.encode(live)
             val vanishing = EnchantmentHelper.has(live, EnchantmentEffectComponents.PREVENT_EQUIPMENT_DROP)

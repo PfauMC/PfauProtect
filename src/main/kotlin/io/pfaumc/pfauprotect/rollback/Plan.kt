@@ -302,9 +302,11 @@ private class Collected(private val keeps: RowFilter) {
         if (!window.complete) return false
         budget -= window.walked
         unreadable += window.unreadable
-        window.rows.filterTo(rows) { keeps.keeps(it) && it.cause != Cause.BLK_LIQUID_FLOW }
-        window.rows.filterTo(nature) { passable(it) && !keeps.keeps(it) }
-        window.rows.filterTo(foreign) { !keeps.keeps(it) && !passable(it) }
+        for (row in window.rows) when {
+            keeps.keeps(row) -> if (row.cause != Cause.BLK_LIQUID_FLOW) rows += row
+            passable(row) -> nature += row
+            else -> foreign += row
+        }
         val read = entities(budget)
         if (!read.complete) return false
         budget -= read.walked

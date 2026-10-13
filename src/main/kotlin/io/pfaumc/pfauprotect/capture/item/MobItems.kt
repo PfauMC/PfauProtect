@@ -78,7 +78,9 @@ private const val REWARD_REACH = 3.0
 // for the same reason an arrow keeps its mark: a zombie holding a picked-up sword is saved with its
 // chunk, and what it drops after the next start still has to come out of the slot it went into.
 // The form and not the count. A mob picks up one stack into one slot and gives it up whole.
-private fun heldKey(slot: Int) = NamespacedKey("pfauprotect", "held_$slot")
+private val HELD_KEYS = Array(ENTITY_ITEM_SLOT + 1) { NamespacedKey("pfauprotect", "held_$it") }
+
+private fun heldKey(slot: Int) = HELD_KEYS[slot]
 
 // The item an entity was placed from — a boat, a stand, a frame — kept apart from anything it wears.
 internal const val ENTITY_ITEM_SLOT = 16
