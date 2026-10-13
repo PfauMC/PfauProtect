@@ -40,10 +40,10 @@ class LookupTest {
         }
     }
 
-    // Completion lists the readable spelling of each parameter while the terse ones keep parsing, so
-    // the two must stay in step: a parameter added to the table has to show up in completion too.
+    // Completion lists each parameter's first key, so that key has to be the readable spelling and the
+    // terse aliases only parse.
     @Test
-    fun `completion offers the long spelling of every parameter and nothing else`() {
+    fun `each parameter's first key is its long spelling`() {
         for (prefix in Param.prefixes) {
             assertTrue(prefix.removeSuffix(":").length > 1, "completion should not offer the terse alias $prefix")
         }

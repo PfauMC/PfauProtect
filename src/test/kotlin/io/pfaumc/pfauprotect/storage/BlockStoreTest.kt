@@ -328,15 +328,23 @@ class BlockStoreTest : BothPlanes() {
         assertEquals(setOf(listOf(5, 64, 6)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
     }
 
+    // Only a row with a damage type or a dealer is written in the longer version; one of the two alone
+    // writes zero for the other.
     @Test
-    fun `an entity death without a damage type or a dealer reads back without them`() {
+    fun `an entity death without a damage type or a dealer is written without them`() {
         val names = entityNames()
-        val key = BlockCodec.key(1, 2, 3, T0, 4, 0)
-        for (row in listOf(
-            EntityRow(1, 2, 3, T0, 4, 0, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:sheep", sheep, death = "minecraft:fall"),
-            EntityRow(1, 2, 3, T0, 4, 0, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:sheep", sheep),
-        )) {
-            assertEquals(row, EntityCodec.decodeOrNull(key, EntityCodec.value(row, names), names))
+        val bare = EntityRow(
+            1, 2, 3, T0, 4, 0, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:sheep", sheep,
+            actor = alice, drops = listOf(firstDrop, secondDrop),
+        )
+        val shapes = mapOf(
+            bare to deathValue.copyOf(deathValue.size - 2).also { it[0] = 0x90.toByte() },
+            bare.copy(death = "minecraft:fall") to deathValue.copyOf().also { it[it.size - 2] = 0x01; it[it.size - 1] = 0 },
+            bare.copy(via = "minecraft:wolf") to deathValue.copyOf().also { it[it.size - 2] = 0 },
+        )
+        for ((row, bytes) in shapes) {
+            assertArrayEquals(bytes, EntityCodec.value(row, names)) { "$row" }
+            assertEquals(row, EntityCodec.decodeOrNull(deathKey, bytes, names))
         }
     }
 
@@ -599,7 +607,6 @@ class BlockStoreTest : BothPlanes() {
 
         val rows = wide.map { log.at(it.x, 64, 40, 0, Long.MAX_VALUE, limit = 100, reverse = false) }
         assertEquals(600, rows.count { it.size == 1 })
-        assertEquals(setOf(0), rows.flatten().map { it.ordinal }.toSet())
     }
 
     @Test

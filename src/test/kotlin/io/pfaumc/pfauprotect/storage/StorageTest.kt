@@ -447,11 +447,9 @@ class StorageTest : OneLedger() {
         assertNull(get(here))
     }
 
-    // An explosion clears a few thousand positions in one event, on the thread ticking the region, so
-    // it asks about the whole set at once and clears it in one write rather than a trip through JNI
-    // per position.
+    // An explosion asks about a few thousand positions in one event and clears them together.
     @Test
-    fun `a whole set of positions is asked and cleared in one call`() {
+    fun `a set of written positions answers only those holding a form and clears only those named`() {
         val here = WorldBlock(world, 1, 2, 3)
         val next = WorldBlock(world, 2, 2, 3)
         val bare = WorldBlock(world, 3, 2, 3)
@@ -482,13 +480,17 @@ class StorageTest : OneLedger() {
         val world = UUID.randomUUID()
         val owner = UUID.randomUUID()
         log.setOwnerAt(world, 1, 2, 3, owner)
+        log.drain()
         assertNull(log.formAt(WorldBlock(world, 1, 2, 3)))
 
         log.setFormAt(WorldBlock(world, 1, 2, 3), pickaxe)
+        log.drain()
         assertEquals(owner, log.ownerAt(world, 1, 2, 3))
 
         log.clearFormAt(WorldBlock(world, 1, 2, 3))
+        log.drain()
         assertEquals(owner, log.ownerAt(world, 1, 2, 3))
+        assertNull(log.formAt(WorldBlock(world, 1, 2, 3)))
     }
 
     @Test
@@ -543,6 +545,8 @@ class StorageTest : OneLedger() {
 
     @Test
     fun `region entries cover the block box and nothing else`() {
+        log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, Container(world, 200, 64, -200, 0), cobblestone, null, 7, T0 + 15))
+        log.drain()
         val inBox = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE).entries
         assertEquals(listOf(32, -5, 1, -3), inBox.map { it.qty })
         assertTrue(inBox.all { it.holder is Container })

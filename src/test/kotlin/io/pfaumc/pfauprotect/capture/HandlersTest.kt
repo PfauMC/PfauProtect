@@ -18,8 +18,10 @@ class HandlersTest {
         "BlockDestructionListener.onTouch",
     )
 
-    private fun listeners(): List<Class<*>> {
-        val path = "io/pfaumc/pfauprotect/capture"
+    // Attribution hears the same player actions the capture writes, and a refused one names nobody.
+    private fun listeners(): List<Class<*>> = listOf("capture", "attribution").flatMap { listeners("io/pfaumc/pfauprotect/$it") }
+
+    private fun listeners(path: String): List<Class<*>> {
         val loader = javaClass.classLoader
         return loader.getResources(path).toList()
             .filter { it.protocol == "file" }

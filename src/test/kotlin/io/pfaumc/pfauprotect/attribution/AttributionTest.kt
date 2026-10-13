@@ -303,12 +303,13 @@ class AttributionTest : BothPlanes() {
         assertEquals(alice, attribution.supportRemoverAt(at(5, 65, 5))?.actor)
     }
 
+    // The newer note is on the face scanned first, so taking the last match in scan order answers wrong.
     @Test
     fun `the most recent removal of a ring is the one that answers`() {
-        attribution.removed(at(6, 65, 5), bob)
+        attribution.removed(at(5, 64, 5), bob)
 
         clock += 10
-        attribution.removed(at(5, 64, 5), alice)
+        attribution.removed(at(6, 65, 5), alice)
 
         assertEquals(alice, attribution.supportRemoverAt(at(5, 65, 5))?.actor)
     }
@@ -364,6 +365,7 @@ class AttributionTest : BothPlanes() {
         val entity = UUID.randomUUID()
         attribution.placed(here, TNT, alice)
         attribution.removed(here, alice)
+        attribution.killed(here, alice)
         attribution.tookOff(entity, Falling(here, SAND, null))
 
         attribution.sweep()
@@ -371,12 +373,17 @@ class AttributionTest : BothPlanes() {
 
         clock += SUPPORT_MILLIS + 1
         attribution.sweep()
-        assertNull(attribution.supportRemoverAt(at(11, 64, 10)))
-        assertEquals(alice, attribution.placerAt(here, TNT)?.actor)
+        asOf(T0) {
+            assertNull(attribution.supportRemoverAt(at(11, 64, 10)))
+            assertEquals(alice, attribution.placerAt(here, TNT)?.actor)
+        }
 
         clock += NOTE_MILLIS + 1
         attribution.sweep()
-        assertNull(attribution.placerAt(here, TNT))
+        asOf(T0) {
+            assertNull(attribution.placerAt(here, TNT))
+            assertEquals(alice, attribution.killerNear(here, 1)?.actor)
+        }
         assertEquals(Falling(here, SAND, null), attribution.landed(entity))
 
         attribution.tookOff(entity, Falling(here, SAND, null))
@@ -386,6 +393,7 @@ class AttributionTest : BothPlanes() {
             assertNull(attribution.placerAt(here, TNT))
             assertNull(attribution.removerAt(here))
             assertNull(attribution.landed(entity))
+            assertNull(attribution.killerNear(here, 1))
         }
     }
 
@@ -394,7 +402,7 @@ class AttributionTest : BothPlanes() {
         val spawn = at(0, 64, 0)
         attribution.placed(at(0, 66, 0), STONE, alice)
         clock += 1
-        attribution.placed(at(3, 65, -1), STONE, bob)
+        attribution.placed(at(-3, 65, -1), STONE, bob)
 
         // Whatever block it was and wherever in the shape it stood: the last one placed completes it.
         assertEquals(bob, attribution.builderNear(spawn, 3)?.actor)
@@ -405,22 +413,6 @@ class AttributionTest : BothPlanes() {
 
         clock += NOTE_MILLIS + 1
         assertNull(attribution.builderNear(spawn, 3))
-    }
-
-    @Test
-    fun `an entity carries the player it came from until it is gone`() {
-        val origins = EntityOrigins { clock }
-        val wither = UUID.randomUUID()
-
-        assertNull(origins.summonerOf(wither))
-
-        origins.appeared(wither, alice)
-        assertEquals(alice, origins.summonerOf(wither)?.actor)
-        // Nothing here is witnessed: the block event that reads it named nobody at all.
-        assertEquals(Confidence.INFERRED, origins.summonerOf(wither)?.confidence)
-
-        origins.gone(wither)
-        assertNull(origins.summonerOf(wither))
     }
 
     // An unloaded entity comes back out of the region file with the same id, and a crystal is taken out
@@ -436,7 +428,8 @@ class AttributionTest : BothPlanes() {
 
         listener.onRemove(EntityRemoveEvent(golem, EntityRemoveEvent.Cause.UNLOAD))
         listener.onRemove(EntityRemoveEvent(crystal, EntityRemoveEvent.Cause.EXPLODE))
-        assertEquals(alice, origins.summonerOf(golem.uniqueId)?.actor)
+        // Nothing here is witnessed: the block event that reads it named nobody at all.
+        assertEquals(Attributed(alice, Confidence.INFERRED), origins.summonerOf(golem.uniqueId))
         assertEquals(alice, origins.summonerOf(crystal.uniqueId)?.actor)
 
         listener.onRemove(EntityRemoveEvent(golem, EntityRemoveEvent.Cause.DEATH))

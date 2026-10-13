@@ -179,10 +179,11 @@ class PlaneSyncTest : BothPlanes() {
         assertEquals(2, cycle.checked)
     }
 
+    // The item writer can run ahead of the block writer: a fresh posting over a block row that is old.
     @Test
-    fun `a position touched inside the settle window is left for a later pass`() {
+    fun `a posting made inside the settle window is left for a later pass`() {
         heldAt(5, 64, 5, stoneForm, ts = now)
-        standAndFall(5, 64, 5, ts = now)
+        standAndFall(5, 64, 5)
         drainBoth()
 
         val settling = assertPlanesAgree(now)

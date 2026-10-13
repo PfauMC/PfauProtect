@@ -92,8 +92,8 @@ class RollbackTest : BothPlanes() {
     fun `blocks are compared and not whole states`() {
         val fence = step(AIR, "minecraft:oak_fence[east=false,north=false,south=false,waterlogged=false,west=false]")
         assertSame(fence, settle("minecraft:oak_fence[east=true,north=false,south=false,waterlogged=false,west=false]", listOf(fence)).back)
-        val opened = step("minecraft:oak_door[open=false]", "minecraft:oak_door[open=true]")
-        assertSame(opened, settle("minecraft:oak_door[open=true]", listOf(opened)).back)
+        val opened = step("minecraft:oak_door[open=false,powered=false]", "minecraft:oak_door[open=true,powered=false]")
+        assertSame(opened, settle("minecraft:oak_door[open=true,powered=true]", listOf(opened)).back)
     }
 
     // A plank burnt out and lava ran into the hole: the lava wrote no row and goes when its source does,
@@ -391,6 +391,7 @@ class RollbackTest : BothPlanes() {
         val plain = around(rollbackFilter())
         assertEquals(listOf(STONE, AIR), steps(plain).map { it.after })
         assertEquals(STONE, settle(STONE, steps(plain)).back?.before)
+        assertEquals(emptyList<PositionPlan>(), positions(around(rollbackFilter(bob))), "bob's only row is the rollback")
         val undo = around(rollbackFilter(causes = Action.ROLLBACK.causes))
         assertEquals(listOf(STONE), steps(undo).map { it.after }, "only the rollback")
     }
@@ -538,6 +539,7 @@ class RollbackTest : BothPlanes() {
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 0), diamond, null, 7, T0))
         shared.drain()
         val theft = shared.holderEntries(chest, 0, Long.MAX_VALUE).single()
+        assertEquals(listOf(7), positions(around(rollbackFilter())).flatMap { p -> p.refills.map { it.qty } })
         shared.submit(Transfer(Cause.ROLLBACK, Void, chest, diamond, null, 7, T0 + 10, reverts = listOf(theft.ref)))
         shared.drain()
 
@@ -558,7 +560,7 @@ class RollbackTest : BothPlanes() {
         shared.drain()
 
         val planned = around(rollbackFilter(causes = Action.ROLLBACK.causes))
-        assertEquals(listOf(-5, 5), planned.chunks.single().positions.single().refills.map { it.qty })
+        assertEquals(listOf(-5, 5), planned.chunks.single().positions.single().refills.map { it.qty }.sorted())
         val plain = around(rollbackFilter())
         assertTrue(plain.chunks.isEmpty(), "a rollback's rows are not touched unless named")
     }

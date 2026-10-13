@@ -100,13 +100,13 @@ class ReconcileTest : OneLedger() {
     // balance has to gather armour, cursor and ender chest as well as the bag.
     @Test
     fun `the balance gathers every kind of slot the player owns`() {
-        move(Cause.PICKUP, ItemEntityRef(UUID.randomUUID()), PlayerInv(steve, 0), stone, 1)
-        move(Cause.EQUIP_ARMOR, PlayerInv(steve, 0), PlayerEquip(steve, 38), stone, 1)
-        move(Cause.CURSOR_TAKE, PlayerEquip(steve, 38), PlayerCursor(steve), stone, 1)
+        move(Cause.PICKUP, ItemEntityRef(UUID.randomUUID()), PlayerInv(steve, 0), stone, 4)
+        move(Cause.EQUIP_ARMOR, PlayerInv(steve, 0), PlayerEquip(steve, 38), stone, 3)
+        move(Cause.CURSOR_TAKE, PlayerEquip(steve, 38), PlayerCursor(steve), stone, 2)
         move(Cause.CONTAINER_ADD, PlayerCursor(steve), PlayerEnder(steve, 2), stone, 1)
         log.drain()
 
-        assertEquals(emptyList<Mismatch>(), reconcile.compare(steve, held(stone to 1)))
-        assertEquals(1, reconcile.compare(steve, held()).single().ledger)
+        assertEquals(emptyList<Mismatch>(), reconcile.compare(steve, held(stone to 4)))
+        assertEquals(4, reconcile.compare(steve, held()).single().ledger)
     }
 }

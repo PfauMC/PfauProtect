@@ -130,12 +130,13 @@ class TextsCoverageTest {
 
     // Filled in with a phrase built in a variable, whose words the translation needs and a number cannot
     // stand in for; a live run in Russian reads them.
-    private val COMPOSED = listOf("  would swap back ", "  swapping back ")
+    private val COMPOSED = listOf("  would swap back ", "  swapping back ", "Purged ", "A purge would delete ")
 
     // What is left once names, ids, causes, commands and parameters are taken out: a Latin word is English.
     private fun english(line: String): Boolean {
         val rest = line
             .replace(Regex("""minecraft:[a-z0-9_:/.\[\]=,-]+"""), " ")
+            .replace(Regex("""\b[a-z]+\.yml\b"""), " ")
             .replace(Regex("""/pp( [a-z]+)?"""), " ")
             .replace(Regex("""/\S+"""), " ")
             .replace(Regex("""\b[a-z0-9]+(_[a-z0-9]+)+\b"""), " ")

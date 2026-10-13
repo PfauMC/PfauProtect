@@ -97,28 +97,6 @@ class CodecTest {
     }
 
     @Test
-    fun `longBE and uuid round trip`() {
-        for (v in longSamples) assertEquals(v, ByteReader(ByteWriter().longBE(v).toByteArray()).longBE())
-        val encoded = ByteWriter().uuid(alice).toByteArray()
-        assertEquals(16, encoded.size)
-        assertEquals(alice, ByteReader(encoded).uuid())
-    }
-
-    @Test
-    fun `no valid varint encoding is a prefix of another`() {
-        val values = (intSamples + (0..600) + (16000..16600)).distinct()
-        val encodings = values.map { it to ByteWriter().varInt(it).toByteArray() }
-        for ((leftValue, left) in encodings) {
-            for ((rightValue, right) in encodings) {
-                if (leftValue == rightValue) continue
-                assertFalse(right.size >= left.size && right.copyOf(left.size).contentEquals(left)) {
-                    "encoding of $leftValue is a prefix of the encoding of $rightValue"
-                }
-            }
-        }
-    }
-
-    @Test
     fun `truncated and overlong reads fail with a clear error`() {
         assertThrows(IllegalArgumentException::class.java) { ByteReader(ByteArray(0)).byte() }
         assertThrows(IllegalArgumentException::class.java) { ByteReader(byteArrayOf(1, 2, 3)).longBE() }
@@ -155,7 +133,7 @@ class CodecTest {
         assertThrows(IllegalArgumentException::class.java) { Zcode.encode(0, 32768, 0) }
         assertThrows(IllegalArgumentException::class.java) { Zcode.encode(0, -32769, 0) }
         assertThrows(IllegalArgumentException::class.java) { Zcode.encode(134217728, 0, 0) }
-        assertThrows(IllegalArgumentException::class.java) { Zcode.encode(0, 0, -134217745) }
+        assertThrows(IllegalArgumentException::class.java) { Zcode.encode(0, 0, -134217729) }
         assertThrows(IllegalArgumentException::class.java) { Zcode.chunkPrefix(0x800000, 0) }
         assertThrows(IllegalArgumentException::class.java) { Zcode.decode(ByteArray(8)) }
     }

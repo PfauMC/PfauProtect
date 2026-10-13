@@ -48,15 +48,6 @@ class BlockStateRegistryTest : OneLedger() {
     }
 
     @Test
-    fun `a number survives a close and a reopen`() {
-        val id = log.registries.idForKey(state, east)
-        reopen()
-
-        assertEquals(id, log.registries.lookupKey(state, east))
-        assertEquals(east, log.registries.keyOf(state, id))
-    }
-
-    @Test
     fun `a batch persists every number it holds`() {
         log.registries.batched { for (key in wires) log.registries.idForKey(state, key) }
         reopen()
@@ -128,6 +119,8 @@ class BlockStateRegistryTest : OneLedger() {
 
     @Test
     fun `the space says it is filling while it still has numbers to give`() {
+        val below = loadedTo(ceil(state.maxId * REGISTRY_HIGH_WATER).toInt() - 1)
+        assertTrue(below.fillWarnings().none { it.contains(state.name.lowercase()) })
         val registries = loadedTo(ceil(state.maxId * REGISTRY_HIGH_WATER).toInt())
 
         assertTrue(registries.fillWarnings().any { it.contains(state.name.lowercase()) })

@@ -664,7 +664,8 @@ class PfauProtectPlugin : JavaPlugin() {
             sender.say("Purge refused: a rollback is running.")
             return 0
         }
-        sender.say(if (confirm) "Purging everything older than $age; this walks the whole journal." else "Counting what a purge of everything older than $age would delete.")
+        if (confirm) sender.say("Purging everything older than $age; this walks the whole journal.")
+        else sender.say("Counting what a purge of everything older than $age would delete.")
         offThread(sender, "the purge failed", "The purge failed; the server log has the details.") {
             val cutoff = System.currentTimeMillis() - seconds * 1000
             running.drainAll()
@@ -677,7 +678,8 @@ class PfauProtectPlugin : JavaPlugin() {
                 entities += e
             }
             val counts = "$entries item rows, $rows block rows, $entities entity rows; $openings opening balances"
-            sender.say(if (confirm) "Purged $counts written." else "A purge would delete $counts to write. /pp purge $age confirm runs it.")
+            if (confirm) sender.say("Purged $counts written.")
+            else sender.say("A purge would delete $counts to write. /pp purge $age confirm runs it.")
         }
     }
 
@@ -737,7 +739,8 @@ class PfauProtectPlugin : JavaPlugin() {
             sender.say("  unexplained since the last report: ${running.uncovered.peek() ?: "nothing"}")
             for (warning in running.ledger.registries.fillWarnings()) sender.say("  $warning")
             val since = running.rollbacks.runningSince()
-            sender.say("  rollback: " + if (since == null) "none running" else "one running for ${(System.currentTimeMillis() - since) / 1000} s")
+            if (since == null) sender.say("  rollback: none running")
+            else sender.say("  rollback: one running for ${(System.currentTimeMillis() - since) / 1000} s")
         }
     }
 

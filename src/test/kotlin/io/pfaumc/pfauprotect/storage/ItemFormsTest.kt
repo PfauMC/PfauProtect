@@ -146,18 +146,28 @@ class ItemFormsTest {
         set(DataComponents.CUSTOM_NAME, Component.literal("Kartoffel"))
     }
 
+    // The unknown component goes first, so a decoder that misreads its length or stops at it loses what follows.
     @Test
     fun `unknown component is skipped by its length`() {
+        val named = ItemStack(Items.DIAMOND).apply {
+            set(DataComponents.CUSTOM_NAME, Component.literal("Kartoffel"))
+            remove(DataComponents.RARITY)
+        }
+        val known = ByteReader(codec.encode(named).form)
+        val item = known.varInt()
+        val adds = known.varInt()
+        val removes = known.varInt()
         val form = ByteWriter()
-            .varInt(registries.idForKey(RegistryNamespace.ITEM_TYPE, "minecraft:diamond"))
-            .varInt(1)
-            .varInt(0)
+            .varInt(item)
+            .varInt(adds + 1)
+            .varInt(removes)
             .varInt(999_999)
             .varInt(3)
             .bytes(byteArrayOf(1, 2, 3))
+            .bytes(known.bytes(known.remaining))
             .toByteArray()
 
-        assertTrue(ItemStack.isSameItemSameComponents(ItemStack(Items.DIAMOND), codec.decode(form, 1, null)))
+        assertTrue(ItemStack.isSameItemSameComponents(named, codec.decode(form, 1, null)))
     }
 
     private fun assertRoundTrip(stack: ItemStack) {

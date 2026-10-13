@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
+
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.disabledPlugin
 import io.pfaumc.pfauprotect.NoPlacedForms
 import io.pfaumc.pfauprotect.model.Cause
@@ -22,12 +24,14 @@ import org.bukkit.event.player.PlayerDropItemEvent
 import org.bukkit.inventory.InventoryView
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.extension.ExtendWith
 import java.util.UUID
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
 // A player who leaves holding something on the cursor has it dropped for them after the quit event.
 // By then the pass that counts a player's slots is gone, so the drop has to be written where it is
 // seen. A listener holding no line of reference for the player is exactly that state.
+@ExtendWith(Vanilla::class)
 class DisconnectDropTest {
     private val player = UUID.fromString("00000000-0000-4000-8000-0000000000d1")
     private val dropped = UUID.fromString("00000000-0000-4000-8000-0000000000d2")

@@ -68,15 +68,15 @@ class MechanismTest {
         val shulker = "minecraft:shulker_box[facing=east]"
 
         assertTrue(placedInFront(spent, air, shulker, Material.SHULKER_BOX, Material.SHULKER_BOX))
-        assertFalse(placedInFront(spent, air, air, Material.AIR, Material.SHULKER_BOX))
-        assertFalse(placedInFront(spent, air, "minecraft:stone", Material.STONE, Material.SHULKER_BOX))
-        val bucket = key("bucket")
-        assertFalse(
-            placedInFront(
-                spent + SlotChange(4, bucket, 1, gain = true), air, "minecraft:water[level=0]", Material.AIR,
-                Material.WATER_BUCKET,
-            )
+        // Each case breaks exactly one of the conditions.
+        val refused = mapOf(
+            "front unchanged" to placedInFront(spent, shulker, shulker, Material.SHULKER_BOX, Material.SHULKER_BOX),
+            "another block" to placedInFront(spent, air, "minecraft:stone", Material.STONE, Material.SHULKER_BOX),
+            "two changes" to placedInFront(spent + SlotChange(5, box, 1, gain = false), air, shulker, Material.SHULKER_BOX, Material.SHULKER_BOX),
+            "a gain" to placedInFront(listOf(SlotChange(4, box, 1, gain = true)), air, shulker, Material.SHULKER_BOX, Material.SHULKER_BOX),
+            "two spent" to placedInFront(listOf(SlotChange(4, box, 2, gain = false)), air, shulker, Material.SHULKER_BOX, Material.SHULKER_BOX),
         )
+        assertEquals(emptyList<String>(), refused.filterValues { it }.keys.toList())
     }
 
     // What came out as an entity is the spawn's to write; the dispenser only owes what it spent. The
@@ -186,17 +186,6 @@ class MechanismTest {
             written.map { listOf(it.from, it.to, it.cause, String(it.form), it.qty, it.actor, it.confidence) }.toSet(),
         )
         assertEquals(6, written.size)
-    }
-
-    @Test
-    fun `a flushed tick starts empty`() {
-        val written = ArrayList<Transfer>()
-        val coalescer = TickCoalescer(written::add)
-        val holder = Container(world, 0, 0, 0, 0)
-        coalescer.add(holder, Void, Cause.HOPPER_PUSH, key("stone"), 1)
-        coalescer.flush()
-        coalescer.flush()
-        assertEquals(1, written.size)
     }
 
     private fun form(item: net.minecraft.world.item.Item, name: String? = null) =

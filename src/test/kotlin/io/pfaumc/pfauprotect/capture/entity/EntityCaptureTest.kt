@@ -56,6 +56,10 @@ import net.minecraft.world.entity.LivingEntity as NmsLivingEntity
 @ExtendWith(Vanilla::class)
 class EntityCaptureTest : BothPlanes() {
     private val tasks = ArrayList<() -> Unit>()
+
+    private fun runTasks() {
+        while (tasks.isNotEmpty()) tasks.removeFirst()()
+    }
     private val summoned = EntityOrigins()
 
     private fun capture() = EntityCapture(
@@ -118,9 +122,12 @@ class EntityCaptureTest : BothPlanes() {
     @Test
     fun `an entity's removal is written once however often it is heard`() {
         val capture = capture()
-        val framed = UUID.randomUUID()
-        assertTrue(capture.firstSighting(framed, now))
-        assertFalse(capture.firstSighting(framed, now + 1))
+        val mob = dying(ground, 0f) { EntityDamageEvent(it, DamageCause.STARVATION, stub(DamageSource::class.java), 1.0) }
+        summoned.appeared(mob.uniqueId, alice)
+        repeat(2) { capture.onDeath(EntityDeathEvent(mob, stub(DamageSource::class.java), mutableListOf())) }
+        runTasks()
+        log.drain()
+        assertEquals(1, log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.count { it.uuid == mob.uniqueId })
 
         val takenAway = UUID.randomUUID()
         capture.forget(takenAway)
@@ -143,8 +150,7 @@ class EntityCaptureTest : BothPlanes() {
         ))
         fun die(victim: Player) {
             capture.onPlayerDeath(PlayerDeathEvent(victim, stub(DamageSource::class.java), mutableListOf(), 0, null, false))
-            tasks.forEach { it() }
-            tasks.clear()
+            runTasks()
             log.drain()
         }
 
@@ -170,7 +176,7 @@ class EntityCaptureTest : BothPlanes() {
         val capture = capture()
         val mob = dying(ground, fell, damage)
         capture.onDeath(EntityDeathEvent(mob, stub(DamageSource::class.java), mutableListOf()))
-        while (tasks.isNotEmpty()) tasks.removeFirst()()
+        runTasks()
         log.drain()
         return log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.single { it.uuid == mob.uniqueId }
     }
@@ -188,13 +194,25 @@ class EntityCaptureTest : BothPlanes() {
         assertEquals(Confidence.NEARBY, row.confidence)
     }
 
+    // What a rollback brings the mob back from; its riders are entities of their own.
     @Test
-    fun `a mob a witness brought in that dies of nothing anybody did names nobody`() {
-        val row = mobDies({ mob ->
-            summoned.appeared(mob.uniqueId, alice, Confidence.NEARBY)
+    fun `a removed mob keeps its whole NBT without its passengers`() {
+        val row = mobDies({ EntityDamageEvent(it, DamageCause.FALL, stub(DamageSource::class.java), 20.0) }, fell = 20f)
+        val saved = nbtOf(shared.payload(row.payloadBefore!!)!!)
+        assertEquals("minecraft:cow", saved.getStringOr("id", ""))
+        assertFalse(saved.contains("Passengers"))
+    }
+
+    @Test
+    fun `a mob brought in that dies of nothing anybody did names its summoner and not a witness`() {
+        fun diesOf(confidence: Confidence) = mobDies({ mob ->
+            summoned.appeared(mob.uniqueId, alice, confidence)
             EntityDamageEvent(mob, DamageCause.STARVATION, stub(DamageSource::class.java), 1.0)
         })
-        assertNull(row.actor)
+        val summoner = diesOf(Confidence.FACT)
+        assertEquals(alice, summoner.actor)
+        assertEquals(Confidence.INFERRED, summoner.confidence)
+        assertNull(diesOf(Confidence.NEARBY).actor)
     }
 
     @Test
@@ -216,6 +234,7 @@ private class Saved(type: NmsEntityType<out ArmorStand>, level: Level) : ArmorSt
 
     override fun saveAsPassenger(output: ValueOutput, includeAll: Boolean, includeNonSaveable: Boolean, forceSerialization: Boolean): Boolean {
         output.putString("id", "minecraft:cow")
+        output.child("Passengers").putString("id", "minecraft:pig")
         return true
     }
 }
