@@ -8,6 +8,7 @@ import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.attribution.witnessed
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.attribution.culprit
+import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.attribution.typeOf
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
@@ -420,7 +421,7 @@ class EntityCapture(
         // from under Alice's mob is Bob's doing. Only where none is found does the death fall to her.
         val around = aroundOf(entity, entity.lastDamageCause)
         val summoner = entities.summonerOf(entity.uniqueId)
-        val culprit = summoner?.let { Culprit(found.cause, it.copy(confidence = Confidence.INFERRED)) } ?: found
+        val culprit = summoner?.let { Culprit(found.cause, it.inferred()) } ?: found
         val touched = entity.persistentDataContainer.has(TOUCHED)
         // Crammed to death is a crowd by definition, however few of them the cramming has left by the
         // time this one goes.
@@ -664,7 +665,7 @@ class EntityCapture(
             if (around.isEmpty()) return@later write(culprit.by)
             offThread {
                 val changed = around.firstNotNullOfOrNull { attribution.journalRemoverAt(it, Settings.freshMillis) }
-                if (changed != null) write(changed.copy(confidence = Confidence.INFERRED)) else if (worth) write(culprit.by)
+                if (changed != null) write(changed.inferred()) else if (worth) write(culprit.by)
             }
         }
     }
@@ -706,7 +707,7 @@ class EntityCapture(
                     ?: attribution.placerAt(at, if (damage.cause == DamageCause.LAVA) "minecraft:lava" else "minecraft:fire")
             else -> null
         }
-        return Culprit(own, by?.copy(confidence = Confidence.INFERRED))
+        return Culprit(own, by?.inferred())
     }
 
     /**
