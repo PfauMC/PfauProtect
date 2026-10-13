@@ -141,7 +141,7 @@ class WorldItemListener(
     private val pending: TickCoalescer,
     private val origins: SpawnOrigins,
     private val capture: ContainerCaptureListener,
-    private val attribution: Attribution? = null,
+    private val attribution: Attribution,
     private val entities: EntityOrigins = EntityOrigins(),
 ) : Listener {
 
@@ -193,7 +193,7 @@ class WorldItemListener(
         litBy(source)?.let { return it.uniqueId }
         if (source.type == EntityType.TNT) {
             val at = positionOf(source.location.block)
-            attribution?.placerAt(at, BlockDestructionListener.TNT)?.let { return it.actor }
+            attribution.placerAt(at, BlockDestructionListener.TNT)?.let { return it.actor }
         }
         return entities.summonerOf(firedBy(source).uniqueId).culprit()
     }

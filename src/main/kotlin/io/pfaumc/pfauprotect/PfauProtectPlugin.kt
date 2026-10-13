@@ -336,7 +336,7 @@ class PfauProtectPlugin : JavaPlugin() {
             origins.sweep()
             attribution.sweepRemovals()
             mechanisms.flush()
-            destruction.settleGrowth()
+            destruction.settle()
         }, 1, 1)
         fun every(period: Long, unit: TimeUnit = TimeUnit.MINUTES, task: () -> Unit) =
             server.asyncScheduler.runAtFixedRate(this, { task() }, period, period, unit)

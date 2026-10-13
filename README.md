@@ -80,7 +80,7 @@ PfauProtect записывает, куда уходит каждый предм�
 | `/pp rollback [параметры]`, `/pp rb` | предпросмотр отката | `rollback` |
 | `/pp apply` | выполнить предпросмотренный откат | `rollback` |
 | `/pp cancel` | сбросить предпросмотр или остановить идущий откат | `rollback` |
-| `/pp chat [параметры]` | чат, команды, входы и выходы | `lookup` |
+| `/pp chat [параметры]` | чат, команды, входы и выходы игроков, без IP-адресов | `lookup` |
 | `/pp status` | размер баз, очереди записи, необъяснённое за сутки | `status` |
 | `/pp verify [recent]`, `/pp v` | запустить самопроверки сейчас; `recent` судит и только что изменённое | `verify` |
 | `/pp reconcile [игрок]`, `/pp r` | сверить инвентарь игрока с журналом, по умолчанию свой | `reconcile` |
@@ -171,12 +171,8 @@ PfauProtect записывает, куда уходит каждый предм�
 
 ## Настройки
 
-`plugins/PfauProtect/config.yml` появляется при первом запуске; значения по умолчанию и объяснение каждого
-ключа — в нём самом ([`src/main/resources/config.yml`](src/main/resources/config.yml)).
-
-Настройки читаются при включении плагина.
-
-Журнал чата хранит сообщения, команды, входы и выходы игроков, без IP-адресов.
+`plugins/PfauProtect/config.yml` появляется при первом запуске и читается при включении плагина; значения по
+умолчанию и объяснение каждого ключа — в нём самом ([`src/main/resources/config.yml`](src/main/resources/config.yml)).
 
 ### Очистка истории
 
@@ -230,7 +226,7 @@ api.logChange(player.uniqueId, block, before, after)
 ./gradlew build                                            # сборка, тесты и jar в build/libs/
 ./gradlew test                                             # все тесты
 ./gradlew test --tests 'io.pfaumc.pfauprotect.storage.StorageTest'   # один класс
-scripts/test-server.sh start|stop|logs                     # тестовый сервер Canvas в Docker
+scripts/test-server.sh start|stop|logs|cmd                 # тестовый сервер Canvas в Docker
 ```
 
 - Стек: Kotlin 2.4, Paper/Folia API через dev-bundle Canvas, RocksDB.

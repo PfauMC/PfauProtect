@@ -189,11 +189,9 @@ class Attribution(
     }
 
     /**
-     * Who put down the thing standing here: the tracker covers the ordinary delay between a block being
-     * noted and being collected, the journal the horizon between a block being placed and being set off
-     * a week later, at the price of a seek. Asked about one position per event, never once per destroyed
-     * block of an explosion. `renote` copies a journal find back into the tracker, so the chain that
-     * carries on from this position has a fresh note to find.
+     * Who put down the thing standing here, by the tracker and then the journal. `renote` copies a
+     * journal find back into the tracker, so the chain that carries on from this position has a fresh
+     * note to find.
      */
     fun placerOrJournal(
         at: WorldBlock,
@@ -337,13 +335,13 @@ class Attribution(
         .maxByOrNull { it.at }
 }
 
-private interface Stamped {
+internal interface Stamped {
     val at: Long
 }
 
 // Each table states its window once: every read refuses a note older than it, and the sweep, which only
 // reclaims heap, drops the same notes.
-private class Notes<K : Any, V : Stamped>(private val window: Long, private val now: () -> Long) {
+internal class Notes<K : Any, V : Stamped>(private val window: Long, private val now: () -> Long) {
     private val notes = ConcurrentHashMap<K, V>()
 
     operator fun set(key: K, note: V) {
@@ -380,9 +378,9 @@ internal const val ORIGIN_MILLIS = 6 * 60 * 60 * 1000L
  * nothing for this rung to fall back on.
  */
 class EntityOrigins(private val now: () -> Long = System::currentTimeMillis) {
-    private class Note(val actor: UUID, val at: Long, val confidence: Confidence)
+    private class Note(val actor: UUID, override val at: Long, val confidence: Confidence) : Stamped
 
-    private val origins = ConcurrentHashMap<UUID, Note>()
+    private val origins = Notes<UUID, Note>(ORIGIN_MILLIS, now)
 
     // A dispenser set off by nobody but a witness hands the witness on as a witness.
     fun appeared(entity: UUID, actor: UUID, confidence: Confidence = Confidence.INFERRED) {
@@ -395,10 +393,7 @@ class EntityOrigins(private val now: () -> Long = System::currentTimeMillis) {
 
     /** Worked out from what a player did, never witnessed on the event that destroyed the block. */
     fun summonerOf(entity: UUID): Attributed? =
-        origins[entity]?.takeIf { now() - it.at <= ORIGIN_MILLIS }?.let { Attributed(it.actor, it.confidence) }
+        origins[entity]?.let { Attributed(it.actor, it.confidence) }
 
-    fun sweep() {
-        val cutoff = now() - ORIGIN_MILLIS
-        origins.values.removeIf { it.at < cutoff }
-    }
+    fun sweep() = origins.sweep()
 }

@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.capture.block
 import io.pfaumc.pfauprotect.attribution.Attribution
+import io.pfaumc.pfauprotect.attribution.LIQUIDS
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.model.Cause
@@ -99,7 +100,6 @@ internal fun brokenAfter(
     return if (below.`is`(BlockTags.ICE_MELTS_WHEN_DESTROYED_ABOVE) || below.liquid()) IceBlock.meltsInto() else removed
 }
 
-/** Where the other half of a double chest stands; null for a chest standing alone. */
 internal fun connectedChestPos(pos: BlockPos, state: NmsBlockState): BlockPos? {
     if (state.block !is ChestBlock || state.getValue(ChestBlock.TYPE) == ChestType.SINGLE) return null
     return ChestBlock.getConnectedBlockPos(pos, state)
@@ -225,7 +225,9 @@ private const val POUR_SOURCES = 4
 
 private val POUR_FACES = listOf(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
 
-internal fun isLiquid(material: Material) = material == Material.WATER || material == Material.LAVA
+private val LIQUID_MATERIALS = LIQUIDS.mapTo(HashSet()) { Material.matchMaterial(it)!! }
+
+internal fun isLiquid(material: Material) = material in LIQUID_MATERIALS
 
 /**
  * The sources a liquid may be running from, nearest first. The walk steps through the same liquid,

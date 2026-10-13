@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.T0
+import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.ledgerEntry
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
@@ -44,7 +46,6 @@ internal class MemoryRegistryStore : RegistryStore {
 class CodecTest {
     private val registries = Registries(MemoryRegistryStore())
 
-    private val playerA = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
     private val playerB = UUID.fromString("00000000-0000-4000-8000-0000000000b2")
     private val entity = UUID.fromString("00000000-0000-4000-8000-0000000000c3")
     private val worldA = UUID.fromString("00000000-0000-4000-8000-0000000000d4")
@@ -97,9 +98,9 @@ class CodecTest {
     @Test
     fun `longBE and uuid round trip`() {
         for (v in longSamples) assertEquals(v, ByteReader(ByteWriter().longBE(v).toByteArray()).longBE())
-        val encoded = ByteWriter().uuid(playerA).toByteArray()
+        val encoded = ByteWriter().uuid(alice).toByteArray()
         assertEquals(16, encoded.size)
-        assertEquals(playerA, ByteReader(encoded).uuid())
+        assertEquals(alice, ByteReader(encoded).uuid())
     }
 
     @Test
@@ -172,8 +173,8 @@ class CodecTest {
     @Test
     fun `entry round trips through key and value`() {
         val holders = listOf(
-            PlayerInv(playerA, 17),
-            PlayerEquip(playerA, 3),
+            PlayerInv(alice, 17),
+            PlayerEquip(alice, 3),
             PlayerCursor(playerB),
             PlayerEnder(playerB, 26),
             Container(worldA, -1345, -61, 700, 5),
@@ -190,7 +191,7 @@ class CodecTest {
             for (counterparty in counterparties) {
                 val entry = LedgerEntry(
                     holder = holder,
-                    timestamp = 1_700_000_000_000L + seed,
+                    timestamp = T0 + seed,
                     txId = 900_000L + seed,
                     ordinal = (seed % (EntryCodec.MAX_ORDINAL + 1)).toInt(),
                     kind = if (seed % 3 == 0L) Kind.TRANSFER else Kind.MUTATE,
@@ -200,7 +201,7 @@ class CodecTest {
                     itemFormId = 1_000_000_000_000L + seed,
                     qty = if (seed % 2 == 0L) -64 else 3,
                     damage = if (seed % 4 == 0L) null else 231,
-                    actor = if (seed % 3 == 0L) playerA else null,
+                    actor = if (seed % 3 == 0L) alice else null,
                 )
                 val key = EntryCodec.key(entry.holder, entry.timestamp, entry.txId, entry.ordinal, registries)
                 val value = EntryCodec.value(entry, registries)
@@ -213,7 +214,7 @@ class CodecTest {
     @Test
     fun `ordinary entry header byte is zero`() {
         assertEquals(0x00, EntryCodec.header(Kind.TRANSFER, Confidence.FACT))
-        val value = EntryCodec.value(ledgerEntry(PlayerInv(playerA, 0), Void), registries)
+        val value = EntryCodec.value(ledgerEntry(PlayerInv(alice, 0), Void), registries)
         assertEquals(0x00, value[0].toInt())
         assertEquals(0x20, EntryCodec.header(Kind.TRANSFER, Confidence.INFERRED))
         assertEquals(0x40, EntryCodec.header(Kind.MUTATE, Confidence.FACT))
@@ -229,7 +230,7 @@ class CodecTest {
         val holder = Container(worldA, 4, 70, 9, 2)
         val key = EntryCodec.key(holder, 7L, 8L, 0, registries)
         for (confidence in Confidence.entries) {
-            val value = EntryCodec.value(ledgerEntry(holder, Void).copy(confidence = confidence, actor = playerA), registries)
+            val value = EntryCodec.value(ledgerEntry(holder, Void).copy(confidence = confidence, actor = alice), registries)
             assertEquals(confidence, EntryCodec.decodeOrNull(key, value, registries)!!.confidence)
         }
     }
@@ -239,11 +240,11 @@ class CodecTest {
     @Test
     fun `an actor is written only when present and leaves older rows readable`() {
         val holder = Container(worldA, 4, 70, 9, 2)
-        val withActor = ledgerEntry(holder, Void).copy(cause = Cause.LOOT_GENERATE, qty = 3, actor = playerA)
+        val withActor = ledgerEntry(holder, Void).copy(cause = Cause.LOOT_GENERATE, qty = 3, actor = alice)
         val key = EntryCodec.key(holder, 7L, 8L, 0, registries)
         val value = EntryCodec.value(withActor, registries)
         assertEquals(0x10, value[0].toInt() and 0x10)
-        assertEquals(playerA, EntryCodec.decodeOrNull(key, value, registries)!!.actor)
+        assertEquals(alice, EntryCodec.decodeOrNull(key, value, registries)!!.actor)
 
         val without = EntryCodec.value(withActor.copy(actor = null), registries)
         assertEquals(0x00, without[0].toInt() and 0x10)
@@ -253,7 +254,7 @@ class CodecTest {
 
     @Test
     fun `records of another version are skipped rather than decoded`() {
-        val holder = PlayerInv(playerA, 0)
+        val holder = PlayerInv(alice, 0)
         val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
         for (version in 1..7) {
             val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
@@ -264,7 +265,7 @@ class CodecTest {
 
     @Test
     fun `a record too short to read is skipped rather than throwing`() {
-        val holder = PlayerInv(playerA, 0)
+        val holder = PlayerInv(alice, 0)
         val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
         val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
         for (kept in 0 until value.size) {
@@ -281,7 +282,7 @@ class CodecTest {
     // scan of an older one. Throwing there would take the whole scan down over a label.
     @Test
     fun `a cause with no name in this build decodes rather than stopping the scan`() {
-        val holder = PlayerInv(playerA, 0)
+        val holder = PlayerInv(alice, 0)
         val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
         val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
         value[1] = 0xBE.toByte() // unused; pick another if a cause takes it
@@ -320,15 +321,15 @@ class CodecTest {
         )
 
         assertEquals(0, registries.id(RegistryNamespace.WORLD, worldA))
-        assertEquals(0, registries.id(RegistryNamespace.PLAYER, playerA))
+        assertEquals(0, registries.id(RegistryNamespace.PLAYER, alice))
         val stored = LedgerEntry(
             holder = Container(worldA, 100, 64, -200, 5),
-            timestamp = 1_700_000_000_000L,
+            timestamp = T0,
             txId = 7L,
             kind = Kind.TRANSFER,
             cause = Cause.CONTAINER_ADD,
             confidence = Confidence.FACT,
-            counterparty = PlayerInv(playerA, 9),
+            counterparty = PlayerInv(alice, 9),
             itemFormId = 300L,
             qty = -32,
             damage = null,
@@ -352,7 +353,7 @@ class CodecTest {
         // The same position as a counterparty: the world number is the same two fixed bytes in the
         // value as it is in the key, and the ordinal is the last byte of the key whatever the holder.
         val facingBack = stored.copy(
-            holder = PlayerInv(playerA, 9),
+            holder = PlayerInv(alice, 9),
             ordinal = 1,
             cause = Cause.CONTAINER_REMOVE,
             counterparty = Container(worldA, 100, 64, -200, 5),

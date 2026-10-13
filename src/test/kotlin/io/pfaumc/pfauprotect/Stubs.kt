@@ -32,8 +32,7 @@ internal fun disabledPlugin(): Plugin = stub(Plugin::class.java, mapOf("isEnable
 
 internal object NoPlacedForms : PlacedForms {
     override fun formAt(at: WorldBlock): ByteArray? = null
-    override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = emptyMap()
     override fun setFormAt(at: WorldBlock, form: ByteArray) = Unit
     override fun clearFormAt(at: WorldBlock) = Unit
-    override fun clearFormsAt(positions: List<WorldBlock>) = Unit
+    override fun takeFormsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = emptyMap()
 }

@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.capture.item
 
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.capture.block.Area as Box
 import java.util.UUID
 
 /**
@@ -9,21 +10,18 @@ import java.util.UUID
  * booking a birth nobody explained.
  */
 object CommandBirths {
-    class Area(
-        val world: UUID,
-        val minX: Int, val minY: Int, val minZ: Int,
-        val maxX: Int, val maxY: Int, val maxZ: Int,
-        val cause: Cause,
-        val actor: UUID?,
-    ) {
+    internal class Area(val box: Box, val cause: Cause, val actor: UUID?) {
+        val world: UUID = box.level.world.uid
+
         // A drop is thrown from the middle of its block and bounces, so a block's width of slack.
         fun holds(world: UUID, x: Double, y: Double, z: Double) = world == this.world &&
-            x >= minX - 1 && x <= maxX + 2 && y >= minY - 1 && y <= maxY + 2 && z >= minZ - 1 && z <= maxZ + 2
+            x >= box.minX - 1 && x <= box.maxX + 2 && y >= box.minY - 1 && y <= box.maxY + 2 &&
+            z >= box.minZ - 1 && z <= box.maxZ + 2
     }
 
     private val running = ThreadLocal<Area?>()
 
-    fun <T> during(area: Area, body: () -> T): T {
+    internal fun <T> during(area: Area, body: () -> T): T {
         val outer = running.get()
         running.set(area)
         try {
@@ -42,6 +40,7 @@ object CommandBirths {
      */
     fun writing(world: UUID, x: Int, y: Int, z: Int): Boolean {
         val area = running.get() ?: return false
-        return world == area.world && x in area.minX..area.maxX && y in area.minY..area.maxY && z in area.minZ..area.maxZ
+        val box = area.box
+        return world == area.world && x in box.minX..box.maxX && y in box.minY..box.maxY && z in box.minZ..box.maxZ
     }
 }

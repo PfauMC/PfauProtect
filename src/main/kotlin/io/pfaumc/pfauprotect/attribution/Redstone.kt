@@ -49,7 +49,6 @@ import org.bukkit.inventory.Inventory
 import org.bukkit.util.BoundingBox
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 // One step of a circuit: a repeater at full delay, a dispenser's own four ticks, a button held for a
@@ -81,13 +80,13 @@ internal const val PRESS_NANOS = 50_000_000L
  * as long as it ticks, which is the answer wanted for it: whoever started it.
  */
 class Energy(private val now: () -> Long = System::currentTimeMillis) {
-    private class Note(val by: Attributed, val at: Long)
+    private class Note(val by: Attributed, override val at: Long) : Stamped
 
     private companion object {
         val FRESHER = compareBy<Note> { it.at }.thenByDescending { it.by.confidence.id }
     }
 
-    private val notes = ConcurrentHashMap<WorldBlock, Note>()
+    private val notes = Notes<WorldBlock, Note>(ENERGY_MILLIS, now)
 
     // Raised before the note goes in, so a reader that sees the note sees the time too.
     private val latestNoteAt = AtomicLong(Long.MIN_VALUE / 2)
@@ -110,9 +109,8 @@ class Energy(private val now: () -> Long = System::currentTimeMillis) {
         if (idle(now)) return null
         var best: Note? = null
         for (centre in centres) {
-            for (dx in -reach..reach) for (dy in -reach..reach) for (dz in -reach..reach) {
-                val note = notes[centre.copy(x = centre.x + dx, y = centre.y + dy, z = centre.z + dz)] ?: continue
-                if (now - note.at > ENERGY_MILLIS) continue
+            for (at in cube(centre, reach)) {
+                val note = notes[at] ?: continue
                 if (best == null || FRESHER.compare(note, best) > 0) best = note
             }
         }
@@ -121,10 +119,7 @@ class Energy(private val now: () -> Long = System::currentTimeMillis) {
 
     fun near(at: WorldBlock, reach: Int = ENERGY_REACH): Attributed? = near(listOf(at), reach)
 
-    fun sweep() {
-        val now = now()
-        notes.values.removeIf { now - it.at > ENERGY_MILLIS }
-    }
+    fun sweep() = notes.sweep()
 }
 
 /**
@@ -234,20 +229,22 @@ internal fun Attributed.inferred(): Attributed =
  * fishing rod pulling it in, a cart or a boat shoved by hand. Refreshed by every new push.
  */
 class Nudges(private val now: () -> Long = System::currentTimeMillis) {
-    private class Note(val by: Attributed, val until: Long)
+    private class Note(val by: Attributed, override val at: Long) : Stamped
 
-    private val notes = ConcurrentHashMap<UUID, Note>()
+    // An entity is a vehicle or not for all its life, so its UUID only ever lands in one of the two.
+    private val others = Notes<UUID, Note>(NUDGE_MILLIS, now)
+    private val vehicles = Notes<UUID, Note>(VEHICLE_NUDGE_MILLIS, now)
 
     fun nudged(entity: Entity, by: Attributed) {
-        val window = if (entity is Minecart || entity is Boat) VEHICLE_NUDGE_MILLIS else NUDGE_MILLIS
-        notes[entity.uniqueId] = Note(by.inferred(), now() + window)
+        val notes = if (entity is Minecart || entity is Boat) vehicles else others
+        notes[entity.uniqueId] = Note(by.inferred(), now())
     }
 
-    fun of(entity: UUID): Attributed? = notes[entity]?.takeIf { now() <= it.until }?.by
+    fun of(entity: UUID): Attributed? = (vehicles[entity] ?: others[entity])?.by
 
     fun sweep() {
-        val now = now()
-        notes.values.removeIf { now > it.until }
+        others.sweep()
+        vehicles.sweep()
     }
 }
 

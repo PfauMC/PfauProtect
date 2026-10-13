@@ -9,8 +9,8 @@
 #   scripts/test-server.sh cmd "pp lookup player:SPY_me"   run a console command; the answer is in logs
 #
 # The console reads from a pipe, because RCON returns before an asynchronous command has answered and
-# every /pp lookup is asynchronous. RCON listens on 127.0.0.1:25575 only. online-mode is off so the bots of the two-player cases can
-# join with the same world and the same player ids as a real client.
+# every /pp lookup is asynchronous. RCON listens on 127.0.0.1:25575 only. online-mode is off so
+# offline-mode bot clients can join.
 set -eu
 cd "$(dirname "$0")/.."
 

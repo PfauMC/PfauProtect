@@ -3,7 +3,7 @@ import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
-import io.pfaumc.pfauprotect.storage.ItemKey
+import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Void
 import net.minecraft.world.item.DyeColor
@@ -106,8 +106,8 @@ class ItemUseTest {
     // holding the same thing moved nothing.
     @Test
     fun `a click on a block with slots is what its slots gained and lost`() {
-        val disc = Stack(ItemKey("music_disc_cat".toByteArray(), null), 1)
-        val book = Stack(ItemKey("book".toByteArray(), null), 1)
+        val disc = Stack(key("music_disc_cat"), 1)
+        val book = Stack(key("book"), 1)
         val put = slotDiff(listOf(null, book), listOf(disc, book)).single()
         assertEquals(0, put.slot)
         assertEquals(true, put.gain)
@@ -146,8 +146,8 @@ class ItemUseTest {
     // for the hand only; the stone stays what nothing explained.
     @Test
     fun `a use explains the loss from the hand and nothing else`() {
-        val charge = ItemKey("fire_charge".toByteArray(), null)
-        val stone = ItemKey("stone".toByteArray(), null)
+        val charge = key("fire_charge")
+        val stone = key("stone")
         val hand = PlayerInv(player, 0)
         val edges = listOf(
             Edge(hand, Void, charge, 1, Confidence.INFERRED),

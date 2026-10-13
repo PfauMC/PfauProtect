@@ -17,6 +17,7 @@ import io.pfaumc.pfauprotect.command.LookupTarget
 import io.pfaumc.pfauprotect.command.Lookups
 import io.pfaumc.pfauprotect.command.RowFilter
 import io.pfaumc.pfauprotect.command.offThread
+import io.pfaumc.pfauprotect.command.offlineName
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.PostingRef
@@ -89,6 +90,13 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.logging.Level
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.sqrt
+import io.pfaumc.pfauprotect.Settings
+import net.minecraft.server.level.ServerPlayer
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
 import net.minecraft.world.Container as NmsContainer
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
@@ -104,7 +112,7 @@ private const val PLACE_FLAGS = SHAPE_FLAGS or Block.UPDATE_KNOWN_SHAPE
 // again; this only bounds how stale the question can be.
 internal const val PENDING_MILLIS = 5 * 60_000L
 
-internal fun nameOrId(uuid: UUID): String = Bukkit.getOfflinePlayer(uuid).name ?: uuid.toString()
+internal fun nameOrId(uuid: UUID): String = offlineName(uuid) ?: uuid.toString()
 
 // A chunk task that never runs — its world unloaded under it — would hold the one rollback slot for
 // good. Past this a running rollback is taken as lost and the slot handed on.
@@ -176,7 +184,7 @@ private class ChunkHold(private val work: List<Pair<ServerLevel, ChunkPlan>>) {
 }
 
 private val TIME_FORMAT: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
+    DateTimeFormatter.ofPattern(Ui.DATE_PATTERN).withZone(ZoneId.systemDefault())
 
 /**
  * Something a rollback gave back, and where it had gone: `qty` above zero was put back and is followed
@@ -769,13 +777,13 @@ class ChunkRollback(
         // The players standing over this chunk's positions, found in its own sections: the world's list of
         // players is every region's.
         val around = AABB(put.first()).let { first -> put.fold(first) { box, pos -> box.minmax(AABB(pos)) } }.inflate(1.0)
-        for (player in level.getEntitiesOfClass(net.minecraft.server.level.ServerPlayer::class.java, around)) {
+        for (player in level.getEntitiesOfClass(ServerPlayer::class.java, around)) {
             val box = player.boundingBox
             if (put.none { box.intersects(AABB(it)) } || level.noCollision(player, box)) continue
             var up = 1.0
             while (box.minY + up < level.maxY && !level.noCollision(player, box.move(0.0, up, 0.0))) up++
             val at = player.bukkitEntity.location
-            player.bukkitEntity.teleportAsync(at.clone().add(0.0, kotlin.math.floor(box.minY + up) - at.y, 0.0))
+            player.bukkitEntity.teleportAsync(at.clone().add(0.0, floor(box.minY + up) - at.y, 0.0))
         }
     }
 
@@ -811,7 +819,7 @@ class Rollbacks(
     // When the rollback running now started, or zero.
     private val running = AtomicLong()
     // Asked by /pp cancel while one runs: the chunks not yet begun are left as they are.
-    private val stopping = java.util.concurrent.atomic.AtomicBoolean()
+    private val stopping = AtomicBoolean()
     private val reader = RollbackReader(ledger, blocks)
     val ghosts = Ghosts(plugin)
 
@@ -907,13 +915,13 @@ class Rollbacks(
                 val refused = readings.filterIsInstance<Refused>().firstOrNull()
                 val plans = readings.filterIsInstance<Planned>()
                 val positions = plans.sumOf { it.positions }
-                val limit = io.pfaumc.pfauprotect.Settings.maxRollbackPositions
+                val limit = Settings.maxRollbackPositions
                 when {
                     refused != null || positions > limit -> {
                         sender.say("Rollback refused: ${(refused ?: reader.tooMany(positions)).reason}.")
                         val over = refused?.positions ?: positions.takeIf { it > limit }
                         if (over != null && event == null && !query.global && radius != null) {
-                            val pieces = kotlin.math.ceil(kotlin.math.sqrt(over.toDouble() / limit)).toInt()
+                            val pieces = ceil(sqrt(over.toDouble() / limit)).toInt()
                             val side = (2 * radius + 1 + pieces - 1) / pieces
                             sender.say("  cut it into $pieces×$pieces squares: radius:${side / 2} around points $side apart.")
                         }
@@ -1051,7 +1059,7 @@ class Rollbacks(
             }
             // A few chunks at a time, each starting the next as it ends: a /pp cancel then reaches the chunks not
             // begun yet, and a big rollback does not land on every region in the same tick.
-            val queue = java.util.concurrent.ConcurrentLinkedQueue(work)
+            val queue = ConcurrentLinkedQueue(work)
             fun next() {
                 while (true) {
                     val (level, chunk) = queue.poll() ?: return

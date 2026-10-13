@@ -219,11 +219,7 @@ class CommandBrackets(
             areas.forEachIndexed { index, area ->
                 if (area.owned()) before[index] = read(area) else area.onRegion { before[index] = read(area) }
             }
-            val first = areas.first()
-            val births = CommandBirths.Area(
-                first.level.world.uid, first.minX, first.minY, first.minZ, first.maxX, first.maxY, first.maxZ,
-                kind.filled, actor,
-            )
+            val births = CommandBirths.Area(areas.first(), kind.filled, actor)
             val result = try {
                 CommandBirths.during(births) { run() }
             } catch (failure: CommandSyntaxException) {

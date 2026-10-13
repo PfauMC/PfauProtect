@@ -590,14 +590,9 @@ class BlockLog(
         val stateAfter = shared.registries.idForKey(RegistryNamespace.BLOCK_STATE, after)
         val payloadBefore = change.payloadBefore?.let { shared.payloads.idOf(it) }
         val payloadAfter = change.payloadAfter?.let { shared.payloads.idOf(it) }
-        // Key order is read as time order, so the newest row of a position is what stands there, and
-        // a row filed behind one already at that position would silently take its place. Only that
-        // position is constrained: a change filed late, which a capture that has to see the outcome
-        // before it can file it always is, keeps its own time when what it fell behind is somewhere
-        // else. The world-wide mark spares the common case the lookup, a time at or past everything
-        // the world holds being past this position too, and it has to survive a restart or a clock
-        // stepped backwards by time synchronisation takes that fast path and reorders a position
-        // after every reopen. The cost: a change behind its own position keeps that position's time.
+        // Key order is time order, so a row filed late must not sort behind its position's newest.
+        // `lastTs` is the fast path, and it is persisted so a clock stepped back cannot skip the
+        // check after a restart.
         val here = Triple(change.x, change.y, change.z)
         val ts = if (change.timestamp >= lastTs) {
             change.timestamp

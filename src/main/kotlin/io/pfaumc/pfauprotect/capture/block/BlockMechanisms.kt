@@ -434,10 +434,10 @@ class BlockMechanismListener(
     private val sink: (List<Transfer>) -> Unit,
     private val energy: Energy = Energy(),
     private val entities: EntityOrigins = EntityOrigins(),
-    private val owners: RocksItemLog? = null,
+    private val owners: RocksItemLog,
     // Leaves a reason for the next pass over a player's slots, which are the pass's alone to write.
-    private val intend: (Player, Intent) -> Unit = { _, _ -> },
-    private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
+    private val intend: (Player, Intent) -> Unit,
+    private val later: (Block, () -> Unit) -> Unit,
 ) : Listener {
 
     // Breaking a block and the drops it causes are one synchronous call on one thread. This is not a
@@ -580,7 +580,7 @@ class BlockMechanismListener(
                 actor = actor,
             )
         )
-        if (owners != null && Tag.SHULKER_BOXES.isTagged(front.type)) {
+        if (Tag.SHULKER_BOXES.isTagged(front.type)) {
             unpackShulker(owners, front, spent) { from, to, child ->
                 val encoded = codec.encode(child)
                 moves += Transfer(
@@ -709,8 +709,8 @@ class BlockMechanismListener(
         val after = List(BREWING_BOTTLES) { slot -> event.results.getOrNull(slot)?.let { key(it) } }
         for ((slot, was, became) in brewed(before, after)) {
             val bottle = containerAt(block, slot)
-            transaction += mutation(bottle, Void, Cause.BREW, was, 1, timestamp)
-            transaction += mutation(Void, bottle, Cause.BREW, became, 1, timestamp)
+            transaction += slotRow(false, bottle, Void, was, 1, Cause.BREW, timestamp, Kind.MUTATE)
+            transaction += slotRow(true, bottle, Void, became, 1, Cause.BREW, timestamp, Kind.MUTATE)
         }
         if (transaction.isNotEmpty()) sink(transaction)
     }
@@ -760,22 +760,11 @@ class BlockMechanismListener(
                 // The event carries a mirror of the whole input slot, while the smelt takes exactly one
                 // item out of it. Booking the stack would write a loss of sixty-four every time a full
                 // furnace finished a single ingot.
-                mutation(containerAt(block, FURNACE_INPUT_SLOT), Void, Cause.SMELT, source, 1, timestamp),
-                mutation(Void, containerAt(block, FURNACE_RESULT_SLOT), Cause.SMELT, result, event.result.amount, timestamp),
+                slotRow(false, containerAt(block, FURNACE_INPUT_SLOT), Void, source, 1, Cause.SMELT, timestamp, Kind.MUTATE),
+                slotRow(true, containerAt(block, FURNACE_RESULT_SLOT), Void, result, event.result.amount, Cause.SMELT, timestamp, Kind.MUTATE),
             )
         )
     }
-
-    private fun mutation(from: Holder, to: Holder, cause: Cause, key: ItemKey, qty: Int, timestamp: Long) =
-        Transfer(
-            cause = cause,
-            from = from,
-            to = to,
-            key = key,
-            qty = qty,
-            timestamp = timestamp,
-            kind = Kind.MUTATE,
-        )
 
     // The composter destroys what it eats, and out of nothing makes bone meal once it fills up. The
     // filling item is what earns the bone meal, but the composter only turns it out a second later

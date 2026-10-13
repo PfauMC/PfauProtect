@@ -38,6 +38,15 @@ import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.Plugin
 import java.util.UUID
 import java.util.logging.Level
+import io.pfaumc.pfauprotect.capture.item.NestedItems
+import io.pfaumc.pfauprotect.command.itemKey
+import net.minecraft.core.BlockPos
+import net.minecraft.core.NonNullList
+import net.minecraft.core.component.DataComponents
+import net.minecraft.world.item.component.ItemContainerContents
+import org.bukkit.Location
+import org.bukkit.craftbukkit.CraftWorld
+import net.minecraft.world.item.ItemStack as NmsItemStack
 
 // How many hops of a dropped item are followed: merges into another pile, and the pickup. Past this the
 // item has gone further than a rollback should reach for it.
@@ -486,10 +495,10 @@ class Confiscations(
                 return
             }
             val world = Bukkit.getWorld(stash.world) ?: return next(left)
-            val at = org.bukkit.Location(world, stash.x.toDouble(), stash.y.toDouble(), stash.z.toDouble())
+            val at = Location(world, stash.x.toDouble(), stash.y.toDouble(), stash.z.toDouble())
             Bukkit.getRegionScheduler().execute(plugin, at) {
-                val level = (world as org.bukkit.craftbukkit.CraftWorld).handle
-                val slots = slotsOf(level.getBlockEntity(net.minecraft.core.BlockPos(stash.x, stash.y, stash.z)))
+                val level = (world as CraftWorld).handle
+                val slots = slotsOf(level.getBlockEntity(BlockPos(stash.x, stash.y, stash.z)))
                 var got = 0
                 if (slots != null) {
                     val rows = ArrayList<Transfer>()
@@ -558,9 +567,9 @@ class Confiscations(
     private fun drainBox(stack: ItemStack?, form: ByteArray, want: Int, now: Long, actor: UUID?, rows: MutableList<Transfer>, put: (ItemStack) -> Unit): Int {
         if (want == 0 || stack == null) return 0
         val box = CraftItemStack.asNMSCopy(stack)
-        val owner = io.pfaumc.pfauprotect.capture.item.NestedItems.ownerOf(box) ?: return 0
-        val contents = box.get(net.minecraft.core.component.DataComponents.CONTAINER) ?: return 0
-        val items = net.minecraft.core.NonNullList.withSize(contents.items.size, net.minecraft.world.item.ItemStack.EMPTY)
+        val owner = NestedItems.ownerOf(box) ?: return 0
+        val contents = box.get(DataComponents.CONTAINER) ?: return 0
+        val items = NonNullList.withSize(contents.items.size, NmsItemStack.EMPTY)
         for ((index, slot) in contents.items.withIndex()) slot.getOrNull()?.let { items[index] = it.create() }
         var took = 0
         for (index in items.indices) {
@@ -575,7 +584,7 @@ class Confiscations(
             rows += Transfer(Cause.ROLLBACK, Nested(owner, index), Void, form, encoded.damage, n, now, actor = actor)
         }
         if (took == 0) return 0
-        box.set(net.minecraft.core.component.DataComponents.CONTAINER, net.minecraft.world.item.component.ItemContainerContents.fromItems(items))
+        box.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(items))
         put(CraftItemStack.asBukkitCopy(box))
         return took
     }
@@ -727,5 +736,5 @@ class Confiscations(
         }
     }
 
-    fun name(formId: Long): String = io.pfaumc.pfauprotect.command.itemKey(ledger, formId) ?: "item form $formId"
+    fun name(formId: Long): String = itemKey(ledger, formId) ?: "item form $formId"
 }

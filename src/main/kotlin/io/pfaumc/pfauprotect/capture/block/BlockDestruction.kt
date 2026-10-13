@@ -235,7 +235,6 @@ private val ENTITY_CAUSES = mapOf(
 
 internal fun explosionCause(source: EntityType): Cause = ENTITY_CAUSES[source] ?: Cause.BLK_EXPLOSION
 
-/** The explosion source that is a block, named from the state the event carries. */
 internal fun explosionCause(exploded: String): Cause = when {
     blockNameOf(exploded).endsWith("_bed") -> Cause.BLK_BED_EXPLOSION
     blockNameOf(exploded) == "minecraft:respawn_anchor" -> Cause.BLK_RESPAWN_ANCHOR
@@ -298,7 +297,6 @@ internal val FIRES = setOf(FIRE, "minecraft:soul_fire")
 
 private val SCULK = setOf("minecraft:sculk", "minecraft:sculk_vein")
 
-/** Fire, sculk and everything else that reaches a neighbouring position by growing into it. */
 internal fun spreadCause(after: String): Cause = when (blockNameOf(after)) {
     in FIRES -> Cause.BLK_FIRE_SPREAD
     in SCULK -> Cause.BLK_SCULK
@@ -358,7 +356,7 @@ internal fun pistonSites(
     for (block in moving) {
         val was = block.blockData
         if (pistonDestroys(was)) {
-            for (half in withOtherHalves(listOf(block))) {
+            for (half in withOtherHalves(block)) {
                 emptied += Site(half, half.blockData, AIR, payload(half))
             }
             continue
@@ -411,7 +409,6 @@ internal fun pistonBase(facing: Direction, sticky: Boolean, extended: Boolean): 
         .setValue(BlockStateProperties.EXTENDED, extended)
         .asBlockData()
 
-/** Whether what was read back is a different block from the one the event was about. */
 internal fun wentAway(before: String, now: String) = blockNameOf(before) != blockNameOf(now)
 
 // The state a position ends up in travels as its string, and only the block behind the string says
@@ -646,7 +643,6 @@ internal fun shapeKeysOf(name: String): Set<String> = when {
     else -> emptySet()
 }
 
-/** Whether a block went from one state to the other by what it takes from its neighbours and nothing else. */
 internal fun reshaped(before: String, after: String): Boolean {
     val name = blockNameOf(before)
     if (before == after || name != blockNameOf(after)) return false
@@ -1255,7 +1251,7 @@ class BlockDestructionListener(
     }
 
     /** Belongs on the per-tick task: [GrowClaims] counts its ticks by the calls of this. */
-    fun settleGrowth() {
+    fun settle() {
         growing.settle()
         readBacks.sweep()
         val now = System.currentTimeMillis()
@@ -1538,10 +1534,6 @@ class BlockDestructionListener(
     }
 
     /**
-     * A piston firing, which is one event over every position it touches: each moved block leaves a row
-     * where it stood and another where it arrived, and the piston's own base and head are positions of
-     * their own that the event never mentions.
-     *
      * Everything is read while the event runs because that is the only moment it can be read: the
      * piston raises it before it touches anything, and a tick later every position it emptied is air.
      *

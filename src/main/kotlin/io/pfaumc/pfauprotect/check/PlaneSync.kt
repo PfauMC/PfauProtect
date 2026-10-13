@@ -27,11 +27,9 @@ private val BACKS_NO_ITEM = AIRS + LIQUIDS + setOf(
 )
 
 /**
- * Whether a position holding this state emptied: what stands there afterwards is something no item was
- * ever made into. The question is asked from both ends — the capture decides by it whether a change is
- * a disappearance to write off or a block turning into another block, and this check decides by it
- * whether a write-off was owed — and an answer that differed between the two would read as debt in one
- * plane for every change the other let through.
+ * Whether a position holding this state emptied: what stands there is something no item was ever made
+ * into. The capture and this check must agree on it, or every change one lets through reads as debt in
+ * the other plane.
  */
 internal fun emptied(state: String) = blockNameOf(state) in BACKS_NO_ITEM
 

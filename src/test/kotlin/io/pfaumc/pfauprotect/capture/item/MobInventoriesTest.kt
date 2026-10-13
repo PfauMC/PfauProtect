@@ -3,6 +3,7 @@ package io.pfaumc.pfauprotect.capture.item
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.capture.block.SlotChange
+import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.Holder
@@ -18,9 +19,9 @@ import java.util.UUID
 
 @ExtendWith(Vanilla::class)
 class MobInventoriesTest {
-    private val wheat = ItemKey("wheat".toByteArray(), null)
-    private val bread = ItemKey("bread".toByteArray(), null)
-    private val hoe = ItemKey("hoe".toByteArray(), 12)
+    private val wheat = key("wheat")
+    private val bread = key("bread")
+    private val hoe = key("hoe", 12)
     private val world = UUID.randomUUID()
 
     private fun slot(i: Int): Holder = Container(world, 0, 64, 0, i)
@@ -71,7 +72,7 @@ class MobInventoriesTest {
         assertEquals(emptyList<SlotChange>(), pocketShifts(before, after).second)
         assertEquals(emptyList<Triple<String, Int, Int>>(), moves(after, after))
 
-        val carrot = ItemKey("carrot".toByteArray(), null)
+        val carrot = key("carrot")
         val ate = pocketShifts(listOf(Pocket(0, carrot, 12)) + after.map { Pocket(it.slot + 1, it.key, it.count) }, after)
         assertEquals(listOf(Triple("wheat", 1, 0), Triple("bread", 2, 1), Triple("hoe", 3, 2)), ate.first.map { (was, now) ->
             Triple(String(was.key.form), was.slot, now.slot)
@@ -84,7 +85,7 @@ class MobInventoriesTest {
     // that came back higher up was not packed there, and stays a loss and a gain.
     @Test
     fun `a stack partly eaten and moved down by loading is a move and a loss`() {
-        val carrot = ItemKey("carrot".toByteArray(), null)
+        val carrot = key("carrot")
         fun signed(changes: List<SlotChange>) = changes.map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) }
         val (moves, rest) = pocketShifts(
             listOf(Pocket(0, bread, 3), Pocket(1, carrot, 12), Pocket(2, wheat, 5)),
@@ -119,7 +120,7 @@ class MobInventoriesTest {
     // child; neither raises an event, and anything else left over is an edit nobody saw.
     @Test
     fun `what a villager does without an event is told apart from an unseen edit`() {
-        val carrot = ItemKey("carrot".toByteArray(), null)
+        val carrot = key("carrot")
         val wheatOf = { form: ByteArray -> String(form) == "wheat" }
         val breadOf = { form: ByteArray -> String(form) == "bread" }
         val foodOf = { form: ByteArray -> String(form) == "bread" || String(form) == "carrot" }
@@ -137,7 +138,7 @@ class MobInventoriesTest {
     // villager picks one up while it eats unseen; a piglin's gold is in its hand, not the pocket.
     @Test
     fun `a pickup the pocket shows nothing of went through it unless a hand holds it`() {
-        val carrot = ItemKey("carrot".toByteArray(), null)
+        val carrot = key("carrot")
         val item = ItemEntityRef(UUID.randomUUID())
         val block = WorldBlock(UUID.randomUUID(), 0, -60, 0)
         fun pickup() = PocketLabel(carrot.form, true, item, Cause.ITEM_PICKUP_BY_MOB_INV, 1, hand = 0)

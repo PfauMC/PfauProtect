@@ -8,6 +8,9 @@ import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.storage.Registries
+import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.RocksItemLog
+import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.stub
@@ -28,6 +31,8 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Path
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
@@ -163,7 +168,7 @@ class WorldItemsTest {
     // Thrown over the edge: the end of the bundle and of everything in it, and the player who threw it
     // is on every one of those rows.
     @Test
-    fun `a thrown bundle lost to the void names its thrower and takes its contents with it`() {
+    fun `a thrown bundle lost to the void names its thrower and takes its contents with it`(@TempDir dir: Path) = RocksItemLog(dir).use { ledger ->
         val owner = UUID.randomUUID()
         val thrower = UUID.randomUUID()
         val entity = UUID.randomUUID()
@@ -183,7 +188,8 @@ class WorldItemsTest {
             ),
         )
 
-        WorldItemListener(codec, spawns.coalescer, origins, capture)
+        val attribution = Attribution(Registries(MemoryRegistryStore()), BlockLogs(dir.resolve("blocks"), ledger))
+        WorldItemListener(codec, spawns.coalescer, origins, capture, attribution)
             .onRemove(EntityRemoveEvent(item, EntityRemoveEvent.Cause.OUT_OF_WORLD))
 
         val rows = spawns.rows()

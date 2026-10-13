@@ -29,12 +29,7 @@ internal val BUILT = setOf(
     SpawnReason.BUILD_COPPERGOLEM,
 )
 
-/**
- * Where the entities that destroy blocks came from. A dispenser is not asked to lend its placer, for
- * the same reason a piston is not asked to lend its builder: a machine somebody left running is not
- * the same as somebody acting, and the answer would be wrong in exactly the cases an investigation
- * cares about.
- */
+/** Where the entities that destroy blocks came from. */
 class EntityOriginListener(
     private val attribution: Attribution,
     private val origins: EntityOrigins,

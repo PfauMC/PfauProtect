@@ -10,6 +10,7 @@ import io.pfaumc.pfauprotect.NoPlacedForms
 import io.pfaumc.pfauprotect.capture.item.Stack
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
+import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.testCodec
@@ -31,6 +32,8 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Path
 import java.util.UUID
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
@@ -265,11 +268,12 @@ class MechanismTest {
     // The event carries a mirror of the whole input slot while the smelt takes exactly one item out of
     // it, so a furnace loaded with a stack must still book a loss of one per ingot.
     @Test
-    fun `a smelt consumes one item however full the input slot is`() {
+    fun `a smelt consumes one item however full the input slot is`(@TempDir dir: Path) = RocksItemLog(dir).use { owners ->
         val written = ArrayList<List<Transfer>>()
         val coalescer = TickCoalescer { }
         val listener = BlockMechanismListener(
             codec, coalescer, SpawnOrigins(coalescer), NoPlacedForms, written::add,
+            owners = owners, intend = { _, _ -> }, later = { _, _ -> },
         )
         val at = BukkitItemStack(Material.RAW_IRON, 8)
         val out = BukkitItemStack(Material.IRON_INGOT, 1)

@@ -56,6 +56,7 @@ import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
 import io.pfaumc.pfauprotect.SECONDS_PER_UNIT
 import io.pfaumc.pfauprotect.Settings
+import kotlin.math.abs
 import io.pfaumc.pfauprotect.TELEPORT_PERMISSION
 import io.pfaumc.pfauprotect.Texts
 import io.pfaumc.pfauprotect.Ui
@@ -574,7 +575,7 @@ internal class RowFilter(
 
     fun keeps(entry: LedgerEntry): Boolean {
         if (!caused(entry.cause)) return false
-        if (amount != null && kotlin.math.abs(entry.qty) !in amount) return false
+        if (amount != null && abs(entry.qty) !in amount) return false
         if (users.isNotEmpty() && !namesUser(entry, users)) return false
         val item = itemKey(ledger, entry.itemFormId)
         return (included.isEmpty() || item in included) && item !in excluded && !namesUser(entry, excludedUsers)
@@ -785,6 +786,8 @@ internal fun Holder.placedIn(box: (Int, Int, Int) -> Boolean, unplaced: Boolean)
 // A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it.
 internal fun canTeleport(sender: CommandSender) = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
 
+internal fun offlineName(uuid: UUID): String? = Bukkit.getOfflinePlayer(uuid).name
+
 class Lookups(
     private val plugin: Plugin,
     private val ledger: RocksItemLog,
@@ -793,7 +796,7 @@ class Lookups(
     private val idOf: (String) -> UUID? = { name ->
         Bukkit.getPlayerExact(name)?.uniqueId ?: Bukkit.getOfflinePlayerIfCached(name)?.uniqueId
     },
-    private val nameOf: (UUID) -> String? = { Bukkit.getOfflinePlayer(it).name },
+    private val nameOf: (UUID) -> String? = ::offlineName,
 ) {
 
     fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
@@ -910,7 +913,7 @@ class Lookups(
             // A slot posting names its player as a holder rather than as its actor.
             val who = entry.actor ?: playerOf(entry.holder) ?: playerOf(entry.counterparty)
             val same = "i ${entry.cause} $who ${entry.itemFormId} ${entry.qty > 0} ${slotless(entry.holder)} ${slotless(entry.counterparty)}"
-            Line(entry.timestamp, entry.cause, who, same, kotlin.math.abs(entry.qty), entry.ref in given, null) { amount, _, clickable ->
+            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null) { amount, _, clickable ->
                 draw(entry, who, amount, clickable)
             }
         }
@@ -945,7 +948,6 @@ class Lookups(
         val matched = shown.sortedByDescending { it.timestamp }
         val runs = folded(matched, query.all)
         val lines = runs.drop(query.limit * (query.page - 1)).take(query.limit)
-        // A read stopped early inside a busy chunk returns rows from one corner of it, so silence there would falsely clear the position.
         // Only a limit the parser takes is worth suggesting; at the top already, only a smaller area helps.
         val wider = minOf(query.limit * 4, MAX_LIMIT)
         val stopped = tr(
@@ -1041,8 +1043,7 @@ class Lookups(
             entities = chunks.flatMap { (cx, cz) -> log.entitiesInChunk(cx, cz, fromTs, toTs, MAX_ENTITY_WALK, inBox).rows }
         }
         val keeps = rowFilter(query, users)
-        // Marked before the filter, which may leave the rollback that undid a row out; and not cut to the
-        // page: runs fold only afterwards, and a cut before them shifts every later page.
+        // Not cut to the page: runs fold only afterwards, and a cut before them shifts every later page.
         return planeLines(target.world, rows, entities, keeps)
     }
 

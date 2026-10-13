@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.storage
+
+import io.pfaumc.pfauprotect.OneLedger
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
@@ -27,7 +29,7 @@ private class LoadedRegistryStore(private val ns: RegistryNamespace, private val
 private fun loadedTo(rows: Int): Registries =
     Registries(LoadedRegistryStore(RegistryNamespace.BLOCK_STATE, rows)).also { it.load() }
 
-class BlockStateRegistryTest {
+class BlockStateRegistryTest : OneLedger() {
     private val state = RegistryNamespace.BLOCK_STATE
     private val east = "minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=false]"
     private val west = "minecraft:oak_stairs[facing=west,half=bottom,shape=straight,waterlogged=false]"
@@ -36,49 +38,42 @@ class BlockStateRegistryTest {
     private val signText = """{"messages":["hello","","",""]}""".toByteArray()
 
     @Test
-    fun `the whole state string is the key`(@TempDir dir: Path) {
-        RocksItemLog(dir).use { log ->
-            val id = log.registries.idForKey(state, east)
+    fun `the whole state string is the key`() {
+        val id = log.registries.idForKey(state, east)
 
-            assertEquals(id, log.registries.idForKey(state, east))
-            assertEquals(east, log.registries.keyOf(state, id))
-            assertNotEquals(id, log.registries.idForKey(state, west))
-            assertNotEquals(id, log.registries.idForKey(state, waterlogged))
-        }
+        assertEquals(id, log.registries.idForKey(state, east))
+        assertEquals(east, log.registries.keyOf(state, id))
+        assertNotEquals(id, log.registries.idForKey(state, west))
+        assertNotEquals(id, log.registries.idForKey(state, waterlogged))
     }
 
     @Test
-    fun `a number survives a close and a reopen`(@TempDir dir: Path) {
-        val id = RocksItemLog(dir).use { it.registries.idForKey(state, east) }
+    fun `a number survives a close and a reopen`() {
+        val id = log.registries.idForKey(state, east)
+        reopen()
 
-        RocksItemLog(dir).use { log ->
-            assertEquals(id, log.registries.lookupKey(state, east))
-            assertEquals(east, log.registries.keyOf(state, id))
-            assertNotEquals(id, log.registries.idForKey(state, west))
-        }
+        assertEquals(id, log.registries.lookupKey(state, east))
+        assertEquals(east, log.registries.keyOf(state, id))
+        assertNotEquals(id, log.registries.idForKey(state, west))
     }
 
     @Test
-    fun `a batch persists every number it holds`(@TempDir dir: Path) {
-        RocksItemLog(dir).use { log ->
-            log.registries.batched { for (key in wires) log.registries.idForKey(state, key) }
-        }
+    fun `a batch persists every number it holds`() {
+        log.registries.batched { for (key in wires) log.registries.idForKey(state, key) }
+        reopen()
 
-        RocksItemLog(dir).use { log ->
-            for ((index, key) in wires.withIndex()) assertEquals(index, log.registries.lookupKey(state, key))
-            assertEquals(wires.size, log.registries.idForKey(state, east))
-        }
+        for ((index, key) in wires.withIndex()) assertEquals(index, log.registries.lookupKey(state, key))
+        assertEquals(wires.size, log.registries.idForKey(state, east))
     }
 
     @Test
-    fun `a payload survives a close and a reopen`(@TempDir dir: Path) {
-        val payloadId = RocksItemLog(dir).use { it.payloads.idOf(signText) }
+    fun `a payload survives a close and a reopen`() {
+        val payloadId = log.payloads.idOf(signText)
+        reopen()
 
-        RocksItemLog(dir).use { log ->
-            assertArrayEquals(signText, log.payload(payloadId))
-            assertEquals(payloadId, log.payloads.lookup(signText))
-            assertNotEquals(payloadId, log.payloads.idOf("""{"messages":["other","","",""]}""".toByteArray()))
-        }
+        assertArrayEquals(signText, log.payload(payloadId))
+        assertEquals(payloadId, log.payloads.lookup(signText))
+        assertNotEquals(payloadId, log.payloads.idOf("""{"messages":["other","","",""]}""".toByteArray()))
     }
 
     // A number any thread can see is one a row in another database may already cite, so it has to be on
@@ -112,23 +107,23 @@ class BlockStateRegistryTest {
 
     // Loaded in part, the registry would mint fresh numbers over names it still holds on disk.
     @Test
-    fun `a registry that cannot be read whole refuses to open`(@TempDir dir: Path) {
-        RocksItemLog(dir).use { log -> wires.forEach { log.registries.idForKey(state, it) } }
+    fun `a registry that cannot be read whole refuses to open`(@TempDir damaged: Path) {
+        RocksItemLog(damaged).use { log -> wires.forEach { log.registries.idForKey(state, it) } }
         // The reopen flushes the registry from the log into a table file.
-        RocksItemLog(dir).close()
-        damageTables(dir, "registry")
+        RocksItemLog(damaged).close()
+        damageTables(damaged, "registry")
 
-        assertThrows(RocksDBException::class.java) { RocksItemLog(dir) }
+        assertThrows(RocksDBException::class.java) { RocksItemLog(damaged) }
     }
 
     // The column family listing answers an empty list for a database it failed to read, which taken at
     // its word is a directory with no database in it.
     @Test
-    fun `a database whose manifest cannot be named is refused rather than taken for none`(@TempDir dir: Path) {
-        RocksItemLog(dir).close()
-        dir.resolve("CURRENT").toFile().writeText("nonsense")
+    fun `a database whose manifest cannot be named is refused rather than taken for none`(@TempDir damaged: Path) {
+        RocksItemLog(damaged).close()
+        damaged.resolve("CURRENT").toFile().writeText("nonsense")
 
-        val refusal = assertThrows(IllegalStateException::class.java) { RocksItemLog(dir) }
+        val refusal = assertThrows(IllegalStateException::class.java) { RocksItemLog(damaged) }
         assertTrue(refusal.message!!.contains("could not be read"))
     }
 

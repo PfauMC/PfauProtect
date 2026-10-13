@@ -280,13 +280,7 @@ enum class Cause(val id: Int) {
     UNKNOWN(0xFF),
     ;
 
-    companion object {
-        private val BY_ID = arrayOfNulls<Cause>(256).apply {
-            for (cause in entries) this[cause.id] = cause
-        }
-
-        fun byId(id: Int): Cause? = BY_ID.getOrNull(id)
-    }
+    companion object { val byId = idIndex(entries) { it.id } }
 }
 
 // The block plane's whole range, so a filter can name it without listing every cause: 0xCA..0xEF, and

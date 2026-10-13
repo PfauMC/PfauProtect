@@ -10,6 +10,8 @@ import io.pfaumc.pfauprotect.command.RowFilter
 import io.pfaumc.pfauprotect.command.boxAround
 import io.pfaumc.pfauprotect.command.chunksAround
 import io.pfaumc.pfauprotect.command.placedIn
+import io.pfaumc.pfauprotect.command.stateName
+import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntityKind
@@ -80,6 +82,7 @@ internal fun originOf(older: List<BlockRow?>, keepsRow: (BlockRow) -> Boolean): 
 }
 
 private val ROW_ORDER = compareBy<BlockRow> { it.eventId }.thenBy { it.ordinal }
+private val ENTITY_ROW_ORDER = compareBy<EntityRow> { it.eventId }.thenBy { it.ordinal }
 
 internal val BlockRow.spot get() = Triple(x, y, z)
 
@@ -319,7 +322,7 @@ private class Collected(private val keeps: RowFilter) {
  */
 class RollbackReader(private val ledger: RocksItemLog, private val blocks: BlockLogs) {
     private fun turf(row: BlockRow): Boolean =
-        io.pfaumc.pfauprotect.command.stateName(ledger, row.stateBefore) in TURFS
+        stateName(ledger, row.stateBefore) in TURFS
 
     internal fun around(
         world: UUID,
@@ -399,7 +402,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     /** What a rollback would undo at these positions of one world, read position by position. */
     internal fun at(world: UUID, positions: Set<WorldBlock>, fromTs: Long, toTs: Long, keeps: RowFilter): Reading {
         val log = blocks.get(world) ?: return closed()
-        if (positions.size > io.pfaumc.pfauprotect.Settings.maxRollbackPositions) return tooMany(positions.size)
+        if (positions.size > Settings.maxRollbackPositions) return tooMany(positions.size)
         val read = Collected(keeps)
         val slots = ArrayList<LedgerEntry>()
         val losses = ArrayList<LedgerEntry>()
@@ -494,7 +497,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             }
         }
         for ((uuid, story) in stories.groupBy { it.uuid }) {
-            val oldest = story.minWith(compareBy<EntityRow> { it.eventId }.thenBy { it.ordinal })
+            val oldest = story.minWith(ENTITY_ROW_ORDER)
             val before = oldest.payloadBefore?.let { ledger.payload(it) }
             if (before == null && (oldest.payloadBefore != null || oldest.kind != EntityKind.CREATED)) {
                 unnamed++
@@ -519,7 +522,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         }
         if (unnamed > 0) return unreadable(unnamed)
         val positions = steps.keys + refills.keys + entities.keys
-        if (positions.size > io.pfaumc.pfauprotect.Settings.maxRollbackPositions) return tooMany(positions.size)
+        if (positions.size > Settings.maxRollbackPositions) return tooMany(positions.size)
         val breaks = losses.groupBy { it.holder as WorldBlock }
         val chunks = positions
             .map {
@@ -536,7 +539,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     private fun state(id: Int): String? = ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, id)
 
     internal fun tooMany(positions: Int) = Refused(
-        "$positions positions changed in that window, more than the ${io.pfaumc.pfauprotect.Settings.maxRollbackPositions} one rollback " +
+        "$positions positions changed in that window, more than the ${Settings.maxRollbackPositions} one rollback " +
             "may write; narrow the radius or the time",
         positions,
     )

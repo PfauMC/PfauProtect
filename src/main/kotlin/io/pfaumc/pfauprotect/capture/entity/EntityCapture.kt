@@ -220,7 +220,6 @@ internal fun changedBetween(before: ByteArray, after: ByteArray): Boolean = sign
 
 internal class Culprit(val cause: Cause, val by: Attributed?)
 
-/** Writes the entity plane's rows: entities removed (with full NBT), created, changed or led away, and players killed. */
 class EntityCapture(
     private val logs: BlockLogs,
     private val origins: SpawnOrigins,

@@ -43,15 +43,11 @@ import kotlin.concurrent.write
 // thread, where one JNI trip per position costs a tick.
 interface PlacedForms {
     fun formAt(at: WorldBlock): ByteArray?
-    fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray>
     fun setFormAt(at: WorldBlock, form: ByteArray)
     fun clearFormAt(at: WorldBlock)
-    fun clearFormsAt(positions: List<WorldBlock>)
+    fun takeFormsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray>
 
     fun takeFormAt(at: WorldBlock): ByteArray? = formAt(at).also { clearFormAt(at) }
-
-    fun takeFormsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> =
-        formsAt(positions).also { clearFormsAt(positions) }
 }
 
 // A row this build cannot decode is not a row without gaps: it is a row nobody looked at. Counting
@@ -733,40 +729,32 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         var checked = 0
         var unreadable = 0
         var last: ByteArray? = null
-        var reachedEnd = false
-        ReadOptions().setTotalOrderSeek(true).use { options ->
-            db.newIterator(entriesCf, options).use { iter ->
-                val cursor = db.get(metaCf, META_SWEEP_CURSOR)
-                if (cursor == null) {
-                    iter.seekToFirst()
-                } else {
-                    iter.seek(cursor)
-                    if (iter.isValid && iter.key().contentEquals(cursor)) iter.next()
-                    if (!iter.isValid) {
-                        // Wrapping round on an error would restart every pass at the first key and never
-                        // check anything past the damage.
-                        iter.status()
-                        iter.seekToFirst()
-                    }
-                }
-                // Unreadable rows spend the budget too: a stretch of them the length of a year would
-                // otherwise be walked in a single pass, on the thread that asked for one pass worth.
-                while (iter.isValid && checked + unreadable < limit) {
-                    val key = iter.key()
-                    val entry = EntryCodec.decodeOrNull(key, iter.value(), registries)
-                    if (entry == null) {
-                        unreadable++
-                    } else {
-                        checked++
-                        gapOf(entry)?.let { gaps += it }
-                    }
-                    last = key
-                    iter.next()
-                }
-                iter.status()
-                reachedEnd = !iter.isValid
+        var reachedEnd = true
+        var found = false
+        fun walk(from: ByteArray?) = forEachUnder(ByteArray(0), reverse = false, from = from) { key, value ->
+            found = true
+            // Unreadable rows spend the budget too: a stretch of them the length of a year would
+            // otherwise be walked in a single pass, on the thread that asked for one pass worth.
+            if (checked + unreadable >= limit) {
+                reachedEnd = false
+                return@forEachUnder false
             }
+            val entry = EntryCodec.decodeOrNull(key, value, registries)
+            if (entry == null) {
+                unreadable++
+            } else {
+                checked++
+                gapOf(entry)?.let { gaps += it }
+            }
+            last = key
+            true
         }
+        val cursor = db.get(metaCf, META_SWEEP_CURSOR)
+        // A trailing zero byte makes the first key after the cursor itself.
+        walk(cursor?.let { it.copyOf(it.size + 1) })
+        // The walk throws on an error rather than end, so this never wraps round past damage to restart
+        // every pass at the first key.
+        if (cursor != null && !found) walk(null)
         if (reachedEnd || last == null) db.delete(metaCf, META_SWEEP_CURSOR) else db.put(metaCf, META_SWEEP_CURSOR, last)
         SweepReport(checked, unreadable, gaps, reachedEnd)
     }
@@ -881,7 +869,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     override fun clearFormAt(at: WorldBlock) = putNote(FORMS, at, null)
 
-    override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = dbLock.read {
+    override fun takeFormsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> =
+        formsAt(positions).also { clearFormsAt(positions) }
+
+    fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = dbLock.read {
         if (closed || positions.isEmpty()) return emptyMap()
         val forms = HashMap<WorldBlock, ByteArray>(positions.size)
         val unsettled = positions.filter { at ->
@@ -896,7 +887,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         forms
     }
 
-    override fun clearFormsAt(positions: List<WorldBlock>) {
+    fun clearFormsAt(positions: List<WorldBlock>) {
         for (at in positions) putNote(FORMS, at, null)
     }
 

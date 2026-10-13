@@ -24,7 +24,9 @@ object Ui {
     val GAINED: TextColor = NamedTextColor.GREEN
     val CHANGED: TextColor = NamedTextColor.YELLOW
 
-    private val DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(ZoneId.systemDefault())
+    const val DATE_PATTERN = "yyyy-MM-dd HH:mm:ss"
+
+    private val DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("$DATE_PATTERN z").withZone(ZoneId.systemDefault())
 
     fun text(value: String, color: TextColor? = null): TextComponent = Component.text(value, color)
 
@@ -66,7 +68,6 @@ object Ui {
 
     fun item(key: String): Component = game(key) { BuiltInRegistries.ITEM.getOptional(it).map { i -> i.descriptionId }.orElse(null) }
 
-    /** A line as it is, but with each item id in it as the game's own name of the item. */
     fun named(line: String): Component {
         val out = Component.text()
         var at = 0
@@ -95,7 +96,6 @@ object Ui {
         return Component.translatable().key(translation).fallback(key.removePrefix("minecraft:")).build()
     }
 
-    /** Clickable words that run a command, with what they do when hovered. */
     fun button(label: String, command: String, color: TextColor, vararg hint: String): Component =
         hover(text(label, color), *hint).clickEvent(ClickEvent.runCommand(command))
 }
