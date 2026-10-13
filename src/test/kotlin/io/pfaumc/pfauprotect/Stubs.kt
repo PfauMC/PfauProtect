@@ -33,17 +33,21 @@ internal fun worldStub(uid: UUID): World = stub(World::class.java, mapOf("getUID
 
 internal fun disabledPlugin(): Plugin = stub(Plugin::class.java, mapOf("isEnabled" to false))
 
+// Anything but a single String or Component sent fails loudly, so a message sent some other way is not
+// silently missing from what the test reads.
 internal fun senderInto(
     lines: MutableList<String>,
     flat: (Component) -> String = PlainTextComponentSerializer.plainText()::serialize,
-): CommandSender = stub(
-    CommandSender::class.java,
-    mapOf(
-        "sendMessage" to { args: Array<out Any?> ->
-            args.forEach { if (it is String) lines += it else if (it is Component) lines += flat(it) }
-        },
-    ),
-)
+): CommandSender = Proxy.newProxyInstance(CommandSender::class.java.classLoader, arrayOf(CommandSender::class.java)) { _, method, args ->
+    val sent = args?.singleOrNull()
+    when {
+        method.name != "sendMessage" -> throw UnsupportedOperationException("sender.${method.name}")
+        sent is String -> lines += sent
+        sent is Component -> lines += flat(sent)
+        else -> throw UnsupportedOperationException("sendMessage(${method.parameterTypes.joinToString { it.simpleName }})")
+    }
+    null
+} as CommandSender
 
 internal object NoPlacedForms : PlacedForms {
     override fun formAt(at: WorldBlock): ByteArray? = null

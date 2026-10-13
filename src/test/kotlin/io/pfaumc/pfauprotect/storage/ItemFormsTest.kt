@@ -51,25 +51,6 @@ class ItemFormsTest {
         assertRoundTrip(stripped)
     }
 
-    @Test
-    fun `two removed components reach the form in the same order either way`() {
-        val stripped = ItemStack(Items.DIAMOND_SWORD).apply {
-            remove(DataComponents.DAMAGE)
-            remove(DataComponents.ENCHANTMENTS)
-        }
-        val strippedInAnotherOrder = ItemStack(Items.DIAMOND_SWORD).apply {
-            remove(DataComponents.ENCHANTMENTS)
-            remove(DataComponents.DAMAGE)
-        }
-
-        val form = codec.encode(stripped).form
-        val reader = ByteReader(form)
-        reader.varInt()
-        assertEquals(0, reader.varInt(), "expected no added components")
-        assertEquals(2, reader.varInt(), "expected both removals to reach the form")
-        assertArrayEquals(form, codec.encode(strippedInAnotherOrder).form)
-    }
-
     // A compound is an open-addressing hash map, and "a" and "f" hash to the same slot at every table size
     // up to 16, so it walks them in the order they were put in. Keys that never collide would come out in
     // one order whatever was done to them.
@@ -87,13 +68,6 @@ class ItemFormsTest {
         assertArrayEquals(codec.encode(one).form, codec.encode(other).form)
     }
 
-    @Test
-    fun `component order does not reach the form bytes`() {
-        val sword = decoratedSword()
-        assertArrayEquals(codec.encode(sword).form, codec.encode(decoratedSwordInAnotherOrder()).form)
-        assertRoundTrip(sword)
-    }
-
     // A form is interned by its bytes, so a change to them splits one item into two form ids across an
     // upgrade. The numbers are minted here in an order of our own, unlike the vanilla iteration order.
     @Test
@@ -105,29 +79,30 @@ class ItemFormsTest {
         own.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, "minecraft:enchantments")
         own.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, "minecraft:custom_name")
 
-        val encoded = ItemFormCodec(own, ServerRegistries.access).encode(decoratedSword())
+        val ownCodec = ItemFormCodec(own, ServerRegistries.access)
+        val encoded = ownCodec.encode(decoratedSword())
 
         assertEquals(5, encoded.damage)
-        assertArrayEquals(
-            byteArrayOf(
-                0x01, 0x03, 0x00,
-                // custom_data: {owner: "pfau", charges: 4}, in the order the compound's hash map walks them
-                0x00, 30,
-                0x0A,
-                0x08, 0x00, 0x05, *"owner".bytes, 0x00, 0x04, *"pfau".bytes,
-                0x03, 0x00, 0x07, *"charges".bytes, 0x00, 0x00, 0x00, 0x04,
-                0x00,
-                // enchantments: {"minecraft:sharpness": 3}
-                0x01, 28,
-                0x0A,
-                0x03, 0x00, 19, *"minecraft:sharpness".bytes, 0x00, 0x00, 0x00, 0x03,
-                0x00,
-                // custom_name: the plain string
-                0x02, 12,
-                0x08, 0x00, 0x09, *"Kartoffel".bytes,
-            ),
-            encoded.form,
+        val pinned = byteArrayOf(
+            0x01, 0x03, 0x00,
+            // custom_data: {owner: "pfau", charges: 4}, in the order the compound's hash map walks them
+            0x00, 30,
+            0x0A,
+            0x08, 0x00, 0x05, *"owner".bytes, 0x00, 0x04, *"pfau".bytes,
+            0x03, 0x00, 0x07, *"charges".bytes, 0x00, 0x00, 0x00, 0x04,
+            0x00,
+            // enchantments: {"minecraft:sharpness": 3}
+            0x01, 28,
+            0x0A,
+            0x03, 0x00, 19, *"minecraft:sharpness".bytes, 0x00, 0x00, 0x00, 0x03,
+            0x00,
+            // custom_name: the plain string
+            0x02, 12,
+            0x08, 0x00, 0x09, *"Kartoffel".bytes,
         )
+        assertArrayEquals(pinned, encoded.form)
+        assertArrayEquals(pinned, ownCodec.encode(decoratedSwordInAnotherOrder()).form, "the order components were set in")
+        assertRoundTrip(decoratedSword())
     }
 
     // Minted so that the ids run against the names: sorted by name the two removals would swap.
@@ -138,13 +113,20 @@ class ItemFormsTest {
         own.idForKey(RegistryNamespace.ITEM_TYPE, "minecraft:diamond_sword")
         own.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, "minecraft:enchantments")
         own.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, "minecraft:damage")
+        val ownCodec = ItemFormCodec(own, ServerRegistries.access)
         val stripped = ItemStack(Items.DIAMOND_SWORD).apply {
             remove(DataComponents.DAMAGE)
             remove(DataComponents.ENCHANTMENTS)
         }
+        val strippedInAnotherOrder = ItemStack(Items.DIAMOND_SWORD).apply {
+            remove(DataComponents.ENCHANTMENTS)
+            remove(DataComponents.DAMAGE)
+        }
 
         // The item, nothing added, two removed, then their ids in order.
-        assertArrayEquals(byteArrayOf(0x01, 0x00, 0x02, 0x00, 0x01), ItemFormCodec(own, ServerRegistries.access).encode(stripped).form)
+        val pinned = byteArrayOf(0x01, 0x00, 0x02, 0x00, 0x01)
+        assertArrayEquals(pinned, ownCodec.encode(stripped).form)
+        assertArrayEquals(pinned, ownCodec.encode(strippedInAnotherOrder).form)
     }
 
     private val String.bytes: ByteArray get() = toByteArray(Charsets.US_ASCII)

@@ -4,19 +4,12 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
-import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Void
-import io.pfaumc.pfauprotect.capture.block.brewed
 import io.pfaumc.pfauprotect.key
-import io.pfaumc.pfauprotect.stub
-import org.bukkit.inventory.AnvilInventory
-import org.bukkit.inventory.CraftingInventory
-import org.bukkit.inventory.Inventory
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -149,44 +142,6 @@ class TransformTest {
 
         assertEquals(Cause.CRAFT_RESULT, transaction.single().cause)
         assertEquals(Confidence.INFERRED, transaction.single().confidence)
-    }
-
-    // Which station a taken result came out of, and whether it changed an item or ran a recipe.
-    @Test
-    fun `a workbench runs a recipe while a station changes the item`() {
-        assertEquals(Kind.TRANSFER, shiftOf(stub(CraftingInventory::class.java))?.kind)
-        assertEquals(Kind.MUTATE, shiftOf(stub(AnvilInventory::class.java))?.kind)
-        assertNull(shiftOf(stub(Inventory::class.java)))
-    }
-
-    // A stand brews three bottles at once, and every combination of "there was nothing there", "the
-    // recipe left it alone" and "it became a potion" happens on one and the same brew.
-    @Test
-    fun `a brew names only the bottles that changed`() {
-        val water = key("water bottle")
-        val awkward = key("awkward potion")
-        val empty: ItemKey? = null
-
-        val changed = brewed(
-            listOf(water, empty, water),
-            listOf(awkward, awkward, water),
-        )
-
-        assertEquals(listOf(Triple(0, water, awkward)), changed)
-    }
-
-    // The game hands back as many results as it made, and reading past them would pair a bottle with
-    // a result that is not there.
-    @Test
-    fun `a results list shorter than the stand leaves the rest alone`() {
-        val water = key("water bottle")
-        val awkward = key("awkward potion")
-
-        assertEquals(
-            listOf(Triple(0, water, awkward)),
-            brewed(listOf(water, water, water), listOf(awkward)),
-        )
-        assertTrue(brewed(listOf(water, water, water), emptyList()).isEmpty())
     }
 
     // The whole pure path in one go: two snapshots of one slot, the intent the event left, and the

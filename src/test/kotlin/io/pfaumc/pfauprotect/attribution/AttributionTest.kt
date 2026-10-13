@@ -102,38 +102,25 @@ class AttributionTest : BothPlanes() {
         assertEquals(null, attribution.killerNear(WorldBlock(world, 3, 64, 0), 12))
     }
 
-    @Test
-    fun `the tracker answers on its own and the journal only where it is asked for by name`() {
-        val here = at(10, 64, 10)
-        assertNull(attribution.placerAt(here, TNT))
-        assertNull(attribution.journalPlacerAt(here, TNT))
-
-        journalled(here, AIR, TNT, bob)
-        assertNull(attribution.placerAt(here, TNT))
-        assertEquals(Attributed(bob, Confidence.INFERRED), attribution.journalPlacerAt(here, TNT))
-
-        attribution.placed(here, TNT, alice)
-        assertEquals(Attributed(alice, Confidence.INFERRED), attribution.placerAt(here, TNT))
-
-        assertNull(attribution.placerAt(at(11, 64, 10), TNT))
-        assertNull(attribution.journalPlacerAt(at(11, 64, 10), TNT))
-    }
-
     // A fire spreading on from a block the journal found has to find a note there: without one, the
     // second block it reaches has nobody behind it.
     @Test
-    fun `the tracker outranks the journal, and a journal find is noted for the chain that follows`() {
+    fun `the tracker outranks the journal, which is asked by name and noted for the chain that follows`() {
         val here = at(10, 64, 10)
         journalled(here, AIR, TNT, bob)
+        assertNull(attribution.placerAt(here, TNT))
+        assertEquals(Attributed(bob, Confidence.INFERRED), attribution.journalPlacerAt(here, TNT))
+        assertEquals(Attributed(bob, Confidence.INFERRED), attribution.placerOrJournal(here, TNT))
+        assertNull(attribution.placerAt(here, TNT), "a find without renote leaves no note")
+        attribution.placerOrJournal(here, TNT, renote = true)
+        assertEquals(bob, attribution.placerAt(here, TNT)?.actor)
+
         attribution.placed(here, TNT, alice)
+        assertEquals(Attributed(alice, Confidence.INFERRED), attribution.placerAt(here, TNT))
         assertEquals(alice, attribution.placerOrJournal(here, TNT)?.actor)
 
-        val there = at(12, 64, 10)
-        journalled(there, AIR, TNT, bob)
-        assertEquals(bob, attribution.placerOrJournal(there, TNT)?.actor)
-        assertNull(attribution.placerAt(there, TNT), "a find without renote leaves no note")
-        attribution.placerOrJournal(there, TNT, renote = true)
-        assertEquals(bob, attribution.placerAt(there, TNT)?.actor)
+        assertNull(attribution.placerAt(at(11, 64, 10), TNT))
+        assertNull(attribution.journalPlacerAt(at(11, 64, 10), TNT))
     }
 
     // A frame comes down seconds after its wall: the breaker is still the newest row there, and a row

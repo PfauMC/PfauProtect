@@ -1,14 +1,9 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.model.Cause
-import io.pfaumc.pfauprotect.model.Confidence
-import io.pfaumc.pfauprotect.model.ItemEntityRef
-import io.pfaumc.pfauprotect.capture.block.TickCoalescer
-import io.pfaumc.pfauprotect.model.Transfer
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
-import java.util.UUID
 
 class CommandsTest {
     @Test
@@ -44,23 +39,5 @@ class CommandsTest {
         assertNull(commandUse(commandWords("item replace block 0 64 0 container.0 with stone")))
         assertNull(commandUse(commandWords("loot spawn 0 64 0 loot minecraft:chests/simple_dungeon")))
         assertNull(commandUse(commandWords("tp Steve 0 64 0")))
-    }
-
-    // Nothing left the inventory for a drop out of the creative menu: the drop made the item, and that
-    // is known rather than guessed.
-    @Test
-    fun `a drop nothing paid for is creative's own making`() {
-        val player = UUID.randomUUID()
-        val entity = ItemEntityRef(UUID.randomUUID())
-        val written = ArrayList<Transfer>()
-        val pending = TickCoalescer { written += it }
-        val drop = Intent(Cause.DROP_FROM_HAND, to = entity, form = "stone".toByteArray(), qty = 64, actor = player)
-
-        unspentDrop(pending, drop, 64) { it == player }
-        pending.flush()
-
-        val row = written.single()
-        assertEquals(Cause.CREATIVE_SET, row.cause)
-        assertEquals(Confidence.FACT, row.confidence)
     }
 }

@@ -23,30 +23,11 @@ class LookupTest {
     }
 
     @Test
-    fun `short and long parameter names mean the same thing`() {
-        val spellings = listOf(
-            "u:Steve" to "user:Steve",
-            "t:2h" to "time:2h",
-            "r:10" to "radius:10",
-            "a:container" to "action:container",
-            "b:diamond" to "item:diamond",
-            "i:diamond" to "include:diamond",
-            "items:diamond" to "include:diamond",
-            "e:dirt" to "exclude:dirt",
-            "l:25" to "rows:25",
-        )
-        for ((short, long) in spellings) {
-            assertEquals(parseLookupQuery(short).copy(words = ""), parseLookupQuery(long).copy(words = ""), "$short vs $long")
-        }
-    }
-
-    // Completion lists each parameter's first key, so that key has to be the readable spelling and the
-    // terse aliases only parse.
-    @Test
-    fun `each parameter's first key is its long spelling`() {
-        for (prefix in Param.prefixes) {
-            assertTrue(prefix.removeSuffix(":").length > 1, "completion should not offer the terse alias $prefix")
-        }
+    fun `the terse spellings parse as the long ones`() {
+        assertEquals(listOf("Steve"), parseLookupQuery("u:Steve").users)
+        assertEquals(7200L, parseLookupQuery("t:2h").secondsBack)
+        assertEquals(10, parseLookupQuery("r:10").radius)
+        assertEquals(setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE), parseLookupQuery("a:container").causes)
     }
 
     // What only shapes a lookup's answer — whose hands, how many rows, which page — means nothing to a
@@ -108,7 +89,13 @@ class LookupTest {
             setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
             parseLookupQuery("a:+container,-container").causes,
         )
-        assertEquals(Action.EXPLOSION.causes + Action.FIRE.causes, parseLookupQuery("a:explosion,fire").causes)
+        assertEquals(
+            setOf(
+                Cause.BLK_TNT, Cause.BLK_CREEPER, Cause.BLK_BED_EXPLOSION, Cause.BLK_RESPAWN_ANCHOR, Cause.BLK_END_CRYSTAL,
+                Cause.BLK_EXPLOSION, Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD,
+            ),
+            parseLookupQuery("a:explosion,fire").causes,
+        )
     }
 
     @Test

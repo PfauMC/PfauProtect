@@ -232,7 +232,9 @@ class LookupReadTest : BothPlanes() {
 
         val byPosition = shared.holderEntries(here, 0, Long.MAX_VALUE)
         assertEquals(byPosition, wholeTransactions(shared, byPosition))
-        assertTrue(said().none { it.contains("11 64 -3") }, "${said()}")
+        val lines = said()
+        assertTrue(lines.any { it.contains("10 64 -3") && it.contains("{blk_tnt}") }, "$lines")
+        assertTrue(lines.none { it.contains("11 64 -3") }, "$lines")
     }
 
     // Keys inside a chunk sort by position before time, so a chunk read up to a limit hands back one
@@ -271,8 +273,7 @@ class LookupReadTest : BothPlanes() {
 
         // Forty rows inside the box, more than one row's worth of read, and none of them the kind asked for.
         val lines = said(LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE)))
-        assertTrue(lines.any { it.contains("stopped before the whole area") }, "$lines")
-        assertTrue(lines.none { it.contains("nothing recorded") }, "$lines")
+        assertTrue(lines.single().contains("limit:4"), "$lines")
     }
 
     // A filter by action drops the rollback rows themselves, and a mark read among what the filter kept
@@ -307,6 +308,23 @@ class LookupReadTest : BothPlanes() {
         assertTrue(said(LookupQuery(radius = 2, causes = Action.KILL.causes, rolledBack = false)).none { it.contains("entity.minecraft.cat") })
     }
 
+    // A theft a rollback gave back reads as rolled back; the rollback's own posting does not.
+    @Test
+    fun `an item row a rollback gave back is marked and found by rolledback`() {
+        val chest = Container(world, 10, 64, -3, 0)
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 0), stone, null, 4, T0))
+        shared.drain()
+        val theft = shared.holderEntries(chest, 0, Long.MAX_VALUE).single()
+        shared.submit(Transfer(Cause.ROLLBACK, Void, chest, stone, null, 4, T0 + 1000, reverts = listOf(theft.ref)))
+        shared.drain()
+
+        val lines = said()
+        assertTrue(lines.single { it.contains("{container_remove}") }.contains("rolled back"), "$lines")
+        assertTrue(lines.single { it.contains("{rollback}") }.let { !it.contains("rolled back") }, "$lines")
+        val back = said(LookupQuery(rolledBack = true)).drop(1)
+        assertTrue(back.single().contains("{container_remove}"), "$back")
+    }
+
     // A read cut short with every matched row on the page has no next page to offer: page 2 starts past
     // them and is empty. It says the read stopped and how to see further instead.
     @Test
@@ -319,7 +337,7 @@ class LookupReadTest : BothPlanes() {
         val lines = said(LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE)))
         assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
         assertTrue(lines.none { it.contains("page:2") }, "$lines")
-        assertTrue(lines.any { it.contains("stopped before the whole area") }, "$lines")
+        assertTrue(lines.last().contains("limit:4"), "$lines")
     }
 
     // What a player carried has no position, and a crafting grid is booked to them as an entity. Both
@@ -343,14 +361,11 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.any { it.contains("Alice{cursor}") }, "$lines")
         assertTrue(lines.any { it.contains("ender_chest") && it.contains("{slot 7}") }, "$lines")
         assertTrue(lines.none { it.contains("Bob") }, "$lines")
-        assertTrue(
-            said(LookupQuery(players = listOf("Alice"), radius = 5), players = mapOf("Alice" to alice))
-                .single().contains("drop the radius"),
-        )
-        assertEquals(
-            listOf("Unknown player: Carol"),
-            said(LookupQuery(players = listOf("Carol")), players = mapOf("Alice" to alice)),
-        )
+        // Refused, not answered: no header, so nothing reads as an empty area.
+        val narrowed = said(LookupQuery(players = listOf("Alice"), radius = 5), players = mapOf("Alice" to alice))
+        assertTrue(narrowed.single().let { !it.startsWith("PfauProtect") && "Alice" !in it }, "$narrowed")
+        val unknown = said(LookupQuery(players = listOf("Carol")), players = mapOf("Alice" to alice))
+        assertTrue(unknown.single().let { !it.startsWith("PfauProtect") && "Carol" in it }, "$unknown")
     }
 
     // The text of a sign is what was kept for it, and an edit reads as what it said before and after.
@@ -413,7 +428,7 @@ class LookupReadTest : BothPlanes() {
             .report(senderInto(lines, ::flat), LookupTarget(other, 1, 64, 1, "stone at 1 64 1"), LookupQuery())
 
         assertTrue(lines.any { it.contains("placed") }, "$lines")
-        assertTrue(lines.any { it.contains("block log is not open") }, "$lines")
+        assertEquals(1, lines.indexOfFirst { it.startsWith("PfauProtect") }, "one notice before the answer: $lines")
     }
 
     @Test

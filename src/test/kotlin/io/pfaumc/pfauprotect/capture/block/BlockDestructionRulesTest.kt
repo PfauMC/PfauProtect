@@ -33,7 +33,6 @@ import org.bukkit.block.Barrel
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.data.BlockData
-import org.bukkit.block.data.type.Bed
 import org.bukkit.craftbukkit.block.data.CraftBlockData
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Creeper
@@ -310,18 +309,6 @@ class BlockDestructionRulesTest {
 
         assertEquals(listOf(stone), withOtherHalves(listOf(stone)).toList())
         assertEquals(listOf(orphan), withOtherHalves(listOf(orphan)).toList())
-    }
-
-    @Test
-    fun `the other half of a bed is derived from the half the explosion names`() {
-        val head = whiteBedHead
-        val foot = otherBedHalf(head) as Bed
-
-        assertEquals(Bed.Part.FOOT, foot.part)
-        assertEquals((head as Bed).facing, foot.facing)
-        assertEquals(Bed.Part.HEAD, (otherBedHalf(foot) as Bed).part)
-
-        assertNull(otherBedHalf(Blocks.STONE.defaultBlockState().asBlockData()))
     }
 
     // A piston, like a blast, reaches one half of a bed at a time.

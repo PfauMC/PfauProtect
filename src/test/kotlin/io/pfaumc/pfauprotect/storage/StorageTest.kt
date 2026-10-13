@@ -82,15 +82,8 @@ class StorageTest : OneLedger() {
         assertEquals(listOf(PlayerInv(alice, 0), PlayerInv(alice, 9)), moved.map { it.holder })
         assertEquals(listOf(PlayerInv(alice, 9), PlayerInv(alice, 0)), moved.map { it.counterparty })
         assertEquals(1, moved.map { it.txId }.distinct().size)
-        assertEquals(0, moved.sumOf { it.qty })
         assertEquals(before, balance())
-
-        val (debit, credit) = moved
-        val whole = log.transactionEntries(debit)
-        assertEquals(2, whole.size)
-        assertEquals(0, whole.sumOf { it.qty })
-        assertEquals(setOf(PlayerInv(alice, 0), PlayerInv(alice, 9)), whole.map { it.holder }.toSet())
-        assertEquals(whole.toSet(), log.transactionEntries(credit).toSet())
+        for (half in moved) assertEquals(moved.toSet(), log.transactionEntries(half).toSet(), "from $half")
         assertEquals(emptyList<String>(), log.sweep(100).gaps)
     }
 
@@ -321,6 +314,16 @@ class StorageTest : OneLedger() {
         "block_payloads", "compensated", "confiscations",
     )
 
+    // The stamp is the only thing that keeps an older build from reading a ledger whose families it
+    // does not know, so a family added or dropped without a new version number has to fail here.
+    @Test
+    fun `a fresh ledger is stamped with the version that matches its families`() {
+        reopen {
+            assertEquals(6L, storedSchemaOf(dir))
+            assertEquals(everyColumnFamily.sorted(), familiesOf(dir).sorted())
+        }
+    }
+
     private fun stampSchemaVersion(version: Long) {
         rawPut(dir, "meta", "schema".toByteArray(), ByteWriter(8).longBE(version).toByteArray())
     }
@@ -368,6 +371,7 @@ class StorageTest : OneLedger() {
         assertEquals(mapOf("0000000000000000" to "0a0b", "0000000000000001" to "0c"), stored["block_payloads"])
         assertEquals("0000000000000002", stored.getValue("meta")["item_form_id".toByteArray().hex()])
         assertEquals("0000000000000002", stored.getValue("meta")["block_payload_id".toByteArray().hex()])
+        assertEquals(0L, log.payloads.lookup(byteArrayOf(0x0A, 0x0B)), "found by its bytes after a reopen")
     }
 
     @Test
@@ -607,30 +611,29 @@ class StorageTest : OneLedger() {
     }
 
     @Test
-    fun `region entries cover the block box and nothing else`() {
+    fun `a region scan answers with every block holder in the box and nothing else`() {
+        val position = WorldBlock(world, 101, 65, -200)
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, Container(world, 200, 64, -200, 0), cobblestone, null, 7, T0 + 15))
-        log.drain()
-        val inBox = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE).entries
-        assertEquals(listOf(32, -5, 1, -3), inBox.map { it.qty })
-        assertTrue(inBox.all { it.holder is Container })
-        assertEquals(5, (inBox[1].holder as Container).slot)
-
-        assertTrue(log.regionPage(world, 5000, 5000, 5016, 5016, 0, Long.MAX_VALUE).entries.isEmpty())
-        assertTrue(log.regionPage(UUID.randomUUID(), 96, -208, 112, -192, 0, Long.MAX_VALUE).entries.isEmpty())
-    }
-
-    @Test
-    fun `region entries see the far half of a chunk and respect the time window`() {
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, farSideOfChunk, cobblestone, null, 2, T0 + 50))
+        log.submit(Transfer(Cause.BLOCK_PLACE, aliceInv, position, cobblestone, null, 1, T0 + 70))
         log.drain()
 
-        val whole = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE).entries
-        assertEquals(5, whole.size)
-        assertEquals(1, whole.count { it.holder == farSideOfChunk })
+        val inBox = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE).entries
+        assertEquals(listOf(32, -5, 1, -3, 2, 1), inBox.map { it.qty })
+        assertEquals(listOf(T0, T0 + 10, T0 + 20, T0 + 30, T0 + 50, T0 + 70), inBox.map { it.timestamp })
+        assertEquals(chestUpperSlot, inBox[1].holder)
+        assertEquals(farSideOfChunk, inBox[4].holder)
+        assertEquals(position, inBox[5].holder)
+
+        // Read backwards it is the same rows in the other order, both holder kinds included: the two
+        // kinds live under prefixes of their own and a reversed walk seeks into each one separately.
+        assertEquals(inBox.reversed(), log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, reverse = true).entries)
 
         val window = log.regionPage(world, 96, -208, 112, -192, T0 + 10, T0 + 30).entries
         assertEquals(listOf(T0 + 10, T0 + 20, T0 + 30), window.map { it.timestamp })
-        assertTrue(log.regionPage(world, 96, -208, 112, -192, T0 + 60, Long.MAX_VALUE).entries.isEmpty())
+        assertTrue(log.regionPage(world, 96, -208, 112, -192, T0 + 80, Long.MAX_VALUE).entries.isEmpty())
+        assertTrue(log.regionPage(world, 5000, 5000, 5016, 5016, 0, Long.MAX_VALUE).entries.isEmpty())
+        assertTrue(log.regionPage(UUID.randomUUID(), 96, -208, 112, -192, 0, Long.MAX_VALUE).entries.isEmpty())
     }
 
     @Test
@@ -638,24 +641,6 @@ class StorageTest : OneLedger() {
         assertThrows(IllegalArgumentException::class.java) {
             log.regionPage(world, 0, 0, 100_000, 0, 0, Long.MAX_VALUE).entries
         }
-    }
-
-    @Test
-    fun `a region scan answers with both block holders`() {
-        val position = WorldBlock(world, 101, 65, -200)
-        log.submit(Transfer(Cause.BLOCK_PLACE, aliceInv, position, cobblestone, null, 1, T0 + 70))
-        log.drain()
-
-        val inBox = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE).entries
-        assertEquals(1, inBox.count { it.holder is WorldBlock })
-        assertEquals(4, inBox.count { it.holder is Container })
-        assertEquals(position, inBox.single { it.holder is WorldBlock }.holder)
-        assertEquals(listOf(T0, T0 + 10, T0 + 20, T0 + 30, T0 + 70), inBox.map { it.timestamp })
-
-        // Read backwards it is the same rows in the other order, both holder kinds included: the two
-        // kinds live under prefixes of their own and a reversed walk seeks into each one separately.
-        val backwards = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, reverse = true).entries
-        assertEquals(inBox.reversed(), backwards)
     }
 
     // A prefix extractor changes what an iterator is allowed to return, and every read below answered

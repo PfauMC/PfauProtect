@@ -9,7 +9,10 @@ import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.bob
+import io.pfaumc.pfauprotect.capture.block.Spot
 import io.pfaumc.pfauprotect.capture.block.blockStub
+import io.pfaumc.pfauprotect.key
+import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntityKind
@@ -21,14 +24,18 @@ import net.minecraft.nbt.CompoundTag
 import net.minecraft.nbt.DoubleTag
 import net.minecraft.nbt.ListTag
 import net.minecraft.world.entity.decoration.ArmorStand
+import net.minecraft.world.entity.decoration.HangingEntity
+import net.minecraft.world.entity.decoration.ItemFrame
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.storage.ValueOutput
 import org.bukkit.Chunk
 import org.bukkit.Location
 import org.bukkit.World
+import org.bukkit.block.BlockFace
 import org.bukkit.craftbukkit.CraftServer
 import org.bukkit.craftbukkit.entity.CraftEntity
+import org.bukkit.craftbukkit.entity.CraftHanging
 import org.bukkit.craftbukkit.entity.CraftLivingEntity
 import org.bukkit.craftbukkit.persistence.CraftPersistentDataContainer
 import org.bukkit.craftbukkit.persistence.CraftPersistentDataTypeRegistry
@@ -42,6 +49,7 @@ import org.bukkit.event.entity.EntityDamageEvent
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityDeathEvent
 import org.bukkit.event.entity.PlayerDeathEvent
+import org.bukkit.event.hanging.HangingBreakEvent
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -62,8 +70,8 @@ class EntityCaptureTest : BothPlanes() {
     }
     private val summoned = EntityOrigins()
 
-    private fun capture() = EntityCapture(
-        logs, Spawns().origins, Attribution(shared.registries, logs), summoned,
+    private fun capture(spawns: Spawns = Spawns()) = EntityCapture(
+        logs, spawns.origins, Attribution(shared.registries, logs), summoned,
         later = { _, task -> tasks += task }, laterOn = { _, task, _ -> tasks += task }, offThread = { tasks += it },
     )
 
@@ -138,10 +146,12 @@ class EntityCaptureTest : BothPlanes() {
         assertEquals(0, log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.count { it.uuid == takenAway.uniqueId })
     }
 
-    // A player who dies of their own arrow or their own dynamite is no grief between players.
+    // A player who dies of their own arrow or their own dynamite is no grief between players. What fell
+    // out of a player killed by another is named on the row, for a rollback of the killer to take back.
     @Test
-    fun `a player killed by another is written and one killed by themselves is not`() {
-        val capture = capture()
+    fun `a player killed by another is written with their drops and one killed by themselves is not`() {
+        val spawns = Spawns()
+        val capture = capture(spawns)
         val ground = stub(World::class.java, mapOf(
             "getUID" to world,
             "getBlockAt" to { _: Array<out Any?> -> blockStub(world, 3, 64, 3, Blocks.AIR.defaultBlockState().asBlockData()) },
@@ -152,8 +162,9 @@ class EntityCaptureTest : BothPlanes() {
             "getWorld" to ground,
             "getLocation" to { _: Array<out Any?> -> Location(ground, 3.5, 64.0, 3.5) },
         ))
-        fun die(victim: Player) {
+        fun die(victim: Player, dropping: () -> Unit = {}) {
             capture.onPlayerDeath(PlayerDeathEvent(victim, stub(DamageSource::class.java), mutableListOf(), 0, null, false))
+            dropping()
             runTasks()
             log.drain()
         }
@@ -161,11 +172,20 @@ class EntityCaptureTest : BothPlanes() {
         die(player(alice, killer = player(alice)))
         assertTrue(log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.isEmpty())
 
-        die(player(alice, killer = player(bob)))
+        val spot = Spot(world, 3.5, 64.0, 3.5)
+        val drop = UUID.randomUUID()
+        die(player(alice, killer = player(bob))) {
+            spawns.origins.expect(PlayerInv(alice, 0), Cause.DEATH_DROP, key("diamond"), spot, 1, tag = alice)
+            spawns.origins.expect(PlayerInv(bob, 0), Cause.DEATH_DROP, key("diamond"), spot, 1, tag = bob)
+            assertEquals(1, spawns.origins.claim(drop, spot, key("diamond"), 1))
+            assertEquals(1, spawns.origins.claim(UUID.randomUUID(), spot, key("diamond"), 1))
+        }
         val row = log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.single()
         assertEquals(EntityKind.PLAYER_DIED, row.kind)
         assertEquals(alice, row.uuid)
         assertEquals(bob, row.actor)
+        assertEquals(Confidence.FACT, row.confidence)
+        assertEquals(listOf(drop), row.drops)
     }
 
     private val ground by lazy {
@@ -198,6 +218,39 @@ class EntityCaptureTest : BothPlanes() {
         assertEquals(Confidence.NEARBY, row.confidence)
     }
 
+    @Test
+    fun `a mob that fell off a floor somebody broke a moment ago names them, as a guess`() {
+        log.submit(listOf(BlockChange(3, 83, 3, "minecraft:stone", "minecraft:air", Cause.BLK_PLAYER_BREAK, now, actor = bob)))
+        log.drain()
+
+        val row = mobDies({ EntityDamageEvent(it, DamageCause.FALL, stub(DamageSource::class.java), 20.0) }, fell = 20f)
+        assertEquals(bob, row.actor)
+        assertEquals(Confidence.INFERRED, row.confidence)
+    }
+
+    @Test
+    fun `a frame that fell off its wall names whoever took the wall away`() {
+        log.submit(listOf(BlockChange(3, 64, 2, "minecraft:stone", "minecraft:air", Cause.BLK_PLAYER_BREAK, now, actor = bob)))
+        log.drain()
+        val wall = blockStub(world, 3, 64, 2, Blocks.AIR.defaultBlockState().asBlockData())
+        val ground = stub(World::class.java, mapOf(
+            "getUID" to world,
+            "getBlockAt" to { _: Array<out Any?> ->
+                blockStub(world, 3, 64, 3, Blocks.AIR.defaultBlockState().asBlockData(), mapOf(BlockFace.NORTH to wall))
+            },
+        ))
+        val frame = hung(ground, BlockFace.NORTH)
+
+        capture().onHangingBreak(HangingBreakEvent(frame, HangingBreakEvent.RemoveCause.PHYSICS))
+        runTasks()
+        log.drain()
+
+        val row = log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.single()
+        assertEquals(EntityKind.REMOVED, row.kind)
+        assertEquals(frame.uniqueId, row.uuid)
+        assertEquals(bob, row.actor)
+    }
+
     // What a rollback brings the mob back from; its riders are entities of their own.
     @Test
     fun `a removed mob keeps its whole NBT without its passengers`() {
@@ -224,6 +277,7 @@ class EntityCaptureTest : BothPlanes() {
         val wither = stub(Wither::class.java, mapOf("getUniqueId" to UUID.randomUUID(), "getType" to EntityType.WITHER))
         summoned.appeared(wither.uniqueId, alice)
         val row = mobDies({ EntityDamageByEntityEvent(wither, it, DamageCause.ENTITY_EXPLOSION, stub(DamageSource::class.java), 1.0) })
+        assertEquals(Cause.BLK_WITHER, row.cause)
         assertEquals(alice, row.actor)
         assertEquals(Confidence.INFERRED, row.confidence)
     }
@@ -258,6 +312,38 @@ private class Dying(server: CraftServer, handle: NmsLivingEntity) : CraftLivingE
     override fun getLastDamageCause(): EntityDamageEvent = damage
     override fun getKiller(): Player? = null
     override fun getPersistentDataContainer() = CraftPersistentDataContainer(CraftPersistentDataTypeRegistry())
+}
+
+private class SavedFrame(type: NmsEntityType<out ItemFrame>, level: Level) : ItemFrame(type, level) {
+    override fun registryAccess(): RegistryAccess = ServerRegistries.access
+
+    override fun saveAsPassenger(output: ValueOutput, includeAll: Boolean, includeNonSaveable: Boolean, forceSerialization: Boolean): Boolean {
+        output.putString("id", "minecraft:item_frame")
+        return true
+    }
+}
+
+private class Hung(server: CraftServer, handle: HangingEntity) : CraftHanging(server, handle) {
+    lateinit var id: UUID
+    lateinit var ground: World
+    lateinit var saved: HangingEntity
+    lateinit var face: BlockFace
+
+    override fun getHandle(): HangingEntity = saved
+    override fun getUniqueId(): UUID = id
+    override fun getWorld(): World = ground
+    override fun getLocation(): Location = Location(ground, 3.5, 64.0, 3.5)
+    override fun getAttachedFace(): BlockFace = face
+}
+
+private fun hung(ground: World, face: BlockFace): Hung {
+    val frame = unsafe.allocateInstance(Hung::class.java) as Hung
+    CraftEntity::class.java.getDeclaredField("entityType").apply { isAccessible = true }.set(frame, EntityType.ITEM_FRAME)
+    frame.id = UUID.randomUUID()
+    frame.ground = ground
+    frame.face = face
+    frame.saved = unsafe.allocateInstance(SavedFrame::class.java) as SavedFrame
+    return frame
 }
 
 private fun dying(ground: World, fell: Float, damage: (Dying) -> EntityDamageEvent): Dying {

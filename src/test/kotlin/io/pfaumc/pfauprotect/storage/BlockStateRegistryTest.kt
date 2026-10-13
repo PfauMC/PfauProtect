@@ -1,7 +1,6 @@
 package io.pfaumc.pfauprotect.storage
 
 import io.pfaumc.pfauprotect.OneLedger
-import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -35,7 +34,6 @@ class BlockStateRegistryTest : OneLedger() {
     private val west = "minecraft:oak_stairs[facing=west,half=bottom,shape=straight,waterlogged=false]"
     private val wires = List(64) { "minecraft:redstone_wire[power=$it]" }
     private val waterlogged = "minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=true]"
-    private val signText = """{"messages":["hello","","",""]}""".toByteArray()
 
     @Test
     fun `the whole state string is the key`() {
@@ -54,16 +52,6 @@ class BlockStateRegistryTest : OneLedger() {
 
         for ((index, key) in wires.withIndex()) assertEquals(index, log.registries.lookupKey(state, key))
         assertEquals(wires.size, log.registries.idForKey(state, east))
-    }
-
-    @Test
-    fun `a payload survives a close and a reopen`() {
-        val payloadId = log.payloads.idOf(signText)
-        reopen()
-
-        assertArrayEquals(signText, log.payload(payloadId))
-        assertEquals(payloadId, log.payloads.lookup(signText))
-        assertNotEquals(payloadId, log.payloads.idOf("""{"messages":["other","","",""]}""".toByteArray()))
     }
 
     // A number any thread can see is one a row in another database may already cite, so it has to be on

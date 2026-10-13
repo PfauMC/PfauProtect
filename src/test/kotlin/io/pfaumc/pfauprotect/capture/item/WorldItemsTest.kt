@@ -33,6 +33,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import java.nio.file.Path
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
@@ -190,26 +192,31 @@ class WorldItemsTest {
         assertEquals(0, mergedAmount(donor = 30, target = 80, targetMax = 99))
     }
 
-    @Test
-    fun `a drop the pass could not spend is born anyway`() {
-        val entity = UUID.randomUUID()
+    // Out of the creative menu nothing left the inventory, so the drop itself made the item, and that is
+    // known rather than guessed; otherwise the row is the one the spawn funnel would have written.
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun `a drop the pass could not spend is born anyway`(creative: Boolean) {
+        val entity = ItemEntityRef(UUID.randomUUID())
         val form = "diamond".toByteArray()
-        unspentDrop(spawns.coalescer, Intent(Cause.DROP_FROM_MENU, to = ItemEntityRef(entity), form = form, qty = 5), 5)
+        val drop = Intent(Cause.DROP_FROM_MENU, to = entity, form = form, qty = 64, actor = alice)
+        unspentDrop(spawns.coalescer, drop, 5) { creative && it == alice }
 
         val row = spawns.rows().single()
-        assertEquals(Cause.ITEM_SPAWN, row.cause)
-        assertEquals(Void, row.from)
-        assertEquals(ItemEntityRef(entity), row.to)
+        assertEquals(Void to entity, row.from to row.to)
         assertEquals(5, row.qty)
-        assertEquals(Confidence.INFERRED, row.confidence)
         assertTrue(form.contentEquals(row.form))
+        if (creative) {
+            assertEquals(Triple(Cause.CREATIVE_SET, Confidence.FACT, alice), Triple(row.cause, row.confidence, row.actor))
+        } else {
+            assertEquals(Triple(Cause.ITEM_SPAWN, Confidence.INFERRED, null), Triple(row.cause, row.confidence, row.actor))
+        }
     }
 
     // An intent that never named an entity of its own explains something other than a birth, and the
     // spawn it would invent here belongs to nothing.
     @Test
     fun `an intent that names no dropped entity is left alone`() {
-        unspentDrop(spawns.coalescer, Intent(Cause.DEATH_DROP, qty = 3, recorded = true), 3)
         unspentDrop(spawns.coalescer, Intent(Cause.PICKUP, from = ItemEntityRef(UUID.randomUUID()), qty = 1), 1)
         // An entity with no form to give it says nothing of what was born.
         unspentDrop(spawns.coalescer, Intent(Cause.DROP_FROM_MENU, to = ItemEntityRef(UUID.randomUUID()), qty = 2), 2)

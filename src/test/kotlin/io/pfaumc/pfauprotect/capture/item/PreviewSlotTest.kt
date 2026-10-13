@@ -2,45 +2,50 @@ package io.pfaumc.pfauprotect.capture.item
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.stub
 import org.bukkit.NamespacedKey
 import org.bukkit.inventory.AnvilInventory
+import org.bukkit.inventory.CartographyInventory
 import org.bukkit.inventory.ComplexRecipe
 import org.bukkit.inventory.CraftingInventory
 import org.bukkit.inventory.FurnaceInventory
+import org.bukkit.inventory.GrindstoneInventory
 import org.bukkit.inventory.Inventory
+import org.bukkit.inventory.LoomInventory
 import org.bukkit.inventory.MerchantInventory
 import org.bukkit.inventory.RecipeChoice
 import org.bukkit.inventory.SmithingInventory
 import org.bukkit.inventory.SmithingTrimRecipe
+import org.bukkit.inventory.StonecutterInventory
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 
 @ExtendWith(Vanilla::class)
 class PreviewSlotTest {
-    // A crafting menu addresses its result ahead of the grid, so the workbench and the player's own
-    // two-by-two both hide the same slot however many grid slots follow it.
     @Test
-    fun `a crafting menu computes its first slot`() {
+    fun `a station hides the slot it computes and a menu that stores its output hides nothing`() {
+        // A crafting menu addresses its result ahead of the grid.
         assertEquals(0, previewSlot(stub(CraftingInventory::class.java, mapOf("getSize" to 10))))
-        assertEquals(0, previewSlot(stub(CraftingInventory::class.java, mapOf("getSize" to 5))))
-    }
-
-    @Test
-    fun `a station built on a result inventory computes its last slot`() {
-        assertEquals(2, previewSlot(stub(AnvilInventory::class.java, mapOf("getSize" to 3))))
         assertEquals(3, previewSlot(stub(SmithingInventory::class.java, mapOf("getSize" to 4))))
-    }
-
-    @Test
-    fun `a menu that stores its output hides nothing`() {
         assertNull(previewSlot(stub(FurnaceInventory::class.java, mapOf("getSize" to 3))))
-        assertNull(previewSlot(stub(Inventory::class.java, mapOf("getSize" to 27))))
     }
 
+    private fun grid(key: String?): Inventory {
+        val recipe = key?.let { stub(ComplexRecipe::class.java, mapOf("getKey" to NamespacedKey.minecraft(it))) }
+        return stub(CraftingInventory::class.java, mapOf("getSize" to 10, "getRecipe" to recipe))
+    }
+
+    private fun smithing(recipe: Any?): Inventory =
+        stub(SmithingInventory::class.java, mapOf("getSize" to 4, "getRecipe" to recipe))
+
+    private fun <T : Inventory> station(type: Class<T>): Inventory = stub(type, mapOf("getSize" to 3))
+
+    // A workbench rearranges whole items and runs a recipe; a station hands back the item that went in,
+    // changed. Only the recipe the grid matched tells a copy or a recolour from an ordinary craft.
     @Test
-    fun `a smithing station tells a trim apart from a transform`() {
+    fun `the station a result came out of names its causes and its kind`() {
         val trim = SmithingTrimRecipe(
             NamespacedKey.minecraft("test_trim"),
             RecipeChoice.empty(),
@@ -48,37 +53,33 @@ class PreviewSlotTest {
             RecipeChoice.empty(),
             stub(org.bukkit.inventory.meta.trim.TrimPattern::class.java),
         )
-
-        assertEquals(Cause.SMITHING_TRIM, shiftOf(smithing(trim))!!.consume)
-        // A result-slot click that matched nothing is ordinary traffic, and the default carries it.
-        assertEquals(Cause.SMITHING_TRANSFORM, shiftOf(smithing(null))!!.consume)
-    }
-
-    // A copy and a recolour go through the same grid as any craft; only the recipe the grid matched
-    // tells them apart, and only while the click is delivered.
-    @Test
-    fun `a special recipe in the crafting grid is named for what it does`() {
-        fun grid(key: String): Inventory {
-            val recipe = stub(ComplexRecipe::class.java, mapOf("getKey" to NamespacedKey.minecraft(key)))
-            return stub(CraftingInventory::class.java, mapOf("getSize" to 10, "getRecipe" to recipe))
+        fun same(cause: Cause, kind: Kind) = listOf(cause, cause, kind)
+        val craft = listOf(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER)
+        val cases = listOf(
+            "no recipe" to grid(null) to craft,
+            "shulker_box" to grid("shulker_box") to craft,
+            "book_cloning" to grid("book_cloning") to same(Cause.BOOK_COPY, Kind.TRANSFER),
+            "leather_chestplate_dyed" to grid("leather_chestplate_dyed") to same(Cause.DYE_ITEM, Kind.TRANSFER),
+            "red_shulker_box" to grid("red_shulker_box") to same(Cause.DYE_ITEM, Kind.TRANSFER),
+            "white_banner_duplicate" to grid("white_banner_duplicate") to same(Cause.BANNER_DUPLICATE, Kind.TRANSFER),
+            "anvil" to station(AnvilInventory::class.java) to same(Cause.ANVIL_COMBINE, Kind.MUTATE),
+            "grindstone" to station(GrindstoneInventory::class.java) to same(Cause.GRINDSTONE, Kind.MUTATE),
+            "stonecutter" to station(StonecutterInventory::class.java) to same(Cause.STONECUTTER, Kind.MUTATE),
+            "loom" to station(LoomInventory::class.java) to same(Cause.LOOM, Kind.MUTATE),
+            "cartography" to station(CartographyInventory::class.java) to same(Cause.CARTOGRAPHY, Kind.MUTATE),
+            "trim" to smithing(trim) to same(Cause.SMITHING_TRIM, Kind.MUTATE),
+            // A result-slot click that matched nothing is ordinary traffic, and the default carries it.
+            "smithing, no recipe" to smithing(null) to same(Cause.SMITHING_TRANSFORM, Kind.MUTATE),
+            // The payment is destroyed and the goods are made.
+            "trade" to station(MerchantInventory::class.java) to listOf(Cause.TRADE_PAYMENT, Cause.TRADE_RESULT, Kind.TRANSFER),
+        )
+        for ((named, expected) in cases) {
+            val (name, top) = named
+            val shift = shiftOf(top)!!
+            assertEquals(expected, listOf(shift.consume, shift.result, shift.kind), name)
         }
-        assertEquals(Cause.BOOK_COPY, shiftOf(grid("book_cloning"))!!.consume)
-        assertEquals(Cause.DYE_ITEM, shiftOf(grid("leather_chestplate_dyed"))!!.consume)
-        assertEquals(Cause.DYE_ITEM, shiftOf(grid("red_shulker_box"))!!.consume)
-        assertEquals(Cause.BANNER_DUPLICATE, shiftOf(grid("white_banner_duplicate"))!!.consume)
-        assertEquals(Cause.CRAFT_CONSUME, shiftOf(grid("shulker_box"))!!.consume)
-        assertEquals(Cause.CRAFT_CONSUME, shiftOf(stub(CraftingInventory::class.java, mapOf("getSize" to 10)))!!.consume)
-    }
-
-    private fun smithing(recipe: Any?): Inventory =
-        stub(SmithingInventory::class.java, mapOf("getSize" to 4, "getRecipe" to recipe))
-
-    @Test
-    fun `a trade is a station whose result is its last slot`() {
-        val merchant = stub(MerchantInventory::class.java, mapOf("getSize" to 3))
-        assertEquals(2, previewSlot(merchant))
-        val shift = shiftOf(merchant)!!
-        assertEquals(Cause.TRADE_PAYMENT, shift.consume)
-        assertEquals(Cause.TRADE_RESULT, shift.result)
+        assertEquals(Cause.CRAFT_REMAINDER, shiftOf(grid(null))!!.remainder)
+        assertEquals(Cause.CRAFT_REMAINDER, shiftOf(grid("book_cloning"))!!.remainder)
+        assertNull(shiftOf(stub(Inventory::class.java)))
     }
 }

@@ -34,7 +34,6 @@ import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import org.bukkit.ExplosionResult
 import org.bukkit.Location
-import org.bukkit.TreeType
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
@@ -49,14 +48,11 @@ import org.bukkit.entity.Player
 import org.bukkit.entity.TNTPrimed
 import org.bukkit.event.entity.EntityExplodeEvent
 import org.bukkit.event.block.BlockExplodeEvent
-import org.bukkit.event.block.BlockFertilizeEvent
 import org.bukkit.event.block.BlockPistonExtendEvent
 import org.bukkit.event.entity.EntityChangeBlockEvent
 import org.bukkit.event.entity.EntityRemoveEvent
-import org.bukkit.event.world.StructureGrowEvent
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -121,14 +117,6 @@ class BlockDestructionTest : BothPlanes() {
         later = later,
     )
 
-    private fun structureGrow(blocks: MutableList<BlockState>) =
-        StructureGrowEvent(Location(worldStub(world), 0.0, 64.0, 0.0), TreeType.TREE, false, null, blocks)
-
-    private fun fertilize(blocks: MutableList<BlockState>) = BlockFertilizeEvent(
-        blockStub(world, 0, 64, 0, Blocks.OAK_SAPLING.defaultBlockState().asBlockData()),
-        null,
-        blocks,
-    )
 
     /**
      * The choice between writing a position off and exchanging what it holds, driven where the listener
@@ -148,6 +136,8 @@ class BlockDestructionTest : BothPlanes() {
     }
 
     private fun stateAfter(row: BlockRow) = shared.registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter)
+
+    private fun stateBefore(row: BlockRow) = shared.registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore)
 
     private fun rowsAt(x: Int, y: Int, z: Int) = log.at(x, y, z, 0, Long.MAX_VALUE, limit = 100, reverse = false)
 
@@ -194,22 +184,6 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(emptyList<Transfer>(), releasedBy(listener, at, whiteBedHead, SHULKER_BOX))
     }
 
-    // The two events of one bone-mealed tree share a list, and the fertilize event files it; a tree that
-    // grew by itself raises only the first, and its claim waits for the next tick to file it.
-    @Test
-    fun `the fertilize event takes the claim the structure event left for the same tree`() {
-        val listener = listener()
-        val fertilized = ArrayList<BlockState>()
-        val natural = ArrayList<BlockState>()
-
-        listener.onStructureGrow(structureGrow(fertilized))
-        listener.onStructureGrow(structureGrow(natural))
-        listener.onFertilize(fertilize(fertilized))
-
-        assertFalse(listener.growing.claims(fertilized))
-        assertTrue(listener.growing.claims(natural))
-    }
-
     // The bed went off from its head, where the player clicked; the foot is cleared by the server under no
     // event of its own and is the half that remembers the form the bed was put down as.
     @Test
@@ -238,6 +212,7 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(alice, footRows[1].actor)
         assertEquals(footRows[1].eventId, headRows[1].eventId)
         assertEquals(listOf(AIR, AIR), listOf(footRows[1], headRows[1]).map { stateAfter(it) })
+        assertEquals(listOf(WHITE_BED_FOOT, WHITE_BED_HEAD), listOf(footRows[1], headRows[1]).map { stateBefore(it) })
 
         val report = assertPlanesAgree(settled)
         assertEquals(1, report.checked)

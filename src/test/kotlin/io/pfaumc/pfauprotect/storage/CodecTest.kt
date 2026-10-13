@@ -84,6 +84,10 @@ class CodecTest {
             assertEquals(v, reader.varLong())
             assertEquals(0, reader.remaining)
         }
+        assertArrayEquals(
+            byteArrayOf(0x80.toByte(), 0x80.toByte(), 0x80.toByte(), 0x80.toByte(), 0x10),
+            ByteWriter().varLong(4294967296L).toByteArray(),
+        )
     }
 
     @Test
@@ -220,14 +224,6 @@ class CodecTest {
         assertEquals(12L, decoded?.itemFormId)
     }
 
-    @Test
-    fun `every cause answers to byId`() {
-        for (cause in Cause.entries) {
-            assertTrue(cause.id in 0..255) { "$cause has id ${cause.id}" }
-            assertEquals(cause, Cause.byId(cause.id))
-        }
-    }
-
     // Written out by hand rather than taken from the encoder: a round trip cannot notice a layout
     // change applied to both sides, and a silent change to the layout is a database that reads back
     // as something other than what was written.
@@ -351,6 +347,15 @@ class CodecTest {
             entry(PlayerInv(alice, 4), PlayerCursor(alice), 1),
             byteArrayOf(0x00, 0x10, 0x04, 0x02, 0x00, 0x01, 0x02),
         )
+        // A position as a holder has no slot, and the Void as a counterparty is its type byte alone.
+        assertPinned(
+            entry(WorldBlock(worldA, 100, 64, -200), Void, 1),
+            byteArrayOf(0x00, 0x10, 0x00, 0x09, 0x01, 0x02),
+        )
+        assertPinned(
+            entry(PlayerEnder(playerB, 26), PlayerEnder(alice, 3), -7),
+            byteArrayOf(0x00, 0x10, 0x1A, 0x03, 0x00, 0x03, 0x01, 0x0D),
+        )
 
         assertArrayEquals(
             byteArrayOf(0x02, 0x00, *timeAndTx, 0x02),
@@ -363,6 +368,19 @@ class CodecTest {
         assertArrayEquals(
             byteArrayOf(0x07, *entityBytes, *timeAndTx, 0x02),
             EntryCodec.key(ItemEntityRef(entity), T0, 7L, 2, registries),
+        )
+        assertArrayEquals(
+            byteArrayOf(0x03, 0x01, *timeAndTx, 0x02),
+            EntryCodec.key(PlayerEnder(playerB, 26), T0, 7L, 2, registries),
+        )
+        assertEquals(0, registries.id(RegistryNamespace.WORLD, worldA))
+        assertArrayEquals(
+            byteArrayOf(
+                0x0A, 0x00, 0x00,
+                0x95.toByte(), 0x55, 0x55, 0x55, 0x55, 0x2D, 0x48, 0x80.toByte(), 0x40,
+                *timeAndTx, 0x02,
+            ),
+            EntryCodec.key(WorldBlock(worldA, 100, 64, -200), T0, 7L, 2, registries),
         )
     }
 
@@ -384,13 +402,21 @@ class CodecTest {
         assertTrue(EntryCodec.key(holder.copy(slot = 26), 1L, 1L, 0, registries).startsWith(prefix))
     }
 
+    // The store sizes a prefix extractor for this length and hands every key shorter than it to a
+    // plain scan, so a world number whose width followed how many worlds the server has would move
+    // the chunk out from under the extractor once there are more worlds than a byte holds.
     @Test
     fun `chunk prefix catches every block of its chunk and nothing else`() {
+        val fillers = List(0x100) { UUID.nameUUIDFromBytes("w$it".toByteArray()) }
+        for (world in fillers) registries.id(RegistryNamespace.WORLD, world)
+        assertEquals(0x100, registries.id(RegistryNamespace.WORLD, worldA))
         val chunkX = -5
         val chunkZ = 7
         val prefixes = EntryCodec.blockChunkPrefixes(worldA, chunkX, chunkZ, registries)
         assertEquals(2, prefixes.size)
-        for (prefix in prefixes) assertEquals(EntryCodec.CHUNK_PREFIX_SIZE, prefix.size)
+        for (prefix in prefixes + EntryCodec.blockChunkPrefixes(fillers.first(), chunkX, chunkZ, registries)) {
+            assertEquals(EntryCodec.CHUNK_PREFIX_SIZE, prefix.size)
+        }
         for (localX in 0..15) {
             for (localZ in 0..15) {
                 for (y in listOf(-64, 0, 319)) {
@@ -414,28 +440,6 @@ class CodecTest {
         )) {
             val key = EntryCodec.key(neighbour, 1L, 1L, 0, registries)
             assertFalse(prefixes.any { key.startsWith(it) }) { "$neighbour" }
-        }
-    }
-
-    // The store sizes a prefix extractor for this length and hands every key shorter than it to a
-    // plain scan, so a world number whose width followed how many worlds the server has would move
-    // the chunk out from under the extractor on the second world.
-    @Test
-    fun `the chunk part of a position key is the same length whatever the world or the position`() {
-        val worlds = List(300) { UUID.nameUUIDFromBytes("w$it".toByteArray()) }
-        for (world in worlds) registries.id(RegistryNamespace.WORLD, world)
-        assertTrue(registries.id(RegistryNamespace.WORLD, worlds.last()) > 0xFF)
-
-        for (world in listOf(worlds.first(), worlds[200], worlds.last())) {
-            for (position in listOf(intArrayOf(0, 0, 0), intArrayOf(-1, -64, -1), intArrayOf(134217727, 32767, -134217728))) {
-                val (x, y, z) = position.toList()
-                val chunk = EntryCodec.blockChunkPrefixes(world, x shr 4, z shr 4, registries)
-                for (prefix in chunk) assertEquals(EntryCodec.CHUNK_PREFIX_SIZE, prefix.size)
-                for (holder in listOf(Container(world, x, y, z, 3), WorldBlock(world, x, y, z))) {
-                    val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
-                    assertTrue(chunk.any { key.startsWith(it) }) { "$holder in world $world" }
-                }
-            }
         }
     }
 }

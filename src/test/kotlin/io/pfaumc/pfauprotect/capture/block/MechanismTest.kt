@@ -28,9 +28,9 @@ import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.Furnace
 import org.bukkit.event.block.BlockCookEvent
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -91,10 +91,7 @@ class MechanismTest {
     fun `bone meal spent by a dispenser leaves its slot`() {
         val before = listOf(null, held("bone_meal", 8))
         val after = listOf(null, held("bone_meal", 7))
-        val change = dispenseChanges(before, after, 1, ejected = 0).single()
-        assertEquals(1, change.slot)
-        assertEquals(1, change.qty)
-        assertFalse(change.gain)
+        assertEquals(setOf("1 -1 bone_meal"), dispenseChanges(before, after, 1, ejected = 0).described())
     }
 
     @Test
@@ -263,8 +260,10 @@ class MechanismTest {
         val consumed = transaction.single { it.to == Void }
         assertEquals(1, consumed.qty, "the whole input stack was booked as smelted")
         assertEquals(Container(world, 7, 65, -12, 0), consumed.from)
+        assertArrayEquals(form(Items.RAW_IRON), consumed.form)
         val produced = transaction.single { it.from == Void }
         assertEquals(1, produced.qty)
+        assertArrayEquals(form(Items.IRON_INGOT), produced.form)
         assertEquals(Container(world, 7, 65, -12, 2), produced.to)
     }
 

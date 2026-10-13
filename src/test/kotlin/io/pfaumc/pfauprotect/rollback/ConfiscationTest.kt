@@ -27,7 +27,9 @@ class ConfiscationTest : OneLedger() {
         return Tally().apply { traces += Trace(lead, id, qty) }
     }
 
-    private fun owed(tally: Tally) = owedFor(log, tally).associate { it.taker to it.qty }
+    // Summed, so a debt split over several entries counts all of them rather than whichever came last.
+    private fun owed(tally: Tally): Map<Taker, Int> =
+        owedFor(log, tally).groupingBy { it.taker }.fold(0) { sum, owed -> sum + owed.qty }
 
     // Taken straight out of the chest into a hand: that hand owes it.
     @Test

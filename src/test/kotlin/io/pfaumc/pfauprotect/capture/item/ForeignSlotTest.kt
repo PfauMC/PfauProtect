@@ -46,6 +46,9 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
+import org.junit.jupiter.params.provider.EnumSource
 import java.util.UUID
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
@@ -166,41 +169,32 @@ class ForeignSlotTest {
     }
 
     // A command's pass can run before the command has touched the inventory, so its reason waits for
-    // a later pass, and once spent it explains nothing more.
-    @Test
-    fun `a command's reason waits for the pass that shows it and is spent there`() {
+    // a later pass, and once spent it explains nothing more. A change names no end, so nothing marks it
+    // used but the pass having gathered anything at all.
+    @ParameterizedTest
+    @EnumSource(Cause::class, names = ["CMD_GIVE", "CMD_ENCHANT"])
+    fun `a command's reason waits for the pass that shows it and is spent there`(cause: Cause) {
         val clicker = furnaceOpen()
-        listener.intend(clicker, Intent(Cause.CMD_GIVE, from = Void, untilTick = 105))
+        val reason = if (cause == Cause.CMD_ENCHANT) mutation(cause, untilTick = 105) else Intent(cause, from = Void, untilTick = 105)
+        listener.intend(clicker, reason)
 
         listener.recompute(clicker)
         assertEquals(emptyList<List<Transfer>>(), written)
 
-        assertEquals(Cause.CMD_GIVE, lastCause(clicker, 3))
+        assertEquals(cause, lastCause(clicker, 3))
         assertEquals(Cause.DIRECT_NEW_ITEM, lastCause(clicker, 5))
     }
 
-    @Test
-    fun `a command's reason is dropped once its ticks are over`() {
+    @ParameterizedTest
+    @CsvSource("105, CMD_GIVE", "106, DIRECT_NEW_ITEM")
+    fun `a command's reason waits through its last tick and no further`(lastPass: Int, explained: Cause) {
         val clicker = furnaceOpen()
         listener.intend(clicker, Intent(Cause.CMD_GIVE, from = Void, untilTick = 105))
         listener.recompute(clicker)
-        tick = 106
+        tick = lastPass
         listener.recompute(clicker)
 
-        assertEquals(Cause.DIRECT_NEW_ITEM, lastCause(clicker, 3))
-    }
-
-    // A change names no end, so nothing marks it used but the pass having gathered anything at all.
-    @Test
-    fun `a command's change is spent by the first pass that moves anything`() {
-        val clicker = furnaceOpen()
-        listener.intend(clicker, mutation(Cause.CMD_ENCHANT, untilTick = 105))
-
-        listener.recompute(clicker)
-        assertEquals(emptyList<List<Transfer>>(), written)
-
-        assertEquals(Cause.CMD_ENCHANT, lastCause(clicker, 3))
-        assertEquals(Cause.DIRECT_NEW_ITEM, lastCause(clicker, 5))
+        assertEquals(explained, lastCause(clicker, 3))
     }
 
     // The death event is the last moment the slot of each dropped stack is known, and the pass after it
@@ -301,12 +295,22 @@ class ForeignSlotTest {
         assertEquals(Kind.TRANSFER, row.kind)
     }
 
+    // A storage block keeps its slots when the window closes, so only a cursor comes back from it; a
+    // grid or a station hands back what was left in it.
     @Test
     fun `a closed chest hands back only the cursor, a grid hands back its slots`() {
-        assertFalse(returnsOnClose("CHEST", cursorEmpty = true))
-        assertTrue(returnsOnClose("CHEST", cursorEmpty = false))
-        assertTrue(returnsOnClose("WORKBENCH", cursorEmpty = true))
-        assertTrue(returnsOnClose("CRAFTING", cursorEmpty = true))
+        val keeps = listOf(
+            InventoryType.CHEST, InventoryType.ENDER_CHEST, InventoryType.SHULKER_BOX, InventoryType.BARREL,
+            InventoryType.HOPPER, InventoryType.DISPENSER, InventoryType.DROPPER, InventoryType.FURNACE,
+            InventoryType.BLAST_FURNACE, InventoryType.SMOKER, InventoryType.BREWING, InventoryType.CRAFTER,
+        )
+        for (type in keeps) {
+            assertFalse(returnsOnClose(type.name, cursorEmpty = true), type.name)
+            assertTrue(returnsOnClose(type.name, cursorEmpty = false), type.name)
+        }
+        for (type in listOf(InventoryType.WORKBENCH, InventoryType.CRAFTING, InventoryType.ANVIL)) {
+            assertTrue(returnsOnClose(type.name, cursorEmpty = true), type.name)
+        }
     }
 
     private fun <T : Inventory> inventoryStub(slots: Array<BukkitItemStack?>, type: InventoryType, kind: Class<T>): T {

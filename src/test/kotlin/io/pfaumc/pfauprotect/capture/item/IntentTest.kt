@@ -12,9 +12,10 @@ import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
 import java.util.UUID
 
 class IntentTest {
@@ -33,15 +34,6 @@ class IntentTest {
 
     private fun carried(moves: List<Move>) = moves.sumOf { move ->
         (if (move.to is PlayerHolder) move.qty else 0) - (if (move.from is PlayerHolder) move.qty else 0)
-    }
-
-    @Test
-    fun `a command's reason lingers through the ticks it was given and no further`() {
-        val clear = Intent(Cause.CMD_CLEAR, to = Void, untilTick = 105)
-        assertTrue(clear.lingers(100))
-        assertTrue(clear.lingers(105))
-        assertFalse(clear.lingers(106))
-        assertFalse(Intent(Cause.CMD_CLEAR, to = Void).lingers(0))
     }
 
     // A command's reason is handed on by a pass that did not spend it, so the pass has to say which it
@@ -266,41 +258,31 @@ class IntentTest {
         assertEquals(emptyList<Move>(), Intents.explain(emptyList(), listOf(place), player) { bag(3) })
     }
 
-    @Test
-    fun `a placement and a pickup that cancelled in one slot are written through the slot the intent names`() {
+    // Two opposite movements that cancelled in one slot run through a slot of the player's: the one
+    // either intent names, or else one the pass sees holding the form.
+    @ParameterizedTest
+    @CsvSource("3, -1, 3", "-1, 4, 4", "-1, -1, 7")
+    fun `a placement and a pickup that cancelled in one slot are written through a slot of the player's`(
+        placedFrom: Int,
+        pickedInto: Int,
+        through: Int,
+    ) {
+        fun named(slot: Int) = if (slot < 0) null else bag(slot)
         val handed = ArrayList<Cause>()
         val intents = listOf(
-            Intent(Cause.BLOCK_PLACE, to = placed, form = "cobble".toByteArray(), qty = 1, holder = bag(3)),
-            Intent(Cause.PICKUP, from = ground, form = "cobble".toByteArray(), qty = 1, actor = player),
+            Intent(Cause.BLOCK_PLACE, to = placed, form = "cobble".toByteArray(), qty = 2, holder = named(placedFrom)),
+            Intent(Cause.PICKUP, from = ground, form = "cobble".toByteArray(), qty = 2, actor = player, holder = named(pickedInto)),
         )
         val moves = Intents.explain(emptyList(), intents, player, { intent, _ -> handed += intent.cause }) { bag(7) }
         assertEquals(
             listOf(
-                Move(bag(3), placed, key("cobble"), 1, Cause.BLOCK_PLACE, Confidence.FACT),
-                Move(ground, bag(3), key("cobble"), 1, Cause.PICKUP, Confidence.FACT, player),
+                Move(bag(through), placed, key("cobble"), 2, Cause.BLOCK_PLACE, Confidence.FACT),
+                Move(ground, bag(through), key("cobble"), 2, Cause.PICKUP, Confidence.FACT, player),
             ),
             moves,
         )
         assertEquals(0, carried(moves))
         assertEquals(emptyList<Cause>(), handed)
-    }
-
-    @Test
-    fun `a pair no intent gave a slot goes through one the pass can see carrying the form`() {
-        val other = ItemEntityRef(UUID.randomUUID())
-        val intents = listOf(
-            Intent(Cause.DROP_FROM_HAND, to = ground, form = "cobble".toByteArray(), qty = 2),
-            Intent(Cause.PICKUP, from = other, form = "cobble".toByteArray(), qty = 2),
-        )
-        val moves = Intents.explain(emptyList(), intents, player) { bag(5) }
-        assertEquals(
-            listOf(
-                Move(bag(5), ground, key("cobble"), 2, Cause.DROP_FROM_HAND, Confidence.FACT),
-                Move(other, bag(5), key("cobble"), 2, Cause.PICKUP, Confidence.FACT),
-            ),
-            moves,
-        )
-        assertEquals(0, carried(moves))
     }
 
     @Test

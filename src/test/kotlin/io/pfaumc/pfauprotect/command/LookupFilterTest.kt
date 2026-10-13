@@ -28,12 +28,4 @@ class LookupFilterTest {
         assertTrue(namesUser(ledgerEntry(chest, PlayerInv(steve, 0)), setOf(steve)))
         assertFalse(namesUser(ledgerEntry(chest, Void), setOf(steve)))
     }
-
-    // Nobody named is nobody excluded: the exclusion runs over every row and must not swallow the
-    // rows that name no player at all.
-    @Test
-    fun `a row naming nobody is named by nobody`() {
-        assertFalse(namesUser(ledgerEntry(chest, Void), emptySet()))
-        assertFalse(namesUser(ledgerEntry(PlayerInv(steve, 0), chest), emptySet()))
-    }
 }

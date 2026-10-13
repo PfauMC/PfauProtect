@@ -120,12 +120,12 @@ class BlockStoreTest : BothPlanes() {
         shared.registries.id(RegistryNamespace.PLAYER, bob)
         log.submit(listOf(placed(100, 64, -200, ts = T0)))
         log.drain()
-        val eventId = log.at(100, 64, -200, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId
         logs.close(world)
         val byActor = rawRowsOf(root.resolve(world.toString()), "by_actor")
         log = logs.open(world)
 
-        val key = "00000001" + "0000018bcfe56800" + "%016x".format(eventId) + "00" + "95555555552d488040"
+        // The first event of a fresh base.
+        val key = "00000001" + "0000018bcfe56800" + "0000000000000000" + "00" + "95555555552d488040"
         assertEquals(mapOf(key to ""), byActor)
     }
 
@@ -372,7 +372,21 @@ class BlockStoreTest : BothPlanes() {
         assertTrue(log.entitiesAt(8, 64, 8, 0, Long.MAX_VALUE, 100).rows.isEmpty())
         logs.close(world)
         assertEquals(current, storedSchemaOf(base))
-        assertTrue("entities" in familiesOf(base))
+        assertEquals(everyBlockFamily, familiesOf(base).sorted())
+    }
+
+    private val everyBlockFamily = listOf("by_actor", "default", "entities", "meta", "rows")
+
+    // The stamp is the only thing that keeps an older build from reading a base whose families it does
+    // not know, so a family added or dropped without a new version number has to fail here.
+    @Test
+    fun `a fresh base is stamped with the version that matches its families`() {
+        logs.close(world)
+        val base = root.resolve(world.toString())
+
+        assertEquals(3L, storedSchemaOf(base))
+        assertEquals(everyBlockFamily, familiesOf(base).sorted())
+        log = logs.open(world)
     }
 
     @Test

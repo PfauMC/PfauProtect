@@ -237,6 +237,7 @@ class StoredNumbersTest {
             ),
             Cause.entries.associate { it.name to it.id },
         )
+        for (cause in Cause.entries) assertEquals(cause, Cause.byId(cause.id))
         assertEquals(
             mapOf(
                 "PLAYER_INV" to 0,
