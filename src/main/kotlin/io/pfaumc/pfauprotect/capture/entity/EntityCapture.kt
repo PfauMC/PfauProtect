@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.capture.entity
 
 import com.destroystokyo.paper.event.entity.EntityRemoveFromWorldEvent
+import com.destroystokyo.paper.event.entity.EntityZapEvent
 import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.attribution.Attribution
@@ -9,6 +10,7 @@ import io.pfaumc.pfauprotect.attribution.culprit
 import io.pfaumc.pfauprotect.attribution.typeOf
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
+import io.pfaumc.pfauprotect.capture.block.boltBy
 import io.pfaumc.pfauprotect.capture.block.explosionCause
 import io.pfaumc.pfauprotect.capture.block.firedBy
 import io.pfaumc.pfauprotect.capture.block.litBy
@@ -18,6 +20,7 @@ import io.papermc.paper.event.entity.EntityDamageItemEvent
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntityKind
+import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
@@ -432,6 +435,7 @@ class EntityCapture(
         val by = when (reason) {
             TransformReason.CURED -> (old as? ZombieVillager)?.conversionPlayer?.let { Attributed(it.uniqueId, Confidence.FACT) }
             TransformReason.SHEARED -> shearers.remove(old.uniqueId)?.let { Attributed(it, Confidence.FACT) }
+            TransformReason.LIGHTNING -> struckBy(old)
             else -> culpritOf(old, Cause.MOB_TRANSFORM).by
         }
         transformed(old, event.transformedEntities, reason, by)
@@ -439,11 +443,18 @@ class EntityCapture(
 
     // A pig struck by lightning turns on an event of its own, which the one above never hears.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    fun onPigZap(event: PigZapEvent) {
-        val by = culpritOf(event.entity, Cause.MOB_TRANSFORM).by
-            ?: (event.lightning.causingEntity as? Player)?.let { Attributed(it.uniqueId, Confidence.FACT) }
-        transformed(event.entity, listOf(event.pigZombie), TransformReason.LIGHTNING, by)
-    }
+    fun onPigZap(event: PigZapEvent) =
+        transformed(event.entity, listOf(event.pigZombie), TransformReason.LIGHTNING, boltBy(event.lightning, entities::summonerOf))
+
+    // A struck villager turns without being hurt, so its last damage is an older blow. The zap just before
+    // the turn, on the same thread, is the one place that names the bolt that struck it.
+    private val zapped = ThreadLocal<Pair<UUID, Attributed>?>()
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onZap(event: EntityZapEvent) = zapped.set(event.entity.uniqueId to boltBy(event.bolt, entities::summonerOf))
+
+    private fun struckBy(entity: Entity): Attributed =
+        zapped.get().also { zapped.set(null) }?.takeIf { it.first == entity.uniqueId }?.second ?: Attributed(LIGHTNING)
 
     private fun transformed(old: Entity, heirs: List<Entity>, reason: TransformReason, by: Attributed?) {
         val touched = old.persistentDataContainer.has(TOUCHED)
@@ -710,8 +721,8 @@ class EntityCapture(
         (damager as? Player)?.let { return Culprit(own, Attributed(it.uniqueId, Confidence.FACT)) }
         litBy(damager)?.let { return Culprit(cause, Attributed(it.uniqueId, Confidence.FACT)) }
         (shooter as? Player)?.let { return Culprit(cause, Attributed(it.uniqueId, Confidence.FACT)) }
-        // A trident's lightning is the thrower's; a block that fell on it, whoever made it fall.
-        ((damager as? LightningStrike)?.causingEntity as? Player)?.let { return Culprit(cause, Attributed(it.uniqueId, Confidence.FACT)) }
+        // A bolt is whoever it answers to, the weather included; a block that fell on it, whoever made it fall.
+        (damager as? LightningStrike)?.let { return Culprit(cause, boltBy(it, entities::summonerOf)) }
         (damager as? FallingBlock)?.let { attribution.flying(it.uniqueId) }?.let { return Culprit(cause, it) }
         if (damager.type == EntityType.TNT) {
             attribution.placerAt(positionOf(damager.location.block), BlockDestructionListener.TNT)?.let { return Culprit(cause, it) }
@@ -726,8 +737,7 @@ class EntityCapture(
         const val SEEN_CAP = 1024
         // Lava sets a mob burning for fifteen seconds after it climbs out; the rest is slack for a server
         // running behind, whose fifteen seconds of ticks take longer on the clock this is measured by.
-        const val BURN_MILLIS = 20_000L
-        // The ways of dying that a place deals out, and that a player changing the place can therefore be behind.
+        const val BURN_MILLIS = 20_000L        // The ways of dying that a place deals out, and that a player changing the place can therefore be behind.
         val BY_PLACE = setOf(
             DamageCause.FALL, DamageCause.DROWNING, DamageCause.DRYOUT, DamageCause.SUFFOCATION, DamageCause.FREEZE,
             DamageCause.CONTACT, DamageCause.HOT_FLOOR, DamageCause.WITHER, DamageCause.CAMPFIRE,

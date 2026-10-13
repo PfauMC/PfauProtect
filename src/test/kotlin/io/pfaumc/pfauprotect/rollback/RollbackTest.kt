@@ -10,6 +10,7 @@ import io.pfaumc.pfauprotect.command.RowFilter
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
@@ -121,6 +122,24 @@ class RollbackTest : BothPlanes() {
         assertEquals(listOf(DIRT to grass, AIR to DIRT, grass to AIR), stair.getValue(1).steps.map { it.before to it.after })
         assertEquals(grass, settle(grass, stair.getValue(1).steps).back?.before)
         assertTrue(settle(STONE, stair.getValue(5).steps).conflict)
+    }
+
+    // A storm burnt Alice's planks: the bolt is named on the row, and still it is nature the walk passes,
+    // where Bob's fire stops it.
+    @Test
+    fun `a storm's fire on a position being undone is walked past like any nature`() {
+        val planks = "minecraft:oak_planks"
+        val fire = "minecraft:fire[age=3]"
+        for ((x, by) in listOf(7 to LIGHTNING, 9 to bob)) {
+            log.submit(listOf(BlockChange(x, 64, 1, AIR, planks, Cause.BLK_PLAYER_PLACE, T0 + 2, actor = alice)))
+            log.submit(listOf(BlockChange(x, 64, 1, planks, fire, Cause.BLK_FIRE_BURN, T0 + 3, Confidence.INFERRED, actor = by)))
+        }
+        log.drain()
+
+        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val steps = planned.chunks.flatMap { it.positions }.associate { it.at.x to it.steps.map { s -> s.before to s.after } }
+        assertEquals(listOf(planks to fire, AIR to planks), steps.getValue(7))
+        assertEquals(listOf(AIR to planks), steps.getValue(9))
     }
 
     // The grass under the griefer's block went to dirt a while after he put it down: taking his block away

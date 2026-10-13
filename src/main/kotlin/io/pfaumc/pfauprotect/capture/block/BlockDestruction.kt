@@ -23,6 +23,7 @@ import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Kind
+import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.capture.item.NestedItems
 import io.pfaumc.pfauprotect.storage.RocksItemLog
@@ -257,6 +258,12 @@ internal fun litBy(source: Entity): Player? = when (source) {
     is Projectile -> source.shooter as? Player
     else -> null
 }
+
+// A bolt answers to the player whose trident called it down, else to whoever summoned it, else to the weather.
+internal fun boltBy(bolt: LightningStrike, summonerOf: (UUID) -> Attributed?): Attributed =
+    (bolt.causingEntity as? Player)?.let { Attributed(it.uniqueId, Confidence.FACT) }
+        ?: summonerOf(bolt.uniqueId)
+        ?: Attributed(LIGHTNING, Confidence.FACT)
 
 // A skull a wither fires is a projectile with no origin of its own, so it is the wither behind it that
 // the summoner rung has to ask about.
@@ -1935,11 +1942,11 @@ class BlockDestructionListener(
         attribution.placerAt(at, standing) ?: attribution.journalPlacerAt(at, standing)
 
     // Who stands behind an entity that changed a block: the shooter of an arrow, a trident or a thrown
-    // potion, whoever steers a boat, the player a trident's lightning answers to, and otherwise whoever
-    // brought the entity into the world.
+    // potion, whoever steers a boat, whoever a bolt answers to, and otherwise whoever brought the entity
+    // into the world.
     private fun behindChange(entity: Entity): Attributed? {
         litBy(entity)?.let { return Attributed(it.uniqueId, Confidence.FACT) }
-        (entity as? LightningStrike)?.causingPlayer?.let { return Attributed(it.uniqueId, Confidence.FACT) }
+        (entity as? LightningStrike)?.let { return boltBy(it, entities::summonerOf) }
         (entity as? Vehicle)?.passengers?.firstOrNull { it is Player }?.let { return Attributed(it.uniqueId, Confidence.FACT) }
         return entities.summonerOf(firedBy(entity).uniqueId)
     }

@@ -25,6 +25,7 @@ import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.model.Kind
+import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.model.LedgerEntry
 import io.pfaumc.pfauprotect.model.MenuSlot
 import io.pfaumc.pfauprotect.model.Nested
@@ -1172,6 +1173,8 @@ class Lookups(
         // A row with nobody on it is not a row worth less: an unfound culprit is no reason to leave a
         // disappearance unrecorded, so it simply says so.
         actor == null -> Ui.text(tr("nobody", "никто"), Ui.FAINT)
+        actor == LIGHTNING ->
+            Ui.hover(Ui.text(tr("lightning", "молния"), Ui.MUTED), tr("weather: a natural strike, no player", "гроза: природный удар, игрок ни при чём"))
         confidence == Confidence.INFERRED ->
             Ui.hover(Ui.text("${playerName(actor)}?", Ui.WHO), tr("worked out, not seen", "вычислено, не видели напрямую"))
         confidence == Confidence.NEARBY -> Ui.hover(

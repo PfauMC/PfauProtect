@@ -31,7 +31,8 @@ interface PfauProtectApi {
 
 /**
  * Raised before a row of the block or entity plane is written, on whatever thread writes it, only while
- * some plugin listens. Cancelled, the row is not written.
+ * some plugin listens. Cancelled, the row is not written. `actor` is a player's id, or
+ * [io.pfaumc.pfauprotect.model.LIGHTNING] for what a storm's bolt did.
  */
 class PfauProtectPreLogEvent(
     val world: UUID,
