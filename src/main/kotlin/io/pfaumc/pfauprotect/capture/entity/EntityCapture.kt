@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.capture.entity
 
 import com.destroystokyo.paper.event.entity.EntityRemoveFromWorldEvent
+import com.destroystokyo.paper.event.entity.EntityZapEvent
 import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.attribution.Attribution
@@ -445,11 +446,15 @@ class EntityCapture(
     fun onPigZap(event: PigZapEvent) =
         transformed(event.entity, listOf(event.pigZombie), TransformReason.LIGHTNING, boltBy(event.lightning, entities::summonerOf))
 
-    // A struck mob turns without being hurt, so its last damage is an older blow and the bolt is asked
-    // instead: it is still standing within the reach it strikes in.
+    // A struck villager turns without being hurt, so its last damage is an older blow. The zap just before
+    // the turn, on the same thread, is the one place that names the bolt that struck it.
+    private val zapped = ThreadLocal<Pair<UUID, Attributed>?>()
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onZap(event: EntityZapEvent) = zapped.set(event.entity.uniqueId to boltBy(event.bolt, entities::summonerOf))
+
     private fun struckBy(entity: Entity): Attributed =
-        entity.world.getNearbyEntitiesByType(LightningStrike::class.java, entity.location, BOLT_REACH)
-            .firstOrNull()?.let { boltBy(it, entities::summonerOf) } ?: Attributed(LIGHTNING)
+        zapped.get().also { zapped.set(null) }?.takeIf { it.first == entity.uniqueId }?.second ?: Attributed(LIGHTNING)
 
     private fun transformed(old: Entity, heirs: List<Entity>, reason: TransformReason, by: Attributed?) {
         val touched = old.persistentDataContainer.has(TOUCHED)
@@ -732,10 +737,7 @@ class EntityCapture(
         const val SEEN_CAP = 1024
         // Lava sets a mob burning for fifteen seconds after it climbs out; the rest is slack for a server
         // running behind, whose fifteen seconds of ticks take longer on the clock this is measured by.
-        const val BURN_MILLIS = 20_000L
-        // A bolt hurts and turns what stands within three blocks of where it lands.
-        const val BOLT_REACH = 4.0
-        // The ways of dying that a place deals out, and that a player changing the place can therefore be behind.
+        const val BURN_MILLIS = 20_000L        // The ways of dying that a place deals out, and that a player changing the place can therefore be behind.
         val BY_PLACE = setOf(
             DamageCause.FALL, DamageCause.DROWNING, DamageCause.DRYOUT, DamageCause.SUFFOCATION, DamageCause.FREEZE,
             DamageCause.CONTACT, DamageCause.HOT_FLOOR, DamageCause.WITHER, DamageCause.CAMPFIRE,
