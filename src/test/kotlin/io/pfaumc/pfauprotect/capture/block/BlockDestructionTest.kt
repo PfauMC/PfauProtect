@@ -160,7 +160,9 @@ class BlockDestructionTest : BothPlanes() {
         val torch = Blocks.TORCH.defaultBlockState().asBlockData()
         val dirt = Blocks.DIRT.defaultBlockState().asBlockData()
 
-        val namedTorch = releasedBy(listener, at, torch, AIR).single().form + 1
+        val plainTorch = codec.encode(NmsItemStack(Items.TORCH)).form
+        assertArrayEquals(plainTorch, releasedBy(listener, at, torch, AIR).single().form)
+        val namedTorch = plainTorch + 1
         for (empty in listOf(AIR, SOURCE_WATER, "minecraft:fire[age=3]", "minecraft:nether_portal[axis=x]")) {
             val off = releasedBy(listener, at, torch, empty, namedTorch)
             assertEquals(1, off.size, empty)
@@ -176,8 +178,8 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(listOf(Kind.MUTATE, Kind.MUTATE), spread.map { it.kind })
         assertEquals(listOf(at, Void), spread.map { it.from })
         assertEquals(listOf(Void, at), spread.map { it.to })
-        assertArrayEquals(codec.shellOf(dirt), spread[0].form)
-        assertArrayEquals(codec.shellOf(Blocks.GRASS_BLOCK.defaultBlockState().asBlockData()), spread[1].form)
+        assertArrayEquals(codec.encode(NmsItemStack(Items.DIRT)).form, spread[0].form)
+        assertArrayEquals(codec.encode(NmsItemStack(Items.GRASS_BLOCK)).form, spread[1].form)
         val namedDirt = spread[0].form + 1
         assertArrayEquals(namedDirt, releasedBy(listener, at, dirt, GRASS, namedDirt)[0].form)
 
@@ -185,7 +187,7 @@ class BlockDestructionTest : BothPlanes() {
         val grown = releasedBy(listener, at, dirt, OAK_LOG)
         assertEquals(2, grown.size)
         assertArrayEquals(spread[0].form, grown[0].form)
-        assertArrayEquals(codec.shellOf(Blocks.OAK_LOG.defaultBlockState().asBlockData()), grown[1].form)
+        assertArrayEquals(codec.encode(NmsItemStack(Items.OAK_LOG)).form, grown[1].form)
         // Both halves of a bed lose their block and the bed was paid for once: the half that remembers
         // nothing speaks for nothing, whichever shape the change would otherwise take.
         assertEquals(emptyList<Transfer>(), releasedBy(listener, at, whiteBedHead, AIR))
@@ -373,6 +375,8 @@ class BlockDestructionTest : BothPlanes() {
         assertArrayEquals(sandForm, move.form)
         assertEquals(Cause.BLK_FALL_LAND, move.cause)
         assertEquals(bob, move.actor)
+        // The guess is about who, not whether: the sand did land here.
+        assertEquals(Confidence.FACT, move.confidence)
 
         shared.submit(listOf(move))
         drainBoth()
@@ -468,8 +472,11 @@ class BlockDestructionTest : BothPlanes() {
         val row = spawns.rows().single()
         assertEquals(from, row.from)
         assertEquals(ItemEntityRef(item), row.to)
+        assertArrayEquals(sandForm, row.form)
+        assertEquals(1, row.qty)
         assertEquals(Cause.BLK_FALL_START, row.cause)
         assertEquals(bob, row.actor)
+        assertEquals(Confidence.FACT, row.confidence)
     }
 
     /**

@@ -102,6 +102,9 @@ class DiffTest {
         assertEquals(Cause.CONTAINER_REMOVE, causeOf(edge(ender, bag(0))))
         assertEquals(Cause.CURSOR_PLACE, causeOf(edge(cursor, bag(0))))
         assertEquals(Cause.CURSOR_TAKE, causeOf(edge(bag(0), cursor)))
+        // A chest's side names the click, not the cursor's.
+        assertEquals(Cause.CONTAINER_REMOVE, causeOf(edge(chest(0), cursor)))
+        assertEquals(Cause.CONTAINER_ADD, causeOf(edge(cursor, chest(0))))
         assertEquals(Cause.QUICK_MOVE, causeOf(edge(bag(0), bag(1))))
         val inside = Nested(UUID.randomUUID(), 0)
         assertEquals(Cause.BUNDLE_INSERT, causeOf(edge(bag(0), inside)))
@@ -224,7 +227,7 @@ class DiffTest {
     }
 
     @Test
-    fun `every edge is positive and nets each slot to what the snapshots say it gained`() {
+    fun `every edge and every move is positive and nets each slot to what the snapshots say it gained`() {
         val random = Random(7)
         val forms = listOf("stone", "dirt", "pickaxe")
         val boxes = List(2) { UUID.randomUUID() }
@@ -268,15 +271,22 @@ class DiffTest {
             }
             count(after, 1)
             count(before, -1)
-            val netted = HashMap<Pair<Holder, String>, Int>()
-            for (edge in edges) {
-                if (edge.to != Void) netted.merge(edge.to to String(edge.key.form), edge.qty, Int::plus)
-                if (edge.from != Void) netted.merge(edge.from to String(edge.key.form), -edge.qty, Int::plus)
+            fun net(rows: List<Triple<Holder, Holder, Pair<String, Int>>>): Map<Pair<Holder, String>, Int> {
+                val netted = HashMap<Pair<Holder, String>, Int>()
+                for ((from, to, moved) in rows) {
+                    if (to in holders) netted.merge(to to moved.first, moved.second, Int::plus)
+                    if (from in holders) netted.merge(from to moved.first, -moved.second, Int::plus)
+                }
+                return netted.filterValues { it != 0 }
             }
+            val moves = Intents.explain(edges, intents, player)
 
             val context = "round $round: $edges"
             assertTrue(edges.all { it.qty > 0 }, context)
-            assertEquals(expected.filterValues { it != 0 }, netted.filterValues { it != 0 }, context)
+            assertEquals(expected.filterValues { it != 0 }, net(edges.map { Triple(it.from, it.to, String(it.key.form) to it.qty) }), context)
+            // Splitting an edge between intents and naming its far end must leave every slot's balance as it was.
+            assertTrue(moves.all { it.qty > 0 }, "$moves, $context")
+            assertEquals(expected.filterValues { it != 0 }, net(moves.map { Triple(it.from, it.to, String(it.key.form) to it.qty) }), "$moves, $context")
 
             val paired = edges.filter { it.from != Void && it.to != Void }
             assertTrue(paired.none { it.from in unpaired || it.to in unpaired }, "unpaired $unpaired, $context")

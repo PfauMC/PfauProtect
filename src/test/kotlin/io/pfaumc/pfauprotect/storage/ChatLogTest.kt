@@ -26,7 +26,25 @@ class ChatLogTest {
             val bobs = log.read(0, Long.MAX_VALUE, 10) { it.player == bob && "diamond" in it.text }
             assertEquals(listOf(ChatLine(2_000, ChatKind.COMMAND, bob, "/give Bob diamond", "world", 1, 64, 2)), bobs)
             assertEquals(listOf(1_000L), log.read(0, 1_500, 10) { true }.map { it.timestamp })
+            // The limit counts what the filter kept, not what the read walked past.
+            assertEquals(listOf("one", "hello"), log.read(0, Long.MAX_VALUE, 2) { it.player == alice }.map { it.text })
+            assertEquals(listOf("hello"), log.read(0, Long.MAX_VALUE, 1) { it.text == "hello" }.map { it.text })
         }
+    }
+
+    // A line that no longer decodes is skipped without a word, so a changed layout would empty the log
+    // silently; the bytes are written out by hand for that reason.
+    @Test
+    fun `a line keeps its stored layout`(@TempDir dir: Path) {
+        ChatLog(dir).use { it.submit(ChatLine(2_000, ChatKind.COMMAND, bob, "/give", "world", 1, 64, 2)) }
+        val (key, value) = rawRowsOf(dir, "default").entries.single()
+
+        assertEquals("00000000000007d0", key.take(16), "the time, big-endian, then a sequence")
+        assertEquals(24, key.length)
+        val expected = "00" + "01" + "000000000000400080000000000000b0" +
+            "00000005" + "world".toByteArray().hex() + "00000001" + "00000040" + "00000002" +
+            "/give".toByteArray().hex()
+        assertEquals(expected, value)
     }
 
     // A lookup or a line can arrive while the plugin is being disabled; after the close it meets a base

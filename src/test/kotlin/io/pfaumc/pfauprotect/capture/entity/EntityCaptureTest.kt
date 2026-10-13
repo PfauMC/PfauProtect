@@ -129,9 +129,13 @@ class EntityCaptureTest : BothPlanes() {
         log.drain()
         assertEquals(1, log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.count { it.uuid == mob.uniqueId })
 
-        val takenAway = UUID.randomUUID()
-        capture.forget(takenAway)
-        assertFalse(capture.firstSighting(takenAway, now))
+        val takenAway = dying(ground, 0f) { EntityDamageEvent(it, DamageCause.STARVATION, stub(DamageSource::class.java), 1.0) }
+        summoned.appeared(takenAway.uniqueId, alice)
+        capture.forget(takenAway.uniqueId)
+        capture.onDeath(EntityDeathEvent(takenAway, stub(DamageSource::class.java), mutableListOf()))
+        runTasks()
+        log.drain()
+        assertEquals(0, log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.count { it.uuid == takenAway.uniqueId })
     }
 
     // A player who dies of their own arrow or their own dynamite is no grief between players.

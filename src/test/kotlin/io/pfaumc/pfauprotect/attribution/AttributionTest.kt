@@ -119,6 +119,23 @@ class AttributionTest : BothPlanes() {
         assertNull(attribution.journalPlacerAt(at(11, 64, 10), TNT))
     }
 
+    // A fire spreading on from a block the journal found has to find a note there: without one, the
+    // second block it reaches has nobody behind it.
+    @Test
+    fun `the tracker outranks the journal, and a journal find is noted for the chain that follows`() {
+        val here = at(10, 64, 10)
+        journalled(here, AIR, TNT, bob)
+        attribution.placed(here, TNT, alice)
+        assertEquals(alice, attribution.placerOrJournal(here, TNT)?.actor)
+
+        val there = at(12, 64, 10)
+        journalled(there, AIR, TNT, bob)
+        assertEquals(bob, attribution.placerOrJournal(there, TNT)?.actor)
+        assertNull(attribution.placerAt(there, TNT), "a find without renote leaves no note")
+        attribution.placerOrJournal(there, TNT, renote = true)
+        assertEquals(bob, attribution.placerAt(there, TNT)?.actor)
+    }
+
     // A frame comes down seconds after its wall: the breaker is still the newest row there, and a row
     // older than a frame ever waits is not asked.
     @Test
@@ -359,42 +376,51 @@ class AttributionTest : BothPlanes() {
         assertNull(attribution.landed(UUID.randomUUID()))
     }
 
+    // Each table is swept by its own window and no other's: kept at the last moment it stands for, gone
+    // a millisecond after.
+    private fun assertSweptAfter(window: Long, read: () -> Attributed?) {
+        clock = T0 + window
+        attribution.sweep()
+        asOf(T0) { assertEquals(alice, read()?.actor) }
+        clock += 1
+        attribution.sweep()
+        asOf(T0) { assertNull(read()) }
+    }
+
     @Test
-    fun `the sweep drops every note once its own window has passed`() {
+    fun `the sweep drops a placement once its window has passed`() {
         val here = at(10, 64, 10)
-        val entity = UUID.randomUUID()
         attribution.placed(here, TNT, alice)
+        assertSweptAfter(NOTE_MILLIS) { attribution.placerAt(here, TNT) }
+    }
+
+    @Test
+    fun `the sweep drops a removal once its window has passed`() {
+        val here = at(10, 64, 10)
         attribution.removed(here, alice)
+        assertSweptAfter(SUPPORT_MILLIS) { attribution.removerAt(here) }
+    }
+
+    @Test
+    fun `the sweep drops a kill once its window has passed`() {
+        val here = at(10, 64, 10)
         attribution.killed(here, alice)
-        attribution.tookOff(entity, Falling(here, SAND, null))
+        assertSweptAfter(KILL_MILLIS) { attribution.killerNear(here, 1) }
+    }
 
+    @Test
+    fun `the sweep drops a flight once its window has passed`() {
+        // Taken once, so the read that finds it standing and the one that finds it gone ask after two.
+        val kept = UUID.randomUUID()
+        val dropped = UUID.randomUUID()
+        attribution.tookOff(kept, Falling(at(10, 64, 10), SAND, null))
+        attribution.tookOff(dropped, Falling(at(10, 64, 10), SAND, null))
+        clock = T0 + FLIGHT_MILLIS
         attribution.sweep()
-        assertEquals(alice, attribution.removerAt(here)?.actor)
-
-        clock += SUPPORT_MILLIS + 1
+        assertEquals(Falling(at(10, 64, 10), SAND, null), asOf(T0) { attribution.landed(kept) })
+        clock += 1
         attribution.sweep()
-        asOf(T0) {
-            assertNull(attribution.supportRemoverAt(at(11, 64, 10)))
-            assertEquals(alice, attribution.placerAt(here, TNT)?.actor)
-        }
-
-        clock += NOTE_MILLIS + 1
-        attribution.sweep()
-        asOf(T0) {
-            assertNull(attribution.placerAt(here, TNT))
-            assertEquals(alice, attribution.killerNear(here, 1)?.actor)
-        }
-        assertEquals(Falling(here, SAND, null), attribution.landed(entity))
-
-        attribution.tookOff(entity, Falling(here, SAND, null))
-        clock += FLIGHT_MILLIS + 1
-        attribution.sweep()
-        asOf(T0) {
-            assertNull(attribution.placerAt(here, TNT))
-            assertNull(attribution.removerAt(here))
-            assertNull(attribution.landed(entity))
-            assertNull(attribution.killerNear(here, 1))
-        }
+        assertNull(asOf(T0) { attribution.landed(dropped) })
     }
 
     @Test

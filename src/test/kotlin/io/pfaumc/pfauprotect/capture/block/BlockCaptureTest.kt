@@ -7,6 +7,7 @@ import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.attribution.Attribution
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.stub
@@ -102,7 +103,7 @@ class BlockCaptureTest : BothPlanes() {
         BlockCaptureListener(logs, attribution).onPlace(placement(at, canBuild = true, inHand = Items::class.java.getField(item).get(null) as Item))
         log.drain()
 
-        assertEquals(listOf(cause to bob), rowsAt(at).map { it.cause to it.actor })
+        assertEquals(listOf(Triple(cause, bob, Confidence.FACT)), rowsAt(at).map { Triple(it.cause, it.actor, it.confidence) })
     }
 
     // A capture that filed the change since the click has the row already; a second one would be a

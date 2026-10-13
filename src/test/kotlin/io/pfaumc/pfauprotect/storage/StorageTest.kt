@@ -235,9 +235,9 @@ class StorageTest : OneLedger() {
 
         log.submit(Transfer(Cause.ROLLBACK, Void, chestUpperSlot, cobblestone, null, 5, T0 + 100, reverts = listOf(theft.ref)))
         log.drain()
-        assertEquals(setOf(theft.ref), log.compensated(listOf(theft.ref)).keys)
-
         val givenBack = log.holderEntries(chest, T0 + 100, T0 + 100).single()
+        assertEquals(mapOf(theft.ref to givenBack.ref.txId), log.compensated(listOf(theft.ref)), "named by the transaction that gave it back")
+
         log.submit(Transfer(Cause.ROLLBACK, chestUpperSlot, Void, cobblestone, null, 5, T0 + 200, reverts = listOf(givenBack.ref)))
         log.drain()
         assertEquals(emptySet<PostingRef>(), log.compensated(listOf(theft.ref)).keys)
@@ -247,6 +247,26 @@ class StorageTest : OneLedger() {
         log.submit(Transfer(Cause.ROLLBACK, Void, chestUpperSlot, cobblestone, null, 5, T0 + 300, reverts = listOf(undone.ref)))
         log.drain()
         assertEquals(setOf(theft.ref), log.compensated(listOf(theft.ref)).keys)
+    }
+
+    // Past the depth the chain is followed to, the posting counts as given back whatever the parity
+    // below would say: the other answer gives the items back once more, out of nothing.
+    @Test
+    fun `a posting under a chain of undos deeper than is followed counts as given back`() {
+        val theft = log.holderEntries(chest, 0, Long.MAX_VALUE).single { it.qty == -5 }
+        var last = theft.ref
+        for (i in 1..MAX_UNDO_DEPTH + 2) {
+            val into = i % 2 == 1
+            log.submit(
+                Transfer(
+                    Cause.ROLLBACK, if (into) Void else chestUpperSlot, if (into) chestUpperSlot else Void,
+                    cobblestone, null, 5, T0 + 100L * i, reverts = listOf(last),
+                )
+            )
+            log.drain()
+            last = log.holderEntries(chest, T0 + 100L * i, T0 + 100L * i).single().ref
+        }
+        assertEquals(setOf(theft.ref), log.compensated(listOf(theft.ref)).keys, "an even number of undos, read as given back")
     }
 
     @Test
@@ -260,6 +280,11 @@ class StorageTest : OneLedger() {
         assertEquals(listOf(bob, null), owed.map { it.actor })
         log.forgive(owed.take(1))
         assertEquals(listOf(8L), log.owedBy(alice).map { it.formId })
+        assertEquals(listOf(2), log.owedBy(bob).map { it.qty })
+
+        // A player who is offline when the rollback runs pays at a join that can come after a restart.
+        reopen()
+        assertEquals(listOf(8L to 1), log.owedBy(alice).map { it.formId to it.qty })
         assertEquals(listOf(2), log.owedBy(bob).map { it.qty })
     }
 
@@ -381,6 +406,44 @@ class StorageTest : OneLedger() {
         assertEquals(mapOf(position to bobHex), stored["nested_owners"])
     }
 
+    // A transaction of more than one movement is reassembled through its tx row: the count, then each
+    // posting's entry key behind its length.
+    @Test
+    fun `a transaction's index row and the transaction counter keep their stored layout`() {
+        val txIdKey = "tx_id".toByteArray().hex()
+        var entriesBefore = emptySet<String>()
+        var nextBefore = 0L
+        reopen {
+            entriesBefore = rawRowsOf(dir, "entries").keys
+            nextBefore = rawRowsOf(dir, "meta").getValue(txIdKey).toLong(16)
+        }
+        log.submit(
+            listOf(
+                Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 50),
+                Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 3), chestUpperSlot, torch, null, 2, T0 + 50),
+            )
+        )
+        log.drain()
+        val stored = HashMap<String, Map<String, String>>()
+        reopen { for (family in listOf("entries", "tx", "meta")) stored[family] = rawRowsOf(dir, family) }
+
+        val postings = stored.getValue("entries").keys - entriesBefore
+        assertEquals(4, postings.size)
+        val (txKey, packed) = stored.getValue("tx").entries.single()
+        assertEquals("%016x".format(nextBefore), txKey, "the id the counter stood at")
+        assertEquals("04", packed.take(2))
+        val unpacked = ArrayList<String>()
+        var at = 2
+        while (at < packed.length) {
+            val length = packed.substring(at, at + 2).toInt(16)
+            unpacked += packed.substring(at + 2, at + 2 + 2 * length)
+            at += 2 + 2 * length
+        }
+        assertEquals(postings, unpacked.toSet())
+        assertEquals(4, unpacked.size)
+        assertEquals("%016x".format(nextBefore + 1), stored.getValue("meta")[txIdKey], "the next id to hand out")
+    }
+
     // A region thread sets a note and reads it back within one event, long before the writer has put
     // it in the database; a read in between has to see it, and a clear the same.
     @Test
@@ -495,9 +558,9 @@ class StorageTest : OneLedger() {
 
     @Test
     fun `holder entries respect the time window and the limit`() {
-        assertEquals(1, log.holderEntries(aliceInv, T0 + 10, T0 + 10).size)
-        assertEquals(2, log.holderEntries(aliceInv, T0 + 10, Long.MAX_VALUE).size)
-        assertEquals(1, log.holderEntries(aliceInv, 0, Long.MAX_VALUE, limit = 1).size)
+        assertEquals(listOf(T0 + 10), log.holderEntries(aliceInv, T0 + 10, T0 + 10).map { it.timestamp })
+        assertEquals(listOf(T0 + 10, T0 + 20), log.holderEntries(aliceInv, T0 + 10, Long.MAX_VALUE).map { it.timestamp })
+        assertEquals(listOf(T0), log.holderEntries(aliceInv, 0, Long.MAX_VALUE, limit = 1).map { it.timestamp }, "the oldest first")
         assertEquals(-1, log.holderPage(aliceInv, 0, Long.MAX_VALUE, reverse = true, limit = 1).entries.single().qty)
         assertTrue(log.holderEntries(PlayerInv(UUID.randomUUID(), 0), 0, Long.MAX_VALUE).isEmpty())
     }

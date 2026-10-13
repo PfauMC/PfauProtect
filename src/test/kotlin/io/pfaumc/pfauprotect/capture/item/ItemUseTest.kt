@@ -62,9 +62,10 @@ class ItemUseTest {
         assertEquals(Cause.PROJ_DESPAWN, projectileEnd(EntityRemoveEvent.Cause.DESPAWN))
         assertEquals(Cause.PROJ_HIT_VOID, projectileEnd(EntityRemoveEvent.Cause.HIT))
         assertEquals(Cause.PROJ_HIT_VOID, projectileEnd(EntityRemoveEvent.Cause.OUT_OF_WORLD))
-        assertNull(projectileEnd(EntityRemoveEvent.Cause.PICKUP))
-        assertNull(projectileEnd(EntityRemoveEvent.Cause.UNLOAD))
-        assertNull(projectileEnd(EntityRemoveEvent.Cause.DROP))
+        assertEquals(
+            setOf(EntityRemoveEvent.Cause.PICKUP, EntityRemoveEvent.Cause.DROP, EntityRemoveEvent.Cause.UNLOAD, EntityRemoveEvent.Cause.PLAYER_QUIT),
+            EntityRemoveEvent.Cause.entries.filter { projectileEnd(it) == null }.toSet(),
+        )
     }
 
     @Test

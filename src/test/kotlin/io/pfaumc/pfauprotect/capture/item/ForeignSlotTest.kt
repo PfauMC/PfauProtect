@@ -131,6 +131,8 @@ class ForeignSlotTest {
         assertEquals(Container(world, 1, 2, 3, 2), row.from)
         assertEquals(PlayerCursor(player), row.to)
         assertEquals(4, row.qty)
+        assertEquals(Cause.CONTAINER_REMOVE, row.cause)
+        assertEquals(Confidence.FACT, row.confidence)
     }
 
     // A player who was online before the plugin came up has no window seen yet. The event that left a

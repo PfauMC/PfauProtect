@@ -130,6 +130,23 @@ class ItemFormsTest {
         )
     }
 
+    // Minted so that the ids run against the names: sorted by name the two removals would swap.
+    @Test
+    fun `removed components keep the form bytes they were interned with`() {
+        val own = Registries(MemoryRegistryStore())
+        own.idForKey(RegistryNamespace.ITEM_TYPE, "minecraft:stone")
+        own.idForKey(RegistryNamespace.ITEM_TYPE, "minecraft:diamond_sword")
+        own.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, "minecraft:enchantments")
+        own.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, "minecraft:damage")
+        val stripped = ItemStack(Items.DIAMOND_SWORD).apply {
+            remove(DataComponents.DAMAGE)
+            remove(DataComponents.ENCHANTMENTS)
+        }
+
+        // The item, nothing added, two removed, then their ids in order.
+        assertArrayEquals(byteArrayOf(0x01, 0x00, 0x02, 0x00, 0x01), ItemFormCodec(own, ServerRegistries.access).encode(stripped).form)
+    }
+
     private val String.bytes: ByteArray get() = toByteArray(Charsets.US_ASCII)
 
     private fun decoratedSword() = ItemStack(Items.DIAMOND_SWORD).apply {

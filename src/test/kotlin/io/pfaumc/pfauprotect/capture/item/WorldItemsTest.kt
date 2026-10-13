@@ -57,6 +57,10 @@ class WorldItemsTest {
             end(EntityRemoveEvent.Cause.DEATH, DamageCause.FIRE_TICK),
         )
         assertEquals(
+            Cause.ITEM_DESTROY_FIRE to Confidence.FACT,
+            end(EntityRemoveEvent.Cause.DEATH, DamageCause.FIRE),
+        )
+        assertEquals(
             Cause.ITEM_DESTROY_CACTUS to Confidence.FACT,
             end(EntityRemoveEvent.Cause.DEATH, DamageCause.CONTACT),
         )
@@ -83,6 +87,8 @@ class WorldItemsTest {
     fun `an item that dies with health left was killed outright, whatever hurt it before`() {
         assertEquals(Cause.CMD_KILL_ITEM to Confidence.FACT, end(EntityRemoveEvent.Cause.DEATH, health = 5))
         assertEquals(Cause.CMD_KILL_ITEM to Confidence.FACT, end(EntityRemoveEvent.Cause.DEATH, DamageCause.FIRE, health = 4))
+        assertEquals(Cause.CMD_KILL_ITEM to Confidence.FACT, end(EntityRemoveEvent.Cause.DISCARD))
+        assertEquals(Cause.CMD_KILL_ITEM to Confidence.FACT, end(EntityRemoveEvent.Cause.PLUGIN))
     }
 
     @Test
@@ -205,6 +211,8 @@ class WorldItemsTest {
     fun `an intent that names no dropped entity is left alone`() {
         unspentDrop(spawns.coalescer, Intent(Cause.DEATH_DROP, qty = 3, recorded = true), 3)
         unspentDrop(spawns.coalescer, Intent(Cause.PICKUP, from = ItemEntityRef(UUID.randomUUID()), qty = 1), 1)
+        // An entity with no form to give it says nothing of what was born.
+        unspentDrop(spawns.coalescer, Intent(Cause.DROP_FROM_MENU, to = ItemEntityRef(UUID.randomUUID()), qty = 2), 2)
         assertTrue(spawns.rows().isEmpty())
     }
 }

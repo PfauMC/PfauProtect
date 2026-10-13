@@ -81,7 +81,7 @@ private val WIDENS_FROM = setOf(4L, 5L)
 
 // How many times a giving back is followed to the giving back of itself: a rollback, its undo, the
 // undo of that. Past this a posting is taken as given back, which is the side that cannot mint items.
-private const val MAX_UNDO_DEPTH = 16
+internal const val MAX_UNDO_DEPTH = 16
 
 private const val FORMS = 0
 private const val OWNERS = 1

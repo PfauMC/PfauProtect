@@ -97,10 +97,14 @@ class SpawnOriginsTest {
     @Test
     fun `a note for any form takes nothing a tick later`() {
         val vine = key("twisting_vines")
+        val start = spawns.clock
         origins.expectAny(Void, Cause.BLK_FADE, at, null)
-
-        spawns.clock += 60
+        spawns.clock = start + 51
         assertEquals(0, origins.claim(UUID.randomUUID(), at, vine, 1))
+
+        origins.expectAny(Void, Cause.BLK_FADE, at, null)
+        spawns.clock += 50
+        assertEquals(1, origins.claim(UUID.randomUUID(), at, vine, 1), "the same tick still claims")
     }
 
     // A cart a dispenser put on a rail takes the note the dispenser left for its item, into the slot the

@@ -86,9 +86,9 @@ class LookupReadTest : BothPlanes() {
 
         val first = said(LookupQuery(limit = 1))
         assertTrue(first.any { it.contains("block.minecraft.tnt") }, "$first")
-        assertTrue(first.none { it.contains("+ placed") }, "$first")
+        assertTrue(first.none { it.contains("{blk_player_place}") }, "$first")
         val second = said(LookupQuery(limit = 1, page = 2))
-        assertTrue(second.any { it.contains("+ placed") }, "$second")
+        assertTrue(second.any { it.contains("{blk_player_place}") }, "$second")
         assertTrue(second.none { it.contains("block.minecraft.tnt") }, "$second")
     }
 
@@ -106,8 +106,8 @@ class LookupReadTest : BothPlanes() {
 
         // Newest first, so the explosion is above the placement in both planes.
         assertTrue(lines.any { it.contains("- block.minecraft.tnt") && it.contains("minecraft:stone → minecraft:air") }, "$lines")
-        assertTrue(lines.any { it.contains("+ placed") && it.contains("minecraft:air → minecraft:stone") }, "$lines")
-        assertTrue(lines.any { it.contains("+ placed") && it.contains("∅") }, "the item plane is still there: $lines")
+        assertTrue(lines.any { it.contains("{blk_player_place}") && it.contains("minecraft:air → minecraft:stone") }, "$lines")
+        assertTrue(lines.any { it.contains("{block_place}") && it.contains("∅") }, "the item plane is still there: $lines")
         // Newest first across both planes: both explosion rows above both placements.
         val causes = listOf("{blk_tnt}", "{block_place}", "{blk_player_place}")
         val read = lines.mapNotNull { line -> causes.firstOrNull { it in line } }.map { if (it == "{blk_tnt}") "tnt" else "place" }
@@ -173,7 +173,8 @@ class LookupReadTest : BothPlanes() {
         log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_LIQUID_DESTROY, T0)))
         log.drain()
 
-        assertTrue(said().any { it.contains("nobody") }, "${said()}")
+        val lines = said()
+        assertTrue(lines.single { it.contains("minecraft:stone → minecraft:air") }.contains("nobody"), "$lines")
     }
 
     // A chest's own placer emptying it is no theft. Somebody else's chest is, and so is one nobody put
@@ -316,7 +317,7 @@ class LookupReadTest : BothPlanes() {
         shared.drain()
 
         val lines = said(LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE)))
-        assertTrue(lines.any { it.contains("+ placed") }, "$lines")
+        assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
         assertTrue(lines.none { it.contains("page:2") }, "$lines")
         assertTrue(lines.any { it.contains("stopped before the whole area") }, "$lines")
     }

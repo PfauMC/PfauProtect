@@ -3,6 +3,7 @@ import io.pfaumc.pfauprotect.OneLedger
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.storage.FormKey
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
@@ -108,5 +109,16 @@ class ReconcileTest : OneLedger() {
 
         assertEquals(emptyList<Mismatch>(), reconcile.compare(steve, held(stone to 4)))
         assertEquals(4, reconcile.compare(steve, held()).single().ledger)
+    }
+
+    // The live count reads the bag, not the crafting grid, so what lies in the grid is left out of the
+    // ledger's side too; counted there alone it would read as a loss every time a recipe is laid out.
+    @Test
+    fun `what lies in the crafting grid is left out of both sides`() {
+        move(Cause.PICKUP, ItemEntityRef(UUID.randomUUID()), PlayerInv(steve, 0), stone, 4)
+        move(Cause.CONTAINER_ADD, PlayerInv(steve, 0), EntitySlot(steve, 1), stone, 1)
+        log.drain()
+
+        assertEquals(emptyList<Mismatch>(), reconcile.compare(steve, held(stone to 3)))
     }
 }

@@ -234,13 +234,20 @@ class BlockStoreTest : BothPlanes() {
         }
     }
 
+    // The actor index is built from raw rows when an old base is first opened, so its own read of the
+    // actor has to refuse an unknown layout as the decoder does, or a garbage number gets indexed.
     @Test
     fun `a row of an unknown layout version is skipped rather than guessed at`() {
-        val row = BlockRow(1, 2, 3, T0, 0, 0, Cause.BLK_GROW, 1, 2)
+        val row = BlockRow(1, 2, 3, T0, 0, 0, Cause.BLK_GROW, 1, 2, actor = alice)
         val key = BlockCodec.key(1, 2, 3, T0, 0, 0)
-        val value = BlockCodec.value(row, IdResolver { _, _ -> 0 })
-        value[0] = (value[0].toInt() or 0x01).toByte()
-        assertNull(BlockCodec.decodeOrNull(key, value, IdLookup { _, _ -> null }))
+        val known = BlockCodec.value(row, IdResolver { _, _ -> 5 })
+        assertEquals(5, BlockCodec.actorNumberOf(known))
+        for (version in 1..3) {
+            val value = known.copyOf()
+            value[0] = (value[0].toInt() or version).toByte()
+            assertNull(BlockCodec.decodeOrNull(key, value, IdLookup { _, _ -> null }), "version $version")
+            assertNull(BlockCodec.actorNumberOf(value), "version $version")
+        }
     }
 
     @Test

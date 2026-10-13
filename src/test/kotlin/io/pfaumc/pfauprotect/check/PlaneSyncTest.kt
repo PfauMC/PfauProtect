@@ -2,6 +2,8 @@ package io.pfaumc.pfauprotect.check
 import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.storage.BlockChange
+import io.pfaumc.pfauprotect.storage.BlockCodec
+import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.EntryCodec
@@ -244,6 +246,28 @@ class PlaneSyncTest : BothPlanes() {
         val report = assertPlanesAgree(now)
 
         assertEquals(1, report.unreadable)
+        assertEquals(0, report.checked)
+    }
+
+    // A block row that cannot be read says nothing about what stands there, and comparing the position
+    // anyway would report a holding against a block nobody knows.
+    @Test
+    fun `a block row torn or naming an unknown state leaves its position unreadable rather than accused`() {
+        heldAt(8, 64, 8, stoneForm)
+        standAndFall(8, 64, 8)
+        heldAt(9, 64, 9, stoneForm)
+        standAndFall(9, 64, 9)
+        drainBoth()
+        closeAll()
+        val base = dir.resolve("blocks").resolve(world.toString())
+        rawPut(base, "rows", BlockCodec.key(8, 64, 8, longAgo + 5, 998, 0), ByteArray(0))
+        val unknown = BlockRow(9, 64, 9, longAgo + 5, 999, 0, Cause.BLK_PLAYER_BREAK, 60_000, 60_001)
+        rawPut(base, "rows", BlockCodec.key(9, 64, 9, longAgo + 5, 999, 0), BlockCodec.value(unknown) { _, _ -> error("no actor") })
+        openPlanes()
+
+        val report = assertPlanesAgree(now)
+
+        assertEquals(2, report.unreadable)
         assertEquals(0, report.checked)
     }
 
