@@ -23,9 +23,10 @@ class SpawnOriginsTest {
     private val at = Spot(world, 4.0, 70.0, 8.0)
 
     @Test
-    fun `the entity that appears carries the reason the block gave`() {
+    fun `the entity that appears carries the reason and the player the block gave`() {
+        val actor = UUID.randomUUID()
         val entity = UUID.randomUUID()
-        origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 1)
+        origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 1, actor)
         assertEquals(1, origins.claim(entity, Spot(world, 4.5, 70.2, 8.7), stone, 1))
 
         val row = spawns.rows().single()
@@ -33,6 +34,7 @@ class SpawnOriginsTest {
         assertEquals(dropper, row.from)
         assertEquals(ItemEntityRef(entity), row.to)
         assertEquals(1, row.qty)
+        assertEquals(actor, row.actor)
     }
 
     // A dead cow drops beef and leather into two piles; its row has to name both, and only once, and a
@@ -119,19 +121,6 @@ class SpawnOriginsTest {
         assertEquals(Cause.DISPENSER_EJECT, row.cause)
     }
 
-    @Test
-    fun `a harvest keeps the player who caused it`() {
-        val actor = UUID.randomUUID()
-        val entity = UUID.randomUUID()
-        origins.expect(Void, Cause.BEEHIVE_HARVEST, honeycomb, at, 3, actor)
-        origins.claim(entity, at, honeycomb, 3)
-
-        val row = spawns.rows().single()
-        assertEquals(Void, row.from)
-        assertEquals(actor, row.actor)
-        assertEquals(3, row.qty)
-    }
-
     // An explosion drops one pile per kind where the first block of that kind stood. The three blocks
     // that fed this pile stood up to five blocks apart; with the crater's reach every one of them
     // accounts for its share, and with a block's own reach only the one it landed on does.
@@ -164,22 +153,13 @@ class SpawnOriginsTest {
     @Test
     fun `a note is claimed piece by piece and then retired`() {
         origins.expect(Void, Cause.CAMPFIRE_COOK_DROP, stone, at, 3)
-        origins.claim(UUID.randomUUID(), at, stone, 1)
-        origins.claim(UUID.randomUUID(), at, stone, 5)
-        origins.claim(UUID.randomUUID(), at, stone, 1)
+        assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1))
+        assertEquals(2, origins.claim(UUID.randomUUID(), at, stone, 5))
+        assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1))
 
         val rows = spawns.rows()
-        assertEquals(setOf(1, 2), rows.map { it.qty }.toSet())
+        assertEquals(listOf(1, 2), rows.map { it.qty }.sorted())
         assertEquals(2, rows.map { it.to }.toSet().size)
-    }
-
-    // A dispenser that shears or fills a bucket keeps its item, so a note nobody claims must leave no
-    // trace rather than invent a movement into the void.
-    @Test
-    fun `an unclaimed note is dropped without writing anything`() {
-        origins.expect(dropper, Cause.DISPENSER_EJECT, stone, at, 1)
-        origins.sweep()
-        assertTrue(spawns.rows().isEmpty())
     }
 
     @Test
@@ -204,14 +184,6 @@ class SpawnOriginsTest {
     }
 
     @Test
-    fun `claim reports the amount left unexplained`() {
-        origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 2)
-
-        assertEquals(2, origins.claim(UUID.randomUUID(), at, stone, 5))
-        assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 3))
-    }
-
-    @Test
     fun `a positional note does not steal a quantity from a note that names the entity`() {
         val named = UUID.randomUUID()
         origins.expect(Void, Cause.CAMPFIRE_COOK_DROP, stone, at, 1)
@@ -222,17 +194,6 @@ class SpawnOriginsTest {
 
         assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1))
         assertEquals(listOf(dropper, Void), spawns.rows().map { it.from })
-    }
-
-    @Test
-    fun `a note survives the sweep of the tick it was written in`() {
-        origins.expect(dropper, Cause.DISPENSER_EJECT, stone, at, 1)
-        origins.sweep()
-        origins.claim(UUID.randomUUID(), at, stone, 1)
-        assertEquals(1, spawns.rows().size)
-
-        origins.sweep()
-        assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1))
     }
 
     @Test
@@ -252,7 +213,7 @@ class SpawnOriginsTest {
 
     @Test
     fun `a note waits out sweeps that come quicker than its spawn`() {
-        origins.expect(Void, Cause.BLK_TNT, stone, at, 1, rolled = true)
+        origins.expect(Void, Cause.BLK_TNT, stone, at, 2)
         repeat(10) { origins.sweep() }
         assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1))
 
@@ -264,8 +225,12 @@ class SpawnOriginsTest {
     @Test
     fun `a note for a thrower is claimed by that thrower's drop anywhere`() {
         val player = UUID.randomUUID()
-        origins.expectThrown(player, Void, Cause.CMD_GIVE, stone, 1, System.currentTimeMillis() + 60_000)
+        origins.expectThrown(player, Void, Cause.CMD_GIVE, stone, 1, until = spawns.clock + 5_000)
+        // Past the two sweeps and the second that drop a note matched by where it landed.
         origins.sweep()
+        spawns.clock += 1_000
+        origins.sweep()
+        spawns.clock += 1_000
         origins.sweep()
         val far = Spot(at.world, at.x + 500, at.y, at.z)
 

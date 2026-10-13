@@ -36,16 +36,6 @@ class IntentTest {
     }
 
     @Test
-    fun `an intent explains a loss the pass could not pair`() {
-        val moves = Intents.explain(
-            listOf(lost("stone", 1)),
-            listOf(Intent(Cause.BLOCK_PLACE, to = placed, qty = 1)),
-            player,
-        )
-        assertEquals(listOf(Move(bag(0), placed, key("stone"), 1, Cause.BLOCK_PLACE, Confidence.FACT)), moves)
-    }
-
-    @Test
     fun `a command's reason lingers through the ticks it was given and no further`() {
         val clear = Intent(Cause.CMD_CLEAR, to = Void, untilTick = 105)
         assertTrue(clear.lingers(100))
@@ -120,12 +110,6 @@ class IntentTest {
     }
 
     @Test
-    fun `an intent nobody needed leaves no trace`() {
-        val intents = listOf(Intent(Cause.BLOCK_PLACE, to = placed, qty = 1))
-        assertEquals(emptyList<Move>(), Intents.explain(emptyList(), intents, player))
-    }
-
-    @Test
     fun `a remainder nothing explains stays inferred and faces the void`() {
         val moves =
             Intents.explain(listOf(lost("stone", 4)), listOf(Intent(Cause.PICKUP, from = ground)), player)
@@ -165,34 +149,19 @@ class IntentTest {
     }
 
     @Test
-    fun `two intents in one pass explain one edge each`() {
-        val other = ItemEntityRef(UUID.randomUUID())
-        val moves = Intents.explain(
-            listOf(lost("stone", 1), lost("stone", 1, from = bag(1))),
-            listOf(
-                Intent(Cause.DROP_FROM_HAND, to = ground, qty = 1),
-                Intent(Cause.DROP_FROM_MENU, to = other, qty = 1),
-            ),
-            player,
-        )
-        assertEquals(
-            listOf(
-                Move(bag(0), ground, key("stone"), 1, Cause.DROP_FROM_HAND, Confidence.FACT),
-                Move(bag(1), other, key("stone"), 1, Cause.DROP_FROM_MENU, Confidence.FACT),
-            ),
-            moves,
-        )
-    }
-
-    @Test
     fun `an intent that names no amount keeps explaining`() {
         val moves = Intents.explain(
             listOf(lost("stone", 2), lost("dirt", 1, from = bag(1))),
             listOf(Intent(Cause.DROP_FROM_HAND, to = ground)),
             player,
         )
-        assertEquals(2, moves.size)
-        assertTrue(moves.all { it.to == ground && it.cause == Cause.DROP_FROM_HAND })
+        assertEquals(
+            listOf(
+                Move(bag(0), ground, key("stone"), 2, Cause.DROP_FROM_HAND, Confidence.FACT),
+                Move(bag(1), ground, key("dirt"), 1, Cause.DROP_FROM_HAND, Confidence.FACT),
+            ),
+            moves,
+        )
     }
 
     @Test
@@ -274,43 +243,21 @@ class IntentTest {
     }
 
     @Test
-    fun `a drop that emptied no slot is handed back to the event that silenced its spawn`() {
-        val unspent = ArrayList<Pair<Cause, Int>>()
-        val dropped = Intent(Cause.DROP_FROM_MENU, to = ground, form = "stone".toByteArray(), qty = 5)
-        val moves = Intents.explain(emptyList(), listOf(dropped), player, { intent, qty ->
-            unspent += intent.cause to qty
-        })
-        assertEquals(emptyList<Move>(), moves)
-        assertEquals(listOf(Cause.DROP_FROM_MENU to 5), unspent)
-    }
+    fun `a drop is handed back to the event that silenced its spawn for whatever no slot paid`() {
+        fun handBack(losses: List<Edge>): Pair<List<Move>, List<Pair<Cause, Int>>> {
+            val unspent = ArrayList<Pair<Cause, Int>>()
+            val dropped = Intent(Cause.DROP_FROM_MENU, to = ground, form = "stone".toByteArray(), qty = 5)
+            val moves = Intents.explain(losses, listOf(dropped), player, { intent, qty -> unspent += intent.cause to qty })
+            return moves to unspent
+        }
 
-    @Test
-    fun `a drop the pass paid for in full is handed back to nobody`() {
-        val unspent = ArrayList<Pair<Cause, Int>>()
-        val dropped = Intent(Cause.DROP_FROM_HAND, to = ground, form = "stone".toByteArray(), qty = 5)
-        Intents.explain(listOf(lost("stone", 5)), listOf(dropped), player, { intent, qty ->
-            unspent += intent.cause to qty
-        })
-        assertEquals(emptyList<Pair<Cause, Int>>(), unspent)
-    }
-
-    @Test
-    fun `a placement and a pickup that cancelled in one slot are written through that slot`() {
-        val handed = ArrayList<Cause>()
-        val intents = listOf(
-            Intent(Cause.BLOCK_PLACE, to = placed, form = "cobble".toByteArray(), qty = 1, holder = bag(3)),
-            Intent(Cause.PICKUP, from = ground, form = "cobble".toByteArray(), qty = 1, actor = player),
-        )
-        val moves = Intents.explain(emptyList(), intents, player, { intent, _ -> handed += intent.cause })
+        assertEquals(emptyList<Move>() to listOf(Cause.DROP_FROM_MENU to 5), handBack(emptyList()))
         assertEquals(
-            listOf(
-                Move(bag(3), placed, key("cobble"), 1, Cause.BLOCK_PLACE, Confidence.FACT),
-                Move(ground, bag(3), key("cobble"), 1, Cause.PICKUP, Confidence.FACT, player),
-            ),
-            moves,
+            listOf(Move(bag(0), ground, key("stone"), 3, Cause.DROP_FROM_MENU, Confidence.FACT)) to
+                listOf(Cause.DROP_FROM_MENU to 2),
+            handBack(listOf(lost("stone", 3))),
         )
-        assertEquals(0, carried(moves))
-        assertEquals(emptyList<Cause>(), handed)
+        assertEquals(emptyList<Pair<Cause, Int>>(), handBack(listOf(lost("stone", 5))).second)
     }
 
     @Test
@@ -320,19 +267,22 @@ class IntentTest {
     }
 
     @Test
-    fun `the slot an intent names beats the one the pass can see`() {
+    fun `a placement and a pickup that cancelled in one slot are written through the slot the intent names`() {
+        val handed = ArrayList<Cause>()
         val intents = listOf(
             Intent(Cause.BLOCK_PLACE, to = placed, form = "cobble".toByteArray(), qty = 1, holder = bag(3)),
-            Intent(Cause.PICKUP, from = ground, form = "cobble".toByteArray(), qty = 1),
+            Intent(Cause.PICKUP, from = ground, form = "cobble".toByteArray(), qty = 1, actor = player),
         )
-        val moves = Intents.explain(emptyList(), intents, player) { bag(7) }
+        val moves = Intents.explain(emptyList(), intents, player, { intent, _ -> handed += intent.cause }) { bag(7) }
         assertEquals(
             listOf(
                 Move(bag(3), placed, key("cobble"), 1, Cause.BLOCK_PLACE, Confidence.FACT),
-                Move(ground, bag(3), key("cobble"), 1, Cause.PICKUP, Confidence.FACT),
+                Move(ground, bag(3), key("cobble"), 1, Cause.PICKUP, Confidence.FACT, player),
             ),
             moves,
         )
+        assertEquals(0, carried(moves))
+        assertEquals(emptyList<Cause>(), handed)
     }
 
     @Test
@@ -363,7 +313,8 @@ class IntentTest {
         )
         val moves = Intents.explain(emptyList(), intents, player, { intent, _ -> handed += intent.cause })
         assertEquals(emptyList<Move>(), moves)
-        assertEquals(listOf(Cause.DROP_FROM_HAND, Cause.PICKUP), handed)
+        assertEquals(setOf(Cause.DROP_FROM_HAND, Cause.PICKUP), handed.toSet())
+        assertEquals(2, handed.size)
     }
 
     @Test
@@ -375,22 +326,22 @@ class IntentTest {
         assertEquals(emptyList<Move>(), Intents.explain(emptyList(), intents, player) { bag(3) })
     }
 
+    // An event that still knew the slot speaks for that slot only, whether it already wrote the row or
+    // leaves it to the pass: the same form lost from another slot stays what nothing explained.
     @Test
-    fun `a written movement is swallowed at the slot it was written for`() {
-        val moves = Intents.explain(
-            listOf(lost("stone", 1), lost("stone", 1, from = bag(1))),
-            listOf(
-                Intent(
-                    Cause.DEATH_DROP,
-                    form = "stone".toByteArray(),
-                    qty = 1,
-                    recorded = true,
-                    holder = bag(1),
-                ),
-            ),
-            player,
+    fun `an intent that names a slot explains the loss from that slot and no other`() {
+        val edges = listOf(lost("stone", 3, from = bag(1)), lost("stone", 1))
+        val vanished = Move(bag(1), Void, key("stone"), 3, Cause.ITEM_VANISHED, Confidence.INFERRED)
+        val stone = "stone".toByteArray()
+
+        val written = Intent(Cause.DEATH_DROP, form = stone, qty = 1, recorded = true, holder = bag(0))
+        assertEquals(listOf(vanished), Intents.explain(edges, listOf(written), player))
+
+        val used = Intent(Cause.ITEM_USED, to = Void, form = stone, holder = bag(0))
+        assertEquals(
+            listOf(vanished, Move(bag(0), Void, key("stone"), 1, Cause.ITEM_USED, Confidence.FACT)),
+            Intents.explain(edges, listOf(used), player),
         )
-        assertEquals(listOf(Move(bag(0), Void, key("stone"), 1, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
 
     @Test
@@ -402,39 +353,20 @@ class IntentTest {
     }
 
     @Test
-    fun `an intent survives exactly one take`() {
-        val queue = PlayerIntents()
-        val intent = Intent(Cause.BLOCK_PLACE, to = placed, qty = 1)
-        queue.add(player, intent)
-        assertEquals(listOf(intent), queue.take(player))
-        assertEquals(emptyList<Intent>(), queue.take(player))
-    }
-
-    @Test
-    fun `forgetting a player discards what is queued`() {
-        val queue = PlayerIntents()
-        queue.add(player, Intent(Cause.BLOCK_PLACE, to = placed, qty = 1))
-        queue.forget(player)
-        assertEquals(emptyList<Intent>(), queue.take(player))
-    }
-
-    @Test
-    fun `one player's take does not drain another's`() {
+    fun `a player's queue is drained by one take or by forgetting them, and no other player's with it`() {
         val queue = PlayerIntents()
         val other = UUID.randomUUID()
         val mine = Intent(Cause.BLOCK_PLACE, to = placed, qty = 1)
         val theirs = Intent(Cause.PICKUP, from = ground, qty = 3)
         queue.add(player, mine)
         queue.add(other, theirs)
-        assertEquals(listOf(mine), queue.take(player))
-        assertEquals(listOf(theirs), queue.take(other))
-    }
 
-    @Test
-    fun `a closed chest hands back only the cursor, a grid hands back its slots`() {
-        assertFalse(returnsOnClose("CHEST", cursorEmpty = true))
-        assertTrue(returnsOnClose("CHEST", cursorEmpty = false))
-        assertTrue(returnsOnClose("WORKBENCH", cursorEmpty = true))
-        assertTrue(returnsOnClose("CRAFTING", cursorEmpty = true))
+        assertEquals(listOf(mine), queue.take(player))
+        assertEquals(emptyList<Intent>(), queue.take(player))
+
+        queue.add(player, mine)
+        queue.forget(player)
+        assertEquals(emptyList<Intent>(), queue.take(player))
+        assertEquals(listOf(theirs), queue.take(other))
     }
 }

@@ -6,19 +6,37 @@ import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
+import io.pfaumc.pfauprotect.Settings
+import io.pfaumc.pfauprotect.ServerRegistries
+import io.pfaumc.pfauprotect.senderInto
+import io.pfaumc.pfauprotect.stub
+import io.pfaumc.pfauprotect.command.LookupTarget
+import io.pfaumc.pfauprotect.command.Lookups
+import io.pfaumc.pfauprotect.storage.ItemFormCodec
+import io.pfaumc.pfauprotect.storage.MAX_REGION_RADIUS
+import org.bukkit.plugin.Plugin
+import io.pfaumc.pfauprotect.capture.block.Difference
+import io.pfaumc.pfauprotect.capture.block.Standing
 import io.pfaumc.pfauprotect.command.Action
+import io.pfaumc.pfauprotect.command.EventRef
+import io.pfaumc.pfauprotect.command.parseLookupQuery
 import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.RowFilter
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.model.PlayerInv
+import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockChange
+import io.pfaumc.pfauprotect.storage.BlockCodec
 import io.pfaumc.pfauprotect.storage.BlockRow
+import io.pfaumc.pfauprotect.storage.ItemKey
+import io.pfaumc.pfauprotect.storage.rawPut
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -43,21 +61,19 @@ class RollbackTest : BothPlanes() {
 
     private fun step(before: String, after: String) = Step(before, after, null)
 
-    @Test
-    fun `a placement is undone back to what it replaced`() {
-        val placed = step(AIR, STONE)
-        val settled = settle(STONE, listOf(placed))
-        assertSame(placed, settled.back)
-        assertFalse(settled.conflict)
-    }
-
     // Undone once already, the position stands on the row's `before`; a second rollback finds nothing
-    // to do there, and that is not a conflict.
+    // to do there, and that is not a conflict. So for a chain: the plank that burnt and then took the
+    // griefer's lava is a plank again. Dirt somebody else put in its place is still somebody else's.
     @Test
     fun `a row already undone is stepped over`() {
         val settled = settle(STONE, listOf(step(STONE, AIR)))
         assertNull(settled.back)
         assertFalse(settled.conflict)
+        val chain = listOf(step("minecraft:fire[age=13]", "minecraft:lava[level=8]"), step("minecraft:oak_planks", "minecraft:fire[age=13]"))
+        val again = settle("minecraft:oak_planks", chain)
+        assertNull(again.back)
+        assertFalse(again.conflict)
+        assertTrue(settle(DIRT, chain).conflict)
     }
 
     // Bob built on the hole Alice left. Rolling Alice back must not tear Bob's block out, and undoing her
@@ -192,17 +208,6 @@ class RollbackTest : BothPlanes() {
         assertEquals(setOf(Triple(1, 64, 1), Triple(1, 65, 1), Triple(2, 66, 1), Triple(5, 64, 1), Triple(5, 65, 1), Triple(5, 66, 1)), at)
     }
 
-    // Rolled back once, the plank that burnt and then took the griefer's lava is a plank again: the second
-    // rollback finds it done. Dirt somebody else put in its place is still somebody else's.
-    @Test
-    fun `a chain undone before is done and no conflict`() {
-        val chain = listOf(step("minecraft:fire[age=13]", "minecraft:lava[level=8]"), step("minecraft:oak_planks", "minecraft:fire[age=13]"))
-        val again = settle("minecraft:oak_planks", chain)
-        assertNull(again.back)
-        assertFalse(again.conflict)
-        assertTrue(settle(DIRT, chain).conflict)
-    }
-
     // Alice broke the door and put dirt in its place, grass grew on it, and a rollback cut short took the
     // grass away. Rolled back again, the door's lower half comes back: the earlier rollback's row is walked
     // past like nature, not taken for somebody's later change.
@@ -249,11 +254,13 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(2, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
         log.submit(listOf(BlockChange(3, 64, 1, AIR, STONE, Cause.ROLLBACK, T0, actor = alice)))
         log.submit(listOf(BlockChange(3, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
+        log.submit(listOf(BlockChange(4, 64, 1, AIR, DIRT, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(4, 64, 1, DIRT, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
         log.drain()
 
         val planned = around(rollbackFilter(alice), from = T0 + 50)
-        assertEquals(3, planned.positions)
-        assertEquals(1, RollbackReader(shared, logs).leftByThemBefore(listOf(planned), setOf(alice), T0 + 50))
+        assertEquals(4, planned.positions)
+        assertEquals(2, RollbackReader(shared, logs).leftByThemBefore(listOf(planned), setOf(alice), T0 + 50))
     }
 
     // Alice put dynamite down before the window and blew it up inside; an earlier rollback had already put the
@@ -299,6 +306,29 @@ class RollbackTest : BothPlanes() {
         assertNull(originOf(listOf(null, placed)) { it.actor == alice })
     }
 
+    // Undoing a rollback goes back to what that rollback found, not on past it to before the player it
+    // undid; a rollback the filter leaves alone is walked past like nature.
+    @Test
+    fun `a kept rollback row leaves the position without an origin`() {
+        val placed = BlockRow(1, 64, 1, T0, 1, 0, Cause.BLK_PLAYER_PLACE, 0, 1, actor = alice)
+        val undone = BlockRow(1, 64, 1, T0 + 10, 2, 0, Cause.ROLLBACK, 1, 0, actor = alice)
+        assertNull(originOf(listOf(undone, placed)) { true })
+        assertEquals(0, originOf(listOf(undone, placed)) { it.cause != Cause.ROLLBACK })
+    }
+
+    // A row stamped with the window's very start is the window's: undone, and not also read as what the
+    // position stood as before it, where Bob's stone would otherwise be taken for her beginning.
+    @Test
+    fun `a row at the window's start is in the window and not before it`() {
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.submit(listOf(BlockChange(1, 64, 1, STONE, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 100, actor = alice)))
+        log.drain()
+
+        val position = positions(around(rollbackFilter(alice), from = T0 + 100)).single()
+        assertEquals(listOf(STONE to DIRT), position.steps.map { it.before to it.after })
+        assertNull(position.origin)
+    }
+
     // Alice burnt a leaf before the window; a command put it back inside it, and she burnt it again. Air stands
     // as before her first burning, but the window opens on the command's leaf, and that is what goes back.
     @Test
@@ -342,8 +372,11 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(3, 64, 1, AIR, STONE, Cause.BLK_ENTITY_SWITCH, T0, Confidence.NEARBY, actor = alice)))
         log.submit(listOf(BlockChange(4, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
         log.drain()
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, Container(world, 5, 64, 1, 0), PlayerInv(bob, 0), diamond, null, 1, T0))
+        shared.drain()
 
         val planned = around(rollbackFilter(alice))
+        assertTrue(positions(planned).none { it.refills.isNotEmpty() }, "Bob's theft is not refilled")
         assertEquals(setOf(1, 2), positions(planned).map { it.at.x }.toSet())
     }
 
@@ -360,24 +393,142 @@ class RollbackTest : BothPlanes() {
         assertEquals(STONE, settle(STONE, steps(plain)).back?.before)
         val undo = around(rollbackFilter(causes = Action.ROLLBACK.causes))
         assertEquals(listOf(STONE), steps(undo).map { it.after }, "only the rollback")
-        assertTrue(RowFilter(shared, LookupQuery(), emptySet(), emptySet()).keeps(log.at(1, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).last()))
+    }
+
+    // A window that ends in the past: what came after it is somebody's later change, Alice's own included,
+    // and it stops the position from being undone.
+    @Test
+    fun `a row after the window's end is a later change`() {
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, STONE, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 100, actor = alice)))
+        log.drain()
+
+        val settled = settle(DIRT, steps(around(rollbackFilter(alice), to = T0 + 50)))
+        assertTrue(settled.conflict)
+        assertNull(settled.back)
     }
 
     @Test
-    fun `a position plans its rows newest first and turns its slot postings round`() {
-        log.submit(listOf(BlockChange(5, 64, 5, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
-        log.submit(listOf(BlockChange(5, 64, 5, STONE, DIRT, Cause.BLK_PLAYER_USE, T0 + 10, actor = alice)))
+    fun `a rollback is refused without a place and a time to undo`() {
+        val refusals = mapOf(
+            "r:5" to "needs time",
+            "t:1h r:5 player:Steve" to "use user:",
+            "t:1h" to "needs radius",
+            "t:1h r:global" to "give user:",
+            EventRef(1, 0, 64, 0, T0).toString() to null,
+            "t:1h r:5" to null,
+            "t:1h r:global u:Steve" to null,
+        )
+        for ((query, refusal) in refusals) {
+            val said = refusalOf(parseLookupQuery(query))
+            if (refusal == null) assertNull(said, "$query") else assertTrue(said?.contains(refusal) == true, "$query -> $said")
+        }
+    }
+
+    @Test
+    fun `a rollback over more positions than one may write is refused`() {
+        log.submit((1..3).map { BlockChange(it, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice) })
         log.drain()
-        val chest = Container(world, 6, 64, 5, 3)
-        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 0), diamond, null, 7, T0 + 20))
+        val limit = Settings.maxRollbackPositions
+        try {
+            Settings.maxRollbackPositions = 3
+            assertEquals(3, around(rollbackFilter(alice)).positions)
+            Settings.maxRollbackPositions = 2
+            val refused = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, 0, Long.MAX_VALUE, rollbackFilter(alice), false)
+            assertEquals(3, (refused as Refused).positions)
+        } finally {
+            Settings.maxRollbackPositions = limit
+        }
+    }
+
+    // Going ahead over part of the history would put back part of the place, so a row the read could not
+    // decode refuses the rollback, and so does one naming a state the ledger does not know.
+    @Test
+    fun `a rollback over a row it cannot read is refused`() {
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(2, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.drain()
+        val unknown = BlockRow(2, 64, 1, T0 + 5, 999, 0, Cause.BLK_PLAYER_PLACE, 60_000, 60_001)
+        logs.close(world)
+        val base = dir.resolve("blocks").resolve(world.toString())
+        rawPut(base, "rows", BlockCodec.key(1, 64, 1, T0 + 5, 998, 0), ByteArray(0))
+        rawPut(base, "rows", BlockCodec.key(2, 64, 1, T0 + 5, 999, 0), BlockCodec.value(unknown) { _, _ -> error("no actor") })
+        log = logs.open(world)
+
+        val reader = RollbackReader(shared, logs)
+        for (x in 1..2) {
+            val reading = reader.at(world, setOf(WorldBlock(world, x, 64, 1)), 0, Long.MAX_VALUE, rollbackFilter())
+            assertTrue((reading as? Refused)?.reason?.contains("could not be read") == true, "at x=$x: ${(reading as? Refused)?.reason ?: "planned"}")
+        }
+    }
+
+    // Excluding Bob drops what he did in both planes, and only that.
+    @Test
+    fun `an excluded player's blocks and postings are left out`() {
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.submit(listOf(BlockChange(2, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.drain()
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, Container(world, 3, 64, 1, 0), PlayerInv(bob, 0), diamond, null, 1, T0))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, Container(world, 4, 64, 1, 0), PlayerInv(alice, 0), diamond, null, 1, T0))
         shared.drain()
 
-        val planned = around(rollbackFilter())
-        val at = planned.chunks.single().positions.associateBy { it.at }
-        assertEquals(listOf(DIRT, STONE), at.getValue(WorldBlock(world, 5, 64, 5)).steps.map { it.after })
-        val refill = at.getValue(WorldBlock(world, 6, 64, 5)).refills.single()
-        assertEquals(7, refill.qty)
-        assertEquals(chest, refill.at)
+        val filter = RowFilter(shared, LookupQuery(), emptySet(), setOf(bob), rollback = true)
+        assertEquals(setOf(2, 4), positions(around(filter)).map { it.at.x }.toSet())
+    }
+
+    // A neighbour's shape goes back with what changed beside it, so a rollback narrowed to explosions takes
+    // it along; undoing a rollback wrote none, and a lookup has one for every fence beside every change.
+    @Test
+    fun `a neighbour's shape row rides with a rollback and shows in a lookup only when asked`() {
+        val shape = BlockRow(2, 64, 1, T0, 1, 0, Cause.BLK_SHAPE, 0, 0, actor = alice)
+        fun keeps(query: LookupQuery, rollback: Boolean) = RowFilter(shared, query, emptySet(), emptySet(), rollback).keeps(shape)
+
+        assertTrue(keeps(LookupQuery(causes = Action.EXPLOSION.causes), rollback = true))
+        assertTrue(keeps(LookupQuery(), rollback = true))
+        assertFalse(keeps(LookupQuery(causes = Action.ROLLBACK.causes), rollback = true))
+        assertFalse(keeps(LookupQuery(), rollback = false))
+        assertFalse(keeps(LookupQuery(causes = Action.EXPLOSION.causes), rollback = false))
+        assertTrue(keeps(LookupQuery(all = true), rollback = false))
+        assertTrue(keeps(LookupQuery(causes = setOf(Cause.BLK_SHAPE)), rollback = false))
+    }
+
+    // A posting given back is filed against the rows that carry it, so the next rollback skips it. With no
+    // slot moving to carry it, a bare mark has to, or it is given back a second time.
+    @Test
+    fun `postings given back ride on what moved or else on a bare mark`() {
+        val given = listOf(PostingRef(7, 0), PostingRef(7, 1))
+        val back = GivenBack().apply { postings += given; marker = diamond }
+        val chest = Blocks.CHEST.defaultBlockState()
+        fun difference() = Difference(world, Cause.ROLLBACK, Cause.ROLLBACK, Cause.ROLLBACK, Kind.TRANSFER, alice, T0)
+
+        val nothing = difference().apply { add(1, 64, 1, Standing(chest, null, listOf(null)), Standing(chest, null, listOf(null))) }
+        val mark = givenBackRows(nothing, back, alice).single()
+        assertTrue(mark.from == Void && mark.to == Void && mark.cause == Cause.ROLLBACK, "${mark.from} -> ${mark.to}")
+        assertEquals(given, mark.reverts)
+        assertTrue(givenBackRows(nothing, GivenBack(), alice).isEmpty())
+
+        val stack = ItemKey(diamond, null) to 7
+        val filled = difference().apply { add(1, 64, 1, Standing(chest, null, listOf(null)), Standing(chest, null, listOf(stack))) }
+        val rows = givenBackRows(filled, back, alice)
+        assertEquals(listOf(Container(world, 1, 64, 1, 0)), rows.map { it.to })
+        assertEquals(given, rows.flatMap { it.reverts })
+    }
+
+    // A neighbour's chest emptied in the same second is somebody else's doing, not part of the event.
+    @Test
+    fun `one event's rollback gives back only the slots where the event stood`() {
+        log.submit(listOf(BlockChange(5, 64, 5, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        log.drain()
+        val broken = Container(world, 5, 64, 5, 0)
+        val neighbour = Container(world, 6, 64, 5, 0)
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, broken, PlayerInv(alice, 0), diamond, null, 3, T0))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, neighbour, PlayerInv(bob, 0), diamond, null, 7, T0 + 1))
+        shared.drain()
+        val event = log.at(5, 64, 5, 0, Long.MAX_VALUE, limit = 10, reverse = false).single().eventId
+        val filter = RowFilter(shared, LookupQuery(event = EventRef(event, 5, 64, 5, T0)), emptySet(), emptySet(), rollback = true)
+
+        val refilled = positions(around(filter)).filter { it.refills.isNotEmpty() }.map { it.at }
+        assertEquals(listOf(WorldBlock(world, 5, 64, 5)), refilled)
     }
 
     // The second rollback of the same theft would mint the diamonds a second time.
@@ -461,14 +612,29 @@ class RollbackTest : BothPlanes() {
         assertEquals(WorldBlock(world, 3, 64, 3), plan.at)
     }
 
-    // The widest radius reads a square of chunks larger than any lookup does, and has to stay inside
-    // what the region read allows; a world with no open base has no history to roll back over.
+    // The widest radius the config allows has to stay inside what the region read takes, wherever in
+    // its chunk the centre falls; a world with no open base has no history to roll back over.
     @Test
     fun `the widest radius reads and a world with no open base is refused`() {
-        val reading = RollbackReader(shared, logs).around(
-            world, 0, 64, 0, 200, 0, Long.MAX_VALUE, RowFilter(shared, LookupQuery(all = true), emptySet(), emptySet()),
-        )
-        assertTrue(reading is Planned)
+        val configured = Settings.maxRadius
+        try {
+            val widest = MAX_REGION_RADIUS
+            Settings.maxRadius = widest
+            // The centre whose square starts on a chunk's last block and so spans the most chunks.
+            val centre = 15 + widest % 16
+            val reading = RollbackReader(shared, logs).around(
+                world, centre, 64, centre, widest, 0, Long.MAX_VALUE, RowFilter(shared, LookupQuery(all = true), emptySet(), emptySet()),
+            )
+            assertTrue(reading is Planned)
+            val said = ArrayList<String>()
+            Lookups(stub(Plugin::class.java), shared, logs, ItemFormCodec(shared.registries, ServerRegistries.access))
+                .report(senderInto(said), LookupTarget(world, centre, 64, centre, "here"), LookupQuery(radius = widest))
+            assertEquals(1, said.size, "$said")
+            val answer = said.single()
+            assertTrue(answer.contains("radius $widest around $centre 64 $centre") && answer.endsWith(" — nothing recorded"), answer)
+        } finally {
+            Settings.maxRadius = configured
+        }
         val refused = RollbackReader(shared, logs).around(
             UUID.randomUUID(), 0, 64, 0, 4, 0, Long.MAX_VALUE, RowFilter(shared, LookupQuery(all = true), emptySet(), emptySet()),
         )
@@ -500,6 +666,8 @@ class RollbackTest : BothPlanes() {
         val campfire = net.minecraft.world.level.block.entity.CampfireBlockEntity(net.minecraft.core.BlockPos(2, 64, 1), net.minecraft.world.level.block.Blocks.CAMPFIRE.defaultBlockState())
         assertEquals(2, putBack(slotsOf(campfire)!!, 1, NmsItemStack(Items.BEEF), 2) { false })
         assertEquals(listOf(true, true, false, false), campfire.items.map { it.item == Items.BEEF })
+
+        assertNull(slotsOf(net.minecraft.world.level.block.entity.SignBlockEntity(net.minecraft.core.BlockPos(3, 64, 1), net.minecraft.world.level.block.Blocks.OAK_SIGN.defaultBlockState())))
     }
 
     @Test
@@ -551,13 +719,88 @@ class RollbackTest : BothPlanes() {
         assertEquals(nether, nearest(ghosts, world, 0.5, 64.0, 0.5, 5).last().at.world)
     }
 
-    private fun around(filter: RowFilter, from: Long = 0, column: Boolean = false): Planned {
-        val reading = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, from, Long.MAX_VALUE, filter, column)
+    private fun around(filter: RowFilter, from: Long = 0, column: Boolean = false, to: Long = Long.MAX_VALUE): Planned {
+        val reading = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, from, to, filter, column)
         return reading as? Planned ?: throw AssertionError((reading as Refused).reason)
     }
 
     private fun rollbackFilter(vararg users: UUID, causes: Set<Cause>? = null) =
         RowFilter(shared, LookupQuery(causes = causes), users.toSet(), emptySet(), rollback = true)
+
+    private fun planOf(vararg steps: Step) =
+        PositionPlan(WorldBlock(world, 1, 64, 1), steps.toList(), emptyList(), emptyList(), emptyList(), emptyList(), null)
+
+    private fun counted(standing: String, payload: ByteArray? = null, hasSlots: Boolean = false, vararg steps: Step): Pair<Tally, Boolean> {
+        val plan = planOf(*steps)
+        val tally = Tally()
+        val changes = tally.count(plan, decide(standing, payload, { hasSlots }, plan))
+        return tally to changes
+    }
+
+    @Test
+    fun `a position is counted as changed, as it was, or stopped by a later change`() {
+        val (broken, changes) = counted(STONE, null, false, step(AIR, STONE))
+        assertTrue(changes)
+        assertEquals(listOf(1, 0, 0), listOf(broken.changed, broken.unchanged, broken.conflicts))
+        assertEquals(listOf(WorldBlock(world, 1, 64, 1)), broken.undone)
+
+        val (already, _) = counted(AIR, null, false, step(AIR, STONE))
+        assertEquals(listOf(0, 1, 0), listOf(already.changed, already.unchanged, already.conflicts))
+
+        val (stopped, _) = counted(DIRT, null, false, step(AIR, STONE))
+        assertEquals(listOf(0, 0, 1), listOf(stopped.changed, stopped.unchanged, stopped.conflicts))
+
+        // Walked back past the newest row and then stopped by an older one: what it got to is put back, and
+        // the stop is said all the same.
+        val (partial, _) = counted(DIRT, null, false, step(STONE, DIRT), step(AIR, LAVA))
+        assertEquals(listOf(1, 0, 1), listOf(partial.changed, partial.unchanged, partial.conflicts))
+    }
+
+    @Test
+    fun `a block standing as it stood gets its tag back unless its slots carry what it held`() {
+        val sign = "minecraft:oak_sign[rotation=0,waterlogged=false]"
+        val written = Step(sign, sign, byteArrayOf(1))
+        val plan = planOf(written)
+
+        val retagged = decide(sign, byteArrayOf(2), { false }, plan)
+        assertFalse(retagged.reshaped)
+        assertTrue(retagged.retagged)
+        assertFalse(decide(sign, byteArrayOf(2), { true }, plan).retagged, "a container's contents are its postings' to give back")
+        assertFalse(decide(sign, byteArrayOf(1), { false }, plan).retagged)
+        assertEquals(listOf(1, 0), counted(sign, byteArrayOf(2), false, written).first.let { listOf(it.changed, it.undone.size) })
+    }
+
+    @Test
+    fun `the postings of a container the rollback took away are given back with it`() {
+        val chest = Container(world, 1, 64, 1, 0)
+        val player = PlayerInv(alice, 0)
+        fun refill(ordinal: Int, qty: Int, lead: io.pfaumc.pfauprotect.model.Holder) =
+            Refill(chest, diamond, 5, null, qty, PostingRef(9, ordinal), lead)
+        val hopper = refill(0, 3, Container(world, 1, 63, 1, 0))
+        val carried = refill(1, 2, player)
+        val arrived = refill(2, -4, Container(world, 1, 65, 1, 0))
+        val tally = Tally()
+        val given = GivenBack()
+        for (r in listOf(hopper, carried, arrived)) tally.giveBack(r, null, removedHere = true, given) { error("no container to move into") }
+
+        assertEquals(listOf(PostingRef(9, 0), PostingRef(9, 1), PostingRef(9, 2)), given.postings)
+        assertTrue(given.marker.contentEquals(diamond))
+        assertEquals(0, tally.missed)
+        assertEquals(listOf(player to 2, arrived.lead to -4), tally.traces.map { it.lead to it.qty }, "a stop on the way is undone there, not followed")
+
+        val left = Tally()
+        val none = GivenBack()
+        left.giveBack(hopper, null, removedHere = false, none) { error("no container to move into") }
+        assertEquals(1, left.missed, "a container that went some other way leaves the posting unmet")
+        assertTrue(none.postings.isEmpty())
+
+        val short = Tally()
+        val some = GivenBack()
+        short.giveBack(hopper, ContainerSlots(SimpleContainer(1)), removedHere = false, some) { 1 }
+        assertEquals(1, short.missed)
+        assertEquals(listOf(PostingRef(9, 0)), some.postings)
+        assertEquals(listOf(1), short.traces.map { it.qty }, "what moved is followed, not what was asked")
+    }
 
     private fun positions(planned: Planned) = planned.chunks.flatMap { it.positions }
 

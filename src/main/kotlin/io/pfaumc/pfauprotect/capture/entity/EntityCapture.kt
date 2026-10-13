@@ -565,6 +565,11 @@ class EntityCapture(
         }
     }
 
+    internal fun firstSighting(entity: UUID, now: Long): Boolean {
+        if (seen.size > SEEN_CAP && sweepDue(seenSwept, now)) seen.values.removeIf { now - it > SEEN_MILLIS }
+        return seen.putIfAbsent(entity, now) == null
+    }
+
     /** Marks an entity whose removal is written elsewhere (a rollback taking it away), so its removal event writes no second row. */
     fun forget(entity: UUID) {
         seen[entity] = System.currentTimeMillis()
@@ -643,8 +648,7 @@ class EntityCapture(
     ) {
         if (entity is LeashHitch) return
         val now = System.currentTimeMillis()
-        if (seen.size > SEEN_CAP && sweepDue(seenSwept, now)) seen.values.removeIf { now - it > SEEN_MILLIS }
-        if (seen.putIfAbsent(entity.uniqueId, now) != null) return
+        if (!firstSighting(entity.uniqueId, now)) return
         val log = logs.get(entity.world.uid) ?: return
         val nbt = snapshotOf(entity) ?: return
         val block = entity.location.block

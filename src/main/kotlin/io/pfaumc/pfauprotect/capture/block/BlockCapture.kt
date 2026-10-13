@@ -132,8 +132,9 @@ internal fun payloadOf(entity: BlockEntity?, registries: HolderLookup.Provider):
     entity?.saveWithFullMetadata(registries)?.let(::bytesOf)
 
 internal fun payloadAt(block: Block): ByteArray? {
-    val level = (block as CraftBlock).level
-    return payloadOf(level.getBlockEntity(block.position), level.registryAccess())
+    // Every block on a running server is the server's own; a test's stub block has no block entity to read.
+    if (block !is CraftBlock) return null
+    return payloadOf(block.level.getBlockEntity(block.position), block.level.registryAccess())
 }
 
 // A block that no longer stands there leaves whatever it was standing in, which for anything dry

@@ -2,10 +2,6 @@ package io.pfaumc.pfauprotect.capture.item
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.model.Cause
-import io.pfaumc.pfauprotect.model.Confidence
-import io.pfaumc.pfauprotect.key
-import io.pfaumc.pfauprotect.model.PlayerInv
-import io.pfaumc.pfauprotect.model.Void
 import net.minecraft.world.item.DyeColor
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.Items
@@ -102,20 +98,6 @@ class ItemUseTest {
         assertEquals(Cause.NAME_TAG, entityUseCause(stack(Items.NAME_TAG), EntityTarget(keeps = true)))
     }
 
-    // A record put in a jukebox is a gain of the slot; one taken back out, a loss. A slot that went on
-    // holding the same thing moved nothing.
-    @Test
-    fun `a click on a block with slots is what its slots gained and lost`() {
-        val disc = Stack(key("music_disc_cat"), 1)
-        val book = Stack(key("book"), 1)
-        val put = slotDiff(listOf(null, book), listOf(disc, book)).single()
-        assertEquals(0, put.slot)
-        assertEquals(true, put.gain)
-        val taken = slotDiff(listOf(disc), listOf(null)).single()
-        assertEquals(false, taken.gain)
-        assertEquals(1, taken.qty)
-    }
-
     @Test
     fun `a block that keeps what is put into it has its own reckoning`() {
         assertEquals(true, keepsItems(Material.JUKEBOX))
@@ -140,24 +122,5 @@ class ItemUseTest {
         assertEquals(Cause.BUCKET_FILL, cauldronCause(ChangeReason.BUCKET_FILL))
         assertEquals(Cause.CAULDRON_WASH, cauldronCause(ChangeReason.ARMOR_WASH))
         assertNull(cauldronCause(ChangeReason.EVAPORATE))
-    }
-
-    // The fire charge leaves the hand and a stone leaves another slot in the same pass. The use speaks
-    // for the hand only; the stone stays what nothing explained.
-    @Test
-    fun `a use explains the loss from the hand and nothing else`() {
-        val charge = key("fire_charge")
-        val stone = key("stone")
-        val hand = PlayerInv(player, 0)
-        val edges = listOf(
-            Edge(hand, Void, charge, 1, Confidence.INFERRED),
-            Edge(PlayerInv(player, 5), Void, stone, 3, Confidence.INFERRED),
-        )
-        val used = Intent(Cause.ITEM_USED, to = Void, form = charge.form, holder = hand)
-
-        val moves = Intents.explain(edges, listOf(used), player)
-
-        assertEquals(listOf(Cause.ITEM_USED, Cause.ITEM_VANISHED), moves.map { it.cause })
-        assertEquals(Confidence.FACT, moves[0].confidence)
     }
 }

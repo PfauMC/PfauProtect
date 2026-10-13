@@ -85,7 +85,12 @@ private const val MAX_UNDO_DEPTH = 16
 
 private const val FORMS = 0
 private const val OWNERS = 1
-private const val MAX_REGION_CHUNKS = 1024
+private const val MAX_REGION_SIDE_CHUNKS = 32
+private const val MAX_REGION_CHUNKS = MAX_REGION_SIDE_CHUNKS * MAX_REGION_SIDE_CHUNKS
+
+// The widest radius whose square fits the region read wherever its centre falls: 2r blocks starting on
+// a chunk's last block reach into ceil(2r / 16) chunks after it.
+internal const val MAX_REGION_RADIUS = (MAX_REGION_SIDE_CHUNKS - 1) * 8
 
 // What one region query may hold in memory at once. Reached only by a query over an area whose
 // history is larger than any answer could carry, and a read that reaches it says it did.
@@ -545,7 +550,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     /** Every movement in the list shares one `tx_id`, which is what carries a graph walk across `Void`. */
     fun submit(transaction: List<Transfer>) {
-        if (progress.failure != null || transaction.isEmpty()) return
+        // Once the writer is told to stop nobody takes the queue, and `drain` would wait for it in vain.
+        if (!running || progress.failure != null || transaction.isEmpty()) return
         progress.submitted.incrementAndGet()
         queue.add(transaction)
     }
@@ -620,6 +626,12 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             val ordered = found.sortedWith(if (reverse) byTime.reversed() else byTime)
             EntryPage(ordered.take(limit), complete && ordered.size <= limit, unreadable)
         }
+    }
+
+    // The entries family is keyed by holder, not by time, so a time window is a walk over all of it.
+    internal fun forEachEntry(action: (LedgerEntry) -> Unit) = dbLock.read {
+        if (closed) return
+        db.forEachRow(entriesCf) { key, value -> EntryCodec.decodeOrNull(key, value, registries)?.let(action) }
     }
 
     /**

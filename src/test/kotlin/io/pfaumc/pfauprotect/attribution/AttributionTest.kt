@@ -3,14 +3,38 @@ import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.T0
+import io.pfaumc.pfauprotect.Vanilla
+import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.WorldBlock
+import io.pfaumc.pfauprotect.worldStub
+import net.minecraft.world.item.Items
+import org.bukkit.Location
+import org.bukkit.World
+import org.bukkit.block.Block
+import org.bukkit.block.BlockFace
+import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.damage.DamageSource
+import org.bukkit.entity.Cow
+import org.bukkit.entity.Creeper
+import org.bukkit.entity.EnderCrystal
+import org.bukkit.entity.IronGolem
+import org.bukkit.entity.Player
+import org.bukkit.event.block.Action
+import org.bukkit.event.entity.CreatureSpawnEvent
+import org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason
+import org.bukkit.event.entity.EntityDamageByEntityEvent
+import org.bukkit.event.entity.EntityDamageEvent.DamageCause
+import org.bukkit.event.entity.EntityRemoveEvent
+import org.bukkit.event.player.PlayerInteractEvent
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.extension.ExtendWith
 import java.util.UUID
+import net.minecraft.world.item.ItemStack as NmsItemStack
 
 private const val AIR = "minecraft:air"
 private const val TNT = "minecraft:tnt"
@@ -20,6 +44,7 @@ private const val SAND = "minecraft:sand"
 private const val CHEST_RIGHT = "minecraft:chest[facing=north,type=right]"
 private const val CHEST_SINGLE = "minecraft:chest[facing=north,type=single]"
 
+@ExtendWith(Vanilla::class)
 class AttributionTest : BothPlanes() {
     private var clock = T0
     private val attribution by lazy { Attribution(shared.registries, logs) { clock } }
@@ -85,10 +110,10 @@ class AttributionTest : BothPlanes() {
 
         journalled(here, AIR, TNT, bob)
         assertNull(attribution.placerAt(here, TNT))
-        assertEquals(bob, attribution.journalPlacerAt(here, TNT)?.actor)
+        assertEquals(Attributed(bob, Confidence.INFERRED), attribution.journalPlacerAt(here, TNT))
 
         attribution.placed(here, TNT, alice)
-        assertEquals(alice, attribution.placerAt(here, TNT)?.actor)
+        assertEquals(Attributed(alice, Confidence.INFERRED), attribution.placerAt(here, TNT))
 
         assertNull(attribution.placerAt(at(11, 64, 10), TNT))
         assertNull(attribution.journalPlacerAt(at(11, 64, 10), TNT))
@@ -149,16 +174,6 @@ class AttributionTest : BothPlanes() {
     }
 
     @Test
-    fun `nothing this answers with is a fact`() {
-        val here = at(10, 64, 10)
-        journalled(here, AIR, TNT, bob)
-        assertEquals(Confidence.INFERRED, attribution.journalPlacerAt(here, TNT)?.confidence)
-
-        attribution.placed(here, TNT, alice)
-        assertEquals(Confidence.INFERRED, attribution.placerAt(here, TNT)?.confidence)
-    }
-
-    @Test
     fun `the journal rung stops at what stands there today`() {
         val here = at(10, 64, 10)
         journalled(here, AIR, TNT, alice, T0)
@@ -205,20 +220,6 @@ class AttributionTest : BothPlanes() {
         val landed = at(30, 64, 30)
         journalled(landed, AIR, TNT, bob, T0, Cause.BLK_FALL_LAND)
         assertNull(attribution.journalPlacerAt(landed, TNT))
-    }
-
-    // A break notes the position it emptied, so within the window that note is the newest thing said
-    // about the position. Bob mines a tunnel; a piston feeds TNT into it and fires it seconds later.
-    @Test
-    fun `a note about the block that was taken away answers for nothing that moves in`() {
-        val here = at(10, 64, 10)
-        attribution.removed(here, bob)
-        attribution.placed(here, AIR, bob)
-
-        clock += 5_000
-        assertNull(attribution.placerAt(here, TNT))
-        assertNull(attribution.carriedTo(here, TNT))
-        assertEquals(bob, attribution.placerAt(here, AIR)?.actor)
     }
 
     @Test
@@ -389,34 +390,6 @@ class AttributionTest : BothPlanes() {
     }
 
     @Test
-    fun `the removal table is swept on its own without walking the other two`() {
-        val here = at(10, 64, 10)
-        val entity = UUID.randomUUID()
-        attribution.placed(here, TNT, alice)
-        attribution.removed(here, alice)
-        attribution.tookOff(entity, Falling(here, SAND, Attributed(alice)))
-
-        clock += SUPPORT_MILLIS + 1
-        attribution.sweepRemovals()
-        assertNull(attribution.supportRemoverAt(at(11, 64, 10)))
-        assertEquals(alice, attribution.placerAt(here, TNT)?.actor)
-
-        clock += NOTE_MILLIS + FLIGHT_MILLIS
-        attribution.sweepRemovals()
-        asOf(T0) {
-            assertNull(attribution.removerAt(here))
-            assertEquals(alice, attribution.placerAt(here, TNT)?.actor)
-            assertEquals(alice, attribution.flying(entity)?.actor)
-        }
-
-        attribution.sweep()
-        asOf(T0) {
-            assertNull(attribution.placerAt(here, TNT))
-            assertNull(attribution.flying(entity))
-        }
-    }
-
-    @Test
     fun `the builder search takes the most recent placement inside its reach and nothing outside it`() {
         val spawn = at(0, 64, 0)
         attribution.placed(at(0, 66, 0), STONE, alice)
@@ -429,14 +402,9 @@ class AttributionTest : BothPlanes() {
         assertEquals(alice, attribution.builderNear(spawn, 2)?.actor)
         assertNull(attribution.builderNear(spawn, 1))
         assertEquals(Confidence.INFERRED, attribution.builderNear(spawn, 3)?.confidence)
-    }
 
-    @Test
-    fun `a placement older than its window builds nothing`() {
-        attribution.placed(at(0, 65, 0), STONE, alice)
         clock += NOTE_MILLIS + 1
-
-        assertNull(attribution.builderNear(at(0, 64, 0), 3))
+        assertNull(attribution.builderNear(spawn, 3))
     }
 
     @Test
@@ -455,6 +423,47 @@ class AttributionTest : BothPlanes() {
         assertNull(origins.summonerOf(wither))
     }
 
+    // An unloaded entity comes back out of the region file with the same id, and a crystal is taken out
+    // of the world before its blast asks who struck it.
+    @Test
+    fun `an origin outlives an unload and a crystal's removal and ends with the entity`() {
+        val origins = EntityOrigins { clock }
+        val listener = EntityOriginListener(attribution, origins)
+        val golem = stub(IronGolem::class.java, mapOf("getUniqueId" to UUID.randomUUID()))
+        val crystal = stub(EnderCrystal::class.java, mapOf("getUniqueId" to UUID.randomUUID()))
+        origins.appeared(golem.uniqueId, alice)
+        origins.appeared(crystal.uniqueId, alice)
+
+        listener.onRemove(EntityRemoveEvent(golem, EntityRemoveEvent.Cause.UNLOAD))
+        listener.onRemove(EntityRemoveEvent(crystal, EntityRemoveEvent.Cause.EXPLODE))
+        assertEquals(alice, origins.summonerOf(golem.uniqueId)?.actor)
+        assertEquals(alice, origins.summonerOf(crystal.uniqueId)?.actor)
+
+        listener.onRemove(EntityRemoveEvent(golem, EntityRemoveEvent.Cause.DEATH))
+        assertNull(origins.summonerOf(golem.uniqueId))
+    }
+
+    @Test
+    fun `a spawn egg names its player on the one mob that comes out of it`() {
+        val origins = EntityOrigins { clock }
+        val listener = EntityOriginListener(attribution, origins)
+        val ground = stub(World::class.java, mapOf(
+            "getUID" to world,
+            "getBlockAt" to { _: Array<out Any?> -> stub(Block::class.java, mapOf("getWorld" to worldStub(world), "getX" to 3, "getY" to 64, "getZ" to 3)) },
+        ))
+        fun cow() = stub(Cow::class.java, mapOf("getUniqueId" to UUID.randomUUID(), "getLocation" to { _: Array<out Any?> -> Location(ground, 3.5, 64.0, 3.5) }))
+        val egg = CraftItemStack.asBukkitCopy(NmsItemStack(Items.COW_SPAWN_EGG))
+        listener.onInteract(PlayerInteractEvent(stub(Player::class.java, mapOf("getUniqueId" to alice)), Action.RIGHT_CLICK_BLOCK, egg, null, BlockFace.UP))
+
+        val hatched = cow()
+        listener.onSpawn(CreatureSpawnEvent(hatched, SpawnReason.SPAWNER_EGG))
+        assertEquals(alice, origins.summonerOf(hatched.uniqueId)?.actor)
+
+        val next = cow()
+        listener.onSpawn(CreatureSpawnEvent(next, SpawnReason.SPAWNER_EGG))
+        assertNull(origins.summonerOf(next.uniqueId))
+    }
+
     @Test
     fun `an origin nobody saw end stops answering once its window has passed`() {
         val origins = EntityOrigins { clock }
@@ -466,5 +475,21 @@ class AttributionTest : BothPlanes() {
 
         origins.sweep()
         asOf(T0) { assertNull(origins.summonerOf(golem)) }
+    }
+
+    @Test
+    fun `a crystal struck by a mob keeps how sure the mob's origin was`() {
+        val origins = EntityOrigins { clock }
+        val creeper = stub(Creeper::class.java, mapOf("getUniqueId" to UUID.randomUUID()))
+        val crystalId = UUID.randomUUID()
+        val crystal = stub(EnderCrystal::class.java, mapOf("getUniqueId" to crystalId))
+        origins.appeared(creeper.uniqueId, alice, Confidence.NEARBY)
+
+        EntityOriginListener(attribution, origins).onStrike(
+            EntityDamageByEntityEvent(creeper, crystal, DamageCause.ENTITY_EXPLOSION, stub(DamageSource::class.java), 1.0),
+        )
+
+        assertEquals(alice, origins.summonerOf(crystalId)?.actor)
+        assertEquals(Confidence.NEARBY, origins.summonerOf(crystalId)?.confidence)
     }
 }

@@ -14,7 +14,7 @@ causes:
   disabled: []
 
 lookup:
-  # The largest radius a lookup or a rollback takes.
+  # The largest radius a lookup or a rollback takes, at most 248.
   max-radius: 200
 
 rollback:

@@ -202,7 +202,9 @@ class ConfiscationTest : OneLedger() {
         val back = Fallen(log, death).restitution().associate { it.taker to it.qty }
         assertEquals(mapOf(Carrier(bob) to 2, Vanished(burned.uuid) to 2), back)
 
-        log.submit(Transfer(Cause.ROLLBACK, Void, Void, diamond, null, 1, T0 + 2, reverts = Fallen(log, death).births().values.flatten()))
+        val births = listOf(picked, burned, regained).flatMap { pile -> log.holderEntries(pile, 0, Long.MAX_VALUE).filter { it.cause == Cause.DEATH_DROP }.map { it.ref } }
+        assertEquals(3, births.size)
+        log.submit(Transfer(Cause.ROLLBACK, Void, Void, diamond, null, 1, T0 + 2, reverts = births))
         log.drain()
         assertTrue(Fallen(log, death).restitution().isEmpty())
     }
@@ -247,5 +249,21 @@ class ConfiscationTest : OneLedger() {
             breaks += loss
         }
         assertEquals(mapOf(Carrier(bob) to 2), owed(whole))
+    }
+
+    @Test
+    fun `what one taker owes of one item more than once is owed as one sum`() {
+        val other = Container(world, 2, 64, 1, 0)
+        val merged = merged(
+            listOf(
+                Owed(Carrier(bob), 1, 3, stashes = listOf(chest)),
+                Owed(Carrier(bob), 1, 4, stashes = listOf(chest, other)),
+                Owed(Carrier(bob), 2, 5),
+                Owed(Carrier(alice), 1, 6),
+            )
+        ).associateBy { it.taker to it.formId }
+
+        assertEquals(mapOf((Carrier(bob) to 1L) to 7, (Carrier(bob) to 2L) to 5, (Carrier(alice) to 1L) to 6), merged.mapValues { it.value.qty })
+        assertEquals(listOf(chest, other), merged.getValue(Carrier(bob) to 1L).stashes)
     }
 }

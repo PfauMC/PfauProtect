@@ -95,6 +95,11 @@ bukkit {
 
 tasks.test {
     useJUnitPlatform()
+    // Booting the server registries writes config/ and logs/ into the working directory.
+    val work = layout.buildDirectory.dir("test-work")
+    workingDir(work)
+    doFirst { work.get().asFile.mkdirs() }
+    systemProperty("pfauprotect.sources", layout.projectDirectory.dir("src/main/kotlin").asFile.absolutePath)
 }
 
 // Reads a copy of the ledger offline; scripts/ledger-rows.sh takes the copy.

@@ -1,13 +1,9 @@
 package io.pfaumc.pfauprotect.storage
-import io.pfaumc.pfauprotect.model.Cause
-import io.pfaumc.pfauprotect.model.Holder
-import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.Vanilla
-import io.pfaumc.pfauprotect.model.Transfer
-import io.pfaumc.pfauprotect.model.Void
 import net.minecraft.core.component.DataComponents
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.nbt.ListTag
 import net.minecraft.network.chat.Component
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
@@ -22,9 +18,6 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.extension.ExtendWith
-import org.junit.jupiter.api.io.TempDir
-import java.nio.file.Path
-import java.util.UUID
 import net.minecraft.core.registries.Registries as VanillaRegistries
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -34,11 +27,6 @@ class ItemFormsTest {
     private val codec = run {
         fillTypeRegistries(registries)
         ItemFormCodec(registries, ServerRegistries.access)
-    }
-
-    @Test
-    fun `stack without components round trips`() {
-        assertRoundTrip(ItemStack(Items.DIAMOND, 3))
     }
 
     @Test
@@ -82,43 +70,21 @@ class ItemFormsTest {
         assertArrayEquals(form, codec.encode(strippedInAnotherOrder).form)
     }
 
+    // A compound is an open-addressing hash map, and "a" and "f" hash to the same slot at every table size
+    // up to 16, so it walks them in the order they were put in. Keys that never collide would come out in
+    // one order whatever was done to them.
     @Test
     fun `the order of keys inside a component does not reach the form bytes`() {
-        val one = ItemStack(Items.DIAMOND)
-        one.set(DataComponents.CUSTOM_DATA, CustomData.of(CompoundTag().apply { putInt("a", 1); putInt("f", 2) }))
-        val other = ItemStack(Items.DIAMOND)
-        other.set(DataComponents.CUSTOM_DATA, CustomData.of(CompoundTag().apply { putInt("f", 2); putInt("a", 1) }))
+        fun pair(first: String, second: String) = CompoundTag().apply { putInt(first, first[0].code); putInt(second, second[0].code) }
+        fun withData(first: String, second: String) = ItemStack(Items.DIAMOND).apply {
+            val list = ListTag().apply { add(pair(first, second)) }
+            set(DataComponents.CUSTOM_DATA, CustomData.of(pair(first, second).apply { put("list", list) }))
+        }
+        val one = withData("a", "f")
+        val other = withData("f", "a")
 
         assertTrue(ItemStack.isSameItemSameComponents(one, other))
         assertArrayEquals(codec.encode(one).form, codec.encode(other).form)
-    }
-
-    @Test
-    fun `custom name round trips`() {
-        val named = ItemStack(Items.DIAMOND_SWORD)
-        named.set(DataComponents.CUSTOM_NAME, Component.literal("Kartoffel"))
-        assertRoundTrip(named)
-    }
-
-    @Test
-    fun `enchantments round trip`() {
-        val enchanted = ItemStack(Items.DIAMOND_SWORD)
-        enchanted.set(DataComponents.ENCHANTMENTS, sharpness(3))
-        assertRoundTrip(enchanted)
-    }
-
-    @Test
-    fun `custom data round trips`() {
-        val tagged = ItemStack(Items.DIAMOND_SWORD)
-        tagged.set(DataComponents.CUSTOM_DATA, CustomData.of(customData()))
-        assertRoundTrip(tagged)
-    }
-
-    @Test
-    fun `stack larger than the vanilla codec range round trips`() {
-        val big = ItemStack(Items.DIAMOND, 500)
-        assertEquals(500, codec.encode(big).count)
-        assertRoundTrip(big)
     }
 
     @Test
@@ -128,29 +94,43 @@ class ItemFormsTest {
         assertRoundTrip(sword)
     }
 
+    // A form is interned by its bytes, so a change to them splits one item into two form ids across an
+    // upgrade. The numbers are minted here in an order of our own, unlike the vanilla iteration order.
     @Test
-    fun `items differing only in component order share one form id across a reopen`(@TempDir dir: Path) {
-        val holder = PlayerInv(UUID.fromString("00000000-0000-4000-8000-0000000000f1"), 0)
-        val interned = RocksItemLog(dir).use { log ->
-            store(log, holder, decoratedSword(), 1L)
-            store(log, holder, decoratedSwordInAnotherOrder(), 2L)
-            val ids = log.holderEntries(holder, 0, Long.MAX_VALUE).map { it.itemFormId }
-            assertEquals(2, ids.size)
-            assertEquals(1, ids.distinct().size)
-            ids.first()
-        }
-        RocksItemLog(dir).use { log ->
-            store(log, holder, decoratedSword(), 3L)
-            assertEquals(interned, log.holderEntries(holder, 0, Long.MAX_VALUE).last().itemFormId)
-            assertArrayEquals(codec.encode(decoratedSword()).form, log.form(interned))
-        }
+    fun `a decorated sword keeps the form bytes it was interned with`() {
+        val own = Registries(MemoryRegistryStore())
+        own.idForKey(RegistryNamespace.ITEM_TYPE, "minecraft:stone")
+        own.idForKey(RegistryNamespace.ITEM_TYPE, "minecraft:diamond_sword")
+        own.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, "minecraft:custom_data")
+        own.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, "minecraft:enchantments")
+        own.idForKey(RegistryNamespace.DATA_COMPONENT_TYPE, "minecraft:custom_name")
+
+        val encoded = ItemFormCodec(own, ServerRegistries.access).encode(decoratedSword())
+
+        assertEquals(5, encoded.damage)
+        assertArrayEquals(
+            byteArrayOf(
+                0x01, 0x03, 0x00,
+                // custom_data: {owner: "pfau", charges: 4}, in the order the compound's hash map walks them
+                0x00, 30,
+                0x0A,
+                0x08, 0x00, 0x05, *"owner".bytes, 0x00, 0x04, *"pfau".bytes,
+                0x03, 0x00, 0x07, *"charges".bytes, 0x00, 0x00, 0x00, 0x04,
+                0x00,
+                // enchantments: {"minecraft:sharpness": 3}
+                0x01, 28,
+                0x0A,
+                0x03, 0x00, 19, *"minecraft:sharpness".bytes, 0x00, 0x00, 0x00, 0x03,
+                0x00,
+                // custom_name: the plain string
+                0x02, 12,
+                0x08, 0x00, 0x09, *"Kartoffel".bytes,
+            ),
+            encoded.form,
+        )
     }
 
-    private fun store(log: RocksItemLog, holder: Holder, stack: ItemStack, timestamp: Long) {
-        val encoded = codec.encode(stack)
-        log.submit(Transfer(Cause.PICKUP, Void, holder, encoded.form, encoded.damage, encoded.count, timestamp))
-        log.drain()
-    }
+    private val String.bytes: ByteArray get() = toByteArray(Charsets.US_ASCII)
 
     private fun decoratedSword() = ItemStack(Items.DIAMOND_SWORD).apply {
         set(DataComponents.CUSTOM_NAME, Component.literal("Kartoffel"))

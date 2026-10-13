@@ -5,6 +5,8 @@ import net.kyori.adventure.text.TextComponent
 import net.kyori.adventure.text.TranslatableComponent
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 @ExtendWith(Vanilla::class)
@@ -20,8 +22,15 @@ class TextsTest {
         val line = "  took back 32 minecraft:diamond from Test2."
         assertEquals(line, Texts.translate(line))
         Settings.language = "ru"
-        assertEquals("  изъято 32 minecraft:diamond у Test2.", Texts.translate(line))
-        assertEquals("Откатывать нечего: 5 блоков вокруг 1 2 3.", Texts.translate("Nothing to roll back: 5 blocks around 1 2 3."))
+        assertTranslatedKeeping(line, "32", "minecraft:diamond", "Test2")
+        assertTranslatedKeeping("Nothing to roll back: 5 blocks around 1 2 3.", "5", "1 2 3")
+    }
+
+    // The wording is the translator's to change; the values a sentence was filled with are not.
+    private fun assertTranslatedKeeping(english: String, vararg values: String) {
+        val translated = Texts.translate(english)
+        assertNotEquals(english, translated)
+        for (value in values) assertTrue(value in translated, "$value lost from \"$translated\"")
     }
 
     // The items a rollback takes back are named as the game names them, in the reader's own language.

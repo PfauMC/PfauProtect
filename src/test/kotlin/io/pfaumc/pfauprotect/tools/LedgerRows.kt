@@ -8,12 +8,9 @@ import io.pfaumc.pfauprotect.model.LedgerEntry
 import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.PostingRef
-import io.pfaumc.pfauprotect.storage.EntryCodec
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
-import org.rocksdb.ColumnFamilyHandle
-import org.rocksdb.RocksDB
 import java.nio.file.Path
 import java.util.UUID
 
@@ -32,7 +29,7 @@ fun main(args: Array<String>) {
             "since" -> {
                 val from = args[2].toLong()
                 val causes = args.drop(3).toSet()
-                everyEntry(log) { e ->
+                log.forEachEntry { e ->
                     if (e.timestamp >= from && (causes.isEmpty() || e.cause.name in causes)) print(e)
                 }
             }
@@ -68,20 +65,6 @@ private fun holderOf(spec: String): Holder {
         "ender" -> PlayerEnder(UUID.fromString(p[1]), p[2].toInt())
         "container" -> Container(UUID.fromString(p[1]), p[2].toInt(), p[3].toInt(), p[4].toInt(), p[5].toInt())
         else -> error("unknown holder $spec")
-    }
-}
-
-// The entries family is keyed by holder, not by time, so a time window is a walk over all of it. Private
-// to the log, and a test tool has no business widening it.
-private fun everyEntry(log: RocksItemLog, action: (LedgerEntry) -> Unit) {
-    val db = RocksItemLog::class.java.getDeclaredField("db").apply { isAccessible = true }.get(log) as RocksDB
-    val cf = RocksItemLog::class.java.getDeclaredField("entriesCf").apply { isAccessible = true }.get(log) as ColumnFamilyHandle
-    db.newIterator(cf).use {
-        it.seekToFirst()
-        while (it.isValid) {
-            EntryCodec.decodeOrNull(it.key(), it.value(), log.registries)?.let(action)
-            it.next()
-        }
     }
 }
 

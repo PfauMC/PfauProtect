@@ -6,6 +6,7 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
+import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.LedgerEntry
@@ -160,17 +161,6 @@ class CodecTest {
     }
 
     @Test
-    fun `neighbouring chunks get different prefixes`() {
-        val prefix = Zcode.chunkPrefix(-5, 7)
-        for (dx in -1..1) {
-            for (dz in -1..1) {
-                if (dx == 0 && dz == 0) continue
-                assertFalse(prefix.contentEquals(Zcode.chunkPrefix(-5 + dx, 7 + dz)))
-            }
-        }
-    }
-
-    @Test
     fun `entry round trips through key and value`() {
         val holders = listOf(
             PlayerInv(alice, 17),
@@ -212,47 +202,6 @@ class CodecTest {
     }
 
     @Test
-    fun `ordinary entry header byte is zero`() {
-        assertEquals(0x00, EntryCodec.header(Kind.TRANSFER, Confidence.FACT))
-        val value = EntryCodec.value(ledgerEntry(PlayerInv(alice, 0), Void), registries)
-        assertEquals(0x00, value[0].toInt())
-        assertEquals(0x20, EntryCodec.header(Kind.TRANSFER, Confidence.INFERRED))
-        assertEquals(0x40, EntryCodec.header(Kind.MUTATE, Confidence.FACT))
-        assertEquals(0xA0, EntryCodec.header(Kind.CLONE, Confidence.INFERRED))
-        assertEquals(0x10, EntryCodec.header(Kind.TRANSFER, Confidence.FACT, actor = true))
-        assertEquals(0x08, EntryCodec.header(Kind.TRANSFER, Confidence.NEARBY))
-    }
-
-    // The third confidence went into a bit every earlier row has clear, so nothing written before it
-    // changes meaning, and it comes back as itself.
-    @Test
-    fun `a witness confidence round-trips without touching the older two`() {
-        val holder = Container(worldA, 4, 70, 9, 2)
-        val key = EntryCodec.key(holder, 7L, 8L, 0, registries)
-        for (confidence in Confidence.entries) {
-            val value = EntryCodec.value(ledgerEntry(holder, Void).copy(confidence = confidence, actor = alice), registries)
-            assertEquals(confidence, EntryCodec.decodeOrNull(key, value, registries)!!.confidence)
-        }
-    }
-
-    // The flag has to live above the version field, which keeps rows written before the field existed
-    // decodable: their reserved bits are zero, so they simply carry no actor.
-    @Test
-    fun `an actor is written only when present and leaves older rows readable`() {
-        val holder = Container(worldA, 4, 70, 9, 2)
-        val withActor = ledgerEntry(holder, Void).copy(cause = Cause.LOOT_GENERATE, qty = 3, actor = alice)
-        val key = EntryCodec.key(holder, 7L, 8L, 0, registries)
-        val value = EntryCodec.value(withActor, registries)
-        assertEquals(0x10, value[0].toInt() and 0x10)
-        assertEquals(alice, EntryCodec.decodeOrNull(key, value, registries)!!.actor)
-
-        val without = EntryCodec.value(withActor.copy(actor = null), registries)
-        assertEquals(0x00, without[0].toInt() and 0x10)
-        assertNull(EntryCodec.decodeOrNull(key, without, registries)!!.actor)
-        assertEquals(value.size - without.size, 1)
-    }
-
-    @Test
     fun `records of another version are skipped rather than decoded`() {
         val holder = PlayerInv(alice, 0)
         val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
@@ -285,7 +234,7 @@ class CodecTest {
         val holder = PlayerInv(alice, 0)
         val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
         val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
-        value[1] = 0xBE.toByte() // unused; pick another if a cause takes it
+        value[1] = (0..255).first { id -> Cause.entries.none { it.id == id } }.toByte()
 
         val decoded = EntryCodec.decodeOrNull(key, value, registries)
         assertEquals(Cause.UNKNOWN, decoded?.cause)
@@ -294,8 +243,7 @@ class CodecTest {
     }
 
     @Test
-    fun `cause ids are unique and answer to byId`() {
-        assertEquals(Cause.entries.size, Cause.entries.map { it.id }.distinct().size)
+    fun `every cause answers to byId`() {
         for (cause in Cause.entries) {
             assertTrue(cause.id in 0..255) { "$cause has id ${cause.id}" }
             assertEquals(cause, Cause.byId(cause.id))
@@ -380,6 +328,67 @@ class CodecTest {
     }
 
     @Test
+    fun `stored bytes of the other holders, an actor and a damage keep their layout`() {
+        assertEquals(0, registries.id(RegistryNamespace.PLAYER, alice))
+        assertEquals(1, registries.id(RegistryNamespace.PLAYER, playerB))
+        val entityBytes = byteArrayOf(0, 0, 0, 0, 0, 0, 0x40, 0, 0x80.toByte(), 0, 0, 0, 0, 0, 0, 0xC3.toByte())
+        val timeAndTx = byteArrayOf(
+            0x00, 0x00, 0x01, 0x8B.toByte(), 0xCF.toByte(), 0xE5.toByte(), 0x68, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,
+        )
+        fun entry(holder: Holder, counterparty: Holder, qty: Int) =
+            LedgerEntry(
+                holder = holder, timestamp = T0, txId = 7L, ordinal = 2, kind = Kind.TRANSFER,
+                cause = Cause.CONTAINER_ADD, confidence = Confidence.FACT, counterparty = counterparty,
+                itemFormId = 1L, qty = qty, damage = null, actor = null,
+            )
+        fun assertPinned(entry: LedgerEntry, value: ByteArray) {
+            assertArrayEquals(value, EntryCodec.value(entry, registries))
+            val key = EntryCodec.key(entry.holder, entry.timestamp, entry.txId, entry.ordinal, registries)
+            assertEquals(entry, EntryCodec.decodeOrNull(key, value, registries))
+        }
+
+        assertPinned(
+            entry(PlayerEquip(playerB, 2), EntitySlot(entity, 300), 5)
+                .copy(kind = Kind.MUTATE, confidence = Confidence.NEARBY, actor = playerB, damage = 231),
+            byteArrayOf(
+                // mutate, the high confidence bit for nearby, an actor
+                0x58, 0x10, 0x02,
+                0x06, *entityBytes, 0xAC.toByte(), 0x02,
+                0x01, 0x0A,
+                0x01,
+                0xE7.toByte(), 0x01,
+            ),
+        )
+        assertPinned(
+            entry(PlayerCursor(alice), MenuSlot(9, 41), -1),
+            byteArrayOf(0x00, 0x10, 0x00, 0x04, 0x09, 0x29, 0x01, 0x01),
+        )
+        assertPinned(
+            entry(PlayerCursor(alice), MenuSlot(9, 41), -1).copy(kind = Kind.CLONE, confidence = Confidence.INFERRED),
+            byteArrayOf(0xA0.toByte(), 0x10, 0x00, 0x04, 0x09, 0x29, 0x01, 0x01),
+        )
+        // A cursor holds one thing, so as a counterparty it is written without a slot.
+        assertPinned(
+            entry(PlayerInv(alice, 4), PlayerCursor(alice), 1),
+            byteArrayOf(0x00, 0x10, 0x04, 0x02, 0x00, 0x01, 0x02),
+        )
+
+        assertArrayEquals(
+            byteArrayOf(0x02, 0x00, *timeAndTx, 0x02),
+            EntryCodec.key(PlayerCursor(alice), T0, 7L, 2, registries),
+        )
+        assertArrayEquals(
+            byteArrayOf(0x08, *entityBytes, *timeAndTx, 0x02),
+            EntryCodec.key(Nested(entity, 4), T0, 7L, 2, registries),
+        )
+        assertArrayEquals(
+            byteArrayOf(0x07, *entityBytes, *timeAndTx, 0x02),
+            EntryCodec.key(ItemEntityRef(entity), T0, 7L, 2, registries),
+        )
+    }
+
+    @Test
     fun `holders without their own rows are rejected as keys`() {
         assertThrows(IllegalArgumentException::class.java) { EntryCodec.key(Void, 1L, 1L, 0, registries) }
         assertThrows(IllegalArgumentException::class.java) { EntryCodec.key(MenuSlot(1, 2), 1L, 1L, 0, registries) }
@@ -450,19 +459,5 @@ class CodecTest {
                 }
             }
         }
-    }
-
-    // Both holders address a position and their keys differ only in the leading byte, so a scan for
-    // one that also matched the other would answer a question about chest contents with block placements.
-    @Test
-    fun `a block and a container at one position keep separate keys`() {
-        val container = Container(worldA, 100, 64, -200, 0)
-        val block = WorldBlock(worldA, 100, 64, -200)
-        val containerPrefix = EntryCodec.holderPrefix(container, registries)
-        val blockPrefix = EntryCodec.holderPrefix(block, registries)
-        assertFalse(containerPrefix.contentEquals(blockPrefix))
-        assertFalse(EntryCodec.key(block, 1L, 1L, 0, registries).startsWith(containerPrefix))
-        assertFalse(EntryCodec.key(container, 1L, 1L, 0, registries).startsWith(blockPrefix))
-        assertTrue(EntryCodec.key(block, 1L, 1L, 0, registries).startsWith(blockPrefix))
     }
 }

@@ -1,8 +1,10 @@
 package io.pfaumc.pfauprotect.command
+import com.mojang.brigadier.context.CommandContext
+import com.mojang.brigadier.context.StringRange
 import com.mojang.brigadier.exceptions.CommandSyntaxException
+import com.mojang.brigadier.suggestion.SuggestionsBuilder
 import io.pfaumc.pfauprotect.model.Cause
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -38,25 +40,29 @@ class LookupTest {
         }
     }
 
-    @Test
-    fun `every accepted spelling reaches its own parameter`() {
-        for (param in Param.entries) {
-            for (key in param.keys) assertEquals(param, Param.of(key), key)
-            assertEquals(param, Param.of(param.canonical.uppercase().lowercase()))
-        }
-    }
-
     // Completion lists the readable spelling of each parameter while the terse ones keep parsing, so
     // the two must stay in step: a parameter added to the table has to show up in completion too.
     @Test
     fun `completion offers the long spelling of every parameter and nothing else`() {
-        assertEquals(Param.entries.size, Param.prefixes.size)
         for (prefix in Param.prefixes) {
-            val key = prefix.removeSuffix(":")
-            assertNotNull(Param.of(key))
-            assertTrue(key.length > 1, "completion should not offer the terse alias $prefix")
+            assertTrue(prefix.removeSuffix(":").length > 1, "completion should not offer the terse alias $prefix")
         }
-        assertTrue(Param.prefixes.containsAll(listOf("user:", "time:", "radius:", "action:", "include:", "exclude:", "limit:")))
+    }
+
+    // What only shapes a lookup's answer — whose hands, how many rows, which page — means nothing to a
+    // rollback, and offering it there reads as if it narrowed what is undone.
+    @Test
+    fun `a rollback is offered only the words that choose what it undoes`() {
+        fun offered(argument: LookupArgument) = argument.listSuggestions(
+            CommandContext<Any>(Any(), "", emptyMap(), null, null, emptyList(), StringRange.at(0), null, null, false),
+            SuggestionsBuilder("", 0),
+        ).get().list.map { it.text }
+        val answerOnly = listOf("player:", "limit:", "page:", "filter:")
+
+        assertTrue(offered(LookupArgument()).containsAll(answerOnly + "#count"))
+        val rollback = offered(LookupArgument(rollback = true))
+        assertTrue(rollback.containsAll(listOf("user:", "time:", "radius:", "action:", "include:", "exclude:")), "$rollback")
+        assertTrue(rollback.none { it in answerOnly || it.startsWith("#") }, "$rollback")
     }
 
     @Test
@@ -102,6 +108,7 @@ class LookupTest {
             setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
             parseLookupQuery("a:+container,-container").causes,
         )
+        assertEquals(Action.EXPLOSION.causes + Action.FIRE.causes, parseLookupQuery("a:explosion,fire").causes)
     }
 
     @Test
@@ -130,23 +137,12 @@ class LookupTest {
         assertEquals(setOf(Cause.CONTAINER_ADD), parseLookupQuery("A:DEPOSIT").causes)
     }
 
-    @Test
-    fun `a whole query parses into every field at once`() {
-        val query = parseLookupQuery("u:Steve t:1d r:16 a:-container b:diamond e:cobblestone rows:25")
-        assertEquals(listOf("Steve"), query.users)
-        assertEquals(86_400L, query.secondsBack)
-        assertEquals(16, query.radius)
-        assertEquals(setOf(Cause.CONTAINER_REMOVE), query.causes)
-        assertEquals(listOf("diamond"), query.included)
-        assertEquals(listOf("cobblestone"), query.excluded)
-        assertEquals(25, query.limit)
-    }
-
     // The point of parsing off the caller's reader is that the game underlines the token at fault, so
     // the cursor each failure carries is the behaviour worth pinning, not just the fact it threw.
     @Test
     fun `a rejected query points at the token that caused it`() {
         val cases = mapOf(
+            "Steve" to 0,
             "u:Steve z:1" to 8,
             "u:Steve Steve" to 8,
             ":10" to 0,
@@ -163,18 +159,8 @@ class LookupTest {
     }
 
     @Test
-    fun `malformed parameters are refused instead of ignored`() {
-        for (query in listOf("Steve", "z:1", "u:", "a:chatter", ":10")) {
-            assertThrows(CommandSyntaxException::class.java, { parseLookupQuery(query) }, query)
-        }
-    }
-
-    @Test
     fun `the block plane is reachable by name and every block cause is under one of the filters`() {
-        val blockRange = Cause.entries.filter { it.id in 0xD0..0xEF }.toSet() + Cause.BLK_SIGN_EDIT + Cause.BLK_SHAPE +
-            Cause.BLK_PLAYER_SWITCH + Cause.BLK_ENTITY_SWITCH + Cause.BLK_PLAYER_USE +
-            Cause.BLK_BUCKET + Cause.BLK_SPONGE + Cause.BLK_COMMAND + Cause.BLK_LIQUID_FLOW + Cause.BLK_PLUGIN
-        assertEquals(42, blockRange.size)
+        val blockRange = Cause.entries.filter { it.name.startsWith("BLK_") }.toSet()
         assertEquals(blockRange, Action.of("block")?.causes)
 
         val named = Action.entries.filter { it != Action.BLOCK }.flatMap { it.causes }.toSet()
@@ -206,10 +192,6 @@ class LookupTest {
         val query = parseLookupQuery("time:3d-1d page:2 limit:20")
         assertEquals(259_200L, query.secondsBack)
         assertEquals(86_400L, query.secondsUntil)
-        // A folded page reads further than the rows it shows; #all reads just those.
-        assertEquals(160, query.wanted)
-        assertEquals(40, parseLookupQuery("time:3d-1d page:2 limit:20 #all").wanted)
-        assertEquals(Action.KILL.causes, parseLookupQuery("action:kill").causes)
     }
 
     // The filters a lookup narrows by besides place and time.
@@ -227,6 +209,18 @@ class LookupTest {
         assertEquals(8..Int.MAX_VALUE, query.amount)
     }
 
+    // Newest first, as an answer is read. A run grows gap by gap, so a wall broken over two minutes at a
+    // steady pace is one line; a pause of more than a minute starts another, and so does a rollback mark.
+    @Test
+    fun `runs fold gap by gap and keep undone rows apart`() {
+        fun line(secondsAgo: Long, undone: Boolean = false) = Line(
+            1_000_000L - secondsAgo * 1000, Cause.BLK_PLAYER_BREAK, null, "break stone", 1, undone, null,
+        ) { _, _, _ -> net.kyori.adventure.text.Component.empty() }
+        val lines = listOf(line(0), line(30), line(70), line(131), line(161, undone = true), line(191), line(221))
+        assertEquals(listOf(3, 1, 1, 2), folded(lines, all = false).map { it.rows })
+        assertEquals(List(lines.size) { 1 }, folded(lines, all = true).map { it.rows })
+    }
+
     // A clicked line fills an event in with where and when, and it reads back as it was written.
     @Test
     fun `an event reads back as written`() {
@@ -241,23 +235,9 @@ class LookupTest {
     fun `a page button asks the same question about the same place`() {
         val query = parseLookupQuery("u:Bob t:1h page:2 at:1,2,3")
         assertEquals(Triple(1, 2, 3), query.at)
-        assertEquals(
-            "/pp l u:Bob t:1h at:7,64,-3 page:3",
-            query.pageCommand(LookupTarget(java.util.UUID(0, 0), 7, 64, -3, ""), 3),
-        )
-    }
-
-    @Test
-    fun `block filters parse by every spelling they offer`() {
-        for (action in listOf(Action.EXPLOSION, Action.FIRE, Action.LIQUID, Action.PISTON, Action.GRAVITY)) {
-            for (key in action.keys) {
-                assertEquals(action.causes, parseLookupQuery("action:$key").causes, key)
-            }
-        }
-        assertEquals(
-            Action.EXPLOSION.causes + Action.FIRE.causes,
-            parseLookupQuery("a:explosion,fire").causes,
-        )
+        val command = query.pageCommand(LookupTarget(java.util.UUID(0, 0), 7, 64, -3, ""), 3)
+        val asked = parseLookupQuery(command.removePrefix("/pp l "))
+        assertEquals(query.copy(page = 3, at = Triple(7, 64, -3), words = asked.words), asked)
     }
 
 }

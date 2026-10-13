@@ -160,6 +160,7 @@ object Netting {
         // same form must not pair with its own input, or the transformation collapses into a plain move
         // plus a vanish.
         unpaired: Set<Holder> = emptySet(),
+        carried: (Nested) -> Boolean = { false },
     ): List<Edge> {
         val losses = ArrayList<Delta>()
         val gains = ArrayList<Delta>()
@@ -190,8 +191,8 @@ object Netting {
             }
         }
 
-        claim(losses, intents, player, loss = true)
-        claim(gains, intents, player, loss = false)
+        claim(losses, intents, player, carried, loss = true)
+        claim(gains, intents, player, carried, loss = false)
 
         val waiting = HashMap<FormKey, ArrayDeque<Delta>>()
         for (gain in gains) {
@@ -222,13 +223,13 @@ object Netting {
     //
     // Two opposite movements in the same slot leave no trace in the snapshot and are not recovered from
     // the intent's word: it cannot say which slot, and in creative a placement consumes nothing at all.
-    private fun claim(deltas: List<Delta>, intents: List<Intent>, player: UUID?, loss: Boolean) {
+    private fun claim(deltas: List<Delta>, intents: List<Intent>, player: UUID?, carried: (Nested) -> Boolean, loss: Boolean) {
         for (intent in intents) {
             if (!intent.aims(loss)) continue
             var left = intent.qty ?: Int.MAX_VALUE
             for (delta in deltas) {
                 if (left <= 0) break
-                if (delta.pairable <= 0 || !intent.explains(delta.holder, delta.form.form, player)) continue
+                if (delta.pairable <= 0 || !intent.explains(delta.holder, delta.form.form, player, carried)) continue
                 val qty = minOf(delta.pairable, left)
                 delta.claimed += qty
                 left -= qty
@@ -492,6 +493,7 @@ class ContainerCaptureListener(
     private val placed: PlacedForms,
     // What the ledger books to every slot under these holders, from rows up to a moment.
     private val booked: (List<Holder>, Long) -> Map<Holder, Map<FormKey, Int>> = { _, _ -> emptyMap() },
+    private val currentTick: () -> Int = Bukkit::getCurrentTick,
     // What an intent asked for and the pass never found.
     private val unspent: (Intent, Int) -> Unit = { _, _ -> },
 ) : Listener {
@@ -1082,10 +1084,10 @@ class ContainerCaptureListener(
         // One item that became another is a mutation; a recipe that ate three and made one is not, so
         // the kind comes from the event and never from the size of what the pass happened to gather.
         val shift = taken.firstNotNullOfOrNull { it.shift }
-        val edges = Netting.diff(was, now, taken, player.uniqueId, stationSlots(player, baseline, shift))
-        val timestamp = System.currentTimeMillis()
         // A bundle the player holds is theirs to empty: a drop out of it is still their drop.
         val carried = was::sees
+        val edges = Netting.diff(was, now, taken, player.uniqueId, stationSlots(player, baseline, shift), carried)
+        val timestamp = System.currentTimeMillis()
         val spent = HashSet<Intent>()
         // A transformation's reason is spent by whatever the pass gathered at all.
         if (edges.isNotEmpty()) taken.filterTo(spent) { it.shift != null }
@@ -1102,7 +1104,7 @@ class ContainerCaptureListener(
         for (rows in namingRows(after, timestamp)) sink(rows)
         // Only a command leaves a reason that can wait, so most passes have nothing to ask the tick for.
         val waiting = taken.filter { it.untilTick != null && it !in spent }
-        val lingering = if (waiting.isEmpty()) waiting else Bukkit.getCurrentTick().let { tick -> waiting.filter { it.lingers(tick) } }
+        val lingering = if (waiting.isEmpty()) waiting else currentTick().let { tick -> waiting.filter { it.lingers(tick) } }
         if (lingering.isNotEmpty()) {
             for (intent in lingering) intents.add(player.uniqueId, intent)
             scheduleRecompute(player)

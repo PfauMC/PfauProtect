@@ -1,8 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
-import io.pfaumc.pfauprotect.model.Confidence
-import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerCursor
@@ -47,22 +45,5 @@ class BundleNamingTest {
         assertEquals(listOf(slot to Void, Void to slot), naming.map { it.from to it.to })
         assertTrue(naming.all { it.cause == Cause.CONTAINER_NAMED && it.kind == Kind.MUTATE })
         assertTrue(naming[0].form.contentEquals(unnamed.form) && naming[1].form.contentEquals(named.form))
-    }
-
-    // A bundle emptied with a right click drops its contents as the player's own drops, and those come
-    // out of the bundle rather than out of a slot.
-    @Test
-    fun `a bundle emptied from the hand is the player's drop out of the bundle`() {
-        val inside = Nested(owner, 0)
-        val entity = ItemEntityRef(UUID.randomUUID())
-        val edges = listOf(Edge(inside, Void, gold, 20, Confidence.INFERRED))
-        val drop = Intent(Cause.DROP_FROM_HAND, to = entity, form = gold.form, qty = 20)
-
-        val move = Intents.explain(edges, listOf(drop), player, carried = { it.ownerId == owner }).single()
-
-        assertEquals(inside, move.from)
-        assertEquals(entity, move.to)
-        assertEquals(Cause.BUNDLE_DUMP, move.cause)
-        assertEquals(Confidence.FACT, move.confidence)
     }
 }

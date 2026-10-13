@@ -2,7 +2,10 @@ package io.pfaumc.pfauprotect
 
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.PlacedForms
+import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import org.bukkit.World
+import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
 import java.lang.reflect.Proxy
 import java.util.UUID
@@ -29,6 +32,18 @@ internal fun <T : Any> stub(type: Class<T>, answers: Map<String, Any?> = emptyMa
 internal fun worldStub(uid: UUID): World = stub(World::class.java, mapOf("getUID" to uid))
 
 internal fun disabledPlugin(): Plugin = stub(Plugin::class.java, mapOf("isEnabled" to false))
+
+internal fun senderInto(
+    lines: MutableList<String>,
+    flat: (Component) -> String = PlainTextComponentSerializer.plainText()::serialize,
+): CommandSender = stub(
+    CommandSender::class.java,
+    mapOf(
+        "sendMessage" to { args: Array<out Any?> ->
+            args.forEach { if (it is String) lines += it else if (it is Component) lines += flat(it) }
+        },
+    ),
+)
 
 internal object NoPlacedForms : PlacedForms {
     override fun formAt(at: WorldBlock): ByteArray? = null

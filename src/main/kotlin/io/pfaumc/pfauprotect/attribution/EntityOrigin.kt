@@ -73,7 +73,7 @@ class EntityOriginListener(
         val source = firedBy(damager)
         when (source) {
             is Player -> origins.appeared(event.entity.uniqueId, source.uniqueId, if (source === damager) Confidence.FACT else Confidence.INFERRED)
-            else -> origins.summonerOf(source.uniqueId)?.let { origins.appeared(event.entity.uniqueId, it.actor) }
+            else -> origins.summonerOf(source.uniqueId)?.inferred()?.let { origins.appeared(event.entity.uniqueId, it.actor, it.confidence) }
         }
     }
 

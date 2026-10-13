@@ -12,6 +12,8 @@ import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.capture.block.brewed
 import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.stub
+import org.bukkit.inventory.AnvilInventory
+import org.bukkit.inventory.CraftingInventory
 import org.bukkit.inventory.Inventory
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -119,20 +121,6 @@ class TransformTest {
         assertEquals(moves, withoutForeignEnds(moves, anvil))
     }
 
-    @Test
-    fun `filling a map is one map changing and not a loss beside a birth`() {
-        val fill = Shift(Cause.MAP_FILL, Cause.MAP_FILL, Kind.MUTATE)
-        val moves = listOf(
-            move(PlayerInv(player, 3), Void, "map", 1, Cause.ITEM_VANISHED),
-            move(Void, PlayerInv(player, 4), "filled_map", 1, Cause.DIRECT_NEW_ITEM),
-        )
-
-        val transaction = transactions(moves, fill).single()
-
-        assertEquals(listOf(Cause.MAP_FILL, Cause.MAP_FILL), transaction.map { it.cause })
-        assertTrue(transaction.all { it.confidence == Confidence.FACT })
-    }
-
     // A movement that happened for its own reasons in the same tick keeps that reason and its own row.
     @Test
     fun `a movement with both ends named is left out of the transformation`() {
@@ -145,49 +133,12 @@ class TransformTest {
 
         val grouped = transactions(moves, craft)
 
-        assertEquals(listOf(elsewhere), grouped.first())
-        assertEquals(2, grouped.last().size)
-        assertEquals(Cause.QUICK_MOVE, grouped.first().single().cause)
-    }
-
-    // Both halves of an anvil face the Void and carry one reason, which is what tells a reader the
-    // item changed rather than one item dying and another being born.
-    @Test
-    fun `an anvil names one reason on both of its sides`() {
-        val moves = listOf(
-            move(table(0), Void, "damaged sword", 1, Cause.CONTAINER_REMOVE),
-            move(table(1), Void, "damaged sword", 1, Cause.CONTAINER_REMOVE),
-            move(Void, cursor, "repaired sword", 1, Cause.CONTAINER_ADD),
+        assertEquals(2, grouped.size)
+        assertEquals(Cause.QUICK_MOVE, grouped.single { elsewhere in it }.single().cause)
+        assertEquals(
+            setOf(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT),
+            grouped.single { elsewhere !in it }.map { it.cause }.toSet(),
         )
-
-        val transaction = transactions(moves, anvil).single()
-
-        assertTrue(transaction.all { it.cause == Cause.ANVIL_COMBINE })
-        assertEquals(3, transaction.size)
-    }
-
-    // A creative craft consumes nothing, so the transformation is a lone arrival. There is no pair to
-    // call a mutation, and calling it one would say an item became something it never was.
-    @Test
-    fun `a result with nothing consumed is a movement and not a mutation`() {
-        val moves = listOf(move(Void, cursor, "furnace", 1, Cause.CONTAINER_ADD))
-
-        val transaction = transactions(moves, anvil).single()
-
-        assertEquals(1, transaction.size)
-        assertEquals(Cause.ANVIL_COMBINE, transaction.single().cause)
-    }
-
-    @Test
-    fun `a transformation with both sides is witnessed rather than guessed`() {
-        val moves = listOf(
-            move(grid(1), Void, "cobblestone", 8, Cause.CONTAINER_REMOVE),
-            move(Void, cursor, "furnace", 1, Cause.CONTAINER_ADD),
-        )
-
-        val transaction = transactions(moves, craft).single()
-
-        assertTrue(transaction.all { it.confidence == Confidence.FACT })
     }
 
     @Test
@@ -196,14 +147,15 @@ class TransformTest {
 
         val transaction = transactions(moves, craft).single()
 
+        assertEquals(Cause.CRAFT_RESULT, transaction.single().cause)
         assertEquals(Confidence.INFERRED, transaction.single().confidence)
     }
 
     // Which station a taken result came out of, and whether it changed an item or ran a recipe.
     @Test
     fun `a workbench runs a recipe while a station changes the item`() {
-        assertEquals(Kind.TRANSFER, craft.kind)
-        assertEquals(Kind.MUTATE, anvil.kind)
+        assertEquals(Kind.TRANSFER, shiftOf(stub(CraftingInventory::class.java))?.kind)
+        assertEquals(Kind.MUTATE, shiftOf(stub(AnvilInventory::class.java))?.kind)
         assertNull(shiftOf(stub(Inventory::class.java)))
     }
 

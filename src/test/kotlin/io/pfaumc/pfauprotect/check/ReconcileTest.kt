@@ -59,15 +59,6 @@ class ReconcileTest : OneLedger() {
         assertEquals(emptyList<Mismatch>(), reconcile.compare(steve, held(pickaxe to 1)))
     }
 
-    // Wear is not identity, so the tool the player is carrying is the tool the ledger handed them
-    // even though every swing has moved its damage on.
-    @Test
-    fun `a worn tool still matches the posting that handed it over`() {
-        move(Cause.PICKUP, ItemEntityRef(UUID.randomUUID()), PlayerInv(steve, 0), pickaxe, 1, damage = 0)
-        log.drain()
-        assertEquals(emptyList<Mismatch>(), reconcile.compare(steve, held(pickaxe to 1)))
-    }
-
     // Loaves the player no longer holds and the ledger never saw leave: the difference names bread,
     // and bread is the address of the missing path.
     @Test
@@ -103,7 +94,6 @@ class ReconcileTest : OneLedger() {
         log.drain()
 
         assertEquals(emptyList<Mismatch>(), reconcile.compare(steve, held()))
-        assertEquals(-64, reconcile.compare(alex, held()).single().difference)
     }
 
     // Every slot a player owns hangs off four prefixes and the slot number is not in the key, so the

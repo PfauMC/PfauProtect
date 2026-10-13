@@ -2,6 +2,8 @@ package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.disabledPlugin
 import io.pfaumc.pfauprotect.NoPlacedForms
 import io.pfaumc.pfauprotect.Spawns
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.ItemEntityRef
@@ -26,7 +28,6 @@ import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -44,24 +45,6 @@ class WorldItemsTest {
     // out was killed by what it carries, so the two are given separately.
     private fun end(cause: EntityRemoveEvent.Cause, damage: DamageCause? = null, health: Int = 0) =
         itemEnd(cause, damage, health)
-
-    @Test
-    fun `an item that runs out of time or falls out of the world is destroyed`() {
-        assertEquals(Cause.ITEM_DESPAWN to Confidence.FACT, end(EntityRemoveEvent.Cause.DESPAWN))
-        assertEquals(Cause.ITEM_DESTROY_VOID to Confidence.FACT, end(EntityRemoveEvent.Cause.OUT_OF_WORLD))
-    }
-
-    @Test
-    fun `being picked up or merged is not an end`() {
-        assertNull(end(EntityRemoveEvent.Cause.PICKUP))
-        assertNull(end(EntityRemoveEvent.Cause.MERGE))
-    }
-
-    @Test
-    fun `an unloaded item has not stopped existing`() {
-        assertNull(end(EntityRemoveEvent.Cause.UNLOAD))
-        assertNull(end(EntityRemoveEvent.Cause.PLAYER_QUIT))
-    }
 
     @Test
     fun `the kind of destruction is read off the damage that caused it`() {
@@ -89,45 +72,44 @@ class WorldItemsTest {
 
     @Test
     fun `a death nobody can name is still written and marked a guess`() {
-        val unnamed = end(EntityRemoveEvent.Cause.DEATH, DamageCause.CUSTOM)
-        assertEquals(Confidence.INFERRED, unnamed?.second)
-        assertEquals(end(EntityRemoveEvent.Cause.DEATH, null), unnamed)
+        assertEquals(Cause.ITEM_SPAWN to Confidence.INFERRED, end(EntityRemoveEvent.Cause.DEATH, DamageCause.CUSTOM))
+        assertEquals(Cause.ITEM_SPAWN to Confidence.INFERRED, end(EntityRemoveEvent.Cause.DEATH, null))
     }
 
     // Killing an item removes it with the same cause a fatal blow does, and hurts it not at all: it
-    // dies in full health with nothing behind it. Read as an unnamed end it would be counted among
-    // the paths the capture cannot see, on a path it can see perfectly well.
+    // dies with health left and nothing behind it. Read as an unnamed end it would be counted among the
+    // paths the capture cannot see; read off the damage it survived earlier, it would be a fire.
     @Test
-    fun `an item killed outright is a kill and not an end nobody can name`() {
-        assertEquals(
-            Cause.CMD_KILL_ITEM to Confidence.FACT,
-            end(EntityRemoveEvent.Cause.DEATH, health = 5),
-        )
+    fun `an item that dies with health left was killed outright, whatever hurt it before`() {
+        assertEquals(Cause.CMD_KILL_ITEM to Confidence.FACT, end(EntityRemoveEvent.Cause.DEATH, health = 5))
+        assertEquals(Cause.CMD_KILL_ITEM to Confidence.FACT, end(EntityRemoveEvent.Cause.DEATH, DamageCause.FIRE, health = 4))
     }
 
     @Test
-    fun `damage an item survived does not name the death that comes later`() {
-        assertEquals(
-            Cause.CMD_KILL_ITEM to Confidence.FACT,
-            end(EntityRemoveEvent.Cause.DEATH, DamageCause.FIRE, health = 4),
-        )
+    fun `an explosion is whoever set it off, and everything else whoever put the item there`() {
+        assertEquals(bob, endedBy(Cause.ITEM_DESTROY_EXPLOSION, blaster = bob, thrower = alice, dispensedBy = null))
+        assertEquals(alice, endedBy(Cause.ITEM_DESTROY_EXPLOSION, blaster = null, thrower = alice, dispensedBy = bob))
+        assertEquals(bob, endedBy(Cause.ITEM_DESTROY_EXPLOSION, blaster = null, thrower = null, dispensedBy = bob))
+        // Fire burning an item names who threw it into the fire, not who blew something up nearby.
+        assertEquals(alice, endedBy(Cause.ITEM_DESTROY_FIRE, blaster = bob, thrower = alice, dispensedBy = null))
+        assertNull(endedBy(Cause.ITEM_DESPAWN, blaster = null, thrower = null, dispensedBy = null))
     }
 
-    // The whole point of the table: every way an item can stop existing writes exactly one row, so
-    // its balance closes or names the path that broke it. A cause nobody has thought about must not
-    // fall through into silence.
+    // Picked up, merged or unloaded, the item goes on existing somewhere else; a row for any of those
+    // would book it twice, and silence for anything else would leave its balance open.
     @Test
-    fun `every removal either writes a row or is deliberately silent`() {
-        val silent = setOf(
-            EntityRemoveEvent.Cause.PICKUP,
-            EntityRemoveEvent.Cause.MERGE,
-            EntityRemoveEvent.Cause.UNLOAD,
-            EntityRemoveEvent.Cause.PLAYER_QUIT,
+    fun `only a removal the item outlives is silent`() {
+        assertEquals(
+            setOf(
+                EntityRemoveEvent.Cause.PICKUP,
+                EntityRemoveEvent.Cause.MERGE,
+                EntityRemoveEvent.Cause.UNLOAD,
+                EntityRemoveEvent.Cause.PLAYER_QUIT,
+            ),
+            EntityRemoveEvent.Cause.entries.filter { end(it) == null }.toSet(),
         )
-        for (cause in EntityRemoveEvent.Cause.entries) {
-            if (cause in silent) continue
-            assertNotNull(end(cause)) { "$cause writes nothing at all" }
-        }
+        assertEquals(Cause.ITEM_DESPAWN to Confidence.FACT, end(EntityRemoveEvent.Cause.DESPAWN))
+        assertEquals(Cause.ITEM_DESTROY_VOID to Confidence.FACT, end(EntityRemoveEvent.Cause.OUT_OF_WORLD))
     }
 
     @Test
@@ -153,16 +135,6 @@ class WorldItemsTest {
             BundleContents(listOf(ItemStackTemplate(Items.DIAMOND, 3), ItemStackTemplate(Items.STONE, 16))),
         )
         owner?.let { NestedItems.mark(this, it) }
-    }
-
-    @Test
-    fun `a bundle accounts for its contents under its own name and an unnamed one for nothing`() {
-        val owner = UUID.randomUUID()
-        assertTrue(namedContents(bundle(null), codec).isEmpty())
-
-        val contents = namedContents(bundle(owner), codec)
-        assertEquals(listOf(Nested(owner, 0), Nested(owner, 1)), contents.map { it.first })
-        assertEquals(listOf(3, 16), contents.map { it.second.count })
     }
 
     // Thrown over the edge: the end of the bundle and of everything in it, and the player who threw it
@@ -193,8 +165,14 @@ class WorldItemsTest {
             .onRemove(EntityRemoveEvent(item, EntityRemoveEvent.Cause.OUT_OF_WORLD))
 
         val rows = spawns.rows()
-        assertEquals(setOf(ItemEntityRef(entity), Nested(owner, 0), Nested(owner, 1)), rows.map { it.from }.toSet())
+        assertEquals(
+            mapOf(ItemEntityRef(entity) to 1, Nested(owner, 0) to 3, Nested(owner, 1) to 16),
+            rows.associate { it.from to it.qty },
+        )
+        assertEquals(3, rows.size)
         assertTrue(rows.all { it.to == Void && it.cause == Cause.ITEM_DESTROY_VOID && it.actor == thrower }, "$rows")
+        // Contents are only filed under a name the bundle carries, so an unnamed one has none to take.
+        assertTrue(namedContents(bundle(null), codec).isEmpty())
     }
 
     // Recording the whole donor would book items that never moved.

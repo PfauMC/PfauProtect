@@ -3,7 +3,10 @@ import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.worldStub
 import io.pfaumc.pfauprotect.key
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.NoPlacedForms
@@ -25,7 +28,6 @@ import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.Furnace
 import org.bukkit.event.block.BlockCookEvent
-import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -55,6 +57,9 @@ class MechanismTest {
 
     private fun held(name: String, count: Int) = Stack(key(name), count)
 
+    private fun List<SlotChange>.described() =
+        map { "${it.slot} ${if (it.gain) "+" else "-"}${it.qty} ${String(it.key.form)}" }.toSet()
+
     @Test
     fun `a dispense that placed its item is told apart from one that spent it`() {
         val box = key("shulker_box")
@@ -74,19 +79,12 @@ class MechanismTest {
         )
     }
 
-    // What came out as an entity is the spawn's to write; the dispenser only owes what it spent.
+    // What came out as an entity is the spawn's to write; the dispenser only owes what it spent. The
+    // last item of a slot leaves it empty, and the spawn took that one too.
     @Test
     fun `an item thrown out of a dispenser is not written off a second time`() {
-        val before = listOf(held("diamond", 5), null)
-        val after = listOf(held("diamond", 4), null)
-        assertTrue(dispenseChanges(before, after, 0, ejected = 1).isEmpty())
-    }
-
-    // The last item of a slot: the slot is gone empty, and the spawn took it, so nothing is left to write.
-    @Test
-    fun `the last item thrown out of a dispenser is not written off either`() {
-        val before = listOf(held("diamond", 1), null)
-        assertTrue(dispenseChanges(before, listOf(null, null), 0, ejected = 1).isEmpty())
+        assertTrue(dispenseChanges(listOf(held("diamond", 5), null), listOf(held("diamond", 4), null), 0, ejected = 1).isEmpty())
+        assertTrue(dispenseChanges(listOf(held("diamond", 1), null), listOf(null, null), 0, ejected = 1).isEmpty())
     }
 
     @Test
@@ -103,18 +101,14 @@ class MechanismTest {
     fun `a bucket filled by a dispenser changes in its own slot`() {
         val before = listOf(held("bucket", 1))
         val after = listOf(held("water_bucket", 1))
-        val changes = dispenseChanges(before, after, 0, ejected = 0)
-        assertEquals(listOf(false, true), changes.map { it.gain })
-        assertEquals("water_bucket", String(changes[1].key.form))
+        assertEquals(setOf("0 -1 bucket", "0 +1 water_bucket"), dispenseChanges(before, after, 0, ejected = 0).described())
     }
 
     @Test
     fun `a bottle filled from a stack lands in another slot as the product`() {
         val before = listOf(held("glass_bottle", 4), null, held("glass_bottle", 2))
         val after = listOf(held("glass_bottle", 3), held("potion", 1), held("glass_bottle", 2))
-        val changes = dispenseChanges(before, after, 0, ejected = 0)
-        assertEquals(2, changes.size)
-        assertEquals(listOf(0 to false, 1 to true), changes.map { it.slot to it.gain })
+        assertEquals(setOf("0 -1 glass_bottle", "1 +1 potion"), dispenseChanges(before, after, 0, ejected = 0).described())
     }
 
     @Test
@@ -135,13 +129,7 @@ class MechanismTest {
     }
 
     @Test
-    fun `only the part that fits counts as moved`() {
-        val nearlyFull = chest(size = 2, fill = mapOf(0 to stone(62), 1 to dirt(64)))
-        assertEquals(Fitting(0, 2), Placement.fit(nearlyFull, stone(10), null))
-    }
-
-    @Test
-    fun `room is summed over every slot the form can reach`() {
+    fun `only the room summed over every slot the form can reach counts as moved`() {
         val spread = chest(size = 3, fill = mapOf(0 to stone(60), 1 to dirt(64), 2 to stone(61)))
         assertEquals(Fitting(0, 7), Placement.fit(spread, stone(20), null))
     }
@@ -170,24 +158,34 @@ class MechanismTest {
         assertEquals(-1, Placement.holdingSlot(furnace, stone(1), Direction.DOWN))
     }
 
+    // Who moved it and how sure that is are part of the movement: merged, one player's hopper would be
+    // filed on another, or a guess passed off as a fact.
     @Test
-    fun `movements sharing both ends and the form leave as one`() {
+    fun `movements sharing both ends, the form, the actor and the confidence leave as one`() {
         val written = ArrayList<Transfer>()
         val coalescer = TickCoalescer(written::add)
         val from = Container(world, 1, 64, 1, 0)
         val to = Container(world, 1, 63, 1, 0)
-        val stone = key("stone")
-        repeat(5) { coalescer.add(from, to, Cause.HOPPER_PUSH, stone, 1) }
+        repeat(5) { coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1) }
         coalescer.add(from, to, Cause.HOPPER_PUSH, key("dirt"), 2)
-        coalescer.add(to, from, Cause.HOPPER_PULL_CONTAINER, stone, 3)
+        coalescer.add(to, from, Cause.HOPPER_PULL_CONTAINER, key("stone"), 3)
+        coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1, alice)
+        coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1, bob)
+        coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1, bob, Confidence.INFERRED)
         coalescer.flush()
 
-        assertEquals(3, written.size)
-        val push = written.single { it.cause == Cause.HOPPER_PUSH && it.form.contentEquals(stone.form) }
-        assertEquals(5, push.qty)
-        assertEquals(from, push.from)
-        assertEquals(to, push.to)
-        assertEquals(setOf(5, 2, 3), written.map { it.qty }.toSet())
+        assertEquals(
+            setOf(
+                listOf(from, to, Cause.HOPPER_PUSH, "stone", 5, null, Confidence.FACT),
+                listOf(from, to, Cause.HOPPER_PUSH, "dirt", 2, null, Confidence.FACT),
+                listOf(to, from, Cause.HOPPER_PULL_CONTAINER, "stone", 3, null, Confidence.FACT),
+                listOf(from, to, Cause.HOPPER_PUSH, "stone", 1, alice, Confidence.FACT),
+                listOf(from, to, Cause.HOPPER_PUSH, "stone", 1, bob, Confidence.FACT),
+                listOf(from, to, Cause.HOPPER_PUSH, "stone", 1, bob, Confidence.INFERRED),
+            ),
+            written.map { listOf(it.from, it.to, it.cause, String(it.form), it.qty, it.actor, it.confidence) }.toSet(),
+        )
+        assertEquals(6, written.size)
     }
 
     @Test
@@ -209,61 +207,49 @@ class MechanismTest {
         ).form
 
     @Test
-    fun `a position gives back the named box it took over and not a bare one`() {
-        val named = form(Items.SHULKER_BOX, "Ender Storage")
-        val bare = form(Items.SHULKER_BOX)
-        assertArrayEquals(named, gaveBack(named, bare))
-    }
-
-    @Test
-    fun `a position nobody placed gives back what the block itself is made of`() {
+    fun `a position gives back what it was credited with while the block standing there is still that item`() {
+        val namedBox = form(Items.SHULKER_BOX, "Ender Storage")
         val cobblestone = form(Items.COBBLESTONE)
-        assertArrayEquals(cobblestone, gaveBack(null, cobblestone))
-    }
-
-    // Dirt turned to grass, or a piston pushed something else in, under a record left by a placement
-    // that is no longer standing there. Given back it would be an item that was never at that position.
-    @Test
-    fun `a form remembered for another item is not given back`() {
         val grass = form(Items.GRASS_BLOCK)
-        assertArrayEquals(grass, gaveBack(form(Items.DIRT, "Sod"), grass))
-    }
-
-    @Test
-    fun `a block nobody placed and with no item form of its own gives nothing back`() {
-        assertNull(gaveBack(null, null))
-    }
-
-    @Test
-    fun `a position that was placed gives back what it took even where the block backs no item`() {
         val pot = form(Items.FLOWER_POT)
-        assertArrayEquals(pot, gaveBack(pot, null))
-    }
-
-    @Test
-    fun `a debit for a double block goes to the half that was paid for`() {
-        val lower = WorldBlock(world, 2, -60, 22)
-        val upper = WorldBlock(world, 2, -59, 22)
-        val paid = form(Items.TALL_GRASS)
-        val remembered = { at: WorldBlock -> paid.takeIf { at == lower } }
-
-        assertEquals(lower, paidHalf(upper, lower, remembered))
-        assertEquals(lower, paidHalf(lower, upper, remembered))
-    }
-
-    @Test
-    fun `a debit for a double block nobody paid for stays where it was struck`() {
-        val lower = WorldBlock(world, 2, -60, 22)
-        val upper = WorldBlock(world, 2, -59, 22)
-        assertEquals(upper, paidHalf(upper, lower) { null })
+        // remembered, the block's own shell, what is given back
+        for ((remembered, shell, expected) in listOf(
+            Triple(namedBox, form(Items.SHULKER_BOX), namedBox),
+            Triple(null, cobblestone, cobblestone),
+            // Dirt turned to grass, or a piston pushed something else in, under a record left by a
+            // placement no longer standing there: given back, it would be an item never at that position.
+            Triple(form(Items.DIRT, "Sod"), grass, grass),
+            // A potted plant backs no item of its own and still gives back the pot that was put down.
+            Triple(pot, null, pot),
+            Triple(null, null, null),
+        )) {
+            assertEquals(expected?.toList(), gaveBack(remembered, shell)?.toList())
+        }
     }
 
     // Most blocks have no other half at all, and the answer for them is the one position there is.
     @Test
-    fun `a debit for a single block is booked where it was struck`() {
-        val at = WorldBlock(world, 44, -60, -27)
-        assertEquals(at, paidHalf(at, null) { form(Items.STONE) })
+    fun `a debit for a block goes to the half that was paid for, else where it was struck`() {
+        val lower = WorldBlock(world, 2, -60, 22)
+        val upper = WorldBlock(world, 2, -59, 22)
+        val single = WorldBlock(world, 44, -60, -27)
+        val paidLower = { at: WorldBlock -> form(Items.TALL_GRASS).takeIf { at == lower } }
+        for ((struck, partner, remembered, expected) in listOf(
+            Debit(upper, lower, paidLower, lower),
+            Debit(lower, upper, paidLower, lower),
+            Debit(upper, lower, { null }, upper),
+            Debit(single, null, { form(Items.STONE) }, single),
+        )) {
+            assertEquals(expected, paidHalf(struck, partner, remembered), "$struck")
+        }
     }
+
+    private data class Debit(
+        val struck: WorldBlock,
+        val partner: WorldBlock?,
+        val remembered: (WorldBlock) -> ByteArray?,
+        val expected: WorldBlock,
+    )
 
     // The event carries a mirror of the whole input slot while the smelt takes exactly one item out of
     // it, so a furnace loaded with a stack must still book a loss of one per ingot.

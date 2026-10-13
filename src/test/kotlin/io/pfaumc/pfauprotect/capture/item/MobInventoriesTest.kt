@@ -26,22 +26,24 @@ class MobInventoriesTest {
 
     private fun slot(i: Int): Holder = Container(world, 0, 64, 0, i)
 
+    private fun <T> bag(items: List<T>) = items.groupingBy { it }.eachCount()
+
     private fun changes(before: List<Pocket>, after: List<Pocket>) =
-        pocketChanges(before, after).map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) }
+        bag(pocketChanges(before, after).map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) })
 
     // Bread baked from wheat in one slot is two changes, and a stack only partly spent is one.
     @Test
     fun `a pocket read twice gives what went out and what came in, slot by slot`() {
         assertEquals(
-            listOf(Triple(0, "wheat", -3), Triple(1, "bread", 1)),
+            bag(listOf(Triple(0, "wheat", -3), Triple(1, "bread", 1))),
             changes(listOf(Pocket(0, wheat, 3)), listOf(Pocket(1, bread, 1))),
         )
-        assertEquals(listOf(Triple(0, "wheat", -2)), changes(listOf(Pocket(0, wheat, 5)), listOf(Pocket(0, wheat, 3))))
+        assertEquals(bag(listOf(Triple(0, "wheat", -2))), changes(listOf(Pocket(0, wheat, 5)), listOf(Pocket(0, wheat, 3))))
         assertEquals(
-            listOf(Triple(0, "wheat", -3), Triple(0, "bread", 1)),
+            bag(listOf(Triple(0, "wheat", -3), Triple(0, "bread", 1))),
             changes(listOf(Pocket(0, wheat, 3)), listOf(Pocket(0, bread, 1))),
         )
-        assertEquals(emptyList<Triple<Int, String, Int>>(), changes(listOf(Pocket(2, wheat, 3)), listOf(Pocket(2, wheat, 3))))
+        assertEquals(emptyMap<Triple<Int, String, Int>, Int>(), changes(listOf(Pocket(2, wheat, 3)), listOf(Pocket(2, wheat, 3))))
         // What went out of a stack went with the wear it had, as in any other slot.
         val shrunk = pocketChanges(listOf(Pocket(0, ItemKey(hoe.form, 3), 5)), listOf(Pocket(0, ItemKey(hoe.form, 4), 3)))
         assertEquals(3, shrunk.single().key.damage)
@@ -64,19 +66,19 @@ class MobInventoriesTest {
     @Test
     fun `a pocket packed by loading is the same stacks in other slots and what changed besides`() {
         fun moves(before: List<Pocket>, after: List<Pocket>) =
-            pocketShifts(before, after).first.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) }
+            bag(pocketShifts(before, after).first.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) })
         val before = listOf(Pocket(0, wheat, 2), Pocket(2, bread, 5), Pocket(3, hoe, 1))
         val after = listOf(Pocket(0, wheat, 2), Pocket(1, bread, 5), Pocket(2, hoe, 1))
 
-        assertEquals(listOf(Triple("bread", 2, 1), Triple("hoe", 3, 2)), moves(before, after))
+        assertEquals(bag(listOf(Triple("bread", 2, 1), Triple("hoe", 3, 2))), moves(before, after))
         assertEquals(emptyList<SlotChange>(), pocketShifts(before, after).second)
-        assertEquals(emptyList<Triple<String, Int, Int>>(), moves(after, after))
+        assertEquals(emptyMap<Triple<String, Int, Int>, Int>(), moves(after, after))
 
         val carrot = key("carrot")
         val ate = pocketShifts(listOf(Pocket(0, carrot, 12)) + after.map { Pocket(it.slot + 1, it.key, it.count) }, after)
-        assertEquals(listOf(Triple("wheat", 1, 0), Triple("bread", 2, 1), Triple("hoe", 3, 2)), ate.first.map { (was, now) ->
+        assertEquals(bag(listOf(Triple("wheat", 1, 0), Triple("bread", 2, 1), Triple("hoe", 3, 2))), bag(ate.first.map { (was, now) ->
             Triple(String(was.key.form), was.slot, now.slot)
-        })
+        }))
         assertEquals(listOf(Triple(0, "carrot", -12)), ate.second.map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) })
     }
 
@@ -86,22 +88,22 @@ class MobInventoriesTest {
     @Test
     fun `a stack partly eaten and moved down by loading is a move and a loss`() {
         val carrot = key("carrot")
-        fun signed(changes: List<SlotChange>) = changes.map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) }
+        fun signed(changes: List<SlotChange>) = bag(changes.map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) })
         val (moves, rest) = pocketShifts(
             listOf(Pocket(0, bread, 3), Pocket(1, carrot, 12), Pocket(2, wheat, 5)),
             listOf(Pocket(0, carrot, 7), Pocket(1, wheat, 5)),
         )
 
         assertEquals(
-            listOf(Triple("wheat", 2, 1), Triple("carrot", 1, 0)),
-            moves.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) },
+            bag(listOf(Triple("wheat", 2, 1), Triple("carrot", 1, 0))),
+            bag(moves.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) }),
         )
-        assertEquals(7, moves.last().second.count)
-        assertEquals(listOf(Triple(0, "bread", -3), Triple(1, "carrot", -5)), signed(rest))
+        assertEquals(7, moves.single { (was, _) -> String(was.key.form) == "carrot" }.second.count)
+        assertEquals(bag(listOf(Triple(0, "bread", -3), Triple(1, "carrot", -5))), signed(rest))
 
         val (none, up) = pocketShifts(listOf(Pocket(0, carrot, 5)), listOf(Pocket(1, carrot, 3)))
         assertEquals(emptyList<Pair<Pocket, Pocket>>(), none)
-        assertEquals(listOf(Triple(0, "carrot", -5), Triple(1, "carrot", 3)), signed(up))
+        assertEquals(bag(listOf(Triple(0, "carrot", -5), Triple(1, "carrot", 3))), signed(up))
     }
 
     // Three bread from nothing leaves a villager where it was, three bread and a carrot from nothing
@@ -143,21 +145,21 @@ class MobInventoriesTest {
         val block = WorldBlock(UUID.randomUUID(), 0, -60, 0)
         fun pickup() = PocketLabel(carrot.form, true, item, Cause.ITEM_PICKUP_BY_MOB_INV, 1, hand = 0)
         fun read(before: List<Pocket>, after: List<Pocket>, vararg labels: PocketLabel, held: Boolean = false) =
-            explainPocket(before, after, labels.toList()) { held }
-                .map { (change, label) -> Triple(change.slot, if (change.gain) change.qty else -change.qty, label?.cause) }
+            bag(explainPocket(before, after, labels.toList()) { held }
+                .map { (change, label) -> Triple(change.slot, if (change.gain) change.qty else -change.qty, label?.cause) })
 
         val five = listOf(Pocket(2, carrot, 5))
         assertEquals(
-            listOf(Triple(2, 1, Cause.ITEM_PICKUP_BY_MOB_INV), Triple(2, -1, Cause.BLOCK_PLACE)),
+            bag(listOf(Triple(2, 1, Cause.ITEM_PICKUP_BY_MOB_INV), Triple(2, -1, Cause.BLOCK_PLACE))),
             read(five, five, pickup(), PocketLabel(null, false, block, Cause.BLOCK_PLACE, 1)),
         )
         assertEquals(
-            listOf(Triple(0, -11, null), Triple(0, 1, Cause.ITEM_PICKUP_BY_MOB_INV), Triple(0, -1, null)),
+            bag(listOf(Triple(0, -11, null), Triple(0, 1, Cause.ITEM_PICKUP_BY_MOB_INV), Triple(0, -1, null))),
             read(listOf(Pocket(0, carrot, 12)), listOf(Pocket(0, carrot, 1)), pickup()),
         )
-        assertEquals(emptyList<Triple<Int, Int, Cause?>>(), read(five, five, pickup(), held = true))
+        assertEquals(emptyMap<Triple<Int, Int, Cause?>, Int>(), read(five, five, pickup(), held = true))
         assertEquals(
-            listOf(Triple(0, 1, Cause.ITEM_PICKUP_BY_MOB_INV), Triple(0, -1, Cause.BLOCK_PLACE)),
+            bag(listOf(Triple(0, 1, Cause.ITEM_PICKUP_BY_MOB_INV), Triple(0, -1, Cause.BLOCK_PLACE))),
             read(emptyList(), emptyList(), pickup(), PocketLabel(null, false, block, Cause.BLOCK_PLACE, 1)),
         )
     }
@@ -187,6 +189,13 @@ class MobInventoriesTest {
         assertEquals(listOf(slot(1) to 10), golemSlots(previous, now, bread.form, took = true, moved = 10))
         assertEquals(emptyList<Pair<Holder, Int>>(), golemSlots(now, now, bread.form, took = false, moved = 5))
         assertEquals(emptyList<Pair<Holder, Int>>(), golemSlots(null, now, bread.form, took = false, moved = 5))
+    }
+
+    @Test
+    fun `a golem's move is never more than its hand changed by`() {
+        val previous = mapOf(slot(0) to Stack(wheat, 16))
+
+        assertEquals(listOf(slot(0) to 10), golemSlots(previous, emptyMap(), wheat.form, took = true, moved = 10))
     }
 
     // A farmer sets wheat down into the air over farmland; a farmer feeding a composter changes the composter.

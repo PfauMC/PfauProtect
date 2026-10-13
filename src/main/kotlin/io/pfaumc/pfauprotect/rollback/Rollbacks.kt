@@ -85,7 +85,6 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.logging.Level
@@ -96,7 +95,6 @@ import kotlin.math.sqrt
 import io.pfaumc.pfauprotect.Settings
 import net.minecraft.server.level.ServerPlayer
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicBoolean
 import net.minecraft.world.Container as NmsContainer
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
@@ -113,10 +111,6 @@ private const val PLACE_FLAGS = SHAPE_FLAGS or Block.UPDATE_KNOWN_SHAPE
 internal const val PENDING_MILLIS = 5 * 60_000L
 
 internal fun nameOrId(uuid: UUID): String = offlineName(uuid) ?: uuid.toString()
-
-// A chunk task that never runs — its world unloaded under it — would hold the one rollback slot for
-// good. Past this a running rollback is taken as lost and the slot handed on.
-private const val STALE_MILLIS = 10 * 60_000L
 
 // How long the chunks a rollback holds get to load before it gives up on them.
 private const val LOAD_MILLIS = 60_000L
@@ -261,6 +255,69 @@ class Tally {
     }
 }
 
+/** What a rollback does at one position given what stands there: `target` is the state it puts back. */
+internal class Decision(val settled: Settled, val target: String?, val reshaped: Boolean, val retagged: Boolean)
+
+internal fun decide(standing: String, payload: ByteArray?, hasSlots: () -> Boolean, plan: PositionPlan): Decision {
+    val settled = settle(standing, plan.steps, plan.origin)
+    val target = settled.back?.before?.let { if (passing(it)) "minecraft:air" else quiet(it) }
+    // A signal is the neighbours' to set, not the rollback's to put back or to count as a difference.
+    val reshaped = target != null && target != quiet(standing)
+    // A container standing where it stood keeps what it holds: its contents are the slot
+    // postings' business, and its tag would hand back what they already give back.
+    val retagged = !reshaped && settled.back?.payloadBefore?.contentEquals(payload) == false && !hasSlots()
+    return Decision(settled, target, reshaped, retagged)
+}
+
+/** Counts the position in the tally, and says whether the rollback changes anything there. */
+internal fun Tally.count(plan: PositionPlan, decision: Decision): Boolean {
+    if (decision.settled.conflict) conflicts++
+    if (!decision.reshaped && !decision.retagged) {
+        // One stopped by a later change is counted there, not again as already as it was.
+        if (plan.steps.isNotEmpty() && !decision.settled.conflict) unchanged++
+        return false
+    }
+    changed++
+    if (decision.reshaped) undone += plan.at
+    return true
+}
+
+/** The postings a chunk gives back, and the form a bare mark of them is written under when no slot moves to carry it. */
+internal class GivenBack {
+    val postings = ArrayList<PostingRef>()
+    var marker: ByteArray? = null
+
+    fun add(refill: Refill) {
+        postings += refill.posting
+        marker = marker ?: refill.form
+    }
+}
+
+/** Gives one slot posting back into `container`, through `move`, or writes it off with the container gone. */
+internal fun Tally.giveBack(refill: Refill, container: Slots?, removedHere: Boolean, given: GivenBack, move: (Slots) -> Int) {
+    // What arrived in a container this rollback took away went with it, and the reading
+    // below writes it off: that is this posting given back, not one that found nothing.
+    // What left it went somewhere whose own posting is undone there: a hopper the
+    // griefer set under a chest is a stop on the way, and both ends of the stop are done.
+    if (container == null && removedHere) {
+        given.add(refill)
+        // What a player or a pile carried out of it is in their hands, not at another stop: the
+        // griefer who emptied his own hopper kept the owner's diamonds.
+        if (refill.qty < 0 || refill.lead is PlayerHolder || refill.lead is ItemEntityRef) {
+            traces += Trace(refill.lead, refill.formId, refill.qty)
+        }
+        return
+    }
+    val moved = if (container == null) 0 else move(container)
+    if (moved < abs(refill.qty)) missed++
+    if (moved > 0) {
+        // What went in and came out again leaves the container as it was: nothing moves to carry
+        // the mark on.
+        given.add(refill)
+        traces += Trace(refill.lead, refill.formId, if (refill.qty > 0) moved else -moved)
+    }
+}
+
 private const val CONCURRENT_CHUNKS = 8
 
 // How far around an event's own position and either side of its time a rollback of it reads.
@@ -364,6 +421,14 @@ internal fun putBack(slots: Slots, slot: Int, template: NmsItemStack, qty: Int, 
     return abs(qty) - left
 }
 
+internal fun givenBackRows(difference: Difference, given: GivenBack, actor: UUID?): List<Transfer> = when {
+    difference.moved -> difference.transfers(given.postings)
+    given.postings.isEmpty() -> emptyList()
+    // Containers taken away empty, the griefer's dispensers fired out: nothing moves, but the postings are
+    // given back all the same, or every rollback after this one counts them again.
+    else -> listOf(Transfer(Cause.ROLLBACK, Void, Void, given.marker!!, null, 1, difference.timestamp, actor = actor, reverts = given.postings))
+}
+
 /**
  * One chunk of a rollback, on the thread of the region that owns it. Nothing here touches the ledger:
  * the plan was read before, and the rows go to the writers' queues.
@@ -387,8 +452,10 @@ class ChunkRollback(
         val before = spots.map { standingAt(level, it, codec) }
         val touched = BooleanArray(positions.size)
         val beforeStates = before.map { it.state.asBlockData().asString }
-        val settles = positions.mapIndexed { i, plan -> settle(beforeStates[i], plan.steps, plan.origin) }
-        val targets = settles.map { settled -> settled.back?.before?.let { if (passing(it)) "minecraft:air" else quiet(it) } }
+        val decisions = positions.mapIndexed { i, plan ->
+            decide(beforeStates[i], before[i].payload, { slotsOf(level.getBlockEntity(spots[i])) != null }, plan)
+        }
+        val targets = decisions.map { it.target }
         // What a source being taken away had run into goes with it, before anything is put back, and so does a
         // flow the players' rows stand in: lava left running sets fire to the house the rollback puts back.
         val drained = if (!apply) emptyList() else positions.indices.flatMap { i ->
@@ -403,34 +470,20 @@ class ChunkRollback(
         }
         for ((pos, _) in drained) level.setBlock(pos, Blocks.AIR.defaultBlockState(), PLACE_FLAGS)
         positions.forEachIndexed { i, plan ->
-            val was = before[i]
-            // A signal is the neighbours' to set, not the rollback's to put back or to count as a difference.
-            val standing = quiet(beforeStates[i])
-            val settled = settles[i]
-            if (settled.conflict) tally.conflicts++
-            val back = settled.back
-            val target = targets[i]
-            val reshaped = target != null && target != standing
-            // A container standing where it stood keeps what it holds: its contents are the slot
-            // postings' business, and its tag would hand back what they already give back.
-            val retagged = !reshaped && back?.payloadBefore?.contentEquals(was.payload) == false &&
-                slotsOf(level.getBlockEntity(spots[i])) == null
-            if (!reshaped && !retagged) {
-                // One stopped by a later change is counted there, not again as already as it was.
-                if (plan.steps.isNotEmpty() && !settled.conflict) tally.unchanged++
-                return@forEachIndexed
-            }
-            tally.changed++
-            if (reshaped) tally.undone += plan.at
+            val decision = decisions[i]
+            if (!tally.count(plan, decision)) return@forEachIndexed
+            val back = decision.settled.back
+            // Null where only the tag goes back.
+            val target = decision.target.takeIf { decision.reshaped }
             // A block back where one stands again is what lets the drops of its break be taken back.
-            val returnsBlock = reshaped && !emptied(target)
+            val returnsBlock = target != null && !emptied(target)
             if (!apply) {
                 if (returnsBlock) restored(tally, plan)
-                if (reshaped) tally.ghosts += Ghost(plan.at.copy(world = world), Bukkit.createBlockData(target))
+                if (target != null) tally.ghosts += Ghost(plan.at.copy(world = world), Bukkit.createBlockData(target))
                 return@forEachIndexed
             }
             try {
-                put(level, spots[i], if (reshaped) target else null, back?.payloadBefore)
+                put(level, spots[i], target, back?.payloadBefore)
                 touched[i] = true
                 if (returnsBlock) restored(tally, plan)
             } catch (failure: Exception) {
@@ -462,9 +515,7 @@ class ChunkRollback(
         }
         val doused = if (!apply) emptyList() else douse(level, spots)
         // After the blocks, so a chest that came back is there to take its contents.
-        val givenBack = ArrayList<PostingRef>()
-        // The form a bare mark of the given-back postings is written under when no slot moves to carry it.
-        var marker: ByteArray? = null
+        val givenBack = GivenBack()
         positions.forEachIndexed { i, plan ->
             for (refill in plan.refills) {
                 tally.slots++
@@ -473,30 +524,10 @@ class ChunkRollback(
                     continue
                 }
                 val container = slotsOf(level.getBlockEntity(BlockPos(refill.at.x, refill.at.y, refill.at.z)))
-                // What arrived in a container this rollback took away went with it, and the reading
-                // below writes it off: that is this posting given back, not one that found nothing.
-                // What left it went somewhere whose own posting is undone there: a hopper the
-                // griefer set under a chest is a stop on the way, and both ends of the stop are done.
-                if (container == null && touched[i]) {
-                    givenBack += refill.posting
-                    marker = marker ?: refill.form
-                    // What a player or a pile carried out of it is in their hands, not at another stop: the
-                    // griefer who emptied his own hopper kept the owner's diamonds.
-                    if (refill.qty < 0 || refill.lead is PlayerHolder || refill.lead is ItemEntityRef) {
-                        tally.traces += Trace(refill.lead, refill.formId, refill.qty)
+                tally.giveBack(refill, container, removedHere = touched[i], givenBack) {
+                    putBack(it, refill.at.slot, codec.decode(refill.form, 1, refill.damage), refill.qty) { stack ->
+                        codec.encode(stack).form.contentEquals(refill.form)
                     }
-                    continue
-                }
-                val moved = if (container == null) 0 else putBack(
-                    container, refill.at.slot, codec.decode(refill.form, 1, refill.damage), refill.qty,
-                ) { codec.encode(it).form.contentEquals(refill.form) }
-                if (moved < abs(refill.qty)) tally.missed++
-                if (moved > 0) {
-                    givenBack += refill.posting
-                    // What went in and came out again leaves the container as it was: nothing moves to carry
-                    // the mark on.
-                    marker = marker ?: refill.form
-                    tally.traces += Trace(refill.lead, refill.formId, if (refill.qty > 0) moved else -moved)
                 }
             }
         }
@@ -513,13 +544,7 @@ class ChunkRollback(
         val planned = spots.toHashSet()
         for ((pos, was) in doused) if (pos !in planned) difference.add(pos.x, pos.y, pos.z, was, standingAt(level, pos, codec), blockRow = true)
         if (difference.rows.isNotEmpty()) logs.get(world)?.submit(difference.rows)
-        if (difference.moved) {
-            sink(difference.transfers(givenBack))
-        } else if (givenBack.isNotEmpty()) {
-            // Containers taken away empty, the griefer's dispensers fired out: nothing moves, but the
-            // postings are given back all the same, or every rollback after this one counts them again.
-            sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, marker!!, null, 1, difference.timestamp, actor = actor, reverts = givenBack)))
-        }
+        givenBackRows(difference, givenBack, actor).takeIf { it.isNotEmpty() }?.let(sink)
         difference.writeOff(plugin, placed, sink)
         // Last, and after the rows: what the neighbours do now is theirs, and the capture files it.
         for (i in positions.indices) if (touched[i]) level.updateNeighboursOnBlockSet(spots[i], before[i].state)
@@ -802,6 +827,15 @@ class ChunkRollback(
     }
 }
 
+internal fun refusalOf(query: LookupQuery): String? = when {
+    query.event != null -> null
+    query.secondsBack == null -> "A rollback needs time: how far back to undo, for example time:1h."
+    query.players.isNotEmpty() -> "player: reads what a player carries and has no place to roll back; use user:."
+    query.radius == null -> "A rollback needs radius: the blocks around you it covers, or global with user:."
+    query.global && query.users.isEmpty() -> "radius:global undoes what named players did; give user: as well."
+    else -> null
+}
+
 /**
  * `/pp rollback`, `apply` and `cancel`. A rollback is previewed first and applied on a second word; the
  * preview is the same reading run against the world without touching it, and apply reads it all again.
@@ -814,13 +848,7 @@ class Rollbacks(
     private val chunks: ChunkRollback,
     private val confiscations: Confiscations,
 ) {
-    private class Pending(val target: LookupTarget, val query: LookupQuery, val at: Long)
-
-    private val pending = ConcurrentHashMap<String, Pending>()
-    // When the rollback running now started, or zero.
-    private val running = AtomicLong()
-    // Asked by /pp cancel while one runs: the chunks not yet begun are left as they are.
-    private val stopping = AtomicBoolean()
+    private val slot = RollbackSlot()
     private val reader = RollbackReader(ledger, blocks)
     val ghosts = Ghosts(plugin)
 
@@ -829,58 +857,38 @@ class Rollbacks(
             sender.say(it)
             return
         }
-        pending[keyOf(sender)] = Pending(target, query, System.currentTimeMillis())
+        slot.preview(keyOf(sender), target, query)
         run(sender, target, query, apply = false)
     }
 
     fun applyPreview(sender: CommandSender) {
-        val key = keyOf(sender)
-        val asked = pending.remove(key)?.takeIf { System.currentTimeMillis() - it.at <= PENDING_MILLIS }
-        if (asked == null) {
-            sender.say("Nothing to apply: preview a rollback with /pp rollback first.")
-            return
+        when (val taken = slot.take(keyOf(sender))) {
+            Taking.NothingPending -> sender.say("Nothing to apply: preview a rollback with /pp rollback first.")
+            Taking.Busy -> sender.say("Another rollback is still running; apply again once it has reported.")
+            is Taking.Started -> {
+                hide(sender)
+                run(sender, taken.asked.target, taken.asked.query, apply = true, startedAt = taken.at)
+            }
         }
-        // Two rollbacks over one place would each read the other's work as not done yet.
-        val started = running.get()
-        val now = System.currentTimeMillis()
-        if (started != 0L && now - started < STALE_MILLIS || !running.compareAndSet(started, now)) {
-            pending[key] = asked
-            sender.say("Another rollback is still running; apply again once it has reported.")
-            return
-        }
-        // Cleared here, not when the chunks start: a /pp cancel while it still reads must hold.
-        stopping.set(false)
-        hide(sender)
-        run(sender, asked.target, asked.query, apply = true, startedAt = now)
     }
 
-    fun runningSince(): Long? = running.get().takeIf { it != 0L }
+    fun runningSince(): Long? = slot.runningSince()
 
     fun cancelPreview(sender: CommandSender) {
-        if (pending.remove(keyOf(sender)) != null) {
+        if (slot.drop(keyOf(sender))) {
             hide(sender)
             return sender.say("Rollback preview dropped.")
         }
-        if (running.get() != 0L && stopping.compareAndSet(false, true)) {
+        if (slot.stop()) {
             return sender.say("Stopping the rollback that runs now: the chunks it has not reached yet stay as they are.")
         }
         sender.say("No rollback preview to drop.")
     }
 
-    private fun refusalOf(query: LookupQuery): String? = when {
-        query.event != null -> null
-        query.secondsBack == null -> "A rollback needs time: how far back to undo, for example time:1h."
-        query.players.isNotEmpty() -> "player: reads what a player carries and has no place to roll back; use user:."
-        query.radius == null -> "A rollback needs radius: the blocks around you it covers, or global with user:."
-        query.global && query.users.isEmpty() -> "radius:global undoes what named players did; give user: as well."
-        else -> null
-    }
-
     private fun keyOf(sender: CommandSender) = (sender as? Player)?.uniqueId?.toString() ?: sender.name
 
     private fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, apply: Boolean, startedAt: Long = 0) {
-        // Only its own slot: a run taken as lost that finishes after all must not free the next one's.
-        val release = { if (apply) running.compareAndSet(startedAt, 0) }
+        val release = { if (apply) slot.release(startedAt) }
         plugin.offThread(sender, "the rollback at ${target.label} failed", "The rollback failed; the server log has the details.") {
             try {
                 val users = lookups.resolveAll(sender, query.users)
@@ -897,8 +905,8 @@ class Rollbacks(
                 val event = query.event
                 // One event: a second either side of it, around where it happened. A window that ends in the
                 // past, an event's or a span's, treats what came after as somebody's later change, which stops it.
-                val from = event?.let { it.at - EVENT_MILLIS } ?: (now - query.secondsBack!! * 1000)
-                val to = event?.let { it.at + EVENT_MILLIS } ?: query.secondsUntil?.let { now - it * 1000 } ?: now
+                val from = event?.let { it.at - EVENT_MILLIS } ?: query.fromTs(now)
+                val to = event?.let { it.at + EVENT_MILLIS } ?: minOf(query.toTs(now), now)
                 val radius = if (event != null) query.radius ?: EVENT_RADIUS else query.radius
                 val at = if (event != null) LookupTarget(target.world, event.x, event.y, event.z, "event ${event.id} at ${event.x} ${event.y} ${event.z}") else target
                 val since = TIME_FORMAT.format(Instant.ofEpochMilli(from)) +
@@ -1064,7 +1072,7 @@ class Rollbacks(
             fun next() {
                 while (true) {
                     val (level, chunk) = queue.poll() ?: return
-                    if (apply && stopping.get()) {
+                    if (apply && slot.stopRequested) {
                         total.add(Tally().apply { skipped = chunk.positions.size })
                         done()
                         continue

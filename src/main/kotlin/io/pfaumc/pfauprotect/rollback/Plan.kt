@@ -427,10 +427,15 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     private fun planOf(
         log: BlockLog, world: UUID, read: Collected, slots: List<LedgerEntry>, losses: List<LedgerEntry>,
         fromTs: Long, toTs: Long, keeps: RowFilter,
-    ): Reading = plan(
-        world, read.rows + passedBy(read.rows, read.nature, ::turf), slots, losses, read.entityRows, toTs, read.unreadable,
-        origins(log, world, read.rows, read.foreign, fromTs, keeps),
-    )
+    ): Reading {
+        // An item row carries no event of its own: one event's are those at the places the event changed.
+        val spots = keeps.event?.let { read.rows.mapTo(HashSet()) { it.spot } + read.entityRows.map { Triple(it.x, it.y, it.z) } }
+        fun ofEvent(entry: LedgerEntry) = spots == null || entry.holder.block?.let { Triple(it.x, it.y, it.z) } in spots
+        return plan(
+            world, read.rows + passedBy(read.rows, read.nature, ::turf), slots.filter(::ofEvent), losses.filter(::ofEvent),
+            read.entityRows, toTs, read.unreadable, origins(log, world, read.rows, read.foreign, fromTs, keeps),
+        )
+    }
 
     // Read off the region threads with the rest of the plan; a window from the beginning has nothing before it.
     // A position somebody else changed inside the window does not stand as the players found it, whatever it

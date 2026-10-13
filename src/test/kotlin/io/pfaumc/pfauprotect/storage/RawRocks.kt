@@ -8,6 +8,7 @@ import org.rocksdb.Options
 import org.rocksdb.RocksDB
 import java.io.RandomAccessFile
 import java.nio.file.Path
+import java.util.HexFormat
 
 // The only way to a row the code under test would never write. Whoever owns the base has to have shut
 // it first: RocksDB takes one writer per directory. `families` opens (creating if missing) a base with
@@ -36,6 +37,30 @@ internal fun rawEdit(
 
 internal fun rawPut(at: Path, family: String, key: ByteArray, value: ByteArray) =
     rawEdit(at) { raw, families -> raw.put(families(family), key, value) }
+
+// Every row of one family in key order, key and value as hex, so a layout can be compared with bytes
+// written out by hand rather than with what the code under test reads back.
+internal fun rawRowsOf(at: Path, family: String): Map<String, String> {
+    val rows = LinkedHashMap<String, String>()
+    rawEdit(at) { raw, families ->
+        raw.newIterator(families(family)).use { iter ->
+            iter.seekToFirst()
+            while (iter.isValid) {
+                rows[iter.key().hex()] = iter.value().hex()
+                iter.next()
+            }
+        }
+    }
+    return rows
+}
+
+internal fun ByteArray.hex(): String = HexFormat.of().formatHex(this)
+
+internal fun storedSchemaOf(at: Path): Long {
+    var found: ByteArray? = null
+    rawEdit(at) { raw, families -> found = raw.get(families("meta"), "schema".toByteArray()) }
+    return ByteReader(found!!).longBE()
+}
 
 internal fun familiesOf(at: Path): List<String> =
     Options().use { RocksDB.listColumnFamilies(it, at.toAbsolutePath().toString()).map { name -> String(name) } }

@@ -350,7 +350,6 @@ internal fun pistonDestroys(data: BlockData) =
 internal fun pistonSites(
     moving: List<Block>,
     step: BlockFace,
-    payload: (Block) -> ByteArray? = ::payloadAt,
 ): Pair<ArrayList<Site>, ArrayList<Site>> {
     val emptied = ArrayList<Site>(moving.size + 1)
     val filled = ArrayList<Site>(moving.size + 2)
@@ -358,12 +357,12 @@ internal fun pistonSites(
         val was = block.blockData
         if (pistonDestroys(was)) {
             for (half in withOtherHalves(block)) {
-                emptied += Site(half, half.blockData, AIR, payload(half))
+                emptied += Site(half, half.blockData, AIR, payloadAt(half))
             }
             continue
         }
         val to = block.getRelative(step)
-        emptied += Site(block, was, AIR, payload(block), went = positionOf(to))
+        emptied += Site(block, was, AIR, payloadAt(block), went = positionOf(to))
         filled += Site(to, AIR_DATA, was.asString, payload = null)
     }
     return emptied to filled
@@ -779,7 +778,7 @@ class BlockDestructionListener(
     private val later: (Location, () -> Unit) -> Unit,
 ) : Listener {
 
-    private val growing = GrowClaims()
+    internal val growing = GrowClaims()
     private val readBacks = ReadBacks()
     // The shaped neighbours waiting for their read, one per position and tick: the first look is the
     // state the tick found, and the next change beside it in that tick would only see it half rewritten.
@@ -1756,7 +1755,7 @@ class BlockDestructionListener(
     // where it emptied, and exchanged for the block that stands there now where that block has an item
     // form of its own. Refused either way where the position is one half of a block whose form was
     // remembered in the other.
-    private fun released(
+    internal fun released(
         site: Site,
         remembered: ByteArray?,
         cause: Cause,

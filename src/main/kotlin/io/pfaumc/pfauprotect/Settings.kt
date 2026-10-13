@@ -3,6 +3,7 @@ package io.pfaumc.pfauprotect
 import io.pfaumc.pfauprotect.model.BLOCK_CAUSES
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.ENTITY_PLANE_CAUSES
+import io.pfaumc.pfauprotect.storage.MAX_REGION_RADIUS
 import org.bukkit.configuration.file.FileConfiguration
 import java.util.logging.Logger
 
@@ -31,7 +32,7 @@ object Settings {
             if (cause == null) log.warning("config.yml: '$name' is no block- or entity-plane cause; ignored")
             cause
         }.toSet()
-        maxRadius = config.getInt("lookup.max-radius", maxRadius).coerceIn(1, 1_000)
+        maxRadius = config.getInt("lookup.max-radius", maxRadius).coerceIn(1, MAX_REGION_RADIUS)
         maxRollbackPositions = config.getInt("rollback.max-positions", maxRollbackPositions).coerceIn(1, 1_000_000)
         freshMillis = config.getLong("mobs.fresh-minutes", freshMillis / 60_000).coerceIn(0, 24 * 60) * 60_000
         crowd = config.getInt("mobs.crowd", crowd).coerceIn(2, 1_000)

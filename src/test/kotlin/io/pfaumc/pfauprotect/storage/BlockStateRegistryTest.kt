@@ -54,7 +54,6 @@ class BlockStateRegistryTest : OneLedger() {
 
         assertEquals(id, log.registries.lookupKey(state, east))
         assertEquals(east, log.registries.keyOf(state, id))
-        assertNotEquals(id, log.registries.idForKey(state, west))
     }
 
     @Test

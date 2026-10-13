@@ -3,24 +3,27 @@ import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.world
-import io.pfaumc.pfauprotect.storage.BlockChange
-import io.pfaumc.pfauprotect.storage.BlockLogs
-import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
-import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.capture.item.endedBy
+import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.stub
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import org.bukkit.Material
+import org.bukkit.World
+import org.bukkit.block.Block
+import org.bukkit.event.block.BlockRedstoneEvent
+import org.bukkit.entity.Arrow
 import org.bukkit.entity.Entity
 import org.bukkit.entity.Item
 import org.bukkit.entity.Minecart
 import org.bukkit.entity.Pig
 import org.bukkit.entity.Player
+import org.bukkit.entity.Skeleton
 import org.bukkit.entity.Wolf
-import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.UUID
 
@@ -38,13 +41,31 @@ class RedstoneTest {
         assertNull(energy.near(at(3)))
     }
 
-    // Each step copies the note onto itself, so the chain outruns the reach of its first note.
+    // Each component that changes copies the note onto itself, so the chain outruns the reach of its
+    // first note; past the press itself every step is worked out.
     @Test
-    fun `a chain carries its note further than one reach`() {
-        energy.note(at(0), Attributed(alice, Confidence.FACT))
-        for (x in 1..20) energy.near(at(x))?.let { energy.note(at(x), it) }
-        assertEquals(alice, energy.near(at(20), reach = 0)?.actor)
+    fun `a chain carries its note further than one reach, as a guess`(@TempDir dir: Path) {
+        RocksItemLog(dir.resolve("items")).use { shared ->
+            BlockLogs(dir.resolve("blocks"), shared).use { logs ->
+                val listener = RedstoneListener(energy, logs, origins, nudges, Attribution(shared.registries, logs))
+                energy.note(at(0), Attributed(alice, Confidence.FACT))
+                for (x in 1..20) listener.onRedstone(BlockRedstoneEvent(repeater(at(x)), 0, 15))
+                assertEquals(Attributed(alice, Confidence.INFERRED), energy.near(at(20), reach = 0))
+            }
+        }
     }
+
+    // Unloaded around it, so a component that finds no note does not go walking wire.
+    private fun repeater(at: WorldBlock): Block = stub(
+        Block::class.java,
+        mapOf(
+            "getWorld" to stub(World::class.java, mapOf("getUID" to at.world), lenient = true),
+            "getX" to at.x,
+            "getY" to at.y,
+            "getZ" to at.z,
+            "getType" to Material.REPEATER,
+        ),
+    )
 
     @Test
     fun `a note older than one step answers for nothing`() {
@@ -68,39 +89,6 @@ class RedstoneTest {
 
         energy.note(at(2), Attributed(alice, Confidence.FACT))
         assertEquals(Attributed(alice, Confidence.FACT), energy.near(at(1)))
-    }
-
-    // A wind charge pulls a lever from inside the explosion it announced a moment before; a switch it
-    // did not reach, or one that changes after the call, is somebody else's.
-    @Test
-    fun `a blast answers for the switches in its reach and only within the call`() {
-        val blast = Blast(setOf(at(0), at(1)), Cause.BLK_ENTITY_SWITCH, Behind(Attributed(alice)), "minecraft:wind_charge", 1_000L)
-        assertEquals(true, blast.covers(at(1), 1_000L + 1))
-        assertEquals(false, blast.covers(at(2), 1_000L + 1))
-        assertEquals(false, blast.covers(at(0), 1_000L + PRESS_NANOS + 1))
-    }
-
-    @Test
-    fun `an explosion is whoever set it off, and everything else whoever put the item there`() {
-        assertEquals(bob, endedBy(Cause.ITEM_DESTROY_EXPLOSION, blaster = bob, thrower = alice, dispensedBy = null))
-        assertEquals(alice, endedBy(Cause.ITEM_DESTROY_EXPLOSION, blaster = null, thrower = alice, dispensedBy = bob))
-        assertEquals(bob, endedBy(Cause.ITEM_DESTROY_EXPLOSION, blaster = null, thrower = null, dispensedBy = bob))
-        // Fire burning an item names who threw it into the fire, not who blew something up nearby.
-        assertEquals(alice, endedBy(Cause.ITEM_DESTROY_FIRE, blaster = bob, thrower = alice, dispensedBy = null))
-        assertNull(endedBy(Cause.ITEM_DESPAWN, blaster = null, thrower = null, dispensedBy = null))
-    }
-
-    // Every writer of the block plane goes through submit, so the log is where rows become notes.
-    @Test
-    fun `the block log shows every accepted row to its watcher`(@TempDir dir: Path) {
-        val seen = ArrayList<Pair<UUID, BlockChange>>()
-        RocksItemLog(dir.resolve("items")).use { shared ->
-            BlockLogs(dir.resolve("blocks"), shared, watch = { world, changes -> changes.forEach { seen += world to it } }).use { logs ->
-                val change = BlockChange(1, 2, 3, "minecraft:air", "minecraft:stone", Cause.BLK_PLAYER_PLACE, actor = alice)
-                logs.open(world).submit(listOf(change))
-                assertEquals(listOf(world to change), seen)
-            }
-        }
     }
 
     // An entity stands in for itself with only what the ladder asks of it answered.
@@ -140,6 +128,29 @@ class RedstoneTest {
         val wolf = entity(Wolf::class.java, UUID.randomUUID(), mapOf("getOwnerUniqueId" to bob))
         assertEquals(Attributed(bob, Confidence.INFERRED), behind(wolf, nudges, origins))
         assertNull(behind(entity(Pig::class.java, UUID.randomUUID()), nudges, origins))
+    }
+
+    // The newest thing a player did to the entity outranks where it came from, and both outrank an owner
+    // who may be nowhere near.
+    @Test
+    fun `a push outranks a summoner, and a summoner the owner`() {
+        val pusher = UUID.randomUUID()
+        val id = UUID.randomUUID()
+        val wolf = entity(Wolf::class.java, id, mapOf("getOwnerUniqueId" to bob))
+        origins.appeared(id, alice)
+        assertEquals(alice, behind(wolf, nudges, origins)?.actor)
+
+        nudges.nudged(wolf, Attributed(pusher, Confidence.FACT))
+        assertEquals(pusher, behind(wolf, nudges, origins)?.actor)
+    }
+
+    @Test
+    fun `an arrow a mob shot answers to whoever stands behind the mob, as a guess`() {
+        val skeleton = entity(Skeleton::class.java, UUID.randomUUID())
+        origins.appeared(skeleton.uniqueId, alice, Confidence.FACT)
+        val arrow = entity(Arrow::class.java, UUID.randomUUID(), mapOf("getShooter" to skeleton))
+
+        assertEquals(Attributed(alice, Confidence.INFERRED), behind(arrow, nudges, origins))
     }
 
     // A witness is not a culprit: an item row, which cannot say how sure it is of its actor, leaves them

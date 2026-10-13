@@ -247,12 +247,20 @@ class BlockLog(
                 held?.let { delete(rowsCf, it); rows++ }
                 held = key.takeIf { timeAt(it, Zcode.SIZE) < cutoff }
             }
-            db.forEachRow(byActorCf) { key, _ -> if (timeAt(key, 4 + Zcode.SIZE) < cutoff) delete(byActorCf, key) }
             db.forEachRow(entitiesCf) { key, _ ->
                 if (timeAt(key, Zcode.SIZE) < cutoff) {
                     delete(entitiesCf, key)
                     entities++
                 }
+            }
+            batch.flush()
+        }
+        if (!dryRun) ChunkedBatch(db, writeOptions).use { batch ->
+            // After the rows are gone: an entry is kept exactly when its row was, whichever plane it names.
+            db.forEachRow(byActorCf) { key, _ ->
+                if (key.size != ACTOR_KEY_SIZE || timeAt(key, 4) >= cutoff) return@forEachRow
+                val row = rowKeyOf(key)
+                if (db.get(rowsCf, row) == null && db.get(entitiesCf, row) == null) batch.delete(byActorCf, key)
             }
             batch.flush()
         }
@@ -291,6 +299,9 @@ class BlockLog(
             .bytes(rowKey.copyOfRange(Zcode.SIZE, BlockCodec.KEY_SIZE))
             .bytes(rowKey.copyOf(Zcode.SIZE))
             .toByteArray()
+
+    private fun rowKeyOf(actorKey: ByteArray): ByteArray =
+        actorKey.copyOfRange(ACTOR_KEY_SIZE - Zcode.SIZE, ACTOR_KEY_SIZE) + actorKey.copyOfRange(4, ACTOR_KEY_SIZE - Zcode.SIZE)
 
     private val writerThread =
         Thread(::runWriter, "pfauprotect-block-writer-${dir.fileName}").apply { isDaemon = true }

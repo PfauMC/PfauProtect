@@ -29,7 +29,7 @@ import net.minecraft.world.item.Items
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.entity.SignBlockEntity
 import net.minecraft.world.level.block.entity.SignTextSlot
-import org.bukkit.command.CommandSender
+import io.pfaumc.pfauprotect.senderInto
 import org.bukkit.plugin.Plugin
 import net.kyori.adventure.text.Component as AdventureComponent
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -57,18 +57,9 @@ class LookupReadTest : BothPlanes() {
         val lines = ArrayList<String>()
         val names = players.entries.associate { (name, id) -> id to name }
         Lookups(stub(Plugin::class.java), shared, logs, codec, players::get, names::get)
-            .report(senderInto(lines), LookupTarget(world, 10, 64, -3, "stone at 10 64 -3"), query)
+            .report(senderInto(lines, ::flat), LookupTarget(world, 10, 64, -3, "stone at 10 64 -3"), query)
         return lines
     }
-
-    private fun senderInto(lines: MutableList<String>) = stub(
-        CommandSender::class.java,
-        mapOf(
-            "sendMessage" to { args: Array<out Any?> ->
-                args.forEach { if (it is String) lines += it else if (it is AdventureComponent) lines += flat(it) }
-            },
-        ),
-    )
 
     // A line as text with what it shows on hover in braces and the game's names as their keys, so a test
     // reads what a player can find on the line without a client to translate it.
@@ -93,9 +84,12 @@ class LookupReadTest : BothPlanes() {
         repeat(10) { log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + 1000 + it))) }
         log.drain()
 
-        assertTrue(said(LookupQuery(limit = 1)).any { it.contains("block.minecraft.tnt") })
+        val first = said(LookupQuery(limit = 1))
+        assertTrue(first.any { it.contains("block.minecraft.tnt") }, "$first")
+        assertTrue(first.none { it.contains("+ placed") }, "$first")
         val second = said(LookupQuery(limit = 1, page = 2))
         assertTrue(second.any { it.contains("+ placed") }, "$second")
+        assertTrue(second.none { it.contains("block.minecraft.tnt") }, "$second")
     }
 
     @Test
@@ -114,13 +108,26 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.any { it.contains("- block.minecraft.tnt") && it.contains("minecraft:stone → minecraft:air") }, "$lines")
         assertTrue(lines.any { it.contains("+ placed") && it.contains("minecraft:air → minecraft:stone") }, "$lines")
         assertTrue(lines.any { it.contains("+ placed") && it.contains("∅") }, "the item plane is still there: $lines")
-        // Newest first across both planes; rows sharing an instant keep the item plane ahead of the
-        // block plane, which is the order the two were read in and is stable.
-        assertEquals(
-            listOf("- block.minecraft.tnt{blk_tnt}", "- block.minecraft.tnt{blk_tnt}", "+ placed{block_place}", "+ placed{blk_player_place}"),
-            lines.drop(1).map { line -> line.trim().split("  ")[2] },
-            "$lines",
-        )
+        // Newest first across both planes: both explosion rows above both placements.
+        val causes = listOf("{blk_tnt}", "{block_place}", "{blk_player_place}")
+        val read = lines.mapNotNull { line -> causes.firstOrNull { it in line } }.map { if (it == "{blk_tnt}") "tnt" else "place" }
+        assertEquals(listOf("tnt", "tnt", "place", "place"), read, "$lines")
+    }
+
+    // A world-wide lookup of a player goes to every place they touched, however far apart, and at each
+    // shows only their rows.
+    @Test
+    fun `a world-wide lookup of a player reads their places and only their rows there`() {
+        log.submit(listOf(BlockChange(1000, 64, 1000, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(-2000, 70, 50, AIR, "minecraft:dirt", Cause.BLK_PLAYER_PLACE, T0 + 1000, actor = alice)))
+        log.submit(listOf(BlockChange(1000, 64, 1000, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 2000, actor = bob)))
+        log.drain()
+
+        val lines = said(LookupQuery(users = listOf("Alice"), radius = -1), players = mapOf("Alice" to alice, "Bob" to bob))
+
+        assertTrue(lines.any { it.contains("minecraft:air → minecraft:stone") && it.contains("Alice") }, "$lines")
+        assertTrue(lines.any { it.contains("minecraft:air → minecraft:dirt") && it.contains("Alice") }, "$lines")
+        assertTrue(lines.none { it.contains("Bob") || it.contains("minecraft:stone → minecraft:air") }, "$lines")
     }
 
     @Test
@@ -140,25 +147,7 @@ class LookupReadTest : BothPlanes() {
 
         assertEquals(2, lines.count { it.contains("block.minecraft.anvil") }, "$lines")
         assertTrue(lines.all { !it.contains("block.minecraft.anvil") || it.contains("changed in place") }, "$lines")
-    }
-
-    // The filter names every bench at once, so a row written by one of them must not be reachable
-    // under a filter that means something else.
-    @Test
-    fun `a transformation is not answered by an unrelated filter`() {
-        val anvil = Container(world, 10, 64, -3, 0)
-        shared.submit(
-            listOf(
-                Transfer(Cause.ANVIL_COMBINE, anvil, Void, byteArrayOf(11), null, 1, T0, kind = Kind.MUTATE),
-                Transfer(Cause.ANVIL_COMBINE, Void, anvil, byteArrayOf(12), null, 1, T0, kind = Kind.MUTATE),
-            )
-        )
-        shared.drain()
-
-        assertTrue(
-            said(LookupQuery(causes = Action.LOOT.causes)).none { it.contains("block.minecraft.anvil") },
-            "${said(LookupQuery(causes = Action.LOOT.causes))}",
-        )
+        assertTrue(said(LookupQuery(causes = Action.LOOT.causes)).none { it.contains("block.minecraft.anvil") })
     }
 
     // A cow killed where somebody is standing is part of what happened there, and so is who did it.
@@ -184,7 +173,35 @@ class LookupReadTest : BothPlanes() {
         log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_LIQUID_DESTROY, T0)))
         log.drain()
 
-        assertTrue(said().any { it.contains("  nobody  ") }, "${said()}")
+        assertTrue(said().any { it.contains("nobody") }, "${said()}")
+    }
+
+    // A chest's own placer emptying it is no theft. Somebody else's chest is, and so is one nobody put
+    // down, a chest of the world's own, since its whole history was read and nobody owns it.
+    @Test
+    fun `a theft is a withdrawal from a chest the taker did not put down`() {
+        log.submit(listOf(BlockChange(11, 64, -3, AIR, "minecraft:chest", Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(12, 64, -3, AIR, "minecraft:chest", Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.drain()
+        for (x in 11..13) shared.submit(Transfer(Cause.CONTAINER_REMOVE, Container(world, x, 64, -3, 0), PlayerInv(alice, 0), stone, null, 1, T0 + 10))
+        shared.drain()
+
+        val lines = said(parseLookupQuery("action:steal radius:3"))
+        assertTrue(lines.none { it.contains("11 64 -3") }, "$lines")
+        assertTrue(lines.any { it.contains("12 64 -3") }, "$lines")
+        assertTrue(lines.any { it.contains("13 64 -3") }, "$lines")
+    }
+
+    @Test
+    fun `a span leaves out what came after its near end`() {
+        val now = System.currentTimeMillis()
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, now - 2 * 86_400_000L)))
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, now - 43_200_000L)))
+        log.drain()
+
+        val lines = said(parseLookupQuery("time:3d-1d"))
+        assertTrue(lines.any { it.contains("air → minecraft:stone") }, "$lines")
+        assertTrue(lines.none { it.contains("stone → minecraft:air") }, "$lines")
     }
 
     @Test
@@ -392,7 +409,7 @@ class LookupReadTest : BothPlanes() {
 
         val lines = ArrayList<String>()
         Lookups(stub(Plugin::class.java), shared, logs, codec)
-            .report(senderInto(lines), LookupTarget(other, 1, 64, 1, "stone at 1 64 1"), LookupQuery())
+            .report(senderInto(lines, ::flat), LookupTarget(other, 1, 64, 1, "stone at 1 64 1"), LookupQuery())
 
         assertTrue(lines.any { it.contains("placed") }, "$lines")
         assertTrue(lines.any { it.contains("block log is not open") }, "$lines")

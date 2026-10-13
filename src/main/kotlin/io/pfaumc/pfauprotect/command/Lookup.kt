@@ -300,9 +300,9 @@ data class LookupQuery(
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
-    fun fromTs(): Long = secondsBack?.let { System.currentTimeMillis() - it * 1000 } ?: 0
+    fun fromTs(now: Long = System.currentTimeMillis()): Long = secondsBack?.let { now - it * 1000 } ?: 0
 
-    fun toTs(): Long = secondsUntil?.let { System.currentTimeMillis() - it * 1000 } ?: Long.MAX_VALUE
+    fun toTs(now: Long = System.currentTimeMillis()): Long = secondsUntil?.let { now - it * 1000 } ?: Long.MAX_VALUE
 
     // Rows a page needs read: every page before it as well, since a read is newest first. Runs folded
     // into one line each eat rows, so a folded page reads further.
@@ -568,7 +568,7 @@ internal class RowFilter(
     private val causes = query.causes
     private val all = query.all
     private val amount = query.amount
-    private val event = query.event?.id
+    internal val event = query.event?.id
     private val included = query.included.map(::normalizeItem).toSet()
     private val excluded = query.excluded.map(::normalizeItem).toSet()
 
@@ -674,7 +674,7 @@ private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FIL
 // One line of an answer, from either plane, so the two read in the order things happened. `same` is what
 // a run of lines folds on: who did what to which thing, which way. `amount` is what a folded line adds
 // up — items, or one per block.
-private class Line(
+internal class Line(
     val timestamp: Long,
     val cause: Cause,
     val who: UUID?,
@@ -689,9 +689,9 @@ private class Line(
 // broken in a minute are one act, and forty lines of it push everything else off the screen.
 private const val FOLD_MILLIS = 60_000L
 
-private class Folded(val first: Line, var rows: Int, var amount: Int, var oldest: Long)
+internal class Folded(val first: Line, var rows: Int, var amount: Int, var oldest: Long)
 
-private fun folded(lines: List<Line>, all: Boolean): List<Folded> {
+internal fun folded(lines: List<Line>, all: Boolean): List<Folded> {
     val out = ArrayList<Folded>()
     for (line in lines) {
         val run = out.lastOrNull()

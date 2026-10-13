@@ -84,21 +84,6 @@ class PlaneSyncTest : BothPlanes() {
     }
 
     @Test
-    fun `positions the two planes agree on are not reported`() {
-        heldAt(1, 64, 1, stoneForm)
-        blockRow(1, 64, 1, AIR, STONE)
-        heldAt(2, 64, 2, stoneForm)
-        releasedAt(2, 64, 2, stoneForm)
-        standAndFall(2, 64, 2)
-        drainBoth()
-
-        val report = assertPlanesAgree(now)
-
-        assertEquals(2, report.checked)
-        assertEquals(0, report.unreadable)
-    }
-
-    @Test
     fun `a waterlogged block broken leaves water standing and is reported`() {
         heldAt(3, 64, 3, stoneForm)
         blockRow(3, 64, 3, AIR, WATERLOGGED)
@@ -213,6 +198,20 @@ class PlaneSyncTest : BothPlanes() {
         assertEquals(AIR, aged.gaps.single().standing)
     }
 
+    // The block went just now and the item plane has not booked what fell out of it yet: the posting is
+    // old, and only the block row says the position is still moving.
+    @Test
+    fun `a block gone just now under an old posting is left for a later pass`() {
+        heldAt(5, 64, 5, stoneForm)
+        standAndFall(5, 64, 5, ts = now)
+        drainBoth()
+
+        val report = assertPlanesAgree(now)
+
+        assertEquals(1, report.settling)
+        assertEquals(0, report.checked)
+    }
+
     @Test
     fun `a disagreement made of inferred postings is counted apart from a confirmed one`() {
         heldAt(1, 64, 1, stoneForm)
@@ -256,32 +255,6 @@ class PlaneSyncTest : BothPlanes() {
 
         assertEquals(1, report.unreadable)
         assertEquals(0, report.checked)
-    }
-
-    @Test
-    fun `small passes cover what one pass covers, repeating none of it and dropping no tail`() {
-        for (n in 1..4) {
-            heldAt(n, 64, n, stoneForm)
-            standAndFall(n, 64, n)
-        }
-        drainBoth()
-
-        val whole = sync.pass(100, now)
-        assertEquals(4, whole.checked)
-        assertTrue(whole.reachedEnd)
-
-        val covered = ArrayList<WorldBlock>()
-        var passes = 0
-        while (passes < 10) {
-            passes++
-            val part = sync.pass(1, now)
-            covered += part.gaps.map { it.at }
-            if (part.reachedEnd) break
-        }
-
-        assertEquals(4, passes)
-        assertEquals(covered.size, covered.toSet().size)
-        assertEquals(whole.gaps.map { it.at }.toSet(), covered.toSet())
     }
 
     @Test

@@ -2,6 +2,7 @@ package io.pfaumc.pfauprotect
 
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
 import java.nio.file.Path
@@ -9,8 +10,8 @@ import kotlin.io.path.extension
 import kotlin.io.path.readText
 
 /**
- * Every message the plugin writes is read out of its sources, as `say("...")` or an error's
- * `LiteralMessage("...")`, with whatever it fills in set to a stand-in, and has to come out in Russian. A
+ * Every message the plugin writes is read out of its sources, as `say("...")`, an error's
+ * `LiteralMessage("...")` or a rollback's `Refused("...")`, with whatever it fills in set to a stand-in, and has to come out in Russian. A
  * message built in a variable first is not seen here; a live run on a server started with PPT_LANG=ru
  * reads those.
  */
@@ -23,11 +24,13 @@ class TextsCoverageTest {
     @Test
     fun `every message the sources write comes out in Russian`() {
         Settings.language = "ru"
-        val untranslated = Files.walk(Path.of("src/main/kotlin")).use { paths ->
+        val messages = Files.walk(Path.of(System.getProperty("pfauprotect.sources"))).use { paths ->
             paths.filter { it.extension == "kt" }.toList()
         }.flatMap { file ->
             messagesIn(file.readText()).map { file.fileName.toString() to it }
-        }.mapNotNull { (file, message) ->
+        }
+        assertTrue(messages.size >= 60, "only ${messages.size} messages found in the sources")
+        val untranslated = messages.mapNotNull { (file, message) ->
             val out = Texts.translate(message)
             if (english(out)) "$file: $message -> $out" else null
         }.distinct()
@@ -37,22 +40,11 @@ class TextsCoverageTest {
     private fun messagesIn(source: String): List<String> {
         val out = ArrayList<String>()
         for (call in Regex("""\b(say|sayNamed|said|LiteralMessage)\(""").findAll(source)) {
-            var i = call.range.last + 1
-            val text = StringBuilder()
-            var whole = true
-            while (true) {
-                while (i < source.length && source[i].isWhitespace()) i++
-                if (i >= source.length || source[i] != '"' || source.startsWith("\"\"\"", i)) break
-                i = literal(source, i, text)
-                var j = i
-                while (j < source.length && source[j].isWhitespace()) j++
-                if (j >= source.length || source[j] != '+') break
-                i = j + 1
-                while (i < source.length && source[i].isWhitespace()) i++
-                // Joined to something that is not a string: what it ends with is not known here.
-                if (source[i] != '"') whole = false
-            }
-            if (text.isNotEmpty() && whole && COMPOSED.none { text.startsWith(it) }) out += text.toString()
+            argument(source, call.range.last + 1)?.let { out += it }
+        }
+        // A rollback's refusal is said by the caller inside its own sentence.
+        for (call in Regex("""\bRefused\(""").findAll(source)) {
+            argument(source, call.range.last + 1)?.let { out += "Rollback refused: $it." }
         }
         // A refusal handed back by a `when` and said by the caller.
         for (branch in Regex("""->\s*("[A-Z][^"$]* [^"$]*")""").findAll(source)) {
@@ -61,6 +53,26 @@ class TextsCoverageTest {
             out += text.toString()
         }
         return out
+    }
+
+    // The string literals joined from `start` on, or null when they are not a whole message.
+    private fun argument(source: String, start: Int): String? {
+        var i = start
+        val text = StringBuilder()
+        var whole = true
+        while (true) {
+            while (i < source.length && source[i].isWhitespace()) i++
+            if (i >= source.length || source[i] != '"' || source.startsWith("\"\"\"", i)) break
+            i = literal(source, i, text)
+            var j = i
+            while (j < source.length && source[j].isWhitespace()) j++
+            if (j >= source.length || source[j] != '+') break
+            i = j + 1
+            while (i < source.length && source[i].isWhitespace()) i++
+            // Joined to something that is not a string: what it ends with is not known here.
+            if (source[i] != '"') whole = false
+        }
+        return text.toString().takeIf { it.isNotEmpty() && whole && COMPOSED.none { c -> it.startsWith(c) } }
     }
 
     // Reads one string literal from its opening quote, writing what it says with each template filled by
