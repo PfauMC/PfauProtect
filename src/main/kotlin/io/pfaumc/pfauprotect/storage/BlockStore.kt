@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntityKind
@@ -8,6 +9,7 @@ import org.rocksdb.ColumnFamilyHandle
 import org.rocksdb.RocksDB
 import org.rocksdb.WriteBatch
 import org.rocksdb.WriteOptions
+import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
@@ -79,17 +81,12 @@ data class BlockStanding(val row: BlockRow?, val torn: Boolean)
 // of a place and report it done.
 data class Window<T>(val rows: List<T>, val unreadable: Int, val complete: Boolean, val walked: Int)
 
-typealias BlockWindow = Window<BlockRow>
-
 data class ActorTouches(val positions: Set<List<Int>>, val complete: Boolean)
 
 // Raised by a change to the key layout or to the set of column families. The record version in the
-// value covers neither: keys carry a version this build reads, so without the bump an older database
-// opens and every key is parsed as something it never was.
-//
-// Version 2 adds the index of rows by actor. A version 1 base is the same base with the index still to
-// build, and it is built from its rows the first time it opens. Version 3 adds the entity plane, which an
-// older base simply has none of yet.
+// value covers neither: without the bump an older database opens and every key is parsed as something it
+// never was. A version 1 base gets its by-actor index built from its rows on first open; a version 2 base
+// simply has no entity rows yet.
 private const val BLOCK_SCHEMA_VERSION = 3L
 private const val INDEXED_FROM = 1L
 private const val WITHOUT_ENTITIES = 2L
@@ -113,7 +110,7 @@ private fun timeAt(key: ByteArray, offset: Int): Long = ByteReader(key).also { i
 // reused, so rows of a world that is gone could otherwise only be got rid of by a range delete.
 //
 // The state numbers, the player numbers and the interned payloads all live in `shared`, and each is
-// made durable there before the row that names it, for the reason given at `RocksItemLog.payloads`.
+// made durable there before the row that names it, for the reason given at `RocksItemLog.syncWriteOptions`.
 class BlockLog(
     dir: Path,
     private val shared: RocksItemLog,
@@ -166,7 +163,6 @@ class BlockLog(
     private val queue = LinkedBlockingQueue<List<WorldChange>>()
     private val progress = WriterProgress("block", "submissions", queue)
 
-    /** Submissions handed to the writer and not written yet. */
     val backlog: Long get() = progress.backlog
 
     @Volatile
@@ -287,7 +283,7 @@ class BlockLog(
     }
 
     private fun actorPrefix(actor: Int): ByteArray =
-        ByteWriter(4).byte(actor ushr 24).byte(actor ushr 16).byte(actor ushr 8).byte(actor).toByteArray()
+        ByteBuffer.allocate(4).putInt(actor).array()
 
     // The actor's number, then the row key turned round: time, event and ordinal, then the position.
     private fun actorKey(actor: Int, rowKey: ByteArray): ByteArray =
@@ -311,8 +307,7 @@ class BlockLog(
      * written. False means the log took nothing and the caller still holds the only copy.
      */
     fun submit(written: List<WorldChange>): Boolean {
-        // What the owner turned off in config.yml is never written at all.
-        val off = io.pfaumc.pfauprotect.Settings.disabledCauses
+        val off = Settings.disabledCauses
         val changes = written.filter { it.cause !in off && keeps(it) }
         // Not `closed`: that is only set once the writer has been joined, and from the moment the
         // writer stops there is nobody left to take the queue. A change accepted in between would be
@@ -336,11 +331,22 @@ class BlockLog(
         x: Int,
         y: Int,
         z: Int,
-        fromTs: Long = 0,
-        toTs: Long = Long.MAX_VALUE,
-        limit: Int = 100,
-        reverse: Boolean = false,
-    ): List<BlockRow> = scan(BlockCodec.positionPrefix(x, y, z), fromTs, toTs, limit, reverse)
+        fromTs: Long,
+        toTs: Long,
+        limit: Int,
+        reverse: Boolean,
+    ): List<BlockRow> = dbLock.read {
+        val found = ArrayList<BlockRow>()
+        if (closed || limit <= 0) return found
+        forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse) { key, value ->
+            // The timestamp follows a position prefix directly, so the walk is already in time order
+            // and the window is nothing but the rows it drops.
+            val row = blockRow(key, value)
+            if (row != null && row.timestamp in fromTs..toTs) found += row
+            found.size < limit
+        }
+        found
+    }
 
     // Inside a chunk the key sorts by position and only then by time, so a walk answers in position
     // order: `reverse` would mean the far corner of the chunk rather than the newest change, and a
@@ -349,10 +355,10 @@ class BlockLog(
     fun inChunk(
         chunkX: Int,
         chunkZ: Int,
-        fromTs: Long = 0,
-        toTs: Long = Long.MAX_VALUE,
-        limit: Int = 100,
-        reverse: Boolean = false,
+        fromTs: Long,
+        toTs: Long,
+        limit: Int,
+        reverse: Boolean,
         // Applied before the limit for the same reason the limit waits for the whole chunk.
         within: (BlockRow) -> Boolean = { true },
     ): List<BlockRow> = dbLock.read {
@@ -379,9 +385,9 @@ class BlockLog(
         toTs: Long,
         budget: Int,
         within: (Int, Int, Int) -> Boolean,
-    ): BlockWindow = window(rowsCf, Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within, ::blockRow)
+    ): Window<BlockRow> = window(rowsCf, Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within, ::blockRow)
 
-    fun windowAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): BlockWindow =
+    fun windowAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): Window<BlockRow> =
         window(rowsCf, BlockCodec.positionPrefix(x, y, z), fromTs, toTs, budget, { _, _, _ -> true }, ::blockRow)
 
     /** The entity plane's rows of a chunk, read the way `windowInChunk` reads the block plane's. */
@@ -514,25 +520,6 @@ class BlockLog(
         }
     }
 
-    private fun scan(
-        prefix: ByteArray,
-        fromTs: Long,
-        toTs: Long,
-        limit: Int,
-        reverse: Boolean,
-    ): List<BlockRow> = dbLock.read {
-        val found = ArrayList<BlockRow>()
-        if (closed || limit <= 0) return found
-        forEachUnder(prefix, reverse) { key, value ->
-            // The timestamp follows a position prefix directly, so the walk is already in time order
-            // and the window is nothing but the rows it drops.
-            val row = blockRow(key, value)
-            if (row != null && row.timestamp in fromTs..toTs) found += row
-            found.size < limit
-        }
-        found
-    }
-
     private inline fun forEachUnder(
         prefix: ByteArray,
         reverse: Boolean,
@@ -587,11 +574,7 @@ class BlockLog(
             drops = change.drops, death = change.death, via = change.via,
         )
         val key = BlockCodec.key(change.x, change.y, change.z, change.timestamp, eventId, ordinal)
-        val ids = shared.registries
-        val type = ids.idForKey(RegistryNamespace.ENTITY_TYPE, change.type)
-        val death = change.death?.let { ids.idForKey(RegistryNamespace.DAMAGE_TYPE, it) } ?: -1
-        val via = change.via?.let { ids.idForKey(RegistryNamespace.ENTITY_TYPE, it) } ?: -1
-        batch.put(entitiesCf, key, EntityCodec.value(row, ids, type, death, via))
+        batch.put(entitiesCf, key, EntityCodec.value(row, shared.registries))
         indexActor(batch, change.actor, key)
     }
 
@@ -701,8 +684,6 @@ class BlockLogs(
 
     val worlds: Set<UUID> get() = logs.keys.toSet()
 
-    val size: Int get() = logs.size
-
     @Synchronized
     fun close(world: UUID) {
         logs.remove(world)?.close()
@@ -711,7 +692,7 @@ class BlockLogs(
     // One world whose close throws still holds its own lock file, and stopping there would leave every
     // world after it holding one too, so the next start finds databases it cannot open.
     @Synchronized
-    fun closeAll() {
+    override fun close() {
         closed = true
         for (world in logs.keys.toList()) {
             runCatching { close(world) }.onFailure {
@@ -719,8 +700,6 @@ class BlockLogs(
             }
         }
     }
-
-    override fun close() = closeAll()
 
     private fun dirOf(world: UUID): Path = root.resolve(world.toString())
 }

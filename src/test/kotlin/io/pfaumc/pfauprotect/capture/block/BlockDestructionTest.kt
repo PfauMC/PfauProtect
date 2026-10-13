@@ -1,7 +1,10 @@
 package io.pfaumc.pfauprotect.capture.block
+import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.worldStub
 import io.pfaumc.pfauprotect.disabledPlugin
 import io.pfaumc.pfauprotect.BothPlanes
+import io.pfaumc.pfauprotect.Spawns
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
@@ -19,9 +22,7 @@ import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.capture.item.NestedItems
-import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
-import io.pfaumc.pfauprotect.check.SETTLE_MILLIS
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.model.Transfer
@@ -74,7 +75,6 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
@@ -94,6 +94,7 @@ private const val STICKY_HEAD = "minecraft:piston_head[facing=east,short=false,t
 private const val WHITE_BED_HEAD = "minecraft:white_bed[facing=east,occupied=false,part=head]"
 private const val WHITE_BED_FOOT = "minecraft:white_bed[facing=east,occupied=false,part=foot]"
 
+@ExtendWith(Vanilla::class)
 class BlockDestructionTest : BothPlanes() {
     override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000003")
     // The first varint of a form is the item type, which is what decides whether the form remembered
@@ -106,29 +107,16 @@ class BlockDestructionTest : BothPlanes() {
     private val logForm = byteArrayOf(12)
     private val grassForm = byteArrayOf(13)
 
-    private val now = System.currentTimeMillis()
-    private val longAgo = now - 10 * SETTLE_MILLIS
-
     private val codec by lazy { ItemFormCodec(shared.registries, ServerRegistries.access) }
 
-    private val spawned = ArrayList<Transfer>()
-    private val coalescer = TickCoalescer(spawned::add)
-    private var clock = 0L
-    private val origins = SpawnOrigins(coalescer) { clock }
+    private val spawns = Spawns()
+    private val origins = spawns.origins
     private val entityOrigins = EntityOrigins()
 
-    // A getter and not a field: touching `Blocks` before `bootstrap` throws out of the class
-    // initializer, and a field is initialized before it.
-    private val bedHead
-        get() = Blocks.BED.white().defaultBlockState()
-            .setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.EAST)
-            .setValue(BlockStateProperties.BED_PART, BedPart.HEAD)
-            .asBlockData()
-
-    @BeforeEach
-    fun bootstrap() {
-        ServerRegistries.access
-    }
+    private val bedHead = Blocks.BED.white().defaultBlockState()
+        .setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.EAST)
+        .setValue(BlockStateProperties.BED_PART, BedPart.HEAD)
+        .asBlockData()
 
     private fun doorHalf(half: DoubleBlockHalf) = Blocks.OAK_DOOR.defaultBlockState()
         .setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, half)
@@ -233,35 +221,6 @@ class BlockDestructionTest : BothPlanes() {
             .invoke(listener, site, remembered, Cause.BLK_FADE, null, now) as List<Transfer>
     }
 
-    private fun heldAt(x: Int, y: Int, z: Int, form: ByteArray, ts: Long = longAgo) {
-        shared.submit(
-            Transfer(
-                cause = Cause.BLOCK_PLACE,
-                from = PlayerInv(alice, 0),
-                to = WorldBlock(world, x, y, z),
-                form = form,
-                damage = null,
-                qty = 1,
-                timestamp = ts,
-            )
-        )
-    }
-
-    private fun releasedAt(x: Int, y: Int, z: Int, form: ByteArray, cause: Cause, actor: UUID?, ts: Long = longAgo) {
-        shared.submit(
-            Transfer(
-                cause = cause,
-                from = WorldBlock(world, x, y, z),
-                to = Void,
-                form = form,
-                damage = null,
-                qty = 1,
-                timestamp = ts,
-                actor = actor,
-            )
-        )
-    }
-
     private fun stateAfter(row: BlockRow) = shared.registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter)
 
     @Test
@@ -343,7 +302,6 @@ class BlockDestructionTest : BothPlanes() {
         assertTrue(liquidDestroys(Blocks.WHEAT.defaultBlockState()))
         assertTrue(liquidDestroys(Blocks.REDSTONE_WIRE.defaultBlockState()))
 
-        // Nothing was standing there at all.
         assertFalse(liquidDestroys(Blocks.AIR.defaultBlockState()))
         // A position already holding a fluid changes its level and loses nothing.
         assertFalse(liquidDestroys(Blocks.WATER.defaultBlockState()))
@@ -358,31 +316,27 @@ class BlockDestructionTest : BothPlanes() {
 
     @Test
     fun `only a position that emptied gives a form back`() {
-        assertArrayEquals(torchForm, lostForm(null, torchForm, AIR, twoPositions = false))
+        assertTrue(emptied(AIR))
+        assertArrayEquals(torchForm, heldForm(null, torchForm, twoPositions = false))
         // A waterlogged block leaves its water behind and is gone all the same.
-        assertArrayEquals(torchForm, lostForm(null, torchForm, SOURCE_WATER, twoPositions = false))
+        assertTrue(emptied(SOURCE_WATER))
         // The remembered form outranks the bare shell: a named bed and a plain one answer alike.
-        assertArrayEquals(namedBed, lostForm(namedBed, bedShell, AIR, twoPositions = false))
+        assertArrayEquals(namedBed, heldForm(namedBed, bedShell, twoPositions = false))
         // A crop advancing a stage is still holding what it was given.
-        assertNull(lostForm(null, torchForm, "minecraft:wheat[age=2]", twoPositions = false))
+        assertFalse(emptied("minecraft:wheat[age=2]"))
         // Grass spreading onto dirt destroys nothing and drops nothing, and booked as a loss it would
         // debit the shell of a block the position was never credited with in the first place.
-        assertNull(lostForm(null, dirtForm, GRASS, twoPositions = false))
+        assertFalse(emptied(GRASS))
         // A block with no item form of its own writes nothing off.
-        assertNull(lostForm(null, null, AIR, twoPositions = false))
+        assertNull(heldForm(null, null, twoPositions = false))
         // Both halves of a bed lose their block, and the bed was paid for once: only the half that
         // remembers the form gives it back.
-        assertArrayEquals(namedBed, lostForm(namedBed, bedShell, AIR, twoPositions = true))
-        assertNull(lostForm(null, bedShell, AIR, twoPositions = true))
+        assertArrayEquals(namedBed, heldForm(namedBed, bedShell, twoPositions = true))
+        assertNull(heldForm(null, bedShell, twoPositions = true))
     }
 
-    /**
-     * A torch loses its support and the read-back runs a tick later, by which time another player has
-     * put a named shulker box in the position and the placement has written a fresh note there. What
-     * stands in the position is no longer what the read watched go, and neither the write-off nor the
-     * clearing of the note is the read's to do: cleared, the box would give back a plain one when it
-     * is broken in turn.
-     */
+    // By the time the read-back runs a placement may have noted a fresh form there; cleared, the named
+    // box standing in it now would break into a plain one.
     @Test
     fun `a read-back that finds the position filled again leaves it alone`() {
         assertTrue(emptied(AIR))
@@ -391,7 +345,6 @@ class BlockDestructionTest : BothPlanes() {
 
         assertFalse(emptied(SHULKER_BOX))
         assertFalse(emptied(GRASS))
-        assertNull(lostForm(namedBed, bedShell, SHULKER_BOX, twoPositions = false))
     }
 
     @Test
@@ -454,12 +407,8 @@ class BlockDestructionTest : BothPlanes() {
         assertTrue(readBacks.isEmpty)
     }
 
-    /**
-     * The claim is taken before the two steps that can fail to queue the task — the block-entity read
-     * and the queueing itself — and a task that was queued can still never run, because the world
-     * unloaded or the plugin went down. Held for ever, the claim would refuse every later read-back of
-     * that position for as long as the server runs.
-     */
+    // A queued task can still never run (the world unloads, the plugin goes down), and a claim held for
+    // ever would refuse every later read-back of that position.
     @Test
     fun `a claim nobody released costs a tick and not the session`() {
         var clock = now
@@ -477,12 +426,8 @@ class BlockDestructionTest : BothPlanes() {
         assertTrue(readBacks.claim(at))
     }
 
-    /**
-     * Whether a position gets a write-off or an exchange turns on what is standing in it now, read off
-     * the state string the row carries. A state that backs no item has to answer with no item, or the
-     * position would be credited with something nobody ever made; a block outside that set has to
-     * answer with one, or its credit is stranded where no self-check can find it.
-     */
+    // A state that backs no item must answer with none, or the position is credited with what nobody
+    // made; any other block must answer with one, or its credit is stranded where no self-check looks.
     @Test
     fun `the block behind the state a position ended up in says whether anything is holding it`() {
         for (state in listOf(AIR, SOURCE_WATER, "minecraft:lava[level=0]", "minecraft:fire[age=3]")) {
@@ -515,12 +460,8 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(alice, arrived.actor)
     }
 
-    /**
-     * The two shapes a disappearance can take, chosen where the listener chooses between them. A
-     * position whose block turned into another block that backs an item was not destroyed and dropped
-     * nothing, so a write-off there would invent a loss; a position left holding a state no item was
-     * ever made into really emptied, and an exchange there would credit it with something nobody made.
-     */
+    // A block that turned into another item-backed block was not destroyed, so a write-off would invent
+    // a loss; an exchange on a position left empty would credit it with something nobody made.
     @Test
     fun `a position emptied is written off and one another block took over is exchanged`() {
         val listener = listener()
@@ -544,7 +485,6 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(listOf(Kind.MUTATE, Kind.MUTATE), spread.map { it.kind })
         assertEquals(listOf(at, Void), spread.map { it.from })
         assertEquals(listOf(Void, at), spread.map { it.to })
-        // The old form leaves and the new one arrives, and they are not the same form.
         assertFalse(spread[0].form.contentEquals(spread[1].form))
         val namedDirt = spread[0].form + 1
         assertArrayEquals(namedDirt, releasedBy(listener, at, dirt, GRASS, namedDirt)[0].form)
@@ -586,7 +526,7 @@ class BlockDestructionTest : BothPlanes() {
         )
         shared.submit(tookOver(sapling, saplingForm, logForm, Cause.BLK_GROW, null, longAgo + 1))
         shared.submit(tookOver(dirt, dirtForm, grassForm, Cause.BLK_GROW, null, longAgo + 1))
-        shared.submit(wroteOff(torch, torchForm, Cause.BLK_LIQUID_DESTROY, null, longAgo + 1))
+        shared.submit(moved(torch, Void, torchForm, Cause.BLK_LIQUID_DESTROY, null, longAgo + 1))
         drainBoth()
 
         val grown = shared.holderEntries(sapling, 0, Long.MAX_VALUE)
@@ -595,8 +535,8 @@ class BlockDestructionTest : BothPlanes() {
         // Both halves of the exchange under one transaction, which is what carries a walk across Void.
         assertEquals(1, grown.drop(1).map { it.txId }.distinct().size)
         // What the position holds now is the block standing in it, which is what a break gives back.
-        assertEquals(shared.formId(logForm), grown.last().itemFormId)
-        assertEquals(shared.formId(grassForm), shared.holderEntries(dirt, 0, Long.MAX_VALUE).last().itemFormId)
+        assertEquals(shared.forms.lookup(logForm), grown.last().itemFormId)
+        assertEquals(shared.forms.lookup(grassForm), shared.holderEntries(dirt, 0, Long.MAX_VALUE).last().itemFormId)
 
         assertEquals(1, grown.sumOf { it.qty })
         assertEquals(1, shared.holderEntries(dirt, 0, Long.MAX_VALUE).sumOf { it.qty })
@@ -608,18 +548,14 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(emptyList<String>(), shared.sweep(100).gaps)
     }
 
-    /**
-     * The support search finds a note in the diagonal ring, which the ladder itself calls a guess, and
-     * the block row says so. The cross-check counts confirmed and inferred postings apart precisely so
-     * that a guess cannot be read as an observation, and an item row left at the default would say
-     * somebody watched the block go.
-     */
+    // The guess is about who and not whether: the block did go, and the cross-check counts inferred
+    // postings apart, so the item row stays a fact whatever the ladder guessed.
     @Test
     fun `the item side is a fact whatever the ladder had to guess about the name on it`() {
         val at = WorldBlock(world, 3, 64, 3)
-        val guessed = wroteOff(at, torchForm, Cause.BLK_FADE, Attributed(alice, Confidence.INFERRED), now)
-        val witnessed = wroteOff(at, torchForm, Cause.BLK_TNT, Attributed(bob, Confidence.FACT), now)
-        val nobody = wroteOff(at, torchForm, Cause.BLK_LIQUID_DESTROY, null, now)
+        val guessed = moved(at, Void, torchForm, Cause.BLK_FADE, Attributed(alice, Confidence.INFERRED), now)
+        val witnessed = moved(at, Void, torchForm, Cause.BLK_TNT, Attributed(bob, Confidence.FACT), now)
+        val nobody = moved(at, Void, torchForm, Cause.BLK_LIQUID_DESTROY, null, now)
 
         for (posting in listOf(guessed, witnessed, nobody)) {
             assertEquals(Confidence.FACT, posting.confidence)
@@ -640,7 +576,7 @@ class BlockDestructionTest : BothPlanes() {
                 BlockChange(7, 64, 7, TORCH, AIR, Cause.BLK_FADE, longAgo + 1, confidence = Confidence.INFERRED),
             )
         )
-        shared.submit(wroteOff(at, torchForm, Cause.BLK_FADE, Attributed(bob, Confidence.INFERRED), longAgo + 1))
+        shared.submit(moved(at, Void, torchForm, Cause.BLK_FADE, Attributed(bob, Confidence.INFERRED), longAgo + 1))
         drainBoth()
 
         assertPlanesAgree(now)
@@ -662,7 +598,6 @@ class BlockDestructionTest : BothPlanes() {
         downstairs[BlockFace.DOWN] = lower
 
         assertEquals(listOf(upper, lower), withOtherHalves(listOf(upper)).toList())
-        // A blast that reached both halves took two positions, not four.
         assertEquals(listOf(upper, lower), withOtherHalves(listOf(upper, lower)).toList())
 
         // A block standing in one position has no other half to follow, and a half whose neighbour
@@ -918,13 +853,12 @@ class BlockDestructionTest : BothPlanes() {
         releasedAt(4, 64, 4, namedBed, Cause.BLK_BED_EXPLOSION, alice, longAgo + 1)
         drainBoth()
 
-        val foot = log.at(4, 64, 4)
-        val head = log.at(5, 64, 4)
+        val foot = log.at(4, 64, 4, 0, Long.MAX_VALUE, limit = 100, reverse = false)
+        val head = log.at(5, 64, 4, 0, Long.MAX_VALUE, limit = 100, reverse = false)
         assertEquals(listOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_BED_EXPLOSION), foot.map { it.cause })
         assertEquals(listOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_BED_EXPLOSION), head.map { it.cause })
         assertEquals(Confidence.INFERRED, foot[1].confidence)
         assertEquals(alice, foot[1].actor)
-        // One explosion is one event over every position it touched.
         assertEquals(foot[1].eventId, head[1].eventId)
         assertEquals(
             shared.registries.lookupKey(RegistryNamespace.BLOCK_STATE, AIR),
@@ -1062,11 +996,9 @@ class BlockDestructionTest : BothPlanes() {
         )
         drainBoth()
 
-        val left = log.at(1, 64, 0)
-        val through = log.at(2, 64, 0)
-        assertEquals(1, (left.drop(1) + through.drop(1) + log.at(0, 64, 0)).map { it.eventId }.distinct().size)
-        // The position the first block left holds the head the piston put down, in that order, and the
-        // position in the middle gave its block up before the next one arrived in it.
+        val left = log.at(1, 64, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false)
+        val through = log.at(2, 64, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false)
+        assertEquals(1, (left.drop(1) + through.drop(1) + log.at(0, 64, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false)).map { it.eventId }.distinct().size)
         assertEquals(listOf(AIR, PISTON_HEAD), left.drop(1).map { stateAfter(it) })
         assertEquals(listOf(AIR, DIRT), through.drop(1).map { stateAfter(it) })
         assertEquals(PISTON_HEAD, stateAfter(log.standingAt(1, 64, 0).row!!))
@@ -1074,14 +1006,12 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(GRASS, stateAfter(log.standingAt(3, 64, 0).row!!))
         assertEquals(PISTON_EXTENDED, stateAfter(log.standingAt(0, 64, 0).row!!))
 
-        // Nothing was lost and nothing was born: the position the line left owes nothing, the one it
-        // moved through holds what came into it rather than what left, and the far end holds the rest.
         assertEquals(0, shared.holderEntries(first, 0, Long.MAX_VALUE).sumOf { it.qty })
         val holding = shared.holderEntries(middle, 0, Long.MAX_VALUE)
             .groupingBy { it.itemFormId }
             .fold(0) { held, entry -> held + entry.qty }
-        assertEquals(mapOf(shared.formId(dirtForm) to 1, shared.formId(grassForm) to 0), holding)
-        assertEquals(shared.formId(grassForm), shared.holderEntries(last, 0, Long.MAX_VALUE).single().itemFormId)
+        assertEquals(mapOf(shared.forms.lookup(dirtForm) to 1, shared.forms.lookup(grassForm) to 0), holding)
+        assertEquals(shared.forms.lookup(grassForm), shared.holderEntries(last, 0, Long.MAX_VALUE).single().itemFormId)
 
         val report = assertPlanesAgree(now)
         assertEquals(3, report.checked)
@@ -1122,7 +1052,7 @@ class BlockDestructionTest : BothPlanes() {
         shared.submit(listOf(moved(from, to, dirtForm, Cause.BLK_FALL_LAND, Attributed(bob), longAgo + 2)))
         drainBoth()
 
-        val start = log.at(5, 70, 5)[1]
+        val start = log.at(5, 70, 5, 0, Long.MAX_VALUE, limit = 100, reverse = false)[1]
         val land = log.standingAt(5, 64, 5).row!!
         // Two events, not one: a flight has a tick or a minute in it and nothing joins its ends.
         assertNotEquals(start.eventId, land.eventId)
@@ -1145,12 +1075,23 @@ class BlockDestructionTest : BothPlanes() {
         mapOf("getUniqueId" to entity, "getLocation" to Location(worldStub(world), x, y, z)),
     )
 
-    @Test
-    fun `a flight that never landed is written off where it started`() {
+    private data class Watched(
+        val attribution: Attribution,
+        val listener: BlockDestructionListener,
+        val written: List<List<Transfer>>,
+        val nextTick: List<() -> Unit>,
+    )
+
+    private fun watched(): Watched {
         val attribution = Attribution(shared.registries, logs)
         val written = ArrayList<List<Transfer>>()
         val nextTick = ArrayList<() -> Unit>()
-        val listener = listener(attribution, { written += it }) { _, task -> nextTick += task }
+        return Watched(attribution, listener(attribution, { written += it }) { _, task -> nextTick += task }, written, nextTick)
+    }
+
+    @Test
+    fun `a flight that never landed is written off where it started`() {
+        val (attribution, listener, written, nextTick) = watched()
         val entity = UUID.fromString("00000000-0000-4000-8000-0000000000f1")
         val from = WorldBlock(world, 2, 70, 2)
         val sand = Blocks.SAND.defaultBlockState().asBlockData()
@@ -1172,7 +1113,6 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(Void, off.to)
         assertEquals(Cause.BLK_FALL_START, off.cause)
         assertEquals(bob, off.actor)
-        // What the position was holding is what it gives back.
         assertArrayEquals(named, off.form)
         assertNull(attribution.landed(entity))
 
@@ -1190,10 +1130,7 @@ class BlockDestructionTest : BothPlanes() {
      */
     @Test
     fun `a flight broken on landing drops out of the position it left`() {
-        val attribution = Attribution(shared.registries, logs)
-        val written = ArrayList<List<Transfer>>()
-        val nextTick = ArrayList<() -> Unit>()
-        val listener = listener(attribution, { written += it }) { _, task -> nextTick += task }
+        val (attribution, listener, written, nextTick) = watched()
         val entity = UUID.fromString("00000000-0000-4000-8000-0000000000f3")
         val from = WorldBlock(world, 4, 70, 4)
         val sand = byteArrayOf(5)
@@ -1205,8 +1142,7 @@ class BlockDestructionTest : BothPlanes() {
         nextTick.forEach { it() }
 
         assertEquals(emptyList<List<Transfer>>(), written)
-        coalescer.flush()
-        val row = spawned.single()
+        val row = spawns.rows().single()
         assertEquals(from, row.from)
         assertEquals(ItemEntityRef(item), row.to)
         assertEquals(Cause.BLK_FALL_START, row.cause)
@@ -1232,7 +1168,7 @@ class BlockDestructionTest : BothPlanes() {
 
         val named = vine + 1
         assertEquals(emptyList<Transfer>(), releasedBy(listener, at, tip, stem.asString, remembered = named))
-        assertArrayEquals(named, shared.formAt(world, 3, 64, 3))
+        assertArrayEquals(named, shared.formAt(WorldBlock(world, 3, 64, 3)))
     }
 
     // A read-back files its row a tick after the change, and the row carries the time of the event.
@@ -1246,40 +1182,24 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(longAgo, log.standingAt(8, 64, 8).row!!.timestamp)
     }
 
-    /**
-     * A chunk going out of memory removes a falling block the same way the world eating it does, and
-     * the two must not be read alike: the block is written to the region file still on its way down
-     * and comes back under the same name to land. Written off here, the loss never happened, and the
-     * landing behind it credits a position nothing was ever taken for.
-     */
+    // An unloading chunk saves the block mid-flight and it comes back to land; written off here, the
+    // landing would credit a position nothing was taken from.
     @Test
     fun `a flight whose chunk unloads is not an ending`() {
-        val attribution = Attribution(shared.registries, logs)
-        val written = ArrayList<List<Transfer>>()
-        val listener = listener(attribution, { written += it })
+        val (attribution, listener, written, nextTick) = watched()
         val entity = UUID.fromString("00000000-0000-4000-8000-0000000000f2")
         val from = WorldBlock(world, 3, 70, 3)
         attribution.tookOff(entity, Falling(from, SAND, Attributed(bob), byteArrayOf(5)))
 
-        listener.onEntityRemove(
-            EntityRemoveEvent(
-                stub(FallingBlock::class.java, mapOf("getUniqueId" to entity)),
-                EntityRemoveEvent.Cause.UNLOAD,
-            )
-        )
+        listener.onEntityRemove(EntityRemoveEvent(fallingStub(entity, 3.5, 70.0, 3.5), EntityRemoveEvent.Cause.UNLOAD))
+        nextTick.forEach { it() }
 
         assertEquals(emptyList<List<Transfer>>(), written)
         // The flight is still there for the landing that follows the chunk coming back.
         assertEquals(from, attribution.landed(entity)?.from)
     }
 
-
-    /**
-     * A bed and a door are shoved apart one half at a time: the piston reaches one of the two, and the
-     * block clears its partner behind it under no event of its own. A half left unfollowed keeps the
-     * form the position was credited with and its newest row goes on naming a bed that is not there,
-     * which the cross-check cannot see either, since a bed is not one of the states that back no item.
-     */
+    // A piston, like a blast, reaches one half of a bed at a time.
     @Test
     fun `a piston that breaks one half of a bed follows the other`() {
         val head = blockStub(2, 64, 0, bedHead)
@@ -1320,10 +1240,7 @@ class BlockDestructionTest : BothPlanes() {
         val key = codec.encodeOrNull(cactus)!!.key
         assertEquals(1, origins.claim(entity, Spot(world, 5.2, 64.0, 7.4), key, 1))
 
-        coalescer.flush()
-        val row = spawned.single()
-        // Born out of the same void a player break's drop is born out of, under the cause that took
-        // the block away and naming whoever the ladder held responsible for it.
+        val row = spawns.rows().single()
         assertEquals(Void, row.from)
         assertEquals(ItemEntityRef(entity), row.to)
         assertEquals(Cause.BLK_FADE, row.cause)
@@ -1422,8 +1339,7 @@ class BlockDestructionTest : BothPlanes() {
         expectDrops(origins, codec, block, Cause.BLK_CREEPER, alice)
 
         assertEquals(3, origins.claim(UUID.randomUUID(), Spot(world, 5.5, 64.0, 7.5), codec.encodeOrNull(diamonds)!!.key, 3))
-        coalescer.flush()
-        val row = spawned.single()
+        val row = spawns.rows().single()
         assertEquals(io.pfaumc.pfauprotect.model.Container(world, 5, 64, 7, 1), row.from)
         assertEquals(Cause.CONTAINER_BREAK_DROP, row.cause)
     }
@@ -1437,12 +1353,11 @@ class BlockDestructionTest : BothPlanes() {
 
         expectDrops(origins, codec, block, Cause.BLK_FADE, null)
         origins.sweep()
-        clock += 1_000
+        spawns.clock += 1_000
         origins.sweep()
 
         assertTrue(origins.isEmpty)
-        coalescer.flush()
-        assertTrue(spawned.isEmpty())
+        assertTrue(spawns.rows().isEmpty())
     }
 
     // What a hand leaves standing is kept; what the signal carries is the switch rows' business, and

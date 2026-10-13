@@ -4,6 +4,7 @@ import com.destroystokyo.paper.event.entity.EntityAddToWorldEvent
 import io.papermc.paper.event.entity.EntityCompostItemEvent
 import io.pfaumc.pfauprotect.capture.block.SlotChange
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
+import io.pfaumc.pfauprotect.capture.block.slotRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntitySlot
@@ -45,6 +46,8 @@ private val OFF_HAND = NmsEquipmentSlot.OFFHAND.ordinal
 
 // A mob's own pocket is booked past every number its equipment, a horse window and a placed entity use.
 internal const val MOB_INVENTORY_BASE = 100
+
+internal fun pocketSlot(mob: Entity, slot: Int) = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + slot)
 
 private val POCKET_KEY = NamespacedKey("pfauprotect", "pocket")
 
@@ -108,12 +111,8 @@ internal fun villagerGuess(
 }
 
 /**
- * A pocket saved and loaded again is packed together: the game stores it as a list without slot
- * numbers, so an empty slot closes up and everything after it moves down. The same items in the same
- * counts at other slots are that, each stack from where it was to where it is now. A stack of the same
- * item that came back smaller and lower down was partly eaten as well as moved: what is left of it moved,
- * and the rest went from where it was. What is left over on either side after that changed besides, as
- * a villager eats a slot empty just before it is saved, and comes back slot by slot.
+ * A pocket is saved without slot numbers, so on load every stack after an empty slot moves down. Returns
+ * those moves, and slot by slot whatever changed besides.
  */
 internal fun pocketShifts(before: List<Pocket>, after: List<Pocket>): Pair<List<Pair<Pocket, Pocket>>, List<SlotChange>> {
     val left = after.toMutableList()
@@ -277,7 +276,7 @@ class MobInventories(
             pocket.key.form.contentEquals(form) && still < pocket.count
         } ?: return null
         book(mob, (before.filter { it.slot != left.slot } + listOfNotNull(now[left.slot])).sortedBy { it.slot })
-        return EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + left.slot)
+        return pocketSlot(mob, left.slot)
     }
 
     private fun settle(mob: Entity) {
@@ -292,9 +291,9 @@ class MobInventories(
         val rows = ArrayList<Transfer>()
         for ((change, label) in explained) {
             if (label == null) continue
-            val slot = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + change.slot)
+            val slot = pocketSlot(mob, change.slot)
             label.placing?.let { placed.setFormAt(it, change.key.form) }
-            rows += row(change, slot, label.other, label.cause, timestamp, Confidence.FACT)
+            rows += slotRow(change.gain, slot, label.other, change.key, change.qty, label.cause, timestamp)
         }
         // A breeding names what both parents ate, and their food points moved for that as well.
         val fed = explained.filter { it.second?.cause == Cause.CONSUME_FOOD }.sumOf { foodPoints(it.first) }
@@ -302,11 +301,7 @@ class MobInventories(
         if (rows.isNotEmpty()) sink(rows)
     }
 
-    /**
-     * What no event explains, as a guess: a villager's baking and eating under causes of their own. Eating
-     * to breed raises no event, but it moves the villager's own food points, and food the points show was
-     * eaten is written as eaten rather than guessed at.
-     */
+    /** Unexplained changes, guessed; food the villager's food points show eaten is FACT. */
     private fun guessed(
         mob: Entity,
         unexplained: List<SlotChange>,
@@ -319,10 +314,10 @@ class MobInventories(
         val foodAfter = foodLevelOf(mob)
         val ate = foodBefore != null && foodAfter != null && ateToBreed(fed + eaten, foodBefore, foodAfter)
         return unexplained.mapIndexed { i, change ->
-            val slot = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + change.slot)
+            val slot = pocketSlot(mob, change.slot)
             val cause = causes?.get(i) ?: Cause.INVENTORY_LOAD
             val confidence = if (ate && cause == Cause.CONSUME_FOOD) Confidence.FACT else Confidence.INFERRED
-            row(change, slot, Void, cause, timestamp, confidence)
+            slotRow(change.gain, slot, Void, change.key, change.qty, cause, timestamp, confidence = confidence)
         }
     }
 
@@ -355,21 +350,7 @@ class MobInventories(
 
     private fun isVillagerFood(form: ByteArray) = codec.decode(form, 1, null).has(DataComponents.VILLAGER_FOOD)
 
-    private fun row(change: SlotChange, slot: Holder, other: Holder, cause: Cause, timestamp: Long, confidence: Confidence) =
-        Transfer(
-            cause = cause,
-            from = if (change.gain) other else slot,
-            to = if (change.gain) slot else other,
-            key = change.key,
-            qty = change.qty,
-            timestamp = timestamp,
-            confidence = confidence,
-        )
-
-    // A pocket loaded with its chunk comes back packed; the slots it moved between are written before
-    // anything reads the pocket against its copy. Whatever else it did since the copy, as a villager
-    // eating just before it was saved, is written at once as well, or the next event is read against a
-    // stale copy.
+    // Read against the copy before anything else does.
     @EventHandler(priority = EventPriority.MONITOR)
     fun onLoad(event: EntityAddToWorldEvent) {
         val mob = event.entity
@@ -389,8 +370,8 @@ class MobInventories(
         sink(guessed(mob, rest, timestamp, foodBefore) + moves.map { (was, now) ->
             Transfer(
                 cause = Cause.INVENTORY_LOAD,
-                from = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + was.slot),
-                to = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + now.slot),
+                from = pocketSlot(mob, was.slot),
+                to = pocketSlot(mob, now.slot),
                 key = now.key,
                 qty = now.count,
                 timestamp = timestamp,

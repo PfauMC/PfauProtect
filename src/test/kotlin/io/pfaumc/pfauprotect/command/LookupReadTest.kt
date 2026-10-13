@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.command
+import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
@@ -19,7 +21,7 @@ import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.capture.block.payloadOf
-import io.pfaumc.pfauprotect.capture.block.wroteOff
+import io.pfaumc.pfauprotect.capture.block.moved
 import net.minecraft.core.BlockPos
 import net.minecraft.core.component.DataComponents
 import net.minecraft.network.chat.Component
@@ -41,18 +43,14 @@ private const val STONE = "minecraft:stone"
 
 // Both planes are read through the one command a moderator has. A block plane nothing can read is a
 // block plane nobody can check, which is how a whole class of capture went unverified before.
+@ExtendWith(Vanilla::class)
 class LookupReadTest : BothPlanes() {
-    // A line names the game's things through its registries, which have to be up before anything reads them.
-    init {
-        ServerRegistries.access
-    }
-
     override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000005")
     private val stone = byteArrayOf(3)
+    private val codec by lazy { ItemFormCodec(shared.registries, ServerRegistries.access) }
 
     private fun said(
         query: LookupQuery = LookupQuery(),
-        codec: ItemFormCodec? = null,
         // Stands in for the server's player cache, which a test has none of.
         players: Map<String, UUID> = emptyMap(),
     ): List<String> {
@@ -106,7 +104,7 @@ class LookupReadTest : BothPlanes() {
         shared.submit(Transfer(Cause.BLOCK_PLACE, Void, at, stone, null, 1, T0))
         log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
         log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + 1000)))
-        shared.submit(wroteOff(at, stone, Cause.BLK_TNT, null, T0 + 1000))
+        shared.submit(moved(at, Void, stone, Cause.BLK_TNT, null, T0 + 1000))
         shared.drain()
         log.drain()
 
@@ -393,7 +391,7 @@ class LookupReadTest : BothPlanes() {
         shared.drain()
 
         val lines = ArrayList<String>()
-        Lookups(stub(Plugin::class.java), shared, logs)
+        Lookups(stub(Plugin::class.java), shared, logs, codec)
             .report(senderInto(lines), LookupTarget(other, 1, 64, 1, "stone at 1 64 1"), LookupQuery())
 
         assertTrue(lines.any { it.contains("placed") }, "$lines")
@@ -402,7 +400,6 @@ class LookupReadTest : BothPlanes() {
 
     @Test
     fun `a named box reads as the named box and a bare one does not borrow its name`() {
-        val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
         val named = NmsItemStack(Items.SHULKER_BOX).apply {
             set(DataComponents.CUSTOM_NAME, Component.literal("Bank"))
         }
@@ -412,7 +409,7 @@ class LookupReadTest : BothPlanes() {
         shared.submit(Transfer(Cause.BLOCK_DROP, at, Void, codec.encode(bare).form, null, 1, T0 + 1000))
         shared.drain()
 
-        val lines = said(codec = codec)
+        val lines = said()
 
         assertTrue(lines.any { it.contains("shulker_box \"Bank\"") }, "$lines")
         assertTrue(lines.any { it.contains("shulker_box") && !it.contains("Bank") }, "the bare one stays bare: $lines")

@@ -6,10 +6,7 @@ import java.util.UUID
 enum class Kind(val id: Int) {
     TRANSFER(0), MUTATE(1), CLONE(2), ;
 
-    companion object {
-        private val BY_ID = entries.associateBy { it.id }
-        fun byId(id: Int): Kind? = BY_ID[id]
-    }
+    companion object { val byId = idIndex(entries) { it.id } }
 }
 
 enum class Confidence(val id: Int) {
@@ -19,18 +16,12 @@ enum class Confidence(val id: Int) {
     NEARBY(2),
     ;
 
-    companion object {
-        private val BY_ID = entries.associateBy { it.id }
-        fun byId(id: Int): Confidence? = BY_ID[id]
-    }
+    companion object { val byId = idIndex(entries) { it.id } }
 }
 
-/**
- * The actor of what a bolt nobody called down did: the fire it lit and everything that fire burnt, the
- * mob or player it killed or turned. Not a player, so an owner's complaint about a house burnt in a storm
- * reads as the accident it was rather than a fire nobody can account for. Written into rows like a
- * player's id, so it never changes.
- */
+internal fun <E : Enum<E>> idIndex(entries: List<E>, id: (E) -> Int): (Int) -> E? = entries.associateBy(id)::get
+
+/** Actor of what an uncalled lightning bolt did; written into rows like a player's id, so it never changes. */
 val LIGHTNING: UUID = UUID(0L, 1L)
 
 // What an entity row says became of the entity it names. Written into every such row, so a number is
@@ -50,10 +41,7 @@ enum class EntityKind(val id: Int) {
     PLAYER_DIED(5),
     ;
 
-    companion object {
-        private val BY_ID = entries.associateBy { it.id }
-        fun byId(id: Int): EntityKind? = BY_ID[id]
-    }
+    companion object { val byId = idIndex(entries) { it.id } }
 }
 
 // These numbers are written into every stored key and must never change. They are named here rather
@@ -124,6 +112,16 @@ data class WorldBlock(val world: UUID, val x: Int, val y: Int, val z: Int) :
     Holder(HolderType.WORLD_BLOCK, carriesSlot = false)
 
 data class EntitySlot(val uuid: UUID, override val slot: Int) : Holder(HolderType.ENTITY_SLOT)
+
+/**
+ * The holders that are a player's own. The slot never enters the key, so slot 0 reads every slot of its
+ * kind; the crafting grid is booked to the player as their entity slot.
+ */
+fun ownHolders(uuid: UUID, craftingGrid: Boolean = true): List<Holder> =
+    listOfNotNull(
+        PlayerInv(uuid, 0), PlayerEquip(uuid, 0), PlayerCursor(uuid), PlayerEnder(uuid, 0),
+        EntitySlot(uuid, 0).takeIf { craftingGrid },
+    )
 
 data class ItemEntityRef(val uuid: UUID) : Holder(HolderType.ITEM_ENTITY, carriesSlot = false)
 

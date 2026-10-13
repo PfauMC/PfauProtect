@@ -6,6 +6,7 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.model.WorldBlock
+import org.bukkit.entity.Entity
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
@@ -67,6 +68,8 @@ internal val FIRING_CAUSES = setOf(Cause.BLK_PLAYER_USE, Cause.BLK_FIRE_SPREAD, 
 
 internal val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
 
+internal val AIRS = setOf("minecraft:air", "minecraft:cave_air", "minecraft:void_air")
+
 internal fun blockNameOf(state: String) = state.substringBefore('[')
 
 // Every position within `reach` of the centre along each axis, x outermost and z innermost.
@@ -93,6 +96,8 @@ internal fun flowing(state: String): Boolean =
  */
 data class Attributed(val actor: UUID, val confidence: Confidence = Confidence.INFERRED)
 
+internal fun Entity.witnessed() = Attributed(uniqueId, Confidence.FACT)
+
 /**
  * The player an item row may name. Such a row has no confidence of its own for its actor — its
  * confidence is about the movement — so a player who was only near is left off it rather than shown
@@ -100,9 +105,11 @@ data class Attributed(val actor: UUID, val confidence: Confidence = Confidence.I
  */
 internal fun Attributed?.culprit(): UUID? = this?.takeIf { it.confidence != Confidence.NEARBY }?.actor
 
-/** A block between the position it broke loose from and the one it lands in. */
-// The form travels with the block rather than being fetched back at the landing: the position it left
-// is free the moment it leaves, and whatever moves in there during the flight owns the note by then.
+/**
+ * A block between the position it broke loose from and the one it lands in. The form travels with the
+ * block rather than being fetched back at the landing: the position it left is free the moment it leaves,
+ * and whatever moves in there during the flight owns the note by then.
+ */
 data class Falling(
     val from: WorldBlock,
     val state: String,
@@ -116,10 +123,6 @@ data class Falling(
  *
  * Two rungs sit here: the tracker, a map lookup, is what an ordinary call gets; the journal costs a
  * seek and has a name of its own so that nobody reaches it without meaning to.
- *
- * Nothing here writes a row and nothing here edits one. A row rewritten after the fact is
- * indistinguishable from one written correctly the first time, and in a plane with no second witness
- * that is the end of the row's value.
  */
 class Attribution(
     private val registries: Registries,
@@ -135,8 +138,6 @@ class Attribution(
     private val flights = ConcurrentHashMap<UUID, Flight>()
     private val felled = ConcurrentHashMap<WorldBlock, Note>()
     private val kills = ConcurrentHashMap<WorldBlock, Note>()
-
-    val isEmpty: Boolean get() = placements.isEmpty() && removals.isEmpty() && flights.isEmpty() && felled.isEmpty() && kills.isEmpty()
 
     /**
      * `state` is what was put down, and a note answers for that block and no other. A break notes the
@@ -166,14 +167,8 @@ class Attribution(
         noted(placements, at, NOTE_MILLIS, blockNameOf(standing))?.let { Attributed(it.actor) }
 
     /**
-     * The same question of the journal, which costs a seek into RocksDB through JNI and so has no
-     * business on a region thread. It answers about ONE position — who put the thing that has just
-     * gone off there — and must never be called once per destroyed block of an explosion.
-     *
-     * Only a row that put the block there may lend its actor, which is decided from what the row
-     * says: its cause, and that the position did not already hold this block before it. The newest
-     * row of a position is what stands in it today, so a row that fails either test answers with
-     * nobody rather than with the row behind it.
+     * The same question of the journal: a seek, asked once per event on its region thread and never
+     * per destroyed block. Only a placing row whose position did not already hold this block lends its actor.
      */
     fun journalPlacerAt(at: WorldBlock, standing: String, causes: Set<Cause> = PLACING_CAUSES): Attributed? {
         val row = newestRowAt(at) ?: return null
@@ -226,7 +221,6 @@ class Attribution(
         kills[at] = Note(actor, now())
     }
 
-    /** The newest death a player stood behind within reach of this position, not older than [KILL_MILLIS]. */
     fun killerNear(at: WorldBlock, reach: Int): Attributed? {
         val now = now()
         return kills.entries.asSequence()
@@ -249,9 +243,9 @@ class Attribution(
         noted(removals, at, SUPPORT_MILLIS)?.let { Attributed(it.actor) }
 
     /**
-     * Who emptied this position, by the journal: the newest row there, if it is recent enough to be what
-     * a frame or a painting has only now noticed. Its tracker note is long gone by then. A seek, asked once
-     * per hanging entity that falls, so it may be asked on a region thread.
+     * Who last changed this position, by the journal: the newest row there, if it is no older than
+     * `within`, for when the tracker note is long gone. A seek: a frame or a painting that falls asks it
+     * once on its region thread, a death asks it off the region thread for the blocks around it.
      */
     fun journalRemoverAt(at: WorldBlock, within: Long = HANGING_MILLIS): Attributed? {
         val row = newestRowAt(at) ?: return null
@@ -289,11 +283,7 @@ class Attribution(
     fun landed(entity: UUID): Falling? =
         flights.remove(entity)?.takeIf { now() - it.at <= FLIGHT_MILLIS }?.falling
 
-    /**
-     * Belongs on the per-tick task, alongside the other sweep. The removal notes are the table worth
-     * that cadence: they stand for a couple of seconds, and one tick of a vein miner can park
-     * thousands of them.
-     */
+    // Per tick: one tick of a vein miner can park thousands of two-second notes.
     fun sweepRemovals() {
         val now = now()
         removals.values.removeIf { now - it.at > SUPPORT_MILLIS }

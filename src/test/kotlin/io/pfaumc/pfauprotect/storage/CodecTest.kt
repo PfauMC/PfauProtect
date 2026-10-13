@@ -90,8 +90,8 @@ class CodecTest {
             val encoded = ByteWriter().zigZagInt(v).toByteArray()
             assertEquals(v, ByteReader(encoded).zigZagInt())
         }
-        assertEquals(1, ByteWriter().zigZagInt(-1).size)
-        assertEquals(1, ByteWriter().zigZagInt(-64).size)
+        assertEquals(1, ByteWriter().zigZagInt(-1).toByteArray().size)
+        assertEquals(1, ByteWriter().zigZagInt(-64).toByteArray().size)
     }
 
     @Test
@@ -121,7 +121,7 @@ class CodecTest {
         assertThrows(IllegalArgumentException::class.java) { ByteReader(ByteArray(0)).byte() }
         assertThrows(IllegalArgumentException::class.java) { ByteReader(byteArrayOf(1, 2, 3)).longBE() }
         assertThrows(IllegalArgumentException::class.java) { ByteReader(byteArrayOf(1, 2, 3)).bytes(4) }
-        val overlongInt = ByteArray(6) { if (it == 5) 0x00 else 0x80.toByte() }
+        val overlongInt = ByteArray(6) { if (it == 5) 0x01 else 0x80.toByte() }
         assertThrows(IllegalArgumentException::class.java) { ByteReader(overlongInt).varInt() }
         val overlongLong = ByteArray(11) { if (it == 10) 0x00 else 0x80.toByte() }
         assertThrows(IllegalArgumentException::class.java) { ByteReader(overlongLong).varLong() }
@@ -319,8 +319,8 @@ class CodecTest {
             Zcode.encode(-1, -64, -1),
         )
 
-        assertEquals(0, registries.idForUuid(RegistryNamespace.WORLD, worldA))
-        assertEquals(0, registries.idForUuid(RegistryNamespace.PLAYER, playerA))
+        assertEquals(0, registries.id(RegistryNamespace.WORLD, worldA))
+        assertEquals(0, registries.id(RegistryNamespace.PLAYER, playerA))
         val stored = LedgerEntry(
             holder = Container(worldA, 100, 64, -200, 5),
             timestamp = 1_700_000_000_000L,
@@ -435,8 +435,8 @@ class CodecTest {
     @Test
     fun `the chunk part of a position key is the same length whatever the world or the position`() {
         val worlds = List(300) { UUID.nameUUIDFromBytes("w$it".toByteArray()) }
-        for (world in worlds) registries.idForUuid(RegistryNamespace.WORLD, world)
-        assertTrue(registries.idForUuid(RegistryNamespace.WORLD, worlds.last()) > 0xFF)
+        for (world in worlds) registries.id(RegistryNamespace.WORLD, world)
+        assertTrue(registries.id(RegistryNamespace.WORLD, worlds.last()) > 0xFF)
 
         for (world in listOf(worlds.first(), worlds[200], worlds.last())) {
             for (position in listOf(intArrayOf(0, 0, 0), intArrayOf(-1, -64, -1), intArrayOf(134217727, 32767, -134217728))) {

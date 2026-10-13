@@ -7,6 +7,7 @@ import org.bukkit.event.Listener
 import org.bukkit.event.entity.CreatureSpawnEvent
 import org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason
 import org.bukkit.entity.EnderCrystal
+import org.bukkit.entity.Entity
 import org.bukkit.entity.Player
 import org.bukkit.entity.Projectile
 import org.bukkit.event.entity.EntityDamageByEntityEvent
@@ -75,7 +76,7 @@ class EntityOriginListener(
         if (event.entity !is EnderCrystal) return
         val damager = event.damager
         // An arrow is its shooter's, and a mob that shot it answers through whoever brought the mob in.
-        val source = (damager as? Projectile)?.shooter as? org.bukkit.entity.Entity ?: damager
+        val source = (damager as? Projectile)?.shooter as? Entity ?: damager
         when (source) {
             is Player -> origins.appeared(event.entity.uniqueId, source.uniqueId, if (source === damager) Confidence.FACT else Confidence.INFERRED)
             else -> origins.summonerOf(source.uniqueId)?.let { origins.appeared(event.entity.uniqueId, it.actor) }

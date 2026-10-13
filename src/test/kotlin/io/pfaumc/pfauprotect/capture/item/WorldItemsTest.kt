@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.disabledPlugin
 import io.pfaumc.pfauprotect.NoPlacedForms
+import io.pfaumc.pfauprotect.Spawns
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.ItemEntityRef
@@ -8,11 +9,10 @@ import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
-import io.pfaumc.pfauprotect.capture.block.TickCoalescer
-import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.testCodec
+import io.pfaumc.pfauprotect.Vanilla
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStackTemplate
 import net.minecraft.world.item.Items
@@ -27,17 +27,13 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.extension.ExtendWith
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
+@ExtendWith(Vanilla::class)
 class WorldItemsTest {
-    private val written = ArrayList<Transfer>()
-    private val coalescer = TickCoalescer(written::add)
-
-    private fun rows(): List<Transfer> {
-        coalescer.flush()
-        return written
-    }
+    private val spawns = Spawns()
 
     // An item that is hurt and lives keeps the damage that hurt it, and only an item whose health ran
     // out was killed by what it carries, so the two are given separately.
@@ -146,8 +142,7 @@ class WorldItemsTest {
 
     private val codec by lazy { testCodec() }
 
-    // `Items` cannot be touched before the registries are up, and the codec is what brings them up.
-    private fun bundle(owner: UUID?) = codec.let { NmsItemStack(Items.BUNDLE) }.apply {
+    private fun bundle(owner: UUID?) = NmsItemStack(Items.BUNDLE).apply {
         set(
             DataComponents.BUNDLE_CONTENTS,
             BundleContents(listOf(ItemStackTemplate(Items.DIAMOND, 3), ItemStackTemplate(Items.STONE, 16))),
@@ -172,7 +167,7 @@ class WorldItemsTest {
         val owner = UUID.randomUUID()
         val thrower = UUID.randomUUID()
         val entity = UUID.randomUUID()
-        val origins = SpawnOrigins(coalescer)
+        val origins = SpawnOrigins(spawns.coalescer)
         val capture = ContainerCaptureListener(
             disabledPlugin(), {}, codec,
             Registries(MemoryRegistryStore()), origins, NoPlacedForms,
@@ -188,10 +183,10 @@ class WorldItemsTest {
             ),
         )
 
-        WorldItemListener(codec, coalescer, origins, capture)
+        WorldItemListener(codec, spawns.coalescer, origins, capture)
             .onRemove(EntityRemoveEvent(item, EntityRemoveEvent.Cause.OUT_OF_WORLD))
 
-        val rows = rows()
+        val rows = spawns.rows()
         assertEquals(setOf(ItemEntityRef(entity), Nested(owner, 0), Nested(owner, 1)), rows.map { it.from }.toSet())
         assertTrue(rows.all { it.to == Void && it.cause == Cause.ITEM_DESTROY_VOID && it.actor == thrower }, "$rows")
     }
@@ -209,9 +204,9 @@ class WorldItemsTest {
     fun `a drop the pass could not spend is born anyway`() {
         val entity = UUID.randomUUID()
         val form = "diamond".toByteArray()
-        unspentDrop(coalescer, Intent(Cause.DROP_FROM_MENU, to = ItemEntityRef(entity), form = form, qty = 5), 5)
+        unspentDrop(spawns.coalescer, Intent(Cause.DROP_FROM_MENU, to = ItemEntityRef(entity), form = form, qty = 5), 5)
 
-        val row = rows().single()
+        val row = spawns.rows().single()
         assertEquals(Cause.ITEM_SPAWN, row.cause)
         assertEquals(Void, row.from)
         assertEquals(ItemEntityRef(entity), row.to)
@@ -224,8 +219,8 @@ class WorldItemsTest {
     // spawn it would invent here belongs to nothing.
     @Test
     fun `an intent that names no dropped entity is left alone`() {
-        unspentDrop(coalescer, Intent(Cause.DEATH_DROP, qty = 3, recorded = true), 3)
-        unspentDrop(coalescer, Intent(Cause.PICKUP, from = ItemEntityRef(UUID.randomUUID()), qty = 1), 1)
-        assertTrue(rows().isEmpty())
+        unspentDrop(spawns.coalescer, Intent(Cause.DEATH_DROP, qty = 3, recorded = true), 3)
+        unspentDrop(spawns.coalescer, Intent(Cause.PICKUP, from = ItemEntityRef(UUID.randomUUID()), qty = 1), 1)
+        assertTrue(spawns.rows().isEmpty())
     }
 }

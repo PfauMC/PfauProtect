@@ -31,9 +31,9 @@ internal fun worldStub(uid: UUID): World = stub(World::class.java, mapOf("getUID
 internal fun disabledPlugin(): Plugin = stub(Plugin::class.java, mapOf("isEnabled" to false))
 
 internal object NoPlacedForms : PlacedForms {
-    override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = null
+    override fun formAt(at: WorldBlock): ByteArray? = null
     override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = emptyMap()
-    override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) = Unit
-    override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) = Unit
+    override fun setFormAt(at: WorldBlock, form: ByteArray) = Unit
+    override fun clearFormAt(at: WorldBlock) = Unit
     override fun clearFormsAt(positions: List<WorldBlock>) = Unit
 }

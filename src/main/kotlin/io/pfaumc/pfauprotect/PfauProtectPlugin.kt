@@ -66,6 +66,7 @@ import io.pfaumc.pfauprotect.capture.item.WorldItemListener
 import io.pfaumc.pfauprotect.storage.cleaningUpOnFailure
 import io.pfaumc.pfauprotect.storage.fillTypeRegistries
 import io.pfaumc.pfauprotect.check.heldForms
+import io.pfaumc.pfauprotect.command.canTeleport
 import io.pfaumc.pfauprotect.command.durationOrNull
 import io.pfaumc.pfauprotect.command.lookupTargetAt
 import io.pfaumc.pfauprotect.command.offThread
@@ -84,6 +85,7 @@ import org.bukkit.block.Block
 import org.bukkit.block.data.BlockData
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.CraftWorld
+import org.bukkit.entity.Entity
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -160,7 +162,6 @@ private class Uncovered(private val ledger: RocksItemLog) {
         ledger.submit(transaction)
     }
 
-    /** The tally as it stands, left for the next report. */
     fun peek(): String? = format(LongAdder::sum)
 
     /** Takes the tally rather than reading it: what has been reported once must not be reported again. */
@@ -260,14 +261,14 @@ class PfauProtectPlugin : JavaPlugin() {
         val entities = EntityOrigins()
         val destruction = BlockDestructionListener(
             this, ledger.registries, blocks, attribution, codec, origins, entities, ledger, ledger, uncovered::submit,
-            energy, touches,
-        ) { at, task -> server.regionScheduler.run(this, at) { task() } }
+            energy, touches, ::onRegion,
+        )
         val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)
         val worldItems = WorldItemListener(codec, mechanisms, origins, capture, attribution, entities)
         val entityCapture = EntityCapture(
             blocks, origins, attribution, entities,
-            later = { at, task -> server.regionScheduler.run(this, at) { task() } },
+            later = ::onRegion,
             // A null task means the entity was gone before it could be scheduled, and neither ever runs.
             laterOn = { entity, task, retired -> entity.scheduler.run(this, { task() }, retired) ?: retired() },
             offThread = { task -> server.asyncScheduler.runNow(this) { task() } },
@@ -284,69 +285,52 @@ class PfauProtectPlugin : JavaPlugin() {
         )
         this.running = running
         ledger.registries.batched { fillTypeRegistries(ledger.registries) }
-        server.pluginManager.registerEvents(WorldBaseListener(blocks), this)
+        listen(WorldBaseListener(blocks))
         // Enabling after startup, every world is already loaded and none of them will ever raise the
         // load event again.
         for (world in server.worlds) if (world.name !in Settings.disabledWorlds) blocks.open(world.uid)
-        // A change to a world with no base open is dropped rather than journalled, so this goes after
-        // the load handler and after the bases opened by hand. Against the other handlers of equal
-        // priority the order is free: nothing it reads is written by any of them.
-        server.pluginManager.registerEvents(
-            BlockCaptureListener(blocks, attribution, touches) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
-            this,
+        listen(
+            // A change to a world with no base open is dropped rather than journalled, so this goes after
+            // the load handler and after the bases opened by hand. Against the other handlers of equal
+            // priority the order is free: nothing it reads is written by any of them.
+            BlockCaptureListener(blocks, attribution, touches, ::onBlock),
+            destruction,
+            EntityOriginListener(attribution, entities),
+            RedstoneListener(energy, blocks, entities, nudges, attribution),
+            // After the attribution of entities, whose notes it reads for who brought a mob in, and before the
+            // item capture, which takes the marks off a dying mob's slots that its snapshot has to keep.
+            entityCapture,
+            capture,
+            ItemUseListener(capture, codec),
+            ProjectileListener(capture, codec, mechanisms, origins),
         )
-        server.pluginManager.registerEvents(destruction, this)
-        server.pluginManager.registerEvents(EntityOriginListener(attribution, entities), this)
-        server.pluginManager.registerEvents(RedstoneListener(energy, blocks, entities, nudges, attribution), this)
-        // After the attribution of entities, whose notes it reads for who brought a mob in, and before the
-        // item capture, which takes the marks off a dying mob's slots that its snapshot has to keep.
-        server.pluginManager.registerEvents(entityCapture, this)
-        server.pluginManager.registerEvents(capture, this)
-        server.pluginManager.registerEvents(ItemUseListener(capture, codec), this)
-        server.pluginManager.registerEvents(ProjectileListener(capture, codec, mechanisms, origins), this)
-        val inventories = MobInventories(codec, mechanisms, ledger, uncovered::submit) { entity, task ->
-            entity.scheduler.run(this, { task() }, null)
-        }
-        server.pluginManager.registerEvents(inventories, this)
-        server.pluginManager.registerEvents(
+        val inventories = MobInventories(codec, mechanisms, ledger, uncovered::submit, ::onEntity)
+        listen(
+            inventories,
             CopperGolemListener(codec, uncovered::submit) { golem, look ->
                 golem.scheduler.runAtFixedRate(this, { task -> if (!look()) task.cancel() }, null, 1, 1)
             },
-            this,
-        )
-        server.pluginManager.registerEvents(
-            MobItemListener(codec, mechanisms, origins, inventories) { at, task -> server.regionScheduler.run(this, at) { task() } },
-            this,
-        )
-        server.pluginManager.registerEvents(
-            CommandListener(capture, codec, origins) { player, task -> player.scheduler.run(this, { task() }, null) },
-            this,
-        )
-        server.pluginManager.registerEvents(
-            HolderListener(capture, codec, origins) { block, task -> server.regionScheduler.run(this, block.location) { task() } },
-            this,
-        )
-        server.pluginManager.registerEvents(MechanismCaptureListener(codec, mechanisms), this)
-        // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
-        // just dropped and the block capture then reads the form of that same stack. Handlers of equal
-        // priority run in the order they were registered, so turning these two around would file the
-        // drop under a form that has no owner on it and the chain of custody would end at the break.
-        server.pluginManager.registerEvents(NestedCaptureListener(ledger, codec, mechanisms), this)
-        server.pluginManager.registerEvents(
+            MobItemListener(codec, mechanisms, origins, inventories, ::onRegion),
+            CommandListener(capture, codec, origins, ::onEntity),
+            HolderListener(capture, codec, origins, ::onBlock),
+            MechanismCaptureListener(codec, mechanisms),
+            // Breaking a shulker box, the nested capture writes the owner mark onto the stack that was
+            // just dropped and the block capture then reads the form of that same stack. Handlers of equal
+            // priority run in the order they were registered, so turning these two around would file the
+            // drop under a form that has no owner on it and the chain of custody would end at the break.
+            NestedCaptureListener(ledger, codec, mechanisms),
             BlockMechanismListener(
                 codec, mechanisms, origins, ledger, uncovered::submit, energy, entities, ledger, capture::intend,
-            ) { block, task ->
-                server.regionScheduler.run(this, block.location) { task() }
-            },
-            this,
+                ::onBlock,
+            ),
+            worldItems,
+            // After the capture's own join handler, whose starting point for the player's first pass the
+            // items taken back on the join have to come after.
+            confiscations,
+            inspector,
+            rollbacks.ghosts,
+            ChatCapture(chat),
         )
-        server.pluginManager.registerEvents(worldItems, this)
-        // After the capture's own join handler, whose starting point for the player's first pass the
-        // items taken back on the join have to come after.
-        server.pluginManager.registerEvents(confiscations, this)
-        server.pluginManager.registerEvents(inspector, this)
-        server.pluginManager.registerEvents(rollbacks.ghosts, this)
-        server.pluginManager.registerEvents(ChatCapture(chat), this)
         server.servicesManager.register(PfauProtectApi::class.java, Api(running), this, ServicePriority.Normal)
         server.globalRegionScheduler.runAtFixedRate(this, {
             origins.sweep()
@@ -368,7 +352,7 @@ class PfauProtectPlugin : JavaPlugin() {
         warnAboutSilencedHoppers()
         registerCommand(CommandBrackets(this, blocks, codec, ledger, uncovered::submit))
         logger.info(
-            "ledger open, ${blocks.size} world bases, registry sizes: " +
+            "ledger open, ${blocks.worlds.size} world bases, registry sizes: " +
                 RegistryNamespace.entries.joinToString { "${it.name.lowercase()}=${ledger.registries.size(it)}" }
         )
         for (warning in ledger.registries.fillWarnings()) logger.warning(warning)
@@ -390,11 +374,9 @@ class PfauProtectPlugin : JavaPlugin() {
         } catch (failure: Throwable) {
             logger.log(Level.SEVERE, "the ledger lost entries while shutting down", failure)
         } finally {
-            // Closing a world base stops its writer before it frees its handles, and that writer
-            // interns state numbers and payloads in the item database, so every base goes before the
-            // ledger it writes through. A base that fails to close must not take the ledger down with
-            // it: an unflushed log and a held lock file leave a plugin that cannot be enabled again
-            // without restarting the server, which is a worse outcome than whatever the base hit.
+            // The bases go first: their writers intern state numbers and payloads through the ledger. A
+            // base that fails to close must not take the ledger down with it, or a held lock file keeps
+            // the plugin from being enabled again without a server restart.
             closeReporting("the world block bases") { running.blocks.close() }
             closeReporting("the ledger") { running.ledger.close() }
             closeReporting("the chat log") { running.chat.close() }
@@ -527,11 +509,11 @@ class PfauProtectPlugin : JavaPlugin() {
             root.then(teleportNode())
             root.then(
                 gated("apply", ROLLBACK_PERMISSION)
-                    .executes { rollbacks(it.source) { rollbacks, sender -> rollbacks.applyPreview(sender) } }
+                    .executes { withRunning(it.source) { running, sender -> running.rollbacks.applyPreview(sender) } }
             )
             root.then(
                 gated("cancel", ROLLBACK_PERMISSION)
-                    .executes { rollbacks(it.source) { rollbacks, sender -> rollbacks.cancelPreview(sender) } }
+                    .executes { withRunning(it.source) { running, sender -> running.rollbacks.cancelPreview(sender) } }
             )
             event.registrar().register(root.build(), "Item ledger lookup and inspector", listOf("pp"))
             // The API hands out a mirror of the dispatcher; the nodes the server executes are behind it.
@@ -586,16 +568,16 @@ class PfauProtectPlugin : JavaPlugin() {
     // Centred like `near`.
     private fun rollbackNode(literal: String) = gated(literal, ROLLBACK_PERMISSION)
         .executes { context ->
-            rollbacks(context.source) { rollbacks, sender ->
-                rollbacks.preview(sender, lookupTargetAt(context.source.location), LookupQuery())
+            withRunning(context.source) { running, sender ->
+                running.rollbacks.preview(sender, lookupTargetAt(context.source.location), LookupQuery())
             }
         }
         .then(
             Commands.argument("query", LookupArgument(rollback = true))
                 .executes { context ->
                     val query = context.getArgument("query", LookupQuery::class.java)
-                    rollbacks(context.source) { rollbacks, sender ->
-                        rollbacks.preview(sender, query.targetOr(lookupTargetAt(context.source.location)), query)
+                    withRunning(context.source) { running, sender ->
+                        running.rollbacks.preview(sender, query.targetOr(lookupTargetAt(context.source.location)), query)
                     }
                 }
         )
@@ -625,9 +607,13 @@ class PfauProtectPlugin : JavaPlugin() {
         return Command.SINGLE_SUCCESS
     }
 
-    private fun rollbacks(source: CommandSourceStack, action: (Rollbacks, CommandSender) -> Unit): Int {
-        val rollbacks = running?.rollbacks ?: return notReady(source)
-        action(rollbacks, source.sender)
+    // Inline so that a refusal inside `action` can return its own 0 from the handler.
+    private inline fun withRunning(source: CommandSourceStack, action: (Running, CommandSender) -> Unit): Int {
+        val running = this.running ?: run {
+            source.sender.say("The ledger is not open.")
+            return 0
+        }
+        action(running, source.sender)
         return Command.SINGLE_SUCCESS
     }
 
@@ -641,49 +627,33 @@ class PfauProtectPlugin : JavaPlugin() {
                 }
         )
 
-    // A player pointing at a block means that block; anything else means the position the command was
-    // run from, which is what makes the command answerable from the console and from `/execute
-    // positioned`, and what stops a player who looked past the last block from being told off.
-    private fun lookup(source: CommandSourceStack, query: LookupQuery): Int {
-        val lookups = running?.lookups ?: return notReady(source)
-        // Only where the command runs from the player themselves: `/execute positioned` names a place of its
-        // own, and the block the player happens to look at must not take over from it.
+    private fun lookup(source: CommandSourceStack, query: LookupQuery): Int = withRunning(source) { running, sender ->
+        // The aimed-at block wins only when run from the player's own position: `/execute positioned` and the
+        // console name a place of their own, and looking past the last block falls back to where one stands.
         val player = (source.executor as? Player)?.takeIf { it.world == source.location.world && it.location.distanceSquared(source.location) < 1e-6 }
         val aimed = player?.getTargetBlockExact(TARGET_RANGE)
-        lookups.run(source.sender, query.targetOr(aimed?.let(::lookupTargetAt) ?: lookupTargetAt(source.location)), query)
-        return Command.SINGLE_SUCCESS
+        running.lookups.run(sender, query.targetOr(aimed?.let(::lookupTargetAt) ?: lookupTargetAt(source.location)), query)
     }
 
-    private fun near(source: CommandSourceStack, radius: Int): Int {
-        val lookups = running?.lookups ?: return notReady(source)
-        lookups.run(source.sender, lookupTargetAt(source.location), LookupQuery(radius = radius, words = "r:$radius"))
-        return Command.SINGLE_SUCCESS
+    private fun near(source: CommandSourceStack, radius: Int): Int = withRunning(source) { running, sender ->
+        running.lookups.run(sender, lookupTargetAt(source.location), LookupQuery(radius = radius, words = "r:$radius"))
     }
 
-    private fun inspect(source: CommandSourceStack, desired: Boolean?): Int {
-        val inspector = running?.inspector ?: return notReady(source)
+    private fun inspect(source: CommandSourceStack, desired: Boolean?): Int = withRunning(source) { running, sender ->
         val player = source.executor as? Player
         if (player == null) {
-            source.sender.say("Only a player can use the inspector.")
+            sender.say("Only a player can use the inspector.")
             return 0
         }
-        val now = inspector.toggle(player, desired)
+        val now = running.inspector.toggle(player, desired)
         // Above the hotbar rather than in chat: it is a state, not a message, and chat is where the answers go.
         player.sendActionBar(
             if (now) Ui.text(tr("Inspector on: left click — the block, right click — the place in front, click an entity — the entity", "Инспектор включён: ЛКМ — блок, ПКМ — место перед гранью, клик по сущности — сущность"), Ui.GAINED)
             else Ui.text(tr("Inspector off", "Инспектор выключен"), Ui.MUTED)
         )
-        return Command.SINGLE_SUCCESS
     }
 
-    /**
-     * Deletes history older than the age given, in both planes, after a preview that counts it. What each
-     * holder held at the cutoff is written as an opening balance, so the self-checks still add up; the
-     * newest row of each position stays, so the attribution can still ask who put a block there.
-     */
-    private fun purge(source: CommandSourceStack, age: String, confirm: Boolean): Int {
-        val running = this.running ?: return notReady(source)
-        val sender = source.sender
+    private fun purge(source: CommandSourceStack, age: String, confirm: Boolean): Int = withRunning(source) { running, sender ->
         val seconds = durationOrNull(age)
         if (seconds == null || seconds < PURGE_MIN_SECONDS) {
             sender.say("Purge refused: give an age of at least a day, for example 90d.")
@@ -708,7 +678,6 @@ class PfauProtectPlugin : JavaPlugin() {
             val counts = "$entries item rows, $rows block rows, $entities entity rows; $openings opening balances"
             sender.say(if (confirm) "Purged $counts written." else "A purge would delete $counts to write. /pp purge $age confirm runs it.")
         }
-        return Command.SINGLE_SUCCESS
     }
 
     // Another plugin may veto a row before it is written; nobody listening, nothing is asked.
@@ -719,10 +688,7 @@ class PfauProtectPlugin : JavaPlugin() {
         return !event.isCancelled
     }
 
-    /** What players said, ran, and when they came and went: `user:`, `time:` and `f:` narrow it. */
-    private fun chat(source: CommandSourceStack, words: String): Int {
-        val running = this.running ?: return notReady(source)
-        val sender = source.sender
+    private fun chat(source: CommandSourceStack, words: String): Int = withRunning(source) { running, sender ->
         val query = try {
             parseLookupQuery(words)
         } catch (failure: CommandSyntaxException) {
@@ -731,7 +697,7 @@ class PfauProtectPlugin : JavaPlugin() {
             return 0
         }
         // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
-        val teleports = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
+        val teleports = canTeleport(sender)
         server.asyncScheduler.runNow(this) {
             val users = running.lookups.resolveAll(sender, query.users) ?: return@runNow
             val text = query.filter?.lowercase()
@@ -743,22 +709,19 @@ class PfauProtectPlugin : JavaPlugin() {
             for (line in lines) {
                 val who = Ui.text(nameOrId(line.player), Ui.WHO)
                 val what = when (line.kind) {
-                    ChatKind.CHAT -> Component.text().append(who).append(Ui.text(": " + line.text)).build()
-                    ChatKind.COMMAND -> Component.text().append(who).append(Ui.text(" " + line.text, Ui.CHANGED)).build()
-                    ChatKind.JOIN -> Component.text().append(who).append(Ui.text(tr(" joined", " · вход"), Ui.GAINED)).build()
-                    ChatKind.QUIT -> Component.text().append(who).append(Ui.text(tr(" left", " · выход"), Ui.MUTED)).build()
+                    ChatKind.CHAT -> Ui.text(": " + line.text)
+                    ChatKind.COMMAND -> Ui.text(" " + line.text, Ui.CHANGED)
+                    ChatKind.JOIN -> Ui.text(tr(" joined", " · вход"), Ui.GAINED)
+                    ChatKind.QUIT -> Ui.text(tr(" left", " · выход"), Ui.MUTED)
                 }
-                val out = Component.text().append(Ui.text(" ")).append(Ui.ago(line.timestamp)).append(Ui.text("  ")).append(what)
+                val out = Component.text().append(Ui.text(" ")).append(Ui.ago(line.timestamp)).append(Ui.text("  ")).append(who).append(what)
                 if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, teleports))
                 sender.sendMessage(out.build())
             }
         }
-        return Command.SINGLE_SUCCESS
     }
 
-    private fun status(source: CommandSourceStack): Int {
-        val running = this.running ?: return notReady(source)
-        val sender = source.sender
+    private fun status(source: CommandSourceStack): Int = withRunning(source) { running, sender ->
         server.asyncScheduler.runNow(this) {
             val folder = dataFolder.toPath()
             sender.sendMessage(Ui.text(tr("PfauProtect · status", "PfauProtect · состояние"), Ui.FAINT))
@@ -775,7 +738,6 @@ class PfauProtectPlugin : JavaPlugin() {
             val since = running.rollbacks.runningSince()
             sender.say("  rollback: " + if (since == null) "none running" else "one running for ${(System.currentTimeMillis() - since) / 1000} s")
         }
-        return Command.SINGLE_SUCCESS
     }
 
     private fun megabytes(dir: Path): String {
@@ -784,33 +746,30 @@ class PfauProtectPlugin : JavaPlugin() {
         return "%.1f MB".format(Locale.ROOT, bytes / 1_048_576.0)
     }
 
-    /**
-     * Both store-side self-checks, run to the end once every writer has caught up, so a hand-run check
-     * does not report the last thing the tester did as a finding. `judgeRecent` gives up the settle
-     * window, which lets a check run straight after an action at the price of the odd race between the
-     * two planes' writers reported as a finding.
-     */
-    private fun verify(source: CommandSourceStack, judgeRecent: Boolean): Int {
-        val running = this.running ?: return notReady(source)
-        val sender = source.sender
+    // Waits for every writer first, so a hand-run check does not report the last thing done as a finding.
+    private fun verify(source: CommandSourceStack, judgeRecent: Boolean): Int = withRunning(source) { running, sender ->
         sender.say("Running both self-checks to the end; this reads the whole journal.")
         offThread(sender, "the self-checks failed", "The self-checks failed; the server log has the details.") {
             running.drainAll()
             checkLedger(running.ledger, VERIFY_ROUNDS, sender::say)
             checkPlanes(running.planes, VERIFY_ROUNDS, judgeRecent, sender::say)
         }
-        return Command.SINGLE_SUCCESS
     }
 
-    private fun reconcile(source: CommandSourceStack, target: Player?): Int {
-        val running = this.running ?: return notReady(source)
+    private fun reconcile(source: CommandSourceStack, target: Player?): Int = withRunning(source) { running, sender ->
         if (target == null) {
-            source.sender.say("Name the player to reconcile.")
+            sender.say("Name the player to reconcile.")
             return 0
         }
-        val sender = source.sender
-        compare(target) { report(sender, target, it, running.reconciliation) }
-        return Command.SINGLE_SUCCESS
+        compare(target) { mismatches ->
+            if (mismatches.isEmpty()) return@compare sender.say("${target.name} matches the ledger; nothing differs.")
+            sender.say("${target.name} differs from the ledger on ${mismatches.size} forms:")
+            for (mismatch in mismatches) sender.say("  ${running.reconciliation.name(mismatch.form)} ${signed(mismatch.difference)}")
+            sender.say(
+                "Anything held before the ledger was opened differs by exactly that much for ever; " +
+                    "a difference that stays put is that constant rather than a leak."
+            )
+        }
     }
 
     // The slots may only be read on the region that ticks the player, and RocksDB has no business
@@ -833,26 +792,6 @@ class PfauProtectPlugin : JavaPlugin() {
         }, null)
     }
 
-    private fun report(
-        sender: CommandSender,
-        player: Player,
-        mismatches: List<Mismatch>,
-        reconciliation: Reconciliation,
-    ) {
-        if (mismatches.isEmpty()) {
-            sender.say("${player.name} matches the ledger; nothing differs.")
-            return
-        }
-        sender.say("${player.name} differs from the ledger on ${mismatches.size} forms:")
-        for (mismatch in mismatches) {
-            sender.say("  ${reconciliation.name(mismatch.form)} ${signed(mismatch.difference)}")
-        }
-        sender.say(
-            "Anything held before the ledger was opened differs by exactly that much for ever; " +
-                "a difference that stays put is that constant rather than a leak."
-        )
-    }
-
     // A hole in the capture gives itself away by being systematic: the same form, the same direction,
     // on many players at once. That shape only shows on the flow of live data, so the pass runs on
     // everyone and says nothing about the players who balance.
@@ -871,10 +810,17 @@ class PfauProtectPlugin : JavaPlugin() {
         }
     }
 
-    private fun notReady(source: CommandSourceStack): Int {
-        source.sender.say("The ledger is not open.")
-        return 0
+    private fun onRegion(at: Location, task: () -> Unit) {
+        server.regionScheduler.run(this, at) { task() }
     }
+
+    private fun onBlock(block: Block, task: () -> Unit) = onRegion(block.location, task)
+
+    private fun onEntity(entity: Entity, task: () -> Unit) {
+        entity.scheduler.run(this, { task() }, null)
+    }
+
+    private fun listen(vararg listeners: Listener) = listeners.forEach { server.pluginManager.registerEvents(it, this) }
 }
 
 private class Api(private val running: Running) : PfauProtectApi {

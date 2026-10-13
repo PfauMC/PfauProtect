@@ -42,8 +42,6 @@ import org.bukkit.entity.ArmorStand
 import org.bukkit.entity.Cat
 import org.bukkit.entity.ItemFrame
 import org.bukkit.entity.MushroomCow
-import org.bukkit.entity.Piglin
-import org.bukkit.entity.SulfurCube
 import org.bukkit.entity.Player
 import org.bukkit.entity.Sheep
 import org.bukkit.entity.Tameable
@@ -96,8 +94,7 @@ internal fun useCause(item: NmsItemStack, target: Material?): Cause? {
     }
 }
 
-// What the target entity makes of an item. Worked out by the caller from the entity, so that this
-// stays a plain function of what was used and on what kind of thing.
+// What the target entity makes of an item.
 internal class EntityTarget(
     // A mob that takes the item into a slot of its own — an allay, a piglin, a sulfur cube: the item
     // goes somewhere the ledger can name, and that is written where it lands.
@@ -127,11 +124,8 @@ internal fun entityUseCause(item: NmsItemStack, target: EntityTarget = EntityTar
 }
 
 /**
- * Whether the item puts a block down when it is used: under the block's own name, or under another — a
- * carrot plants carrots, a seed plants wheat, redstone lays wire, string strings a tripwire. Asked of
- * `Material.isBlock`, the second kind are all items, and their placement would read as a use of the block
- * and the item as gone nowhere. The use capture leaves every such item to the placement event, so the two
- * have to agree on which items these are.
+ * Whether using the item places a block, including under another name (carrot→carrots, string→tripwire);
+ * `Material.isBlock` misses those.
  */
 internal fun placesBlock(type: Material) = CraftMagicNumbers.getItem(type) is BlockItem
 
@@ -140,7 +134,7 @@ private fun spentElsewhere(item: NmsItemStack): Boolean {
     return kind is BlockItem ||item.isDamageableItem || item.has(DataComponents.CONSUMABLE) ||
         item.has(DataComponents.EQUIPPABLE) || kind is BucketItem || kind is MobBucketItem ||
         (kind is ProjectileItem && kind !is FireChargeItem) || kind is EnderpearlItem ||
-        kind is BottleItem || kind is EmptyMapItem || kind is BundleItem || kind is WritableBookItem ||
+        kind is BottleItem || kind is BundleItem || kind is WritableBookItem ||
         // Each of these becomes an entity, and the entity's own placement event names where it went.
         kind is BoatItem || kind is MinecartItem || kind is ArmorStandItem || kind is EndCrystalItem ||
         kind is HangingEntityItem || kind is CushionItem
@@ -165,7 +159,7 @@ class ItemUseListener(
     private val codec: ItemFormCodec,
 ) : Listener {
     // A right click in the air is raised already denied, so the item's own verdict is what says whether
-    // the use went ahead — the same test the map uses.
+    // the use went ahead.
     @EventHandler(priority = EventPriority.MONITOR)
     fun onUse(event: PlayerInteractEvent) {
         if (!event.action.isRightClick || event.useItemInHand() == Event.Result.DENY) return
@@ -175,6 +169,8 @@ class ItemUseListener(
         val player = event.player
         // Water from a source or a hive, a bottle at a time, beside the stack the bottle came from.
         if (live.item is BottleItem) return capture.intend(player, mutation(Cause.BOTTLE_FILL))
+        // A filled map is written in the hand that held the empty one, or beside it when that was one of a stack.
+        if (live.item is EmptyMapItem) return capture.intend(player, mutation(Cause.MAP_FILL))
         // A sulfur cube's bucket holds no water, so letting the cube out raises no bucket event.
         if ((live.item as? MobBucketItem)?.content == Fluids.EMPTY) return capture.intend(player, mutation(Cause.BUCKET_RELEASE_MOB))
         val block = event.clickedBlock
@@ -202,15 +198,14 @@ class ItemUseListener(
         if (entity is ItemFrame || entity is ArmorStand) return
         // A dancing allay takes an amethyst shard to split in two; the shard is gone, not held.
         if (entity is Allay && entity.isDancing && stack.type == Material.AMETHYST_SHARD) {
-            spend(player, event.hand, stack, Cause.FEED_MOB)
-            return
+            return spend(player, event.hand, stack, Cause.FEED_MOB)
         }
         // An axolotl eats the fish out of the bucket and hands the water back.
         if (entity is Axolotl && stack.type == Material.TROPICAL_FISH_BUCKET) return capture.intend(player, mutation(Cause.FEED_MOB))
         // A bowl held to a mooshroom comes back full of stew.
         if (entity is MushroomCow && stack.type == Material.BOWL) return capture.intend(player, mutation(Cause.ITEM_USED))
         val target = EntityTarget(
-            keeps = entity is Allay || entity is Piglin || entity is SulfurCube,
+            keeps = takesHandedItem(entity),
             untamed = entity is Tameable && !entity.isTamed,
             breedsOn = entity is Animals && entity.isBreedItem(stack),
             dyeable = entity is Sheep || entity is Wolf || entity is Cat,
@@ -262,11 +257,8 @@ class ItemUseListener(
     fun onPick(event: PlayerPickItemEvent) {
         val player = event.player
         // In creative the picked block is made on the spot rather than looked for in the inventory.
-        if (player.gameMode == GameMode.CREATIVE) {
-            capture.intend(player, Intent(Cause.CREATIVE_PICK, from = Void))
-            return
-        }
-        capture.intend(player, Intent(Cause.HOTBAR_SWAP))
+        val creative = player.gameMode == GameMode.CREATIVE
+        capture.intend(player, if (creative) Intent(Cause.CREATIVE_PICK, from = Void) else Intent(Cause.HOTBAR_SWAP))
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

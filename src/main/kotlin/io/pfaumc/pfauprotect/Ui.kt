@@ -35,17 +35,15 @@ object Ui {
     fun ago(at: Long): Component =
         hover(text(agoText(System.currentTimeMillis() - at), MUTED), DATE.format(Instant.ofEpochMilli(at)))
 
-    fun agoText(millis: Long): String {
+    private val AGO_UNITS = listOf("y" to "г", "mo" to "мес", "d" to "д", "h" to "ч", "m" to "м")
+
+    private fun agoText(millis: Long): String {
         val s = maxOf(0, millis / 1000)
-        val (n, en, ru) = when {
-            s < 60 -> Triple(s, "s", "с")
-            s < 3_600 -> Triple(s / 60, "m", "м")
-            s < 86_400 -> Triple(s / 3_600, "h", "ч")
-            s < 2_592_000 -> Triple(s / 86_400, "d", "д")
-            s < 31_536_000 -> Triple(s / 2_592_000, "mo", "мес")
-            else -> Triple(s / 31_536_000, "y", "г")
+        for ((en, ru) in AGO_UNITS) {
+            val unit = SECONDS_PER_UNIT.getValue(en)
+            if (s >= unit) return "${s / unit}${tr(en, ru)}"
         }
-        return "$n${tr(en, ru)}"
+        return "$s${tr("s", "с")}"
     }
 
     /**
@@ -101,6 +99,8 @@ object Ui {
     fun button(label: String, command: String, color: TextColor, vararg hint: String): Component =
         hover(text(label, color), *hint).clickEvent(ClickEvent.runCommand(command))
 }
+
+internal val SECONDS_PER_UNIT = mapOf("y" to 31_536_000L, "mo" to 2_592_000L, "w" to 604_800L, "d" to 86_400L, "h" to 3_600L, "m" to 60L)
 
 /** The English or the Russian of a phrase made from parts, which no whole-line rule could translate. */
 fun tr(en: String, ru: String): String = if (Settings.language == "ru") ru else en

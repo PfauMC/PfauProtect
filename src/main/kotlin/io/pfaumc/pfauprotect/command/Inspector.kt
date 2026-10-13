@@ -10,7 +10,9 @@ import org.bukkit.event.hanging.HangingBreakByEntityEvent
 import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.block.Container
 import org.bukkit.block.Sign
+import org.bukkit.entity.ArmorStand
 import org.bukkit.entity.Entity
+import org.bukkit.entity.Hanging
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.inventory.EquipmentSlot
 import java.util.UUID
@@ -27,7 +29,7 @@ class Inspector(private val lookups: Lookups) : Listener {
         return next
     }
 
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.LOWEST)
     fun onInteract(event: PlayerInteractEvent) {
         if (event.player.uniqueId !in enabled) return
         if (event.action != Action.LEFT_CLICK_BLOCK && event.action != Action.RIGHT_CLICK_BLOCK) return
@@ -53,7 +55,7 @@ class Inspector(private val lookups: Lookups) : Listener {
         return before != null && before.first == what && now - before.second < REPEAT_MILLIS
     }
 
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.LOWEST)
     fun onInteractEntity(event: PlayerInteractEntityEvent) {
         if (event.player.uniqueId !in enabled || event.hand != EquipmentSlot.HAND) return
         event.isCancelled = true
@@ -61,17 +63,17 @@ class Inspector(private val lookups: Lookups) : Listener {
     }
 
     // A frame or a stand hit while inspecting is asked about rather than broken.
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.LOWEST)
     fun onHit(event: EntityDamageByEntityEvent) {
         val player = event.damager as? Player ?: return
         if (player.uniqueId !in enabled) return
         // A mob or a player is fought as usual: an inspector who could not hit back would be defenceless.
-        if (event.entity !is org.bukkit.entity.Hanging && event.entity !is org.bukkit.entity.ArmorStand) return
+        if (event.entity !is Hanging && event.entity !is ArmorStand) return
         event.isCancelled = true
         inspect(player, event.entity)
     }
 
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.LOWEST)
     fun onHangingHit(event: HangingBreakByEntityEvent) {
         val player = event.remover as? Player ?: return
         if (player.uniqueId !in enabled) return

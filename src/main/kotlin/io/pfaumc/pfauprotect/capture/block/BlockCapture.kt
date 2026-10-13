@@ -99,6 +99,12 @@ internal fun brokenAfter(
     return if (below.`is`(BlockTags.ICE_MELTS_WHEN_DESTROYED_ABOVE) || below.liquid()) IceBlock.meltsInto() else removed
 }
 
+/** Where the other half of a double chest stands; null for a chest standing alone. */
+internal fun connectedChestPos(pos: BlockPos, state: NmsBlockState): BlockPos? {
+    if (state.block !is ChestBlock || state.getValue(ChestBlock.TYPE) == ChestType.SINGLE) return null
+    return ChestBlock.getConnectedBlockPos(pos, state)
+}
+
 /**
  * Whether `ServerPlayerGameMode.destroyBlock` is about to return without touching the world. All
  * three refusals sit behind the event, so a creative player who may not use game-master blocks
@@ -146,8 +152,7 @@ internal fun Attribution.cleared(block: Block, actor: UUID) {
     for (standing in listOfNotNull(block, otherHalfOf(block))) {
         val at = positionOf(standing)
         removed(at, actor)
-        // What the removal writes back over the position, by the fluid rule `brokenAfter` states in full.
-        // The ice melt that rule also carries is left out: a note naming air where water ends up answers
+        // The ice melt `brokenAfter` also carries is left out: a note naming air where water ends up answers
         // nobody, which is the direction to be wrong in.
         placed(at, leftBehind(standing.blockData).asString, actor)
     }
@@ -218,6 +223,10 @@ internal fun flood(
 private const val POUR_WALK = 64
 private const val POUR_SOURCES = 4
 
+private val POUR_FACES = listOf(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
+
+internal fun isLiquid(material: Material) = material == Material.WATER || material == Material.LAVA
+
 /**
  * The sources a liquid may be running from, nearest first. The walk steps through the same liquid,
  * up and sideways only: a liquid never runs upwards to where it stands.
@@ -225,7 +234,7 @@ private const val POUR_SOURCES = 4
  * `owned` keeps the walk inside the region ticking this block, as for leaves.
  */
 internal fun sourcesOf(liquid: Block, owned: (Block) -> Boolean = Bukkit::isOwnedByCurrentRegion): List<Block> {
-    val kind = liquid.blockData.material.takeIf { it == Material.LAVA || it == Material.WATER } ?: return emptyList()
+    val kind = liquid.blockData.material.takeIf(::isLiquid) ?: return emptyList()
     val seen = hashSetOf(liquid)
     val queue = ArrayDeque(listOf(liquid))
     val sources = ArrayList<Block>()
@@ -241,8 +250,6 @@ internal fun sourcesOf(liquid: Block, owned: (Block) -> Boolean = Bukkit::isOwne
     }
     return sources
 }
-
-internal val POUR_FACES =listOf(BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)
 
 // A column poured from the build limit and a wide spread of water at its foot, and no further: what is
 // left beyond runs dry by itself, its source being gone.
@@ -304,7 +311,6 @@ class BlockCaptureListener(
     private val logs: BlockLogs,
     private val attribution: Attribution,
     private val touches: HandTouches = HandTouches(),
-    // Runs a task on the block's own region a tick later.
     private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
     // The event carries the lines the player sent, before the sign takes them, and a plugin at a higher
@@ -347,7 +353,6 @@ class BlockCaptureListener(
         // Both positions are the same placement, so they go in one submit and share its event id.
         val replaced = replacedBy(event)
         val actor = event.player.uniqueId
-        // The block already stands where it was put, and it is that block the note answers for.
         for (was in replaced) attribution.placed(positionOf(was.block), was.block.blockData.asString, actor)
         // The server raises a placement for what a tool, wax, an eye of ender or a flint does to a block
         // too, and the block change behind most of them is filed by its own event first. What does not
@@ -417,11 +422,7 @@ class BlockCaptureListener(
         )
         val was = state.asBlockData().asString
         val now = after.asBlockData().asString
-        // A plugin that set the position to air without cancelling has already had its say, and the
-        // break the server is about to refuse over it leaves nothing more to file. The refusal reads
-        // the position as air whichever of the three airs stands there, while the derived side only
-        // ever names the plain one, so comparing the two strings is not enough on its own.
-        if (now == was || state.isAir) return null
+        if (now == was) return null
         return BlockChange(
             x = pos.x,
             y = pos.y,
@@ -440,8 +441,7 @@ class BlockCaptureListener(
     // through a neighbour update that raises no event of its own, so without this row that position
     // keeps naming a chest that is no longer the one there.
     private fun singledChestHalf(block: CraftBlock, state: NmsBlockState, actor: UUID): BlockChange? {
-        if (state.block !is ChestBlock || state.getValue(ChestBlock.TYPE) == ChestType.SINGLE) return null
-        val pos = ChestBlock.getConnectedBlockPos(block.position, state)
+        val pos = connectedChestPos(block.position, state) ?: return null
         val other = block.level.getBlockState(pos)
         if (other.block !is ChestBlock || other.getValue(ChestBlock.TYPE) == ChestType.SINGLE) return null
         return BlockChange(

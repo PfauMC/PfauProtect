@@ -1,10 +1,10 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.Spawns
 import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.ItemEntityRef
-import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -14,20 +14,13 @@ import java.util.UUID
 
 class SpawnOriginsTest {
     private val world = UUID.randomUUID()
-    private val written = ArrayList<Transfer>()
-    private val coalescer = TickCoalescer(written::add)
-    private var clock = 0L
-    private val origins = SpawnOrigins(coalescer) { clock }
+    private val spawns = Spawns()
+    private val origins = spawns.origins
 
     private val dropper = Container(world, 4, 70, 8, 2)
     private val honeycomb = key("honeycomb")
     private val stone = key("stone")
     private val at = Spot(world, 4.0, 70.0, 8.0)
-
-    private fun rows(): List<Transfer> {
-        coalescer.flush()
-        return written
-    }
 
     @Test
     fun `the entity that appears carries the reason the block gave`() {
@@ -35,7 +28,7 @@ class SpawnOriginsTest {
         origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 1)
         assertEquals(1, origins.claim(entity, Spot(world, 4.5, 70.2, 8.7), stone, 1))
 
-        val row = rows().single()
+        val row = spawns.rows().single()
         assertEquals(Cause.DROPPER_EJECT, row.cause)
         assertEquals(dropper, row.from)
         assertEquals(ItemEntityRef(entity), row.to)
@@ -72,7 +65,7 @@ class SpawnOriginsTest {
         origins.expect(dropper, Cause.CONTAINER_BREAK_DROP, carrot, at, 1)
 
         assertEquals(4, origins.claim(UUID.randomUUID(), at, carrot, 4))
-        assertEquals(setOf(dropper to 1, Void to 3), rows().map { it.from to it.qty }.toSet())
+        assertEquals(setOf(dropper to 1, Void to 3), spawns.rows().map { it.from to it.qty }.toSet())
     }
 
     @Test
@@ -82,8 +75,8 @@ class SpawnOriginsTest {
         origins.expectAny(Void, Cause.BLK_FADE, at, null)
 
         assertEquals(2, origins.claim(UUID.randomUUID(), at, vine, 2))
-        assertEquals(setOf(dropper to 1, Void to 1), rows().map { it.from to it.qty }.toSet())
-        assertEquals(Cause.BLK_FADE, rows().single { it.from == Void }.cause)
+        assertEquals(setOf(dropper to 1, Void to 1), spawns.rows().map { it.from to it.qty }.toSet())
+        assertEquals(Cause.BLK_FADE, spawns.rows().single { it.from == Void }.cause)
         assertEquals(0, origins.claim(UUID.randomUUID(), Spot(world, 40.0, 70.0, 8.0), vine, 1))
     }
 
@@ -93,9 +86,9 @@ class SpawnOriginsTest {
         val player = UUID.randomUUID()
         origins.expectThrown(player, Void, Cause.CMD_GIVE, stone, 1, until = 100)
 
-        clock = 101
+        spawns.clock = 101
         assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1, thrower = player))
-        clock = 100
+        spawns.clock = 100
         assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1, thrower = player))
     }
 
@@ -104,7 +97,7 @@ class SpawnOriginsTest {
         val vine = key("twisting_vines")
         origins.expectAny(Void, Cause.BLK_FADE, at, null)
 
-        clock += 60
+        spawns.clock += 60
         assertEquals(0, origins.claim(UUID.randomUUID(), at, vine, 1))
     }
 
@@ -120,7 +113,7 @@ class SpawnOriginsTest {
         val ejected = origins.expect(dropper, Cause.DISPENSER_EJECT, cart, at, 1)
         assertTrue(origins.claimInto(held, Spot(world, 5.6, 70.0, 8.5), cart))
         assertEquals(1, ejected())
-        val row = rows().single()
+        val row = spawns.rows().single()
         assertEquals(dropper, row.from)
         assertEquals(held, row.to)
         assertEquals(Cause.DISPENSER_EJECT, row.cause)
@@ -133,7 +126,7 @@ class SpawnOriginsTest {
         origins.expect(Void, Cause.BEEHIVE_HARVEST, honeycomb, at, 3, actor)
         origins.claim(entity, at, honeycomb, 3)
 
-        val row = rows().single()
+        val row = spawns.rows().single()
         assertEquals(Void, row.from)
         assertEquals(actor, row.actor)
         assertEquals(3, row.qty)
@@ -156,7 +149,7 @@ class SpawnOriginsTest {
     fun `another form spawning nearby claims nothing`() {
         origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 1)
         origins.claim(UUID.randomUUID(), at, honeycomb, 1)
-        assertTrue(rows().isEmpty())
+        assertTrue(spawns.rows().isEmpty())
     }
 
     @Test
@@ -164,7 +157,7 @@ class SpawnOriginsTest {
         origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 1)
         origins.claim(UUID.randomUUID(), Spot(world, 12.0, 70.0, 8.0), stone, 1)
         origins.claim(UUID.randomUUID(), Spot(UUID.randomUUID(), 4.0, 70.0, 8.0), stone, 1)
-        assertTrue(rows().isEmpty())
+        assertTrue(spawns.rows().isEmpty())
     }
 
     // A campfire hands out its result in whatever piles the game feels like.
@@ -175,7 +168,7 @@ class SpawnOriginsTest {
         origins.claim(UUID.randomUUID(), at, stone, 5)
         origins.claim(UUID.randomUUID(), at, stone, 1)
 
-        val rows = rows()
+        val rows = spawns.rows()
         assertEquals(setOf(1, 2), rows.map { it.qty }.toSet())
         assertEquals(2, rows.map { it.to }.toSet().size)
     }
@@ -186,7 +179,7 @@ class SpawnOriginsTest {
     fun `an unclaimed note is dropped without writing anything`() {
         origins.expect(dropper, Cause.DISPENSER_EJECT, stone, at, 1)
         origins.sweep()
-        assertTrue(rows().isEmpty())
+        assertTrue(spawns.rows().isEmpty())
     }
 
     @Test
@@ -195,10 +188,10 @@ class SpawnOriginsTest {
         origins.expect(mine, dropper, Cause.DEATH_DROP, stone, 1)
 
         assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1))
-        assertTrue(rows().isEmpty())
+        assertTrue(spawns.rows().isEmpty())
 
         assertEquals(1, origins.claim(mine, at, stone, 1))
-        assertEquals(ItemEntityRef(mine), rows().single().to)
+        assertEquals(ItemEntityRef(mine), spawns.rows().single().to)
     }
 
     @Test
@@ -207,7 +200,7 @@ class SpawnOriginsTest {
         origins.accounted(entity, 4)
 
         assertEquals(4, origins.claim(entity, at, stone, 4))
-        assertTrue(rows().isEmpty())
+        assertTrue(spawns.rows().isEmpty())
     }
 
     @Test
@@ -225,10 +218,10 @@ class SpawnOriginsTest {
         origins.expect(named, dropper, Cause.DEATH_DROP, stone, 1)
 
         assertEquals(1, origins.claim(named, at, stone, 1))
-        assertEquals(dropper, rows().single().from)
+        assertEquals(dropper, spawns.rows().single().from)
 
         assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1))
-        assertEquals(listOf(dropper, Void), rows().map { it.from })
+        assertEquals(listOf(dropper, Void), spawns.rows().map { it.from })
     }
 
     @Test
@@ -236,7 +229,7 @@ class SpawnOriginsTest {
         origins.expect(dropper, Cause.DISPENSER_EJECT, stone, at, 1)
         origins.sweep()
         origins.claim(UUID.randomUUID(), at, stone, 1)
-        assertEquals(1, rows().size)
+        assertEquals(1, spawns.rows().size)
 
         origins.sweep()
         assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1))
@@ -263,7 +256,7 @@ class SpawnOriginsTest {
         repeat(10) { origins.sweep() }
         assertEquals(1, origins.claim(UUID.randomUUID(), at, stone, 1))
 
-        clock += 1_000
+        spawns.clock += 1_000
         origins.sweep()
         assertEquals(0, origins.claim(UUID.randomUUID(), at, stone, 1))
     }
@@ -278,6 +271,6 @@ class SpawnOriginsTest {
 
         assertEquals(0, origins.claim(UUID.randomUUID(), far, stone, 1, UUID.randomUUID()))
         assertEquals(1, origins.claim(UUID.randomUUID(), far, stone, 1, player))
-        assertEquals(Cause.CMD_GIVE, rows().single().cause)
+        assertEquals(Cause.CMD_GIVE, spawns.rows().single().cause)
     }
 }

@@ -1,9 +1,10 @@
 package io.pfaumc.pfauprotect.capture.item
+import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.PlayerInv
-import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.model.Void
 import net.minecraft.world.item.DyeColor
 import net.minecraft.world.item.Item
@@ -15,22 +16,15 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.TestInstance
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
 // Which reason a use leaves, and that a reason is left only where no other event already speaks for
 // the loss: a reason here would arrive first and take the loss away from the event written for it.
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@ExtendWith(Vanilla::class)
 class ItemUseTest {
     private val player = UUID.fromString("00000000-0000-4000-8000-0000000000e1")
-
-    @BeforeAll
-    fun loadServerRegistries() {
-        ServerRegistries.access
-    }
 
     private fun stack(item: Item) = NmsItemStack(item)
 

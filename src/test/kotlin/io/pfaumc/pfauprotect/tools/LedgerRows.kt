@@ -20,11 +20,8 @@ import java.util.UUID
 /**
  * Reads a copy of the ledger offline, for what `/pp lookup` has no view of: the rows of a pile on the
  * ground, of a mob's pocket, of every holder at once. The bot's scenarios run it through
- * `scripts/ledger-rows.sh`, which takes the copy from inside the test server's container.
- *
- *     <ledger dir> since <millis> [CAUSE...]        every row since then, of these causes or all
- *     <ledger dir> holder <holder> [<from millis>]   one holder's rows: item:<uuid>, slot:<uuid>:<n>,
- *                                                    inv:<uuid>:<n>, ender:<uuid>:<n>, container:<world>:<x>:<y>:<z>:<n>
+ * `scripts/ledger-rows.sh`, which takes the copy from inside the test server's container; the arguments
+ * are the ledger directory followed by those described there.
  *
  * One row a line: `ts=… cause=… holder=… qty=… item=… counterparty=… actor=… confidence=… tx=…`.
  */

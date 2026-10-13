@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.model.idIndex
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -17,9 +18,7 @@ enum class RegistryNamespace(val id: Int, val maxId: Int) {
 
     // Keyed by the whole `blockData.asString`, not by the vanilla state number: the numbers are
     // renumbered from one game version to the next while the string survives the update, and the
-    // string is itself what `Bukkit.createBlockData` takes to put the state back. Nothing is reserved
-    // for "no state": a block row that knows only one of its two sides is a write error rather than a
-    // row with a default, so the case never arises and all of 0..0xFFFF is available.
+    // string is itself what `Bukkit.createBlockData` takes to put the state back.
     BLOCK_STATE(7, 0xFFFF),
 
     // Keyed by the name of the InventoryType constant, not by its ordinal: a new type added anywhere
@@ -33,17 +32,11 @@ enum class RegistryNamespace(val id: Int, val maxId: Int) {
 
     internal val usesUuid: Boolean get() = this == WORLD || this == PLAYER
 
-    companion object {
-        private val BY_ID = entries.associateBy { it.id }
-        fun byId(id: Int): RegistryNamespace? = BY_ID[id]
-    }
+    companion object { val byId = idIndex(entries) { it.id } }
 }
 
-// A number is never handed out twice, so a capped space only ever fills, and one game update that
-// changes the properties of a family of blocks can spend a slice of the ceiling in a single day.
-// Reported at this level, moving to a wider field is a conversation with years in hand; left to be
-// discovered by `assign` refusing, it is a plugin that no longer starts on a database that by then
-// nobody can widen any more.
+// Numbers are never reused, so a namespace only fills and must be widened before it does; this is the
+// fill level at which that is reported, early enough to act on.
 internal const val REGISTRY_HIGH_WATER = 0.8
 
 class RegistryRow(val ns: RegistryNamespace, val keyBytes: ByteArray, val id: Int)
@@ -71,13 +64,9 @@ class Registries(private val store: RegistryStore) : IdResolver, IdLookup {
 
     fun idForKey(ns: RegistryNamespace, key: String): Int = ids.getValue(ns)[key] ?: assign(ns, key)
 
-    fun idForUuid(ns: RegistryNamespace, uuid: UUID): Int = idForKey(ns, uuid.toString())
-
     fun lookupKey(ns: RegistryNamespace, key: String): Int? = ids.getValue(ns)[key]
 
     fun keyOf(ns: RegistryNamespace, id: Int): String? = keys.getValue(ns)[id]
-
-    fun uuidOf(ns: RegistryNamespace, id: Int): UUID? = keyOf(ns, id)?.let(UUID::fromString)
 
     fun size(ns: RegistryNamespace): Int = ids.getValue(ns).size
 
@@ -88,9 +77,9 @@ class Registries(private val store: RegistryStore) : IdResolver, IdLookup {
             "reuses none of them: a wider field has to be in place before the last one is gone"
     }
 
-    override fun id(ns: RegistryNamespace, uuid: UUID) = idForUuid(ns, uuid)
+    override fun id(ns: RegistryNamespace, uuid: UUID) = idForKey(ns, uuid.toString())
 
-    override fun uuid(ns: RegistryNamespace, id: Int) = uuidOf(ns, id)
+    override fun uuid(ns: RegistryNamespace, id: Int): UUID? = keyOf(ns, id)?.let(UUID::fromString)
 
     // The numbers a batch has minted and not yet written, seen only by the thread running it: every other
     // thread misses them in `ids` and waits in `assign` until the batch is on disk.

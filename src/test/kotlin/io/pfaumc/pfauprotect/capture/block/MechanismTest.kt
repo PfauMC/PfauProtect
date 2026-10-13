@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.capture.block
+import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.worldStub
 import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
@@ -32,11 +34,11 @@ import org.junit.jupiter.api.TestInstance
 import java.util.UUID
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
+@ExtendWith(Vanilla::class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MechanismTest {
     private val world = UUID.randomUUID()
 
-    // Eager: building the codec brings the registries up, and most tests touch `Items` without it.
     private val codec = testCodec()
 
     private fun chest(size: Int = 27, fill: Map<Int, ItemStack> = emptyMap()) =

@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.capture.item
+import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.model.Cause
-import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.stub
 import org.bukkit.NamespacedKey
 import org.bukkit.inventory.AnvilInventory
@@ -18,19 +19,10 @@ import org.bukkit.inventory.SmithingTrimRecipe
 import org.bukkit.inventory.StonecutterInventory
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
-import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.TestInstance
 
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@ExtendWith(Vanilla::class)
 class PreviewSlotTest {
-    // A trim recipe builds an ItemStack in its own constructor, and every ItemStack constructor throws
-    // until a datapack load has bound the item prototypes.
-    @BeforeAll
-    fun loadServerRegistries() {
-        ServerRegistries.access
-    }
-
     // A crafting menu addresses its result ahead of the grid, so the workbench and the player's own
     // two-by-two both hide the same slot however many grid slots follow it.
     @Test

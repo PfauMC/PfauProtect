@@ -1,6 +1,8 @@
 package io.pfaumc.pfauprotect.capture
 
 import io.papermc.paper.event.player.AsyncChatEvent
+import io.pfaumc.pfauprotect.Settings
+import io.pfaumc.pfauprotect.capture.item.commandName
 import io.pfaumc.pfauprotect.storage.ChatKind
 import io.pfaumc.pfauprotect.storage.ChatLine
 import io.pfaumc.pfauprotect.storage.ChatLog
@@ -25,7 +27,7 @@ class ChatCapture(private val log: ChatLog) : Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onCommand(event: PlayerCommandPreprocessEvent) =
-        placed(event.player, ChatKind.COMMAND, shown(event.message, io.pfaumc.pfauprotect.Settings.hiddenCommands))
+        placed(event.player, ChatKind.COMMAND, shown(event.message, Settings.hiddenCommands))
 
     @EventHandler(priority = EventPriority.MONITOR)
     fun onJoin(event: PlayerJoinEvent) = placed(event.player, ChatKind.JOIN, "")
@@ -41,6 +43,6 @@ class ChatCapture(private val log: ChatLog) : Listener {
 
 // A login or a register carries a password, and the log is read by every moderator: only its name is kept.
 internal fun shown(message: String, hidden: Set<String>): String {
-    val name = message.removePrefix("/").substringBefore(' ')
-    return if (name.substringAfter(':').lowercase() in hidden) "/$name" else message
+    if (commandName(message) !in hidden) return message
+    return "/" + message.removePrefix("/").substringBefore(' ')
 }

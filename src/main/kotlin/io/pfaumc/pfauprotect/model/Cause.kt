@@ -19,8 +19,8 @@ enum class Cause(val id: Int) {
     EQUIP_ARMOR(0x0E),
     UNEQUIP_ARMOR(0x0F),
 
-    // A class larger than its sixteen slots continues in the reserve range instead of shifting the
-    // classes above it: 0x00 spills into 0x90, 0x10 into 0xA0, 0x30 into 0xB0, 0x40 into 0xC0.
+    // A class that outgrows its sixteen slots continues in the free 0x90–0xC9 range instead of shifting
+    // the classes above it.
     MENU_CLOSE_RETURN(0x90),
     DEATH_DROP(0x91),
     DEATH_DESTROY_VANISHING(0x92),
@@ -271,11 +271,12 @@ enum class Cause(val id: Int) {
     CMD_ENCHANT(0xFC),
     CMD_CLEAR(0xFD),
 
+    // The block plane's range is full, so it goes on here.
+    BLK_SIGN_EDIT(0xFE),
+
     // Never written, only decoded into. Causes are added without touching the record version, so a
     // row from a newer build carries a number this one has no name for — and the quantity beside it
     // is still readable and still counts towards a balance, which a skipped row would not.
-    // The block plane's thirty-two slots are full, so it goes on here.
-    BLK_SIGN_EDIT(0xFE),
     UNKNOWN(0xFF),
     ;
 

@@ -145,7 +145,6 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
         // When a note for any form was made: what falls by the block in a later tick is not its drop.
         val made: Long? = null,
     ) {
-        // When the first sweep saw it.
         var swept: Long? = null
     }
 
@@ -185,7 +184,6 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
         boxes += Box(stack.copy(), owner, at)
     }
 
-    /** The name a box that has just appeared here has to carry, taken once. */
     @Synchronized
     fun ownerFor(stack: NmsItemStack, at: Spot): UUID? {
         val box = boxes.firstOrNull { near(it.at, at) && sameBox(it.stack, stack) } ?: return null
@@ -320,17 +318,16 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
         notes.removeIf { note ->
             val until = note.until
             if (until != null) return@removeIf now > until
-            val swept = note.swept
-            if (swept == null) note.swept = now
-            swept != null && now - swept >= NOTE_MILLIS
+            sweptLongAgo(note.swept, now) { note.swept = it }
         }
-        boxes.removeIf { box ->
-            val swept = box.swept
-            if (swept == null) box.swept = now
-            swept != null && now - swept >= NOTE_MILLIS
-        }
+        boxes.removeIf { box -> sweptLongAgo(box.swept, now) { box.swept = it } }
         // Asked for a tick after the event; one nobody asks about is gone well before it could matter.
         witnessed.values.removeIf { now - it.at > WITNESS_MILLIS }
+    }
+
+    private fun sweptLongAgo(swept: Long?, now: Long, mark: (Long) -> Unit): Boolean {
+        if (swept == null) mark(now)
+        return swept != null && now - swept >= NOTE_MILLIS
     }
 
     private fun sameBox(expected: NmsItemStack, spawned: NmsItemStack) =
@@ -362,7 +359,6 @@ internal fun brewed(
 internal fun spilled(state: BlockState?): Array<BukkitItemStack?> = when (state) {
     is ShulkerBox -> emptyArray()
     // One half of a double chest: the inventory of a live chest is both halves together.
-    is ContainerBlock -> state.snapshotInventory.contents
     is TileStateInventoryHolder -> state.snapshotInventory.contents
     is Campfire -> Array(state.size) { state.getItem(it) }
     else -> emptyArray()
@@ -374,6 +370,29 @@ private const val DISPENSE_NANOS = 50_000_000L
 private const val DISPENSE_REACH = 2.5
 
 internal class SlotChange(val slot: Int, val key: ItemKey, val qty: Int, val gain: Boolean)
+
+internal fun slotRow(
+    gain: Boolean,
+    slot: Holder,
+    other: Holder,
+    key: ItemKey,
+    qty: Int,
+    cause: Cause,
+    timestamp: Long,
+    kind: Kind = Kind.TRANSFER,
+    confidence: Confidence = Confidence.FACT,
+    actor: UUID? = null,
+) = Transfer(
+    cause = cause,
+    from = if (gain) other else slot,
+    to = if (gain) slot else other,
+    key = key,
+    qty = qty,
+    timestamp = timestamp,
+    kind = kind,
+    confidence = confidence,
+    actor = actor,
+)
 
 /**
  * A dispense that put its item down as the block in front of it — a shulker box, a carved pumpkin, a
@@ -419,7 +438,6 @@ class BlockMechanismListener(
     private val owners: RocksItemLog? = null,
     // Leaves a reason for the next pass over a player's slots, which are the pass's alone to write.
     private val intend: (Player, Intent) -> Unit = { _, _ -> },
-    // Runs a task on the block's own region a tick later.
     private val later: (Block, () -> Unit) -> Unit = { _, _ -> },
 ) : Listener {
 
@@ -543,19 +561,9 @@ class BlockMechanismListener(
         val mutated = changes.any { it.gain }
         val cause = if (projectile && !mutated) Cause.DISPENSED_PROJECTILE else Cause.DISPENSER_BEHAVIOR
         val timestamp = System.currentTimeMillis()
+        val kind = if (mutated) Kind.MUTATE else Kind.TRANSFER
         sink(changes.map { change ->
-            val at = containerAt(block, change.slot)
-            Transfer(
-                cause = cause,
-                from = if (change.gain) Void else at,
-                to = if (change.gain) at else Void,
-                form = change.key.form,
-                damage = change.key.damage,
-                qty = change.qty,
-                timestamp = timestamp,
-                kind = if (mutated) Kind.MUTATE else Kind.TRANSFER,
-                actor = actor,
-            )
+            slotRow(change.gain, containerAt(block, change.slot), Void, change.key, change.qty, cause, timestamp, kind, actor = actor)
         })
     }
 
@@ -568,8 +576,7 @@ class BlockMechanismListener(
                 cause = Cause.DISPENSER_BEHAVIOR,
                 from = containerAt(block, change.slot),
                 to = at,
-                form = change.key.form,
-                damage = change.key.damage,
+                key = change.key,
                 qty = 1,
                 timestamp = timestamp,
                 actor = actor,
@@ -584,8 +591,7 @@ class BlockMechanismListener(
                     cause = Cause.CONTAINER_PLACE_UNPACK,
                     from = Nested(owner, index),
                     to = containerAt(front, index),
-                    form = encoded.key.form,
-                    damage = encoded.key.damage,
+                    key = encoded.key,
                     qty = encoded.count,
                     timestamp = timestamp,
                     actor = actor,
@@ -597,9 +603,7 @@ class BlockMechanismListener(
 
     private fun contentsOf(block: Block): List<Stack?>? {
         val inventory = (block.getState(false) as? ContainerBlock)?.inventory ?: return null
-        return (0 until inventory.size).map { slot ->
-            codec.stackOf(inventory.getItem(slot))
-        }
+        return List(inventory.size) { codec.stackOf(inventory.getItem(it)) }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -663,8 +667,7 @@ class BlockMechanismListener(
                     cause = Cause.BLOCK_DROP,
                     from = Void,
                     to = entity,
-                    form = key.form,
-                    damage = key.damage,
+                    key = key,
                     qty = unspilled,
                     timestamp = timestamp,
                     actor = actor,
@@ -750,11 +753,7 @@ class BlockMechanismListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onCook(event: BlockCookEvent) {
         val block = event.block
-        val campfire = block.getState(false) as? Campfire
-        if (campfire == null) {
-            smelted(event)
-            return
-        }
+        val campfire = block.getState(false) as? Campfire ?: return smelted(event)
         val source = event.source
         val slot = (0 until campfire.size).firstOrNull { campfire.getItem(it)?.isSimilar(source) == true } ?: return
         key(source)?.let { pending.add(containerAt(block, slot), Void, Cause.CAMPFIRE_COOK_DROP, it, source.amount) }
@@ -786,8 +785,7 @@ class BlockMechanismListener(
             cause = cause,
             from = from,
             to = to,
-            form = key.form,
-            damage = key.damage,
+            key = key,
             qty = qty,
             timestamp = timestamp,
             kind = Kind.MUTATE,

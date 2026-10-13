@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.command
+import io.pfaumc.pfauprotect.attribution.AIRS
+import io.pfaumc.pfauprotect.attribution.blockNameOf
 import io.pfaumc.pfauprotect.say
 import com.mojang.brigadier.LiteralMessage
 import com.mojang.brigadier.StringReader
@@ -8,8 +10,8 @@ import com.mojang.brigadier.context.CommandContext
 import com.mojang.brigadier.exceptions.DynamicCommandExceptionType
 import com.mojang.brigadier.suggestion.Suggestions
 import com.mojang.brigadier.suggestion.SuggestionsBuilder
+import io.papermc.paper.command.brigadier.CommandSourceStack
 import io.papermc.paper.command.brigadier.argument.CustomArgumentType
-import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.capture.entity.TRANSFORMED
@@ -38,9 +40,10 @@ import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
+import io.pfaumc.pfauprotect.model.ownHolders
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
 import net.minecraft.core.component.DataComponents
-import net.minecraft.nbt.NbtIo
+import io.pfaumc.pfauprotect.capture.entity.nbtOf
 import net.minecraft.nbt.NbtOps
 import net.minecraft.world.level.block.entity.SignText
 import org.bukkit.Bukkit
@@ -49,9 +52,10 @@ import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
-import java.io.ByteArrayInputStream
-import java.io.DataInputStream
+import io.pfaumc.pfauprotect.SECONDS_PER_UNIT
+import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.TELEPORT_PERMISSION
+import io.pfaumc.pfauprotect.Texts
 import io.pfaumc.pfauprotect.Ui
 import io.pfaumc.pfauprotect.tr
 import net.kyori.adventure.key.Key
@@ -355,7 +359,7 @@ fun lookupTargetAt(at: Location) =
     LookupTarget(at.world.uid, at.blockX, at.blockY, at.blockZ, "${at.blockX} ${at.blockY} ${at.blockZ}")
 
 // Brigadier tells the player these itself, past say(): translated as they are made.
-private fun said(text: String) = LiteralMessage(io.pfaumc.pfauprotect.Texts.translate(text))
+private fun said(text: String) = LiteralMessage(Texts.translate(text))
 
 private val NOT_A_PARAMETER = DynamicCommandExceptionType {
     said("'$it' is not a parameter, expected one of ${Param.help}")
@@ -368,7 +372,7 @@ private val BAD_TIME = DynamicCommandExceptionType {
     said("'$it' is not a time span, expected something like 30m, 2h or 1d6h")
 }
 private val BAD_RADIUS = DynamicCommandExceptionType {
-    said("'$it' is not a radius, expected 0 to ${io.pfaumc.pfauprotect.Settings.maxRadius} blocks or 'global'")
+    said("'$it' is not a radius, expected 0 to ${Settings.maxRadius} blocks or 'global'")
 }
 private val BAD_ACTION = DynamicCommandExceptionType {
     said("'$it' is not an action, expected one of ${Action.names.joinToString(" ")}")
@@ -507,15 +511,7 @@ fun durationOrNull(value: String): Long? {
     var covered = 0
     for (match in DURATION.findAll(text)) {
         covered += match.value.length
-        total += match.groupValues[1].toLong() * when (match.groupValues[2]) {
-            "y" -> 31_536_000L
-            "mo" -> 2_592_000L
-            "w" -> 604_800L
-            "d" -> 86_400L
-            "h" -> 3_600L
-            "m" -> 60L
-            else -> 1L
-        }
+        total += match.groupValues[1].toLong() * (SECONDS_PER_UNIT[match.groupValues[2]] ?: 1L)
     }
     return if (covered == text.length && total > 0) total else null
 }
@@ -523,7 +519,7 @@ fun durationOrNull(value: String): Long? {
 private fun radiusOrNull(value: String): Int? {
     val text = value.lowercase().removePrefix("#")
     if (text in GLOBAL_WORDS) return GLOBAL_RADIUS
-    return text.toIntOrNull()?.takeIf { it in 0..io.pfaumc.pfauprotect.Settings.maxRadius }
+    return text.toIntOrNull()?.takeIf { it in 0..Settings.maxRadius }
 }
 
 private fun limitOrNull(value: String): Int? = value.toIntOrNull()?.takeIf { it in 1..MAX_LIMIT }
@@ -547,7 +543,7 @@ internal fun itemKey(ledger: RocksItemLog, itemFormId: Long): String? {
 
 // The full state string is what the registry keeps, properties and all, which is what makes a row
 // restorable; the properties are noise in a list, so only the block itself is shown.
-internal fun stateName(ledger: RocksItemLog, id: Int): String = stateOf(ledger, id).substringBefore('[')
+internal fun stateName(ledger: RocksItemLog, id: Int): String = blockNameOf(stateOf(ledger, id))
 
 internal fun stateOf(ledger: RocksItemLog, id: Int): String =
     ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, id) ?: "block state $id"
@@ -568,6 +564,7 @@ internal class RowFilter(
     private val rollback: Boolean = false,
 ) {
     private val causes = query.causes
+    private val all = query.all
     private val amount = query.amount
     private val event = query.event?.id
     private val included = query.included.map(::normalizeItem).toSet()
@@ -595,18 +592,16 @@ internal class RowFilter(
         return (included.isEmpty() || named.any { it in included }) && named.none { it in excluded }
     }
 
-    // A neighbour's shape goes back with whatever went back beside it, so a rollback narrowed to fire or to
-    // explosions takes the shape rows too; undoing a rollback is the one reading that leaves them, since the
-    // rollback wrote none. A lookup shows them only when asked: there is one for every fence beside every
-    // block that changed.
-    private val all = query.all
-
     private fun keepsActed(cause: Cause, eventId: Long, actor: UUID?, confidence: Confidence): Boolean {
         if (!caused(cause) || amount != null || event != null && eventId != event) return false
         if (users.isNotEmpty() && (actor !in users || rollback && confidence == Confidence.NEARBY)) return false
         return actor == null || actor !in excludedUsers
     }
 
+    // A neighbour's shape goes back with whatever went back beside it, so a rollback narrowed to fire or to
+    // explosions takes the shape rows too; undoing a rollback is the one reading that leaves them, since the
+    // rollback wrote none. A lookup shows them only when asked: there is one for every fence beside every
+    // block that changed.
     private fun caused(cause: Cause): Boolean {
         if (cause == Cause.BLK_SHAPE) {
             return if (rollback) causes?.contains(Cause.ROLLBACK) != true else all || causes?.contains(cause) == true
@@ -638,7 +633,7 @@ class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType
         val param = Param.of(token.substring(0, colon).lowercase())
         // A position is one value with commas in it, not a list.
         if (param == Param.AT) {
-            val at = (context.source as? io.papermc.paper.command.brigadier.CommandSourceStack)?.location
+            val at = (context.source as? CommandSourceStack)?.location
             return offer(builder, tokenStart + colon + 1, listOfNotNull(at?.let { "${it.blockX},${it.blockY},${it.blockZ}" }))
         }
         val valueStart = if (comma > colon) comma + 1 else colon + 1
@@ -668,8 +663,7 @@ class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType
         Param.PAGE -> listOf("2", "3")
         Param.ROLLEDBACK -> listOf("no", "yes")
         Param.AMOUNT -> listOf(">=8", ">=64", "<4")
-        Param.EVENT, Param.FILTER, Param.AT -> emptyList()
-        null -> emptyList()
+        Param.EVENT, Param.FILTER, Param.AT, null -> emptyList()
     }
 }
 
@@ -723,8 +717,6 @@ private fun slotless(holder: Holder): String = when (holder) {
     else -> holder.toString()
 }
 
-private val AIRS = setOf("minecraft:air", "minecraft:cave_air", "minecraft:void_air")
-
 private fun sign(text: String) = Ui.text(text, when (text) {
     "-" -> Ui.LOST
     "+" -> Ui.GAINED
@@ -752,10 +744,7 @@ internal fun wholeTransactions(ledger: RocksItemLog, entries: List<LedgerEntry>)
         // explosion is one transaction over a whole crater, and pulling it in would answer a question
         // about this position with thousands of rows about every other one.
         if (whole.size > NEIGHBOURLY_TRANSACTION) continue
-        for (posting in whole) {
-            if ((posting.holder to posting.counterparty) in mirrors) continue
-            shown += posting
-        }
+        whole.filterNotTo(shown) { (it.holder to it.counterparty) in mirrors }
     }
     return shown.toList()
 }
@@ -775,11 +764,32 @@ fun Plugin.offThread(sender: CommandSender, logged: String, told: String, task: 
     }
 }
 
+internal fun chunksAround(x: Int, z: Int, radius: Int): List<Pair<Int, Int>> =
+    (((x - radius) shr 4)..((x + radius) shr 4)).flatMap { cx ->
+        (((z - radius) shr 4)..((z + radius) shr 4)).map { cz -> cx to cz }
+    }
+
+/** The cube of `radius` around a point, or with `column` the whole height of its square. */
+internal fun boxAround(x: Int, y: Int, z: Int, radius: Int, column: Boolean = false): (Int, Int, Int) -> Boolean =
+    { bx, by, bz ->
+        bx in (x - radius)..(x + radius) && (column || by in (y - radius)..(y + radius)) && bz in (z - radius)..(z + radius)
+    }
+
+/** Whether a positional holder stands in `box`; a holder with no position answers `unplaced`. */
+internal fun Holder.placedIn(box: (Int, Int, Int) -> Boolean, unplaced: Boolean): Boolean = when (this) {
+    is Container -> box(x, y, z)
+    is WorldBlock -> box(x, y, z)
+    else -> unplaced
+}
+
+// A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it.
+internal fun canTeleport(sender: CommandSender) = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
+
 class Lookups(
     private val plugin: Plugin,
     private val ledger: RocksItemLog,
     private val blocks: BlockLogs,
-    private val codec: ItemFormCodec? = null,
+    private val codec: ItemFormCodec,
     private val idOf: (String) -> UUID? = { name ->
         Bukkit.getPlayerExact(name)?.uniqueId ?: Bukkit.getOfflinePlayerIfCached(name)?.uniqueId
     },
@@ -796,24 +806,22 @@ class Lookups(
      * frame's item, a donkey's chest, a stand's armour — and its rows in the chunks around where it stands.
      */
     fun entity(sender: CommandSender, entity: UUID, type: String, at: LookupTarget) {
-        val label = "$type ${entity.toString().take(8)}"
+        val short = entity.toString().take(8)
+        val label = "$type $short"
         val query = LookupQuery(teleports = canTeleport(sender))
         plugin.offThread(sender, "lookup of $label failed", "The lookup failed; the server log has the details.") {
             val slots = ledger.holderPage(EntitySlot(entity, 0), 0, Long.MAX_VALUE, reverse = true, limit = MAX_FETCH)
             val items = entryLines(wholeTransactions(ledger, slots.entries))
             val log = blocks.get(at.world)
             // The chunk it stands in and the eight around it.
-            val rows = if (log == null) emptyList() else chunksAround(at, 16).flatMap { (cx, cz) ->
+            val rows = if (log == null) emptyList() else chunksAround(at.x, at.z, 16).flatMap { (cx, cz) ->
                 log.entitiesInChunk(cx, cz, 0, Long.MAX_VALUE, MAX_ENTITY_WALK) { _, _, _ -> true }.rows.filter { it.uuid == entity }
             }
             val lines = items + markedEntities(rows).map { (row, back) -> lineOf(at.world, row, back) }
-            val where = Component.text().append(Ui.entity(type)).append(Ui.text(" ${entity.toString().take(8)}", Ui.MUTED)).build()
+            val where = Component.text().append(Ui.entity(type)).append(Ui.text(" $short", Ui.MUTED)).build()
             answer(sender, lines, slots.complete, where, query, at, pages = false)
         }
     }
-
-    // A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it.
-    private fun canTeleport(sender: CommandSender) = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
 
     internal fun report(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
         if (query.players.isNotEmpty()) return reportPlayers(sender, target, query)
@@ -826,7 +834,7 @@ class Lookups(
             return reportEverywhere(sender, target, query, users)
         }
         val page = read(target, query)
-        val items = entryLines(wholeTransactions(ledger, filter(page.entries, query, users)))
+        val items = itemLines(page.entries, query, users)
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
         val changes = blockLines(target, query, users)
@@ -855,9 +863,7 @@ class Lookups(
         val entities = positions.flatMap { (x, y, z) -> log.entitiesAt(x, y, z, fromTs, toTs, MAX_ENTITY_WALK).rows }
         val holders = positions.flatMap { (x, y, z) -> holdersAt(target.world, x, y, z) }
         val entries = holderRows(holders, fromTs, toTs, query).entries
-        val lines = entryLines(wholeTransactions(ledger, filter(entries, query, users))) +
-            marked(rows).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(target.world, row, back) } +
-            markedEntities(entities).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(target.world, row, back) }
+        val lines = itemLines(entries, query, users) + planeLines(target.world, rows, entities, keeps)
         val who = query.users.joinToString(", ")
         answer(sender, lines, touches.all { it.complete }, Ui.text(tr("everything by $who", "всё от $who")), query, target)
     }
@@ -875,15 +881,9 @@ class Lookups(
         }
         val players = resolveAll(sender, query.players) ?: return
         val users = resolveAll(sender, query.users) ?: return
-        // The slot never enters the key, so slot 0 stands for every slot of its kind.
-        val holders = players.flatMap { player ->
-            listOf(
-                PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player),
-                PlayerEnder(player, 0), EntitySlot(player, 0),
-            )
-        }
+        val holders = players.flatMap { ownHolders(it) }
         val page = holderRows(holders, query.fromTs(), query.toTs(), query)
-        val items = entryLines(wholeTransactions(ledger, filter(page.entries, query, users)))
+        val items = itemLines(page.entries, query, users)
         val who = query.players.joinToString(", ")
         answer(sender, items, page.complete, Ui.text(tr("what $who carried", "вещи $who")), query, target)
     }
@@ -900,12 +900,15 @@ class Lookups(
         return named.values.filterNotNull().toSet()
     }
 
+    private fun itemLines(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<Line> =
+        entryLines(wholeTransactions(ledger, filter(entries, query, users)))
+
     // Item rows marked when a rollback has since given them back.
     private fun entryLines(entries: List<LedgerEntry>): List<Line> {
         val given = ledger.compensated(entries.map { it.ref }).keys
         return entries.map { entry ->
             // A slot posting names its player as a holder rather than as its actor.
-            val who = entry.actor ?: (entry.holder as? PlayerHolder)?.uuid ?: (entry.counterparty as? PlayerHolder)?.uuid
+            val who = entry.actor ?: playerOf(entry.holder) ?: playerOf(entry.counterparty)
             val same = "i ${entry.cause} $who ${entry.itemFormId} ${entry.qty > 0} ${slotless(entry.holder)} ${slotless(entry.counterparty)}"
             Line(entry.timestamp, entry.cause, who, same, kotlin.math.abs(entry.qty), entry.ref in given, null) { amount, _, clickable ->
                 draw(entry, who, amount, clickable)
@@ -942,25 +945,18 @@ class Lookups(
         val matched = shown.sortedByDescending { it.timestamp }
         val runs = folded(matched, query.all)
         val lines = runs.drop(query.limit * (query.page - 1)).take(query.limit)
-        // Nothing matched can mean two very different things, and telling them apart is the whole
-        // difference between "nothing happened here" and "I did not get far enough to see". A read
-        // that stopped early inside a busy chunk hands back rows from one corner of it, and answering
-        // that with silence would clear a position the reader is standing in the crater of.
+        // A read stopped early inside a busy chunk returns rows from one corner of it, so silence there would falsely clear the position.
         // Only a limit the parser takes is worth suggesting; at the top already, only a smaller area helps.
         val wider = minOf(query.limit * 4, MAX_LIMIT)
-        val stopped = if (wider == query.limit) tr(
+        val stopped = tr(
             "the read stopped before the whole area was seen; narrow the radius",
             "чтение остановилось раньше, чем увидело всю область; сузь радиус",
-        ) else tr(
-            "the read stopped before the whole area was seen; narrow the radius or ask for more with limit:$wider",
-            "чтение остановилось раньше, чем увидело всю область; сузь радиус или запроси больше через limit:$wider",
-        )
+        ) + if (wider == query.limit) "" else tr(" or ask for more with limit:$wider", " или запроси больше через limit:$wider")
         if (lines.isEmpty()) {
             val why = if (complete) tr("nothing recorded", "ничего не записано") else tr("nothing matched, but ", "ничего не найдено, но ") + stopped
             sender.sendMessage(header(where, target).append(Ui.text(" — $why", Ui.MUTED)))
             return
         }
-        // The mark runs /pp tp: shown to whoever may go, the coordinates to anyone else.
         val clickable = query.teleports
         sender.sendMessage(header(where, target))
         for (run in lines) {
@@ -981,9 +977,7 @@ class Lookups(
             }
             sender.sendMessage(Component.text(" ").append(out))
         }
-        // A truncated view that says nothing about being truncated reads as the whole history, and an
-        // investigator would conclude the item came from nowhere. The read itself stops early too, and
-        // it stops before the filter runs, so a page cut short says so even when few rows matched.
+        // The read stops before the filter runs, so a cut-short page must say so even when few rows matched.
         val more = runs.size > query.limit * query.page || matched.size > query.wanted
         // An entity's own story has no command to ask for its next page by; it can only say there is more.
         if (!pages) {
@@ -1027,34 +1021,34 @@ class Lookups(
         if (!complete) sender.sendMessage(Ui.text(tr("  … the read stopped early; these are counts of what it saw", "  … чтение остановилось раньше; это сводка прочитанного"), Ui.MUTED))
     }
 
-    /**
-     * The block plane's side of the same question. A world whose base is not open answers with nothing
-     * rather than with silence dressed as an answer: the caller is told, because a position whose
-     * history simply is not loaded looks exactly like a position nothing ever happened at.
-     */
+    /** Block and entity plane lines; empty when the world's log is not open, which report() tells the reader. */
     private fun blockLines(target: LookupTarget, query: LookupQuery, users: Set<UUID>): List<Line> {
         val log = blocks.get(target.world) ?: return emptyList()
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius
-        val rows = if (radius == null) {
-            log.at(target.x, target.y, target.z, fromTs, toTs, limit = query.fetch, reverse = true)
+        val rows: List<BlockRow>
+        val entities: List<EntityRow>
+        if (radius == null) {
+            rows = log.at(target.x, target.y, target.z, fromTs, toTs, limit = query.fetch, reverse = true)
+            entities = log.entitiesAt(target.x, target.y, target.z, fromTs, toTs, MAX_ENTITY_WALK).rows
         } else {
-            val inBox = boxAround(target, radius)
-            chunksAround(target, radius)
-                .flatMap { (cx, cz) ->
-                    log.inChunk(cx, cz, fromTs, toTs, limit = query.fetch, reverse = true) { inBox(it.x, it.y, it.z) }
-                }
-                // Each chunk came back newest first; together they have to be again.
-                .sortedByDescending { it.timestamp }
+            val inBox = boxAround(target.x, target.y, target.z, radius)
+            val chunks = chunksAround(target.x, target.z, radius)
+            rows = chunks.flatMap { (cx, cz) ->
+                log.inChunk(cx, cz, fromTs, toTs, limit = query.fetch, reverse = true) { inBox(it.x, it.y, it.z) }
+            }
+            entities = chunks.flatMap { (cx, cz) -> log.entitiesInChunk(cx, cz, fromTs, toTs, MAX_ENTITY_WALK, inBox).rows }
         }
         val keeps = rowFilter(query, users)
         // Marked before the filter, which may leave the rollback that undid a row out; and not cut to the
         // page: runs fold only afterwards, and a cut before them shifts every later page.
-        val kept = marked(rows).filter { keeps.keeps(it.first) }
-        val blockLines = kept.map { (row, back) -> lineOf(target.world, row, back) }
-        return blockLines + entityLines(log, target, query, keeps, fromTs, toTs)
+        return planeLines(target.world, rows, entities, keeps)
     }
+
+    private fun planeLines(world: UUID, rows: List<BlockRow>, entities: List<EntityRow>, keeps: RowFilter): List<Line> =
+        marked(rows).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(world, row, back) } +
+            markedEntities(entities).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(world, row, back) }
 
     /**
      * Each row with a mark when a rollback since put back what it took: a later rollback row at its position
@@ -1079,23 +1073,11 @@ class Lookups(
         }
     }
 
-    private fun entityLines(log: BlockLog, target: LookupTarget, query: LookupQuery, keeps: RowFilter, fromTs: Long, toTs: Long): List<Line> {
-        val radius = query.radius
-        val rows = if (radius == null) {
-            log.entitiesAt(target.x, target.y, target.z, fromTs, toTs, MAX_ENTITY_WALK).rows
-        } else {
-            val inBox = boxAround(target, radius)
-            chunksAround(target, radius).flatMap { (cx, cz) -> log.entitiesInChunk(cx, cz, fromTs, toTs, MAX_ENTITY_WALK, inBox).rows }
-        }
-        val kept = markedEntities(rows).filter { keeps.keeps(it.first) }.sortedByDescending { it.first.timestamp }
-        return kept.map { (row, back) -> lineOf(target.world, row, back) }
-    }
-
     private fun read(target: LookupTarget, query: LookupQuery): EntryPage {
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z), fromTs, toTs, query)
-        val inBox = boxAround(target, radius)
+        val inBox = boxAround(target.x, target.y, target.z, radius)
         return ledger.regionPage(
             world = target.world,
             minX = target.x - radius,
@@ -1109,25 +1091,8 @@ class Lookups(
             // The scan reads whole chunks, so it comes back with rows the radius does not cover. The
             // block plane keeps to the box, and two planes disagreeing about what one radius means
             // inside one answer reads as rows appearing and vanishing for no reason.
-            within = { holder ->
-                when (holder) {
-                    is Container -> inBox(holder.x, holder.y, holder.z)
-                    is WorldBlock -> inBox(holder.x, holder.y, holder.z)
-                    else -> true
-                }
-            },
+            within = { it.placedIn(inBox, unplaced = true) },
         )
-    }
-
-    private fun chunksAround(target: LookupTarget, radius: Int): List<Pair<Int, Int>> =
-        (((target.x - radius) shr 4)..((target.x + radius) shr 4)).flatMap { cx ->
-            (((target.z - radius) shr 4)..((target.z + radius) shr 4)).map { cz -> cx to cz }
-        }
-
-    private fun boxAround(target: LookupTarget, radius: Int) = { x: Int, y: Int, z: Int ->
-        x in (target.x - radius)..(target.x + radius) &&
-            y in (target.y - radius)..(target.y + radius) &&
-            z in (target.z - radius)..(target.z + radius)
     }
 
     private fun holdersAt(world: UUID, x: Int, y: Int, z: Int): List<Holder> =
@@ -1135,7 +1100,7 @@ class Lookups(
 
     private fun holderRows(holders: List<Holder>, fromTs: Long, toTs: Long, query: LookupQuery): EntryPage {
         val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = query.fetch) }
-        return EntryPage(pages.flatMap { it.entries }.sortedByDescending { it.timestamp }, pages.all { it.complete })
+        return EntryPage(pages.flatMap { it.entries }, pages.all { it.complete })
     }
 
     private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
@@ -1160,7 +1125,7 @@ class Lookups(
         }
         if (!placer.known) return false
         // A withdrawal names whoever took it as where it went rather than as its actor.
-        val taker = entry.actor ?: (entry.counterparty as? PlayerHolder)?.uuid ?: return false
+        val taker = entry.actor ?: playerOf(entry.counterparty) ?: return false
         return taker != placer.player
     }
 
@@ -1170,8 +1135,6 @@ class Lookups(
 
     /** Who a row is on, and how sure: a name seen, a name worked out, a witness, or nobody. */
     private fun who(actor: UUID?, confidence: Confidence, away: String? = null): Component = when {
-        // A row with nobody on it is not a row worth less: an unfound culprit is no reason to leave a
-        // disappearance unrecorded, so it simply says so.
         actor == null -> Ui.text(tr("nobody", "никто"), Ui.FAINT)
         actor == LIGHTNING ->
             Ui.hover(Ui.text(tr("lightning", "молния"), Ui.MUTED), tr("weather: a natural strike, no player", "гроза: природный удар, игрок ни при чём"))
@@ -1179,7 +1142,7 @@ class Lookups(
             Ui.hover(Ui.text("${playerName(actor)}?", Ui.WHO), tr("worked out, not seen", "вычислено, не видели напрямую"))
         confidence == Confidence.NEARBY -> Ui.hover(
             Ui.text("(${playerName(actor)})", Ui.MUTED),
-            tr("only nearby", "был только рядом") + (away?.let { tr(", $it blocks away", ", в $it блоках") } ?: ""),
+            tr("only nearby", "был только рядом") + away?.let { tr(", $it blocks away", ", в $it блоках") }.orEmpty(),
         )
         else -> Ui.text(playerName(actor), Ui.WHO)
     }
@@ -1194,8 +1157,8 @@ class Lookups(
         val gained = entry.qty > 0
         // Both halves of a mutation face the Void, so without this they read as an item destroyed and
         // an unrelated item created at the same instant, which is the very thing they exist to deny.
-        val act = if (entry.kind == Kind.MUTATE) act(if (gained) "+" else "-", entry.cause, tr("changed in place", "изменён на месте"))
-        else act(if (gained) "+" else "-", entry.cause)
+        val inPlace = if (entry.kind == Kind.MUTATE) arrayOf(tr("changed in place", "изменён на месте")) else emptyArray()
+        val act = act(if (gained) "+" else "-", entry.cause, *inPlace)
         val (from, to) = if (gained) entry.counterparty to entry.holder else entry.holder to entry.counterparty
         val flow = Component.text().append(holder(from)).append(Ui.text(" → ", Ui.FAINT)).append(holder(to)).build()
         val at = listOf(entry.holder, entry.counterparty).firstNotNullOfOrNull {
@@ -1302,7 +1265,7 @@ class Lookups(
     // row then says what it always said rather than failing the whole answer.
     private fun signText(payloadId: Long): String? {
         val bytes = ledger.payload(payloadId) ?: return null
-        val tag = runCatching { NbtIo.read(DataInputStream(ByteArrayInputStream(bytes))) }.getOrNull() ?: return null
+        val tag = runCatching { nbtOf(bytes) }.getOrNull() ?: return null
         val sides = listOf("front_text", "back_text").mapNotNull { side ->
             val text = tag.get(side) ?: return@mapNotNull null
             SignText.CODEC.parse(NbtOps.INSTANCE, text).result().getOrNull()
@@ -1315,11 +1278,7 @@ class Lookups(
     private fun menuName(id: Int): String =
         ledger.registries.keyOf(RegistryNamespace.MENU_TYPE, id)?.lowercase() ?: "type $id"
 
-    /**
-     * The item type plus the name written on it, when one is. A named box and a bare one are the same
-     * type and read as the same row without it, which is exactly the difference a shulker box full of
-     * somebody's things turns on.
-     */
+    /** Type plus custom name: a named shulker box and a bare one are otherwise the same row. */
     private fun item(itemFormId: Long, amount: Int): Component {
         val key = itemKey(ledger, itemFormId) ?: return Ui.text("item form $itemFormId", Ui.THING)
         val out = Component.text().color(Ui.THING).append(Ui.item(key))
@@ -1329,10 +1288,9 @@ class Lookups(
     }
 
     private fun customName(itemFormId: Long): String? {
-        val decoder = codec ?: return null
         val form = ledger.form(itemFormId) ?: return null
         // A form that will not decode still names its type, which is worth more than an error.
-        return runCatching { decoder.decode(form, 1, null).get(DataComponents.CUSTOM_NAME)?.string }.getOrNull()
+        return runCatching { codec.decode(form, 1, null).get(DataComponents.CUSTOM_NAME)?.string }.getOrNull()
     }
 
     // The short name of each end of a movement; where exactly in it — the slot, the coordinates — on hover.

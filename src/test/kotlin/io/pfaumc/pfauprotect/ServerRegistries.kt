@@ -16,6 +16,9 @@ import net.minecraft.util.Util
 import net.minecraft.world.flag.FeatureFlags
 import net.minecraft.world.level.DataPackConfig
 import net.minecraft.world.level.WorldDataConfiguration
+import org.junit.jupiter.api.extension.ExtensionContext
+import org.junit.jupiter.api.extension.TestInstanceFactoryContext
+import org.junit.jupiter.api.extension.TestInstancePreConstructCallback
 
 // Item prototype components are bound by a datapack load, not by Bootstrap, and without them every
 // ItemStack constructor throws.
@@ -83,5 +86,14 @@ object ServerRegistries {
             .newInstance(config)
         type.getField("unsupportedSettings").set(config, unsupported)
         instance.set(null, config)
+    }
+}
+
+// Vanilla's statics (`Blocks`, `Items`, `InventoryType`) throw out of their class initializer when touched
+// before the bootstrap, and a class broken that way stays broken for every test after it in the run.
+// Brought up before the test instance is built, so a field may touch them too.
+class Vanilla : TestInstancePreConstructCallback {
+    override fun preConstructTestInstance(factoryContext: TestInstanceFactoryContext, context: ExtensionContext) {
+        ServerRegistries.access
     }
 }

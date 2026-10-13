@@ -2,10 +2,6 @@ package io.pfaumc.pfauprotect.storage
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.HolderType
 import io.pfaumc.pfauprotect.model.LedgerEntry
-import io.pfaumc.pfauprotect.model.PlayerCursor
-import io.pfaumc.pfauprotect.model.PlayerEnder
-import io.pfaumc.pfauprotect.model.PlayerEquip
-import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.WorldBlock
@@ -42,38 +38,28 @@ import kotlin.concurrent.read
 import kotlin.concurrent.withLock
 import kotlin.concurrent.write
 
-// A position takes over the item it was built from, and breaking it has to give back the same thing.
-// The block alone cannot say what that was: a named box, an enchanted head and a plain one all answer
-// with the bare item, so the position would give back something it never received and its history
-// would part company by form at the break. What was put down is only knowable while it is being put
-// down, so it is remembered here for as long as it stands.
-//
-// A whole set of positions is asked and cleared in one call as well as one at a time: an explosion
-// reaches these with every position it took away, from the thread ticking the region, where a trip
-// through JNI per position is a tick spent on nothing else.
+// A block can't say which item it was built from (a named box reads as a plain one), so the placed form
+// is kept here while it stands. The batch calls exist because an explosion reaches these from the region
+// thread, where one JNI trip per position costs a tick.
 interface PlacedForms {
-    fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray?
+    fun formAt(at: WorldBlock): ByteArray?
     fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray>
-    fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray)
-    fun clearFormAt(world: UUID, x: Int, y: Int, z: Int)
+    fun setFormAt(at: WorldBlock, form: ByteArray)
+    fun clearFormAt(at: WorldBlock)
     fun clearFormsAt(positions: List<WorldBlock>)
 
-    fun formAt(at: WorldBlock): ByteArray? = formAt(at.world, at.x, at.y, at.z)
+    fun takeFormAt(at: WorldBlock): ByteArray? = formAt(at).also { clearFormAt(at) }
 
-    fun setFormAt(at: WorldBlock, form: ByteArray) = setFormAt(at.world, at.x, at.y, at.z, form)
-
-    fun clearFormAt(at: WorldBlock) = clearFormAt(at.world, at.x, at.y, at.z)
+    fun takeFormsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> =
+        formsAt(positions).also { clearFormsAt(positions) }
 }
 
 // A row this build cannot decode is not a row without gaps: it is a row nobody looked at. Counting
 // the two together would let a ledger that has become unreadable report a clean sweep.
 data class SweepReport(val checked: Int, val unreadable: Int, val gaps: List<String>, val reachedEnd: Boolean)
 
-// Whether the walk ran out of rows or out of budget travels with the rows it brought back. A caller
-// that has to tell the difference cannot get it from the size of the list: a scan that stopped one
-// row short of the end and one that stopped in the middle of a year both come back full. The rows it
-// walked past without being able to read are counted too: a rollback acts on what the page holds, and
-// one that went ahead over a row nobody could read would restore part of a place and call it done.
+// `complete` tells a walk that reached the end from one cut off by its budget, which the list size can't;
+// `unreadable` lets a rollback refuse to act over rows it couldn't decode.
 data class EntryPage(val entries: List<LedgerEntry>, val complete: Boolean, val unreadable: Int = 0)
 
 // Everything the item plane holds against one block position, and the rows of that position nobody
@@ -88,18 +74,12 @@ data class BlockPostingsPage(val positions: List<BlockPostings>, val reachedEnd:
 // the rollback. `key` is where it is kept, to be forgiven once taken.
 class OwedItem(val key: ByteArray, val formId: Long, val qty: Int, val actor: UUID?)
 
-// Raised by a change to the key layout — version 2 took a fixed-width world number and a trailing
-// posting ordinal — and by a change to the set of column families, which is what version 3 is: the
-// family of interned block-entity payloads. The record version in the value covers neither. Keys
-// carry a version this build reads, so without the bump an older database opens and every key is
-// parsed as something it never was; a family holds rows the value version never speaks for at all.
-//
-// Version 4 keeps the layout but counts menu numbers through a registry instead of InventoryType.ordinal,
-// so an old row parses cleanly and names the wrong menu; an ordinary entry's header byte is pinned to
-// 0x00, so only this number can refuse such a database.
-//
-// Versions 5 and 6 each only add a family, so an older ledger is opened, given the families and
-// stamped anew, and an older build then refuses it by the stamp.
+// Raised by a change to the key layout, the set of column families or the meaning of stored numbers:
+// the record version in the value covers none of them, so without the bump an older database opens and
+// every key is parsed as something it never was. Version 4 moved menu numbers to a registry without
+// touching the layout; an ordinary entry's header byte is pinned to 0x00, so only this number can refuse
+// such a database. WIDENS_FROM differ only by families this build adds on open, and an older build then
+// refuses the result by the stamp.
 private const val SCHEMA_VERSION = 6L
 private val WIDENS_FROM = setOf(4L, 5L)
 
@@ -228,11 +208,11 @@ internal fun storedSchema(path: String, metaCf: ByteArray, key: ByteArray): Long
     ColumnFamilyOptions().use { cfOptions ->
         DBOptions().use { options ->
             RocksDB.openReadOnly(options, path, existing.map { ColumnFamilyDescriptor(it, cfOptions) }, handles)
-                .use { probed ->
+                .let { probed ->
                     try {
                         probed.get(handles[metaIndex], key)?.let { ByteReader(it).longBE() }
                     } finally {
-                        handles.forEach { it.close() }
+                        probed.closeWithHandles(handles)
                     }
                 }
         }
@@ -430,10 +410,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         .setTableFormatConfig(plainTable)
         .setWriteBufferSize(COLD_WRITE_BUFFER_BYTES)
 
-    // A prefix extractor lets a plain iterator stop at the end of the prefix it was seeked into, so a
-    // walk that means to cover a whole column family has to say it wants total order.
-    private val wholeCfRead = ReadOptions().setTotalOrderSeek(true)
-
     private val writeOptions = WriteOptions()
 
     // A registry number or a payload may be named by another database, and that database flushes its
@@ -467,13 +443,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     private val queue = LinkedBlockingQueue<List<Transfer>>()
 
-    // The notes a block position carries — the form it was placed from, the name its contents are
-    // filed under — are set and cleared from region threads, inside the events that change them. A
-    // region thread may not wait on the database: every write queues behind the writer's own, and the
-    // writer fsyncs its log once a second, which on a slow disk held a piston clock's region for five
-    // seconds at a time. So a note goes into this overlay at once, where every read looks first, and on
-    // to the writer, which takes it off the overlay once it is in the database. A null value is a note
-    // cleared.
+    // Notes are set from region threads, which must not wait on the writer, so a note goes into this
+    // overlay at once (reads look here first) and the writer removes it once written. A null value is a
+    // cleared note.
     private data class NoteKey(val family: Int, val world: UUID, val x: Int, val y: Int, val z: Int)
 
     // Compared by identity: the writer takes a note off the overlay only if it is still this very write.
@@ -483,7 +455,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     private val noteQueue = LinkedBlockingQueue<NoteWrite>()
     private val progress = WriterProgress("ledger", "transfers", queue)
 
-    /** Transactions handed to the writer and not written yet. */
     val backlog: Long get() = progress.backlog
 
     @Volatile
@@ -556,17 +527,11 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     val registries = Registries(this)
     val forms = InternTable(itemFormsCf, META_ITEM_FORM_ID)
 
-    // The block rows that will name these payloads live in a database per world, with no WAL shared
-    // between that database and this one. Writing the payload first is half of it; the other half is
-    // that the write is fsynced before it returns, so a row written afterwards can never reach the
-    // disk ahead of the payload it names. An orphaned payload is garbage nobody reads; a row whose
-    // payload was never written is lost data.
+    // Block rows in the world bases cite these ids, so interning is synced (see syncWriteOptions).
     val payloads = InternTable(blockPayloadsCf, META_BLOCK_PAYLOAD_ID)
 
-    // An unregistered world or player owns no rows at all, so a scan for one has to find nothing.
-    // A player number is a varint and -1 encodes to something the registry never hands out; a world
-    // number is two fixed bytes and -1 lands on 0xFFFF, which stays free only while the registry is
-    // never asked for its 65536th world.
+    // Unregistered ids map to -1, which encodes to a number neither registry hands out, so a scan for
+    // them finds nothing.
     private val knownIds = IdResolver { ns, uuid -> registries.lookupKey(ns, uuid.toString()) ?: UNASSIGNED }
 
     init {
@@ -638,11 +603,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             val found = ArrayList<LedgerEntry>()
             var complete = true
             var unreadable = 0
-            // Keys inside a chunk are ordered by position and only then by time, so a chunk cut off
-            // at the limit contributes its rows by position: a crater packed into one chunk answers
-            // with one corner of itself and reads as silence over every position that is not in that
-            // corner. Every row under the prefix is therefore in hand before the limit is applied,
-            // which is how the block plane has always read a chunk.
+            // Keys in a chunk sort by position before time, so every row is collected before sorting
+            // and applying the limit.
             for (cx in chunkX) {
                 for (cz in chunkZ) {
                     for (prefix in EntryCodec.blockChunkPrefixes(world, cx, cz, knownIds)) {
@@ -735,29 +697,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     fun form(itemFormId: Long): ByteArray? = forms.valueOf(itemFormId)
 
-    fun formId(form: ByteArray): Long? = forms.lookup(form)
-
     fun payload(payloadId: Long): ByteArray? = payloads.valueOf(payloadId)
-
-    // The slot never enters the key, so one prefix per holder type already covers every slot a player
-    // owns and the whole balance is four scans rather than a read per row.
-    fun formBalance(player: UUID): Map<Long, Int> = dbLock.read {
-        val totals = HashMap<Long, Int>()
-        if (closed) return totals
-        val holders = listOf(
-            PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player), PlayerEnder(player, 0),
-        )
-        for (holder in holders) {
-            forEachUnder(EntryCodec.holderPrefix(holder, knownIds), reverse = false) { key, value ->
-                EntryCodec.decodeOrNull(key, value, registries)?.let {
-                    totals.merge(it.itemFormId, it.qty, Int::plus)
-                }
-                true
-            }
-        }
-        totals.entries.removeIf { it.value == 0 }
-        totals
-    }
 
     /**
      * What the ledger books to every slot under these holders, by form, counting only rows written up
@@ -781,11 +721,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         totals
     }
 
-    // The standing test of the capture: an entry that does not face the void has a second half, and
-    // the two cancel each other out. A half that is missing is not a dupe but a hole in the capture —
-    // two ends of one movement that collapsed onto one key, or a write that never landed — and it is
-    // worth hearing about now rather than in the middle of an investigation years later. Each pass
-    // picks up where the last one stopped, so the whole ledger is covered over time at a fixed cost.
+    // Every posting that doesn't face the void needs its opposite half; a missing half is a hole in the
+    // capture. Each pass resumes from a stored cursor, so the whole ledger is covered at a fixed cost per
+    // pass.
     fun sweep(limit: Int): SweepReport = dbLock.read {
         if (closed) return SweepReport(0, 0, emptyList(), false)
         val gaps = ArrayList<String>()
@@ -793,36 +731,38 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         var unreadable = 0
         var last: ByteArray? = null
         var reachedEnd = false
-        db.newIterator(entriesCf, wholeCfRead).use { iter ->
-            val cursor = db.get(metaCf, META_SWEEP_CURSOR)
-            if (cursor == null) {
-                iter.seekToFirst()
-            } else {
-                iter.seek(cursor)
-                if (iter.isValid && iter.key().contentEquals(cursor)) iter.next()
-                if (!iter.isValid) {
-                    // Wrapping round on an error would restart every pass at the first key and never
-                    // check anything past the damage.
-                    iter.status()
+        ReadOptions().setTotalOrderSeek(true).use { options ->
+            db.newIterator(entriesCf, options).use { iter ->
+                val cursor = db.get(metaCf, META_SWEEP_CURSOR)
+                if (cursor == null) {
                     iter.seekToFirst()
-                }
-            }
-            // Unreadable rows spend the budget too: a stretch of them the length of a year would
-            // otherwise be walked in a single pass, on the thread that asked for one pass worth.
-            while (iter.isValid && checked + unreadable < limit) {
-                val key = iter.key()
-                val entry = EntryCodec.decodeOrNull(key, iter.value(), registries)
-                if (entry == null) {
-                    unreadable++
                 } else {
-                    checked++
-                    gapOf(entry)?.let { gaps += it }
+                    iter.seek(cursor)
+                    if (iter.isValid && iter.key().contentEquals(cursor)) iter.next()
+                    if (!iter.isValid) {
+                        // Wrapping round on an error would restart every pass at the first key and never
+                        // check anything past the damage.
+                        iter.status()
+                        iter.seekToFirst()
+                    }
                 }
-                last = key
-                iter.next()
+                // Unreadable rows spend the budget too: a stretch of them the length of a year would
+                // otherwise be walked in a single pass, on the thread that asked for one pass worth.
+                while (iter.isValid && checked + unreadable < limit) {
+                    val key = iter.key()
+                    val entry = EntryCodec.decodeOrNull(key, iter.value(), registries)
+                    if (entry == null) {
+                        unreadable++
+                    } else {
+                        checked++
+                        gapOf(entry)?.let { gaps += it }
+                    }
+                    last = key
+                    iter.next()
+                }
+                iter.status()
+                reachedEnd = !iter.isValid
             }
-            iter.status()
-            reachedEnd = !iter.isValid
         }
         if (reachedEnd || last == null) db.delete(metaCf, META_SWEEP_CURSOR) else db.put(metaCf, META_SWEEP_CURSOR, last)
         SweepReport(checked, unreadable, gaps, reachedEnd)
@@ -933,13 +873,12 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int) = putNote(OWNERS, world, x, y, z, null)
 
-    override fun formAt(world: UUID, x: Int, y: Int, z: Int): ByteArray? = note(FORMS, world, x, y, z)
+    override fun formAt(at: WorldBlock): ByteArray? = note(FORMS, at.world, at.x, at.y, at.z)
 
-    override fun setFormAt(world: UUID, x: Int, y: Int, z: Int, form: ByteArray) = putNote(FORMS, world, x, y, z, form)
+    override fun setFormAt(at: WorldBlock, form: ByteArray) = putNote(FORMS, at.world, at.x, at.y, at.z, form)
 
-    override fun clearFormAt(world: UUID, x: Int, y: Int, z: Int) = putNote(FORMS, world, x, y, z, null)
+    override fun clearFormAt(at: WorldBlock) = putNote(FORMS, at.world, at.x, at.y, at.z, null)
 
-    // Positions with no note are absent from the map.
     override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = dbLock.read {
         if (closed || positions.isEmpty()) return emptyMap()
         val forms = HashMap<WorldBlock, ByteArray>(positions.size)
@@ -1017,7 +956,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     private fun closeOptions() {
         writeOptions.close()
         syncWriteOptions.close()
-        wholeCfRead.close()
         entriesOptions.close()
         pointReadOptions.close()
         unfilteredOptions.close()
@@ -1072,11 +1010,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         },
     ) { writing.withLock { writeAll(it) } }
 
-    // One movement that cannot be encoded is a bug in the capture; every movement after it is not.
-    // Letting the first one stop the writer turns a single bad row into a ledger that silently records
-    // nothing for the rest of the session, which for a journal kept to be trusted is the worst of the
-    // available outcomes. The offending transaction is rolled back out of the batch and counted; a
-    // failure of the write itself is a different animal and still stops everything.
+    // A transaction that fails to encode is rolled back out of the batch and logged, so one bad row can't
+    // silence the writer; a failed write still stops it.
     private fun writeAll(transactions: List<List<Transfer>>) {
         WriteBatch().use { batch ->
             pendingBatch = batch
@@ -1215,8 +1150,6 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         action: (ByteArray, ByteArray) -> Boolean,
     ) = db.forEachUnder(entriesCf, prefix, reverse, from, action)
 
-    // Each call brings back at most `limit` entries under its own prefix, so a region scan gives every
-    // chunk the same allowance rather than letting the first one it walks spend the whole budget.
     private fun scan(
         prefix: ByteArray,
         fromTs: Long,
@@ -1272,12 +1205,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             db.forEachRow(cf) { key, value -> remember(ByteReader(key).longBE(), value) }
         }
 
-        // Minting is a read-modify-write of the counter, and the block plane interns from a writer
-        // thread of its own, so two threads reaching a value neither has seen would hand out one
-        // number twice and file two different things under it.
-        // Handed out only once staged: a write that failed would otherwise leave the number cached, and
-        // the next row to name the value would cite a number nothing was written under. The number is
-        // spent either way, as a failed write promises nothing about whether it landed.
+        // One lock for the same mint race as `Registries`: the block plane interns from a writer thread of its own.
+        // Handed out only once staged, so a failed write never leaves a cached number nothing was written under.
         @Synchronized
         fun idOf(value: ByteArray): Long {
             idByValue[FormKey(value)]?.let { return it }
@@ -1307,8 +1236,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             minted.get()?.clear()
         }
 
-        // Asking whether a form is known must not name it: a reconciliation that walks a live
-        // inventory would otherwise mint an id for every item the ledger has never recorded.
+        // Unlike idOf, never mints: asking about a value must not intern it.
         fun lookup(value: ByteArray): Long? = idByValue[FormKey(value)]
 
         private fun remember(id: Long, value: ByteArray) {

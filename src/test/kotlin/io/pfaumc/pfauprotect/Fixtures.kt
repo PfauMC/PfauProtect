@@ -1,13 +1,20 @@
 package io.pfaumc.pfauprotect
 
+import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
+import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.check.PlaneGap
 import io.pfaumc.pfauprotect.check.PlaneReport
 import io.pfaumc.pfauprotect.check.PlaneSync
+import io.pfaumc.pfauprotect.check.SETTLE_MILLIS
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.LedgerEntry
+import io.pfaumc.pfauprotect.model.PlayerInv
+import io.pfaumc.pfauprotect.model.Transfer
+import io.pfaumc.pfauprotect.model.Void
+import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
@@ -31,33 +38,48 @@ internal val bob: UUID = UUID.fromString("00000000-0000-4000-8000-0000000000b0")
 
 internal fun key(name: String, damage: Int? = null) = ItemKey(name.toByteArray(), damage)
 
-internal fun ledgerEntry(
-    holder: Holder,
-    counterparty: Holder,
-    timestamp: Long = T0,
-    txId: Long = 7L,
-    kind: Kind = Kind.TRANSFER,
-    cause: Cause = Cause.PICKUP,
-    confidence: Confidence = Confidence.FACT,
-    itemFormId: Long = 12L,
-    qty: Int = 1,
-    damage: Int? = null,
-    actor: UUID? = null,
-) = LedgerEntry(
-    holder = holder,
-    timestamp = timestamp,
-    txId = txId,
-    kind = kind,
-    cause = cause,
-    confidence = confidence,
-    counterparty = counterparty,
-    itemFormId = itemFormId,
-    qty = qty,
-    damage = damage,
-    actor = actor,
+internal fun ledgerEntry(holder: Holder, counterparty: Holder, actor: UUID? = null) = LedgerEntry(
+    holder = holder, timestamp = T0, txId = 7L, kind = Kind.TRANSFER, cause = Cause.PICKUP,
+    confidence = Confidence.FACT, counterparty = counterparty, itemFormId = 12L, qty = 1, damage = null, actor = actor,
 )
 
 internal fun testCodec() = ItemFormCodec(Registries(MemoryRegistryStore()), ServerRegistries.access)
+
+// The coalescer only hands a row on at the end of its tick, so `rows` flushes it first.
+internal class Spawns {
+    private val written = ArrayList<Transfer>()
+    val coalescer = TickCoalescer(written::add)
+    var clock = 0L
+    val origins = SpawnOrigins(coalescer) { clock }
+
+    fun rows(): List<Transfer> {
+        coalescer.flush()
+        return written
+    }
+}
+
+abstract class OneLedger {
+    protected lateinit var dir: Path
+    protected lateinit var log: RocksItemLog
+
+    @BeforeEach
+    fun openLedger(@TempDir tempDir: Path) {
+        dir = tempDir
+        log = RocksItemLog(dir)
+    }
+
+    // Reopening flushes the memtable, so what was written before it is read back from disk.
+    protected fun reopen(whileClosed: () -> Unit = {}) {
+        log.close()
+        whileClosed()
+        log = RocksItemLog(dir)
+    }
+
+    @AfterEach
+    fun closeLedger() {
+        log.close()
+    }
+}
 
 abstract class BothPlanes {
     protected open val world: UUID = io.pfaumc.pfauprotect.world
@@ -66,6 +88,9 @@ abstract class BothPlanes {
     protected lateinit var shared: RocksItemLog
     protected lateinit var logs: BlockLogs
     protected lateinit var log: BlockLog
+
+    protected val now = System.currentTimeMillis()
+    protected val longAgo = now - 10 * SETTLE_MILLIS
 
     @BeforeEach
     fun open(@TempDir tempDir: Path) {
@@ -82,6 +107,54 @@ abstract class BothPlanes {
     protected fun drainBoth() {
         log.drain()
         shared.drain()
+    }
+
+    protected fun heldAt(
+        x: Int,
+        y: Int,
+        z: Int,
+        form: ByteArray,
+        ts: Long = longAgo,
+        confidence: Confidence = Confidence.FACT,
+        at: UUID = world,
+    ) {
+        shared.submit(
+            Transfer(
+                cause = Cause.BLOCK_PLACE,
+                from = PlayerInv(alice, 0),
+                to = WorldBlock(at, x, y, z),
+                form = form,
+                damage = null,
+                qty = 1,
+                timestamp = ts,
+                confidence = confidence,
+            )
+        )
+    }
+
+    protected fun releasedAt(
+        x: Int,
+        y: Int,
+        z: Int,
+        form: ByteArray,
+        cause: Cause = Cause.BLOCK_DROP,
+        actor: UUID? = alice,
+        ts: Long = longAgo,
+        confidence: Confidence = Confidence.FACT,
+    ) {
+        shared.submit(
+            Transfer(
+                cause = cause,
+                from = WorldBlock(world, x, y, z),
+                to = Void,
+                form = form,
+                damage = null,
+                qty = 1,
+                timestamp = ts,
+                actor = actor,
+                confidence = confidence,
+            )
+        )
     }
 
     protected fun stateOf(blockData: String): Int? =

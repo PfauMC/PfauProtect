@@ -59,14 +59,11 @@ class Intent(
     // on nothing here; the pass reads it after the fact to gather its own unpaired ends into one
     // transaction.
     val shift: Shift? = null,
-    // Until which of the player's own ticks a pass that had nothing for it to explain hands it on to the
-    // next one instead of dropping it. A command from another region reaches the player's slots on its
-    // own schedule, and any pass in between would otherwise spend its reason on an inventory it has not
-    // touched yet. Ticks and not time: right after a join the player's region can take hundreds of
-    // milliseconds over one tick, and the command keeps that region's pace, not the clock's.
+    // Until which of the player's ticks an unspent reason waits for the next pass; see COMMAND_LINGER_TICKS.
+    // Ticks and not time: right after a join the player's region can take hundreds of milliseconds over
+    // one tick, and the command keeps that region's pace, not the clock's.
     val untilTick: Int? = null,
 ) {
-    /** Whether a pass at this tick of the player's region that did not spend it hands it on. */
     internal fun lingers(tick: Int) = untilTick != null && untilTick >= tick
 
     // An intent is about the slots of the player who left it, so the end that is not its counterparty

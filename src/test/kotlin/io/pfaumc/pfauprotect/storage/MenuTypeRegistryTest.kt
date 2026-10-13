@@ -1,23 +1,17 @@
 package io.pfaumc.pfauprotect.storage
-import io.pfaumc.pfauprotect.ServerRegistries
+import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.Vanilla
 import org.bukkit.event.inventory.InventoryType
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 
+@ExtendWith(Vanilla::class)
 class MenuTypeRegistryTest {
     private val menu = RegistryNamespace.MENU_TYPE
-
-    // InventoryType and the type registries reach into vanilla's, and a class whose static init finds them
-    // unbootstrapped stays broken for every test after it in the run.
-    @BeforeEach
-    fun bootstrap() {
-        ServerRegistries.access
-    }
 
     @Test
     fun `a menu is keyed by the name of its type and not by its ordinal`(@TempDir dir: Path) {

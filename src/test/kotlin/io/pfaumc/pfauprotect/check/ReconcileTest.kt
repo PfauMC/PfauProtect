@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.check
+import io.pfaumc.pfauprotect.OneLedger
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
@@ -9,20 +10,16 @@ import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.PlayerInv
-import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
-import java.nio.file.Path
 import java.util.UUID
 
-class ReconcileTest {
+class ReconcileTest : OneLedger() {
     private val world = UUID.fromString("00000000-0000-4000-8000-000000000011")
     private val steve = UUID.fromString("00000000-0000-4000-8000-0000000000f1")
     private val chest = Container(world, 8, 64, 8, 0)
@@ -30,20 +27,13 @@ class ReconcileTest {
     private val pickaxe = byteArrayOf(2, 2)
     private val bread = byteArrayOf(3, 3)
 
-    private lateinit var log: RocksItemLog
     private lateinit var reconcile: Reconciliation
 
     private var clock = T0
 
     @BeforeEach
-    fun open(@TempDir dir: Path) {
-        log = RocksItemLog(dir)
+    fun openReconciliation() {
         reconcile = Reconciliation(log)
-    }
-
-    @AfterEach
-    fun close() {
-        log.close()
     }
 
     private fun move(cause: Cause, from: Holder, to: Holder, form: ByteArray, qty: Int, damage: Int? = null) {

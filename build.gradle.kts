@@ -40,14 +40,10 @@ dependencies {
         version = "$canvasMinecraftVersion.build.$canvasBuild-$canvasChannel",
         group = "io.canvasmc.canvas",
     )
-    // Everything declared with library(...) is written into plugin.yml's `libraries` block by
-    // plugin-yml and downloaded from Maven Central by the server at load time.
     library("org.jetbrains.kotlin:kotlin-stdlib:2.4.0")
 
     compileOnly("org.rocksdb:rocksdbjni:$rocksdbVersion")
 
-    // library(...) only reaches the main compile classpath, so the test source set needs its own
-    // stdlib as long as the default stdlib dependency stays disabled.
     testImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.0")
     testImplementation("org.rocksdb:rocksdbjni:$rocksdbVersion:osx")
     testImplementation("org.rocksdb:rocksdbjni:$rocksdbVersion:linux64")
@@ -80,8 +76,8 @@ bukkit {
     // declare the permission that gates it.
     permissions {
         mapOf(
-            "lookup" to "Read the item ledger for a block",
-            "inspect" to "Toggle the inspector and read the ledger by clicking blocks",
+            "lookup" to "Look up block, item, entity and chat history",
+            "inspect" to "Toggle the inspector: click a block or entity to see its history",
             "verify" to "Run the self-checks now instead of waiting for their schedules",
             "reconcile" to "Compare what a player is carrying against the ledger",
             "purge" to "Delete history older than an age, keeping what every balance needs",

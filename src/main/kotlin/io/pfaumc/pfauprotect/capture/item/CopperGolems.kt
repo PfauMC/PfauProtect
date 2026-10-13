@@ -1,12 +1,12 @@
 package io.pfaumc.pfauprotect.capture.item
 
 import io.papermc.paper.event.entity.ItemTransportingEntityValidateTargetEvent
+import io.pfaumc.pfauprotect.capture.block.slotRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
-import io.pfaumc.pfauprotect.storage.ItemKey
 import org.bukkit.block.Block
 import org.bukkit.entity.CopperGolem
 import org.bukkit.event.EventHandler
@@ -105,20 +105,11 @@ class CopperGolemListener(
         val hand = EntitySlot(golem.uniqueId, MAIN_HAND)
         val timestamp = System.currentTimeMillis()
         val key = side.key
-        val rows = slots.map { (slot, qty) -> golemRow(took, slot, hand, key, qty, timestamp) }
+        val cause = if (took) Cause.CONTAINER_REMOVE else Cause.CONTAINER_ADD
+        val rows = slots.map { (slot, qty) -> slotRow(!took, slot, hand, key, qty, cause, timestamp) }
         if (took) bookHeld(golem, MAIN_HAND, form) else if (after == null) unbookHeld(golem, MAIN_HAND)
         sink(rows)
     }
-
-    private fun golemRow(took: Boolean, slot: Holder, hand: Holder, key: ItemKey, qty: Int, timestamp: Long) =
-        Transfer(
-            cause = if (took) Cause.CONTAINER_REMOVE else Cause.CONTAINER_ADD,
-            from = if (took) slot else hand,
-            to = if (took) hand else slot,
-            key = key,
-            qty = qty,
-            timestamp = timestamp,
-        )
 }
 
 /**

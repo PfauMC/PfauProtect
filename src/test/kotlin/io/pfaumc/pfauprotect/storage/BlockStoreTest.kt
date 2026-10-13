@@ -51,7 +51,7 @@ class BlockStoreTest : BothPlanes() {
 
     private fun writeRawRow(key: ByteArray, value: ByteArray) {
         logs.close(world)
-        rawEdit(root.resolve(world.toString())) { raw, family -> raw.put(family("rows"), key, value) }
+        rawPut(root.resolve(world.toString()), "rows", key, value)
         log = logs.open(world)
     }
 
@@ -177,8 +177,8 @@ class BlockStoreTest : BothPlanes() {
         log.drain()
         writeRawRow(BlockCodec.key(2, 64, 2, T0 + 5, 999, 0), ByteArray(0))
 
-        assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), log.at(2, 64, 2).map { it.stateAfter })
-        assertEquals(2, log.inChunk(0, 0).size)
+        assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), log.at(2, 64, 2, 0, Long.MAX_VALUE, limit = 100, reverse = false).map { it.stateAfter })
+        assertEquals(2, log.inChunk(0, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
         assertEquals(stateOf(DIRT), log.standingAt(2, 64, 2).row?.stateAfter)
     }
 
@@ -243,7 +243,7 @@ class BlockStoreTest : BothPlanes() {
         assertNull(row.payloadAfter)
         assertEquals(listOf(drop), row.drops)
         assertEquals(listOf(row), log.entitiesInChunk(0, 0, 0, Long.MAX_VALUE, 100) { _, _, _ -> true }.rows)
-        assertEquals(1, log.at(5, 64, 6).size, "the block plane keeps its own row beside it")
+        assertEquals(1, log.at(5, 64, 6, 0, Long.MAX_VALUE, limit = 100, reverse = false).size, "the block plane keeps its own row beside it")
         assertEquals(setOf(listOf(5, 64, 6)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
     }
 
@@ -285,7 +285,7 @@ class BlockStoreTest : BothPlanes() {
         }
         log = logs.open(world)
 
-        assertEquals(1, log.at(8, 64, 8).size)
+        assertEquals(1, log.at(8, 64, 8, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
         assertTrue(log.entitiesAt(8, 64, 8, 0, Long.MAX_VALUE, 100).rows.isEmpty())
     }
 
@@ -342,7 +342,7 @@ class BlockStoreTest : BothPlanes() {
         for ((i, at) in spots.withIndex()) {
             val (x, y, z) = at
             val kept = if (i % 3 == 1) T0 + 10 else T0 + 200
-            assertEquals(listOf(kept), log.at(x, y, z).map { it.timestamp }, "rows at $at")
+            assertEquals(listOf(kept), log.at(x, y, z, 0, Long.MAX_VALUE, limit = 100, reverse = false).map { it.timestamp }, "rows at $at")
             val entities = if (i % 3 == 2) listOf(T0 + 200) else emptyList()
             assertEquals(entities, log.entitiesAt(x, y + 1, z, 0, Long.MAX_VALUE, 100).rows.map { it.timestamp }, "entities at $at")
         }
@@ -370,7 +370,7 @@ class BlockStoreTest : BothPlanes() {
         shared.close()
         openPlanes()
 
-        assertEquals(bob, log.at(3, 64, 3).single().actor)
+        assertEquals(bob, log.at(3, 64, 3, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().actor)
     }
 
     // A block the checksum rejects ends a walk exactly as the last row does, and an answer cut short there
@@ -386,8 +386,8 @@ class BlockStoreTest : BothPlanes() {
         damageTables(root.resolve(world.toString()), "rows")
         log = logs.open(world)
 
-        assertThrows(RocksDBException::class.java) { log.inChunk(0, 0) }
-        assertThrows(RocksDBException::class.java) { log.at(0, 64, 0) }
+        assertThrows(RocksDBException::class.java) { log.inChunk(0, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false) }
+        assertThrows(RocksDBException::class.java) { log.at(0, 64, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false) }
         assertThrows(RocksDBException::class.java) { log.purgeBefore(T0 + 1_000, dryRun = true) }
     }
 
@@ -407,7 +407,7 @@ class BlockStoreTest : BothPlanes() {
 
         shared.close()
 
-        assertEquals(1, log.at(1, 64, 1).size)
+        assertEquals(1, log.at(1, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
         assertThrows(IllegalStateException::class.java) { logs.open(UUID.randomUUID()) }
     }
 
@@ -423,10 +423,10 @@ class BlockStoreTest : BothPlanes() {
         )
         log.drain()
 
-        assertEquals(1, log.at(1, 64, 1).size)
-        assertTrue(log.at(2, 64, 1).isEmpty())
-        assertTrue(log.at(3, 64, 1).isEmpty())
-        assertEquals(stateOf(DIRT), log.at(4, 64, 1).single().stateAfter)
+        assertEquals(1, log.at(1, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
+        assertTrue(log.at(2, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
+        assertTrue(log.at(3, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
+        assertEquals(stateOf(DIRT), log.at(4, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().stateAfter)
     }
 
     @Test
@@ -440,7 +440,7 @@ class BlockStoreTest : BothPlanes() {
         )
         log.drain()
 
-        val here = log.at(100, 64, -200)
+        val here = log.at(100, 64, -200, 0, Long.MAX_VALUE, limit = 100, reverse = false)
         assertEquals(1, here.size)
         assertEquals(listOf(100, 64, -200), listOf(here[0].x, here[0].y, here[0].z))
         assertEquals(stateOf(STONE), here[0].stateAfter)
@@ -451,7 +451,7 @@ class BlockStoreTest : BothPlanes() {
         assertEquals(7, 120 shr 4)
         assertEquals(
             setOf(100 to 64, 104 to 70),
-            log.inChunk(6, -13).map { it.x to it.y }.toSet(),
+            log.inChunk(6, -13, 0, Long.MAX_VALUE, limit = 100, reverse = false).map { it.x to it.y }.toSet(),
         )
     }
 
@@ -465,7 +465,7 @@ class BlockStoreTest : BothPlanes() {
         )
         log.drain()
 
-        val rows = log.at(0, 64, 0)
+        val rows = log.at(0, 64, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false)
         assertEquals(2, rows.size)
         assertEquals(listOf(stateOf(AIR), stateOf(WATER)), rows.map { it.stateBefore })
         assertEquals(listOf(stateOf(WATER), stateOf(STONE)), rows.map { it.stateAfter })
@@ -482,8 +482,8 @@ class BlockStoreTest : BothPlanes() {
         log.submit(wide)
         log.drain()
 
-        assertEquals(600, wide.count { log.at(it.x, 64, 40).size == 1 })
-        assertEquals(setOf(0), (0 until 600).flatMap { log.at(it, 64, 40) }.map { it.ordinal }.toSet())
+        assertEquals(600, wide.count { log.at(it.x, 64, 40, 0, Long.MAX_VALUE, limit = 100, reverse = false).size == 1 })
+        assertEquals(setOf(0), (0 until 600).flatMap { log.at(it, 64, 40, 0, Long.MAX_VALUE, limit = 100, reverse = false) }.map { it.ordinal }.toSet())
     }
 
     @Test
@@ -492,12 +492,12 @@ class BlockStoreTest : BothPlanes() {
         log.submit(listOf(placed(1, 64, 1, after = DIRT, ts = T0 + 5000)))
         log.drain()
 
-        assertEquals(listOf(T0 + 5000, T0), log.inChunk(0, 0, reverse = true).map { it.timestamp })
-        assertEquals(listOf(1 to 1), log.inChunk(0, 0, limit = 1, reverse = true).map { it.x to it.z })
-        assertEquals(listOf(15 to 15), log.inChunk(0, 0, limit = 1).map { it.x to it.z })
+        assertEquals(listOf(T0 + 5000, T0), log.inChunk(0, 0, 0, Long.MAX_VALUE, limit = 100, reverse = true).map { it.timestamp })
+        assertEquals(listOf(1 to 1), log.inChunk(0, 0, 0, Long.MAX_VALUE, limit = 1, reverse = true).map { it.x to it.z })
+        assertEquals(listOf(15 to 15), log.inChunk(0, 0, 0, Long.MAX_VALUE, limit = 1, reverse = false).map { it.x to it.z })
         assertEquals(
             listOf(T0, T0 + 5000),
-            log.inChunk(0, 0, fromTs = T0, toTs = T0 + 5000).map { it.timestamp },
+            log.inChunk(0, 0, T0, T0 + 5000, limit = 100, reverse = false).map { it.timestamp },
         )
     }
 
@@ -510,7 +510,7 @@ class BlockStoreTest : BothPlanes() {
         val latest = log.standingAt(10, 64, 10).row
         assertEquals(stateOf(DIRT), latest?.stateAfter)
         assertEquals(T0 + 10, latest?.timestamp)
-        assertEquals(2, log.at(10, 64, 10).size)
+        assertEquals(2, log.at(10, 64, 10, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
     }
 
     @Test
@@ -520,12 +520,12 @@ class BlockStoreTest : BothPlanes() {
         log.drain()
 
         val event = setOf(
-            log.at(1, 64, 1).single().eventId,
-            log.at(2, 64, 1).single().eventId,
-            log.at(3, 64, 1).single().eventId,
+            log.at(1, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId,
+            log.at(2, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId,
+            log.at(3, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId,
         )
         assertEquals(1, event.size)
-        assertNotEquals(event.single(), log.at(1, 65, 1).single().eventId)
+        assertNotEquals(event.single(), log.at(1, 65, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId)
     }
 
     @Test
@@ -534,7 +534,7 @@ class BlockStoreTest : BothPlanes() {
         log.submit(listOf(placed(7, 64, 7, before = STONE, after = DIRT, ts = T0)))
         log.drain()
 
-        val rows = log.at(7, 64, 7)
+        val rows = log.at(7, 64, 7, 0, Long.MAX_VALUE, limit = 100, reverse = false)
         assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
         assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
         assertEquals(stateOf(DIRT), log.standingAt(7, 64, 7).row?.stateAfter)
@@ -547,8 +547,8 @@ class BlockStoreTest : BothPlanes() {
         log.submit(listOf(placed(2, 64, 2, after = DIRT, ts = T0)))
         log.drain()
 
-        assertEquals(T0, log.at(2, 64, 2).single().timestamp)
-        assertEquals(T0 + 1000, log.at(1, 64, 1).single().timestamp)
+        assertEquals(T0, log.at(2, 64, 2, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().timestamp)
+        assertEquals(T0 + 1000, log.at(1, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().timestamp)
     }
 
     @Test
@@ -560,7 +560,7 @@ class BlockStoreTest : BothPlanes() {
         log.submit(listOf(placed(3, 64, 3, before = STONE, after = DIRT, ts = T0)))
         log.drain()
 
-        val rows = log.at(3, 64, 3)
+        val rows = log.at(3, 64, 3, 0, Long.MAX_VALUE, limit = 100, reverse = false)
         assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
         assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
         assertEquals(stateOf(DIRT), log.standingAt(3, 64, 3).row?.stateAfter)
@@ -578,7 +578,7 @@ class BlockStoreTest : BothPlanes() {
         reopened.submit(listOf(placed(8, 64, 8, before = STONE, after = DIRT, ts = T0)))
         reopened.drain()
 
-        val rows = reopened.at(8, 64, 8)
+        val rows = reopened.at(8, 64, 8, 0, Long.MAX_VALUE, limit = 100, reverse = false)
         assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
         assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
         assertEquals(stateOf(DIRT), reopened.standingAt(8, 64, 8).row?.stateAfter)
@@ -588,14 +588,14 @@ class BlockStoreTest : BothPlanes() {
     fun `rows and the event counter survive a close and a reopen`() {
         log.submit(listOf(placed(5, 64, 5)))
         log.drain()
-        val firstEvent = log.at(5, 64, 5).single().eventId
+        val firstEvent = log.at(5, 64, 5, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId
         logs.close(world)
 
         val reopened = logs.open(world)
-        assertEquals(stateOf(STONE), reopened.at(5, 64, 5).single().stateAfter)
+        assertEquals(stateOf(STONE), reopened.at(5, 64, 5, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().stateAfter)
         reopened.submit(listOf(placed(6, 64, 5, ts = T0 + 10)))
         reopened.drain()
-        assertEquals(firstEvent + 1, reopened.at(6, 64, 5).single().eventId)
+        assertEquals(firstEvent + 1, reopened.at(6, 64, 5, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId)
     }
 
     @Test
@@ -604,8 +604,8 @@ class BlockStoreTest : BothPlanes() {
         log.drain()
         log.close()
 
-        assertTrue(log.at(5, 64, 5).isEmpty())
-        assertTrue(log.inChunk(0, 0).isEmpty())
+        assertTrue(log.at(5, 64, 5, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
+        assertTrue(log.inChunk(0, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
         assertNull(log.standingAt(5, 64, 5).row)
         assertFalse(log.submit(listOf(placed(9, 64, 9))))
         log.drain()
@@ -616,6 +616,6 @@ class BlockStoreTest : BothPlanes() {
         logs.close(world)
 
         assertFalse(log.submit(listOf(placed(9, 64, 9))))
-        assertTrue(logs.open(world).at(9, 64, 9).isEmpty())
+        assertTrue(logs.open(world).at(9, 64, 9, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
     }
 }

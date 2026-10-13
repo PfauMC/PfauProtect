@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.OneLedger
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
@@ -18,7 +19,6 @@ import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.command.namesUser
 import io.pfaumc.pfauprotect.command.wholeTransactions
 import io.pfaumc.pfauprotect.world
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
@@ -29,12 +29,10 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import org.rocksdb.Options
-import org.rocksdb.RocksDB
 import java.nio.file.Path
 import java.util.UUID
 
-class StorageTest {
+class StorageTest : OneLedger() {
     private val chest = Container(world, 100, 64, -200, 0)
     private val chestUpperSlot = Container(world, 100, 64, -200, 5)
     private val aliceInv = PlayerInv(alice, 9)
@@ -43,13 +41,8 @@ class StorageTest {
     private val pickaxe = byteArrayOf(4, 5)
     private val torch = byteArrayOf(6, 7, 8, 9)
 
-    private lateinit var dir: Path
-    private lateinit var log: RocksItemLog
-
     @BeforeEach
-    fun openAndSeed(@TempDir tempDir: Path) {
-        dir = tempDir
-        log = RocksItemLog(dir)
+    fun seed() {
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, cobblestone, null, 32, T0))
         log.submit(Transfer(Cause.CONTAINER_REMOVE, chestUpperSlot, aliceInv, cobblestone, null, 5, T0 + 10))
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, pickaxe, 7, 1, T0 + 20))
@@ -68,15 +61,10 @@ class StorageTest {
         log.drain()
     }
 
-    @AfterEach
-    fun closeLog() {
-        log.close()
-    }
-
     // A holder prefix covers every slot its owner has, so this is every row of one form alice holds.
     private fun aliceRows(form: ByteArray): List<LedgerEntry> =
         log.holderEntries(PlayerInv(alice, 0), 0, Long.MAX_VALUE, limit = 1000)
-            .filter { it.itemFormId == log.formId(form) }
+            .filter { it.itemFormId == log.forms.lookup(form) }
 
     @Test
     fun `a sound ledger sweeps without a word`() {
@@ -94,7 +82,7 @@ class StorageTest {
         log.submit(Transfer(Cause.CONTAINER_ADD, chest, chest, torch, null, 4, T0 + 40))
         log.drain()
 
-        val moved = log.holderEntries(chest, 0, Long.MAX_VALUE).filter { it.itemFormId == log.formId(torch) }
+        val moved = log.holderEntries(chest, 0, Long.MAX_VALUE).filter { it.itemFormId == log.forms.lookup(torch) }
         assertEquals(listOf(-4, 4), moved.map { it.qty })
         assertEquals(listOf(T0 + 40, T0 + 40), moved.map { it.timestamp })
         assertEquals(listOf(0, 1), moved.map { it.ordinal })
@@ -105,34 +93,26 @@ class StorageTest {
     // of its ends address the same player.
     @Test
     fun `a move between two slots of one player leaves two rows that cancel`() {
-        log.submit(Transfer(Cause.QUICK_MOVE, PlayerInv(alice, 0), PlayerInv(alice, 9), torch, null, 32, T0 + 40))
-        log.drain()
-
-        val moved = aliceRows(torch)
-        assertEquals(listOf(-32, 32), moved.map { it.qty })
-        assertEquals(listOf(PlayerInv(alice, 0), PlayerInv(alice, 9)), moved.map { it.holder })
-        assertEquals(listOf(PlayerInv(alice, 9), PlayerInv(alice, 0)), moved.map { it.counterparty })
-        assertEquals(listOf(T0 + 40, T0 + 40), moved.map { it.timestamp })
-        assertEquals(1, moved.map { it.txId }.distinct().size)
-        assertEquals(0, moved.sumOf { it.qty })
-    }
-
-    @Test
-    fun `shuffling a stack between slots leaves the balance alone`() {
-        val before = log.formBalance(alice)
+        fun balance() = HashMap<FormKey, Int>().apply {
+            for (slots in log.slotBalances(listOf(PlayerInv(alice, 0)), Long.MAX_VALUE).values) {
+                for ((form, qty) in slots) merge(form, qty, Int::plus)
+            }
+        }
+        val before = balance()
         log.submit(
             Transfer(Cause.QUICK_MOVE, PlayerInv(alice, 0), PlayerInv(alice, 9), cobblestone, null, 32, T0 + 40)
         )
         log.drain()
-        assertEquals(before, log.formBalance(alice))
-    }
 
-    @Test
-    fun `a move inside one inventory is whole from either half`() {
-        log.submit(Transfer(Cause.QUICK_MOVE, PlayerInv(alice, 0), PlayerInv(alice, 9), torch, null, 32, T0 + 40))
-        log.drain()
+        val moved = aliceRows(cobblestone).filter { it.timestamp == T0 + 40 }
+        assertEquals(listOf(-32, 32), moved.map { it.qty })
+        assertEquals(listOf(PlayerInv(alice, 0), PlayerInv(alice, 9)), moved.map { it.holder })
+        assertEquals(listOf(PlayerInv(alice, 9), PlayerInv(alice, 0)), moved.map { it.counterparty })
+        assertEquals(1, moved.map { it.txId }.distinct().size)
+        assertEquals(0, moved.sumOf { it.qty })
+        assertEquals(before, balance())
 
-        val (debit, credit) = aliceRows(torch)
+        val (debit, credit) = moved
         val whole = log.transactionEntries(debit)
         assertEquals(2, whole.size)
         assertEquals(0, whole.sumOf { it.qty })
@@ -159,7 +139,7 @@ class StorageTest {
         assertEquals(2, rows.size)
         assertEquals(listOf(-1, 1), rows.map { it.qty })
         assertEquals(listOf(0, 1), rows.map { it.ordinal })
-        assertEquals(listOf(log.formId(pickaxe), log.formId(torch)), rows.map { it.itemFormId })
+        assertEquals(listOf(log.forms.lookup(pickaxe), log.forms.lookup(torch)), rows.map { it.itemFormId })
         assertEquals(1, rows.map { it.txId }.distinct().size)
 
         for (half in rows) {
@@ -214,10 +194,7 @@ class StorageTest {
         assertEquals(emptyList<String>(), log.sweep(100).gaps)
     }
 
-    // A block break submits several movements at once, and two of them landing in one container
-    // collide exactly as the two ends of a single movement do.
-    @Test
-    fun `two movements of one transaction into the same container keep their own rows`() {
+    private fun submitTwoTorchesIntoChest() {
         log.submit(
             listOf(
                 Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 40),
@@ -225,8 +202,15 @@ class StorageTest {
             )
         )
         log.drain()
+    }
 
-        val landed = log.holderEntries(chest, 0, Long.MAX_VALUE).filter { it.itemFormId == log.formId(torch) }
+    // A block break submits several movements at once, and two of them landing in one container
+    // collide exactly as the two ends of a single movement do.
+    @Test
+    fun `two movements of one transaction into the same container keep their own rows`() {
+        submitTwoTorchesIntoChest()
+
+        val landed = log.holderEntries(chest, 0, Long.MAX_VALUE).filter { it.itemFormId == log.forms.lookup(torch) }
         assertEquals(listOf(1, 2), landed.map { it.qty })
         assertEquals(listOf(chest, chestUpperSlot), landed.map { it.holder })
 
@@ -241,13 +225,7 @@ class StorageTest {
     // from one of its own halves must not come back smaller than it does from the others.
     @Test
     fun `a transaction of four postings reads the same from each of them`() {
-        log.submit(
-            listOf(
-                Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 40),
-                Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 0), chestUpperSlot, torch, null, 2, T0 + 40),
-            )
-        )
-        log.drain()
+        submitTwoTorchesIntoChest()
 
         val rows = (
             aliceRows(torch) +
@@ -287,9 +265,8 @@ class StorageTest {
         val paused = log.sweep(2)
         assertFalse(paused.reachedEnd)
 
-        // Reopening flushes, so everything above is now on disk and the memtable below is empty.
-        log.close()
-        log = RocksItemLog(dir)
+        // Everything above is now on disk and the memtable below is empty.
+        reopen()
 
         // Neither end shares a prefix with the row the walk stopped at, so nothing puts that prefix
         // into the fresh memtable alongside this row.
@@ -312,14 +289,12 @@ class StorageTest {
     // only guard, and it has to refuse rather than let the misreading start.
     @Test
     fun `a database of an older key layout refuses to open`() {
-        log.close()
-        stampSchemaVersion(1L)
-
-        val refused = assertThrows(IllegalArgumentException::class.java) { RocksItemLog(dir) }
-        assertTrue(refused.message.orEmpty().contains("schema"), "the refusal has to name the reason: $refused")
-
-        stampSchemaVersion(6L)
-        log = RocksItemLog(dir)
+        reopen {
+            stampSchemaVersion(1L)
+            val refused = assertThrows(IllegalArgumentException::class.java) { RocksItemLog(dir) }
+            assertTrue(refused.message.orEmpty().contains("schema"), "the refusal has to name the reason: $refused")
+            stampSchemaVersion(6L)
+        }
         assertEquals(4, log.holderEntries(chest, 0, Long.MAX_VALUE).size)
     }
 
@@ -328,15 +303,15 @@ class StorageTest {
     @Test
     fun `a version 4 ledger is widened in place`(@TempDir older: Path) {
         val earlier = everyColumnFamily - "compensated" - "confiscations"
-        openWith(older, earlier) { raw, handles ->
-            raw.put(handles[earlier.indexOf("meta")], "schema".toByteArray(), ByteWriter(8).longBE(4L).toByteArray())
+        rawEdit(older, earlier) { raw, family ->
+            raw.put(family("meta"), "schema".toByteArray(), ByteWriter(8).longBE(4L).toByteArray())
         }
 
         RocksItemLog(older).use { widened ->
             widened.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, cobblestone, null, 1, T0))
             widened.drain()
         }
-        val families = Options().use { RocksDB.listColumnFamilies(it, older.toAbsolutePath().toString()).map { String(it) } }
+        val families = familiesOf(older)
         assertTrue("compensated" in families && "confiscations" in families, "$families")
         RocksItemLog(older).use { assertEquals(1, it.holderEntries(chest, 0, Long.MAX_VALUE).size) }
     }
@@ -383,9 +358,7 @@ class StorageTest {
     @Test
     fun `a region read counts the rows it could not decode`() {
         val orphan = EntryCodec.key(chest, T0 + 40, 99L, 0, log.registries)
-        log.close()
-        writeRawEntry(dir, orphan, byteArrayOf(0x07))
-        log = RocksItemLog(dir)
+        reopen { rawPut(dir, "entries", orphan, byteArrayOf(0x07)) }
 
         val page = log.regionPage(world, 96, -208, 112, -192, 0, Long.MAX_VALUE, limit = 100)
         assertEquals(1, page.unreadable)
@@ -398,51 +371,22 @@ class StorageTest {
     @Test
     fun `a database refused for its schema is left as it was found`(@TempDir older: Path) {
         val earlier = everyColumnFamily - "block_payloads"
-        openWith(older, earlier) { raw, handles ->
-            raw.put(handles[earlier.indexOf("meta")], "schema".toByteArray(), ByteWriter(8).longBE(2L).toByteArray())
+        rawEdit(older, earlier) { raw, family ->
+            raw.put(family("meta"), "schema".toByteArray(), ByteWriter(8).longBE(2L).toByteArray())
         }
 
         assertThrows(IllegalArgumentException::class.java) { RocksItemLog(older) }
 
-        val left = org.rocksdb.Options().use { probe ->
-            org.rocksdb.RocksDB.listColumnFamilies(probe, older.toAbsolutePath().toString()).map { String(it) }
-        }
-        assertEquals(earlier.sorted(), left.sorted())
+        assertEquals(earlier.sorted(), familiesOf(older).sorted())
     }
 
-    // Opening has to name every column family the log created, or RocksDB refuses the database.
     private val everyColumnFamily = listOf(
         "default", "entries", "item_forms", "registry", "meta", "nested_owners", "tx", "placed_forms",
         "block_payloads", "compensated", "confiscations",
     )
 
     private fun stampSchemaVersion(version: Long) {
-        openWith(dir, everyColumnFamily) { raw, handles ->
-            raw.put(
-                handles[everyColumnFamily.indexOf("meta")],
-                "schema".toByteArray(),
-                ByteWriter(8).longBE(version).toByteArray(),
-            )
-        }
-    }
-
-    private fun openWith(
-        at: Path,
-        families: List<String>,
-        body: (org.rocksdb.RocksDB, List<org.rocksdb.ColumnFamilyHandle>) -> Unit,
-    ) {
-        org.rocksdb.RocksDB.loadLibrary()
-        val handles = ArrayList<org.rocksdb.ColumnFamilyHandle>()
-        org.rocksdb.ColumnFamilyOptions().use { cfOptions ->
-            org.rocksdb.DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true).use { dbOptions ->
-                val descriptors = families.map { org.rocksdb.ColumnFamilyDescriptor(it.toByteArray(), cfOptions) }
-                org.rocksdb.RocksDB.open(dbOptions, at.toAbsolutePath().toString(), descriptors, handles)
-                    .use { raw ->
-                        body(raw, handles)
-                        handles.forEach { it.close() }
-                    }
-            }
-        }
+        rawPut(dir, "meta", "schema".toByteArray(), ByteWriter(8).longBE(version).toByteArray())
     }
 
     // A region thread sets a note and reads it back within one event, long before the writer has put
@@ -452,73 +396,79 @@ class StorageTest {
         val world = UUID.randomUUID()
         val here = WorldBlock(world, 1, 2, 3)
         val there = WorldBlock(world, 4, 5, 6)
-        log.setFormAt(world, 4, 5, 6, pickaxe)
+        log.setFormAt(WorldBlock(world, 4, 5, 6), pickaxe)
         log.drain()
 
-        log.setFormAt(world, 1, 2, 3, pickaxe)
-        assertArrayEquals(pickaxe, log.formAt(world, 1, 2, 3))
+        log.setFormAt(WorldBlock(world, 1, 2, 3), pickaxe)
+        assertArrayEquals(pickaxe, log.formAt(WorldBlock(world, 1, 2, 3)))
         assertEquals(setOf(here, there), log.formsAt(listOf(here, there)).keys)
         log.clearFormsAt(listOf(there))
         assertEquals(setOf(here), log.formsAt(listOf(here, there)).keys)
 
         log.drain()
-        assertArrayEquals(pickaxe, log.formAt(world, 1, 2, 3))
-        assertNull(log.formAt(world, 4, 5, 6))
+        assertArrayEquals(pickaxe, log.formAt(WorldBlock(world, 1, 2, 3)))
+        assertNull(log.formAt(WorldBlock(world, 4, 5, 6)))
     }
 
     // A shulker loses its mark when it is broken, so the name has to outlive the box standing there,
     // restarts included.
     @Test
     fun `the name of a placed container outlives the session`() {
-        val world = UUID.randomUUID()
         val owner = UUID.randomUUID()
-        assertNull(log.ownerAt(world, 1, 2, 3))
-        log.setOwnerAt(world, 1, 2, 3, owner)
-        assertEquals(owner, log.ownerAt(world, 1, 2, 3))
-        assertNull(log.ownerAt(world, 1, 2, 4))
-        assertNull(log.ownerAt(UUID.randomUUID(), 1, 2, 3))
-
-        log.close()
-        log = RocksItemLog(dir)
-        assertEquals(owner, log.ownerAt(world, 1, 2, 3))
-
-        log.clearOwnerAt(world, 1, 2, 3)
-        assertNull(log.ownerAt(world, 1, 2, 3))
+        assertNoteOutlivesSession(
+            owner,
+            get = { log.ownerAt(it.world, it.x, it.y, it.z) },
+            set = { log.setOwnerAt(it.world, it.x, it.y, it.z, owner) },
+            clear = { log.clearOwnerAt(it.world, it.x, it.y, it.z) },
+        )
     }
 
     // A block answers with the bare item whatever was put down, so the position has to give back the
     // form it took over rather than one built from the block, restarts included.
     @Test
     fun `the form a position took over outlives the session`() {
-        val world = UUID.randomUUID()
-        assertNull(log.formAt(world, 1, 2, 3))
-        log.setFormAt(world, 1, 2, 3, pickaxe)
-        assertArrayEquals(pickaxe, log.formAt(world, 1, 2, 3))
-        assertNull(log.formAt(world, 1, 2, 4))
-        assertNull(log.formAt(UUID.randomUUID(), 1, 2, 3))
+        assertNoteOutlivesSession(
+            pickaxe.toList(),
+            get = { log.formAt(it)?.toList() },
+            set = { log.setFormAt(it, pickaxe) },
+            clear = { log.clearFormAt(it) },
+        )
+    }
 
-        log.close()
-        log = RocksItemLog(dir)
-        assertArrayEquals(pickaxe, log.formAt(world, 1, 2, 3))
+    private fun <T : Any> assertNoteOutlivesSession(
+        value: T,
+        get: (WorldBlock) -> T?,
+        set: (WorldBlock) -> Unit,
+        clear: (WorldBlock) -> Unit,
+    ) {
+        val here = WorldBlock(UUID.randomUUID(), 1, 2, 3)
+        assertNull(get(here))
+        set(here)
+        assertEquals(value, get(here))
+        assertNull(get(here.copy(z = 4)))
+        assertNull(get(here.copy(world = UUID.randomUUID())))
 
-        log.clearFormAt(world, 1, 2, 3)
-        assertNull(log.formAt(world, 1, 2, 3))
+        reopen()
+        assertEquals(value, get(here))
+
+        clear(here)
+        assertNull(get(here))
     }
 
     @Test
     fun `each position keeps its own form`() {
         val world = UUID.randomUUID()
-        log.setFormAt(world, 1, 2, 3, pickaxe)
-        log.setFormAt(world, 2, 2, 3, torch)
-        assertArrayEquals(pickaxe, log.formAt(world, 1, 2, 3))
-        assertArrayEquals(torch, log.formAt(world, 2, 2, 3))
+        log.setFormAt(WorldBlock(world, 1, 2, 3), pickaxe)
+        log.setFormAt(WorldBlock(world, 2, 2, 3), torch)
+        assertArrayEquals(pickaxe, log.formAt(WorldBlock(world, 1, 2, 3)))
+        assertArrayEquals(torch, log.formAt(WorldBlock(world, 2, 2, 3)))
 
-        log.setFormAt(world, 1, 2, 3, cobblestone)
-        assertArrayEquals(cobblestone, log.formAt(world, 1, 2, 3))
+        log.setFormAt(WorldBlock(world, 1, 2, 3), cobblestone)
+        assertArrayEquals(cobblestone, log.formAt(WorldBlock(world, 1, 2, 3)))
 
-        log.clearFormAt(world, 1, 2, 3)
-        assertNull(log.formAt(world, 1, 2, 3))
-        assertArrayEquals(torch, log.formAt(world, 2, 2, 3))
+        log.clearFormAt(WorldBlock(world, 1, 2, 3))
+        assertNull(log.formAt(WorldBlock(world, 1, 2, 3)))
+        assertArrayEquals(torch, log.formAt(WorldBlock(world, 2, 2, 3)))
     }
 
     // An explosion clears a few thousand positions in one event, on the thread ticking the region, so
@@ -531,9 +481,9 @@ class StorageTest {
         val bare = WorldBlock(world, 3, 2, 3)
         val also = WorldBlock(world, 4, 2, 3)
         val elsewhere = WorldBlock(UUID.randomUUID(), 1, 2, 3)
-        log.setFormAt(world, 1, 2, 3, pickaxe)
-        log.setFormAt(world, 2, 2, 3, torch)
-        log.setFormAt(world, 4, 2, 3, cobblestone)
+        log.setFormAt(WorldBlock(world, 1, 2, 3), pickaxe)
+        log.setFormAt(WorldBlock(world, 2, 2, 3), torch)
+        log.setFormAt(WorldBlock(world, 4, 2, 3), cobblestone)
 
         val forms = log.formsAt(listOf(here, next, bare, elsewhere))
 
@@ -544,9 +494,9 @@ class StorageTest {
 
         log.clearFormsAt(listOf(here, bare, also))
 
-        assertNull(log.formAt(world, 1, 2, 3))
-        assertNull(log.formAt(world, 4, 2, 3))
-        assertArrayEquals(torch, log.formAt(world, 2, 2, 3))
+        assertNull(log.formAt(WorldBlock(world, 1, 2, 3)))
+        assertNull(log.formAt(WorldBlock(world, 4, 2, 3)))
+        assertArrayEquals(torch, log.formAt(WorldBlock(world, 2, 2, 3)))
         assertEquals(setOf(next), log.formsAt(listOf(here, next, bare, also)).keys)
     }
 
@@ -555,12 +505,12 @@ class StorageTest {
         val world = UUID.randomUUID()
         val owner = UUID.randomUUID()
         log.setOwnerAt(world, 1, 2, 3, owner)
-        assertNull(log.formAt(world, 1, 2, 3))
+        assertNull(log.formAt(WorldBlock(world, 1, 2, 3)))
 
-        log.setFormAt(world, 1, 2, 3, pickaxe)
+        log.setFormAt(WorldBlock(world, 1, 2, 3), pickaxe)
         assertEquals(owner, log.ownerAt(world, 1, 2, 3))
 
-        log.clearFormAt(world, 1, 2, 3)
+        log.clearFormAt(WorldBlock(world, 1, 2, 3))
         assertEquals(owner, log.ownerAt(world, 1, 2, 3))
     }
 
@@ -603,43 +553,29 @@ class StorageTest {
     }
 
     // A row this build cannot decode is not a row without gaps, and a sweep that folds the two
-    // together reports a clean pass over a ledger it can no longer read.
+    // together reports a clean pass over a ledger it can no longer read. A row torn by a half-written
+    // page reads as a version this build knows and then runs out of bytes; a throw would end the pass on
+    // the spot and leave every row after it unswept for as long as the row is there.
     @Test
     fun `rows this build cannot read are counted apart from the ones it checked`() {
+        val unreadable = listOf(
+            // A version this build does not know, which is the one thing decoding rejects before it has
+            // read anything else.
+            byteArrayOf(0x07),
+            // Nothing but the header: the version is this build's, and the cause byte after it is gone.
+            byteArrayOf(EntryCodec.header(Kind.TRANSFER, Confidence.FACT).toByte()),
+        )
         val readable = log.sweep(1000).checked
         val orphan = EntryCodec.key(chest, T0 + 40, 99L, 0, log.registries)
-        log.close()
-        // A version this build does not know, which is the one thing decoding rejects before it has
-        // read anything else.
-        writeRawEntry(dir, orphan, byteArrayOf(0x07))
-        log = RocksItemLog(dir)
+        for (value in unreadable) {
+            reopen { rawPut(dir, "entries", orphan, value) }
 
-        val report = log.sweep(1000)
-        assertEquals(readable, report.checked)
-        assertEquals(1, report.unreadable)
-        assertTrue(report.reachedEnd)
+            val report = log.sweep(1000)
+            assertEquals(readable, report.checked)
+            assertEquals(1, report.unreadable)
+            assertTrue(report.reachedEnd)
+        }
     }
-
-    // A row torn by a half-written page reads as a version this build knows and then runs out of
-    // bytes. The sweep already has somewhere to put a row it cannot read, and a throw would instead
-    // end the pass on the spot and leave every row after it unswept for as long as the row is there.
-    @Test
-    fun `a row torn in half is counted rather than ending the pass`() {
-        val readable = log.sweep(1000).checked
-        val torn = EntryCodec.key(chest, T0 + 40, 99L, 0, log.registries)
-        log.close()
-        // Nothing but the header: the version is this build's, and the cause byte after it is gone.
-        writeRawEntry(dir, torn, byteArrayOf(EntryCodec.header(Kind.TRANSFER, Confidence.FACT).toByte()))
-        log = RocksItemLog(dir)
-
-        val report = log.sweep(1000)
-        assertEquals(readable, report.checked)
-        assertEquals(1, report.unreadable)
-        assertTrue(report.reachedEnd)
-    }
-
-    private fun writeRawEntry(dir: Path, key: ByteArray, value: ByteArray) =
-        rawEdit(dir) { raw, family -> raw.put(family("entries"), key, value) }
 
     @Test
     fun `region entries cover the block box and nothing else`() {
@@ -801,8 +737,7 @@ class StorageTest {
         // Nothing has asked for a flush, so every one of these rows is still in the memtable.
         assertEveryScanAnswers(position)
 
-        log.close()
-        log = RocksItemLog(dir)
+        reopen()
         assertTrue(sstFiles() > 0, "nothing was flushed, so the table's own prefix filter never had a turn")
         assertEveryScanAnswers(position)
     }
@@ -827,7 +762,7 @@ class StorageTest {
         val fromAlice = log.holderEntries(aliceInv, 0, Long.MAX_VALUE, limit = 1000)
         assertEquals(3 + 20, fromAlice.size, "the seeded rows plus the placements")
         assertEquals(fromAlice.reversed(), log.holderPage(aliceInv, 0, Long.MAX_VALUE, reverse = true, limit = 1000).entries)
-        assertTrue(log.formBalance(alice).isNotEmpty())
+        assertTrue(log.slotBalances(listOf(aliceInv), Long.MAX_VALUE).isNotEmpty())
 
         // The whole ledger, walked from the start and then again a few rows at a time from a cursor.
         // Counted against the prefixes rather than against another walk, or a walk that stopped early
@@ -859,8 +794,7 @@ class StorageTest {
     @Test
     fun `a reopened log keeps entries forms and counters`() {
         val before = log.holderEntries(chest, 0, Long.MAX_VALUE)
-        log.close()
-        log = RocksItemLog(dir)
+        reopen()
 
         assertEquals(before, log.holderEntries(chest, 0, Long.MAX_VALUE))
         assertArrayEquals(cobblestone, log.form(before[0].itemFormId))
@@ -892,7 +826,7 @@ class StorageTest {
         log.drain()
 
         val landed = log.holderEntries(chest, 0, Long.MAX_VALUE, limit = 1000)
-            .filter { it.itemFormId == log.formId(torch) }
+            .filter { it.itemFormId == log.forms.lookup(torch) }
         assertEquals(listOf(1, 3), landed.map { it.qty })
 
         // Still alive afterwards: the next movement is written like nothing happened.
@@ -901,7 +835,7 @@ class StorageTest {
         assertEquals(
             listOf(1, 3, 5),
             log.holderEntries(chest, 0, Long.MAX_VALUE, limit = 1000)
-                .filter { it.itemFormId == log.formId(torch) }.map { it.qty },
+                .filter { it.itemFormId == log.forms.lookup(torch) }.map { it.qty },
         )
         assertEquals(emptyList<String>(), log.sweep(1000).gaps)
     }

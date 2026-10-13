@@ -3,6 +3,7 @@ package io.pfaumc.pfauprotect.rollback
 import io.pfaumc.pfauprotect.say
 import io.pfaumc.pfauprotect.sayNamed
 import ca.spottedleaf.concurrentutil.util.Priority
+import io.pfaumc.pfauprotect.attribution.blockNameOf
 import io.pfaumc.pfauprotect.capture.block.Difference
 import io.pfaumc.pfauprotect.capture.block.ranFrom
 import io.pfaumc.pfauprotect.capture.block.shapeKeysOf
@@ -26,7 +27,7 @@ import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
-import net.minecraft.nbt.NbtIo
+import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.TicketType
 import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManager
@@ -50,6 +51,7 @@ import net.minecraft.world.entity.EntitySpawnRequest
 import net.minecraft.world.entity.EntityType
 import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.ObserverBlock
 import net.minecraft.world.level.block.LeavesBlock
 import net.minecraft.world.level.levelgen.structure.BoundingBox
@@ -79,8 +81,6 @@ import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.craftbukkit.block.data.CraftBlockData
 import org.bukkit.entity.Player
 import org.bukkit.plugin.Plugin
-import java.io.ByteArrayInputStream
-import java.io.DataInputStream
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -97,10 +97,9 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 // held with it instead of spilling it on the ground. The neighbours are told once everything is in.
 private const val SHAPE_FLAGS = Block.UPDATE_CLIENTS or Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS
 
-// And the shape each row names is the shape put back: a block set with its neighbours' shapes worked out
-// anew made a wall the builder left low tall beside the plank that came back.
+// And the shape each row names is the shape put back, not one worked out anew from the neighbours: a
+// rollback restores the shape the builder left.
 private const val PLACE_FLAGS = SHAPE_FLAGS or Block.UPDATE_KNOWN_SHAPE
-
 
 // How long a preview waits for `apply`. The world goes on changing under it, so apply reads it all
 // again; this only bounds how stale the question can be.
@@ -384,11 +383,8 @@ class ChunkRollback(
         val touched = BooleanArray(positions.size)
         val settles = positions.mapIndexed { i, plan -> settle(before[i].state.asBlockData().asString, plan.steps, plan.origin) }
         val targets = settles.map { settled -> settled.back?.before?.let { if (passing(it)) "minecraft:air" else quiet(it) } }
-        // What a source being taken away had run into goes with it, before anything is put back: a plank
-        // put back in the middle of the flow would cut the walk off, and lava left running sets fire to
-        // the house the rollback is putting back.
-        // So does a flow the players' rows stand in whose source is no more: the lava of a cast whose sources the
-        // water turned to stone ran on down the restored roofs for minutes, read as air and left to drain.
+        // What a source being taken away had run into goes with it, before anything is put back, and so does a
+        // flow the players' rows stand in: lava left running sets fire to the house the rollback puts back.
         val drained = if (!apply) emptyList() else positions.indices.flatMap { i ->
             val was = before[i].state
             val removed = was.block is LiquidBlock && was.fluidState.isSource &&
@@ -424,7 +420,7 @@ class ChunkRollback(
             val returnsBlock = reshaped && !emptied(target!!)
             if (!apply) {
                 if (returnsBlock) restored(tally, plan)
-                if (reshaped) tally.ghosts += Ghost(world, spots[i].x, spots[i].y, spots[i].z, Bukkit.createBlockData(target!!))
+                if (reshaped) tally.ghosts += Ghost(plan.at.copy(world = world), Bukkit.createBlockData(target!!))
                 return@forEachIndexed
             }
             try {
@@ -458,8 +454,6 @@ class ChunkRollback(
                 }
             }
         }
-        // Around every position of the plan, not only the ones put back: fire on a plank the griefer's lava had
-        // not yet burnt stood next to nothing that came back, and burnt the house again.
         val doused = if (!apply) emptyList() else douse(level, spots)
         // After the blocks, so a chest that came back is there to take its contents.
         val givenBack = ArrayList<PostingRef>()
@@ -496,8 +490,8 @@ class ChunkRollback(
                     // What went in and came out again leaves the container as it was: nothing moves to carry
                     // the mark on.
                     marker = marker ?: refill.form
+                    tally.traces += Trace(refill.lead, refill.formId, if (refill.qty > 0) moved else -moved)
                 }
-                if (moved > 0) tally.traces += Trace(refill.lead, refill.formId, if (refill.qty > 0) moved else -moved)
             }
         }
         // After the blocks, so a frame comes back to a wall that is there again.
@@ -538,7 +532,7 @@ class ChunkRollback(
         val low = maxOf(level.minY, chunk.positions.minOf { it.at.y } - DRAIN_SPAN)
         val high = minOf(level.maxY - 1, chunk.positions.maxOf { it.at.y } + DRAIN_SPAN)
         val seen = HashSet<BlockPos>()
-        val orphaned = LinkedHashMap<BlockPos, net.minecraft.world.level.block.state.BlockState>()
+        val orphaned = LinkedHashMap<BlockPos, BlockState>()
         for (x in chunk.chunkX * 16 until chunk.chunkX * 16 + 16) for (z in chunk.chunkZ * 16 until chunk.chunkZ * 16 + 16) {
             for (y in low..high) {
                 val pos = BlockPos(x, y, z)
@@ -551,15 +545,15 @@ class ChunkRollback(
         for ((pos, was) in orphaned) level.updateNeighboursOnBlockSet(pos, was)
     }
 
-    private fun running(state: net.minecraft.world.level.block.state.BlockState) = state.block is LiquidBlock && !state.fluidState.isSource
+    private fun running(state: BlockState) = state.block is LiquidBlock && !state.fluidState.isSource
 
     // The running liquid joined to `start`, and whether a source of it touches any of it. One too big to walk is
     // taken as fed.
     private fun flowFrom(
         start: BlockPos, level: ServerLevel, seen: MutableSet<BlockPos>,
-    ): Pair<Map<BlockPos, net.minecraft.world.level.block.state.BlockState>, Boolean> {
+    ): Pair<Map<BlockPos, BlockState>, Boolean> {
         val fluid = level.getBlockState(start).fluidState.type
-        val flow = LinkedHashMap<BlockPos, net.minecraft.world.level.block.state.BlockState>()
+        val flow = LinkedHashMap<BlockPos, BlockState>()
         val queue = ArrayDeque(listOf(start))
         seen += start
         var fed = false
@@ -581,13 +575,8 @@ class ChunkRollback(
     }
 
     /**
-     * Fire within two blocks of the positions the rollback reads, put out. A house rolled back while it still
-     * burns caught again from the fire that had spread between the reading and the putting back, or had
-     * jumped where no row of the window reached, and a second rollback found it burnt anew. Fire that
-     * stands on a block meant to burn for ever is somebody's hearth and stays.
-     *
-     * The plan's own positions too, once the blocks are in: one the plan left as it stood — its walk stopped
-     * on a later change — kept its fire, and a house rolled back under the lava's fire burnt down again.
+     * Fire within [DOUSE_REACH] of every plan position, put out once the blocks are in, or it burns them
+     * again. Fire on an infiniburn block is somebody's hearth and stays.
      */
     private fun douse(level: ServerLevel, back: List<BlockPos>): List<Pair<BlockPos, Standing>> {
         val out = LinkedHashMap<BlockPos, Standing>()
@@ -613,7 +602,16 @@ class ChunkRollback(
      */
     private fun entity(level: ServerLevel, plan: EntityPlan, actor: UUID?, apply: Boolean, tally: Tally) {
         val alive = Bukkit.getEntity(plan.uuid)?.takeIf { it.isValid }
-        when (plan.oldest.kind) {
+        val kind = plan.oldest.kind
+        // Gone, or changed or led away and then killed or broken in the same window: brought back as it was
+        // before the first change.
+        if (alive == null && (kind == EntityKind.REMOVED || kind != EntityKind.CREATED && plan.removed)) {
+            tally.entitiesBack++
+            plan.bucket?.let { tally.buckets += it }
+            if (apply) bringBack(level, plan, actor, tally)
+            return
+        }
+        when (kind) {
             EntityKind.CREATED -> {
                 // Gone already, but what fell out of it lies there: wool and mutton of a sheep the griefer let
                 // loose on a roof, which fell off it and died.
@@ -624,25 +622,12 @@ class ChunkRollback(
                 tally.entitiesTaken++
                 if (apply) tally.jobs += EntityJob(alive) { takeAway(alive, plan, actor) }
             }
-            EntityKind.REMOVED -> {
-                if (alive != null) return run { tally.entitiesAlready++ }
-                tally.entitiesBack++
-                plan.bucket?.let { tally.buckets += it }
-                if (apply) bringBack(level, plan, actor, tally)
-            }
+            EntityKind.REMOVED -> tally.entitiesAlready++
             else -> {
-                // Changed or led away and then killed or broken in the same window: brought back as it
-                // was before the first change.
-                if (alive == null && plan.removed) {
-                    tally.entitiesBack++
-                    plan.bucket?.let { tally.buckets += it }
-                    if (apply) bringBack(level, plan, actor, tally)
-                    return
-                }
                 if (alive == null) return run { tally.entitiesGoneSince++ }
                 tally.entitiesReverted++
                 // Whether it already is what it was can only be read on its own thread, so the preview asks
-                // there too: a second rollback counted every one as to change back and wrote a row for it.
+                // there too, and one already as it was is neither counted nor written again.
                 tally.jobs += EntityJob(alive) { reverted ->
                     if (asItWas(alive, plan, level.world)) {
                         synchronized(reverted) {
@@ -693,14 +678,11 @@ class ChunkRollback(
         val now = snapshotOf(handle) ?: return
         val before = nbtOf(plan.before!!)
         if (plan.oldest.kind == EntityKind.MOVED) {
-            val pos = before.getListOrEmpty("Pos")
             entity.leaveVehicle()
             // The one who rode it off gets off here; a teleport would carry them back along with it.
             entity.eject()
             (entity as? LivingEntity)?.setLeashHolder(null)
-            if (pos.size == 3) {
-                entity.teleportAsync(Location(home, pos.getDoubleOr(0, 0.0), pos.getDoubleOr(1, 0.0), pos.getDoubleOr(2, 0.0)))
-            }
+            homeOf(before, home)?.let(entity::teleportAsync)
             filed(plan, EntityKind.MOVED, actor, before = now)
             return
         }
@@ -719,13 +701,19 @@ class ChunkRollback(
         if (!entity.isValid) return true
         val before = nbtOf(plan.before!!)
         if (plan.oldest.kind == EntityKind.MOVED) {
-            val pos = before.getListOrEmpty("Pos")
-            if (pos.size != 3 || entity.world != home || entity.isInsideVehicle || entity.passengers.isNotEmpty() || (entity as? LivingEntity)?.isLeashed == true) return false
+            val pos = homeOf(before, home)
+            if (pos == null || entity.world != home || entity.isInsideVehicle || entity.passengers.isNotEmpty() || (entity as? LivingEntity)?.isLeashed == true) return false
             val at = entity.location
-            return abs(at.x - pos.getDoubleOr(0, 0.0)) < 1 && abs(at.y - pos.getDoubleOr(1, 0.0)) < 1 && abs(at.z - pos.getDoubleOr(2, 0.0)) < 1
+            return abs(at.x - pos.x) < 1 && abs(at.y - pos.y) < 1 && abs(at.z - pos.z) < 1
         }
         val now = snapshotOf((entity as CraftEntity).handle) ?: return true
         return !changedBetween(plan.before, now)
+    }
+
+    private fun homeOf(tag: CompoundTag, world: World): Location? {
+        val pos = tag.getListOrEmpty("Pos")
+        if (pos.size != 3) return null
+        return Location(world, pos.getDoubleOr(0, 0.0), pos.getDoubleOr(1, 0.0), pos.getDoubleOr(2, 0.0))
     }
 
     // What the entity's own slots did after the moment it went back to: the NBT already holds them as
@@ -769,7 +757,7 @@ class ChunkRollback(
             for (face in Direction.entries) {
                 val near = pos.relative(face)
                 if (near in planned || !owned(level, near)) continue
-                if (shapeKeysOf(level.getBlockState(near).asBlockData().asString.substringBefore('[')).isNotEmpty()) continue
+                if (shapeKeysOf(blockNameOf(level.getBlockState(near).asBlockData().asString)).isNotEmpty()) continue
                 level.neighborShapeChanged(face.opposite, near, pos, state, SHAPE_FLAGS, Block.UPDATE_LIMIT - 1)
             }
         }
@@ -798,7 +786,7 @@ class ChunkRollback(
         if (state != null) level.setBlock(pos, (Bukkit.createBlockData(state) as CraftBlockData).state, PLACE_FLAGS)
         if (payload == null) return
         val entity = level.getBlockEntity(pos) ?: return
-        val tag = NbtIo.read(DataInputStream(ByteArrayInputStream(payload)))
+        val tag = nbtOf(payload)
         entity.loadWithComponents(TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), tag))
         // The tag still holds what the block held when the row was written, and the slot postings give
         // that back; loading it as well would hand everything out twice.
@@ -828,7 +816,6 @@ class Rollbacks(
     // Asked by /pp cancel while one runs: the chunks not yet begun are left as they are.
     private val stopping = java.util.concurrent.atomic.AtomicBoolean()
     private val reader = RollbackReader(ledger, blocks)
-    // The blocks each player sees as a preview of theirs would put them.
     val ghosts = Ghosts(plugin)
 
     fun preview(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
@@ -861,7 +848,6 @@ class Rollbacks(
         run(sender, asked.target, asked.query, apply = true, startedAt = now)
     }
 
-    /** When the rollback running now began, or null. */
     fun runningSince(): Long? = running.get().takeIf { it != 0L }
 
     fun cancelPreview(sender: CommandSender) {
@@ -889,12 +875,12 @@ class Rollbacks(
     private fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, apply: Boolean, startedAt: Long = 0) {
         // Only its own slot: a run taken as lost that finishes after all must not free the next one's.
         val release = { if (apply) running.compareAndSet(startedAt, 0) }
-        Bukkit.getAsyncScheduler().runNow(plugin) {
+        plugin.offThread(sender, "the rollback at ${target.label} failed", "The rollback failed; the server log has the details.") {
             try {
                 val users = lookups.resolveAll(sender, query.users)
                 if (users == null) {
                     release()
-                    return@runNow
+                    return@offThread
                 }
                 val keeps = lookups.rowFilter(query, users, rollback = true)
                 // The writers run on threads of their own, and what they still hold is history the
@@ -914,7 +900,7 @@ class Rollbacks(
                 val readings = if (query.global) {
                     everywhere(users, from, to, keeps)
                 } else {
-                    listOf(reader.around(at.world, at.x, at.y, at.z, radius!!, from, to, keeps::keeps, keeps::keeps, keeps::keeps, column = users.isNotEmpty()))
+                    listOf(reader.around(at.world, at.x, at.y, at.z, radius!!, from, to, keeps, column = users.isNotEmpty()))
                 }
                 val where = when {
                     event != null -> at.label
@@ -928,8 +914,6 @@ class Rollbacks(
                 when {
                     refused != null || positions > limit -> {
                         sender.say("Rollback refused: ${(refused ?: reader.tooMany(positions)).reason}.")
-                        // How to cut it, worked out, rather than left to tries: a griefer's 52 220 positions
-                        // were rolled back by hand in four squares of radius 32.
                         val over = refused?.positions ?: positions.takeIf { it > limit }
                         if (over != null && event == null && !query.global && radius != null) {
                             val pieces = kotlin.math.ceil(kotlin.math.sqrt(over.toDouble() / limit)).toInt()
@@ -944,9 +928,8 @@ class Rollbacks(
                     }
                 }
             } catch (failure: Throwable) {
-                plugin.logger.log(Level.SEVERE, "the rollback at ${target.label} failed", failure)
-                sender.say("The rollback failed; the server log has the details.")
                 release()
+                throw failure
             }
         }
     }
@@ -955,7 +938,7 @@ class Rollbacks(
     private fun everywhere(users: Set<UUID>, from: Long, now: Long, keeps: RowFilter): List<Reading> {
         val touched = reader.touchedBy(users, from, now)
             ?: return listOf(Refused("those players did more in that window than one rollback reads; narrow the time"))
-        return touched.map { (world, positions) -> reader.at(world, positions, from, now, keeps::keeps, keeps::keeps, keeps::keeps) }
+        return touched.map { (world, positions) -> reader.at(world, positions, from, now, keeps) }
     }
 
     private fun dispatch(
@@ -970,7 +953,8 @@ class Rollbacks(
     ) {
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
-        val (blockRows, slotRows) = plans.sumOf { it.rows } to plans.sumOf { it.postings }
+        val blockRows = plans.sumOf { it.rows }
+        val slotRows = plans.sumOf { it.postings }
         // The number after its word: "1 rows" and «1 строк» both read wrong.
         val read = tr("rows read: blocks $blockRows, slots $slotRows", "прочитано строк: блоков $blockRows, слотов $slotRows")
         if (work.isEmpty() && plans.all { it.deaths.isEmpty() }) {
@@ -978,13 +962,13 @@ class Rollbacks(
             release()
             return
         }
-        val actor = (sender as? Player)?.uniqueId
         val total = Tally()
         total.leftBefore = leftBefore
         total.since = since
         total.deaths += plans.flatMap { it.deaths }
+        val run = Run(sender, total, read, where, apply, rows)
         // Only deaths to give back for, and no place to touch: straight on to them.
-        if (work.isEmpty()) return finishing(sender, total, read, where, apply, actor, rows, release)
+        if (work.isEmpty()) return run.finishing(release)
         val hold = ChunkHold(work)
         if (!hold.take()) {
             sender.say("Rollback refused: the chunks it works in did not load within ${LOAD_MILLIS / 1000} s.")
@@ -992,69 +976,11 @@ class Rollbacks(
             return
         }
         try {
-            start(sender, work, total, read, where, apply, actor, rows, release, hold)
+            run.start(work, release, hold)
         } catch (failure: Throwable) {
             hold.release()
             throw failure
         }
-    }
-
-    private fun start(
-        sender: CommandSender,
-        work: List<Pair<ServerLevel, ChunkPlan>>,
-        total: Tally,
-        read: String,
-        where: String,
-        apply: Boolean,
-        actor: UUID?,
-        rows: String?,
-        release: () -> Unit,
-        hold: ChunkHold,
-    ) {
-        // Held through the taking back too: the piles it takes back lie in these chunks, and taking them is
-        // queued on the global region and then on the pile's own, after this returns. Let go at once, the
-        // chunks unloaded under it and the piles read as gone while they still lay there.
-        val freed = {
-            release()
-            Bukkit.getGlobalRegionScheduler().runDelayed(plugin, { hold.release() }, HOLD_LINGER_TICKS)
-            Unit
-        }
-        val left = AtomicInteger(work.size)
-        val progress = Progress(sender as? Player, work.size, apply)
-        val done = {
-            val n = left.decrementAndGet()
-            progress.step(work.size - n)
-            if (n == 0) drainAll(work, apply) { entityJobs(total) { finishing(sender, total, read, where, apply, actor, rows, freed) } }
-        }
-        // A few chunks at a time, each starting the next as it ends: a /pp cancel then reaches the chunks not
-        // begun yet, and a big rollback does not land on every region in the same tick.
-        val queue = java.util.concurrent.ConcurrentLinkedQueue(work)
-        fun next() {
-            while (true) {
-                val (level, chunk) = queue.poll() ?: return
-                if (apply && stopping.get()) {
-                    total.add(Tally().apply { skipped = chunk.positions.size })
-                    done()
-                    continue
-                }
-                // Loaded by the hold, so this runs on the chunk's region rather than waiting for a load.
-                level.`canvas$loadOrRunAtChunksAsync`(
-                    chunk.chunkX - 1, chunk.chunkX + 1, chunk.chunkZ - 1, chunk.chunkZ + 1, Priority.NORMAL,
-                ) {
-                    try {
-                        total.add(chunks.run(level, chunk, actor, apply))
-                    } catch (failure: Throwable) {
-                        plugin.logger.log(Level.SEVERE, "a rollback chunk at ${chunk.chunkX} ${chunk.chunkZ} failed", failure)
-                        total.add(Tally().apply { failed = chunk.positions.size })
-                    } finally {
-                        done()
-                        next()
-                    }
-                }
-                return
-            }
-        }
-        repeat(minOf(CONCURRENT_CHUNKS, work.size)) { next() }
     }
 
     // The liquid left running, every chunk on its own region, once all of them are put back.
@@ -1094,118 +1020,179 @@ class Rollbacks(
         }
     }
 
-    // Following what was given back to whoever holds it reads the ledger, which a region thread may not.
-    private fun finishing(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, rows: String?, release: () -> Unit) {
-        plugin.offThread(
-            sender,
-            "taking back what the rollback at $where gave back failed",
-            "Taking back what the rollback gave back failed; the server log has the details.",
-        ) {
-            try {
-                finish(sender, total, read, where, apply, actor, rows)
-            } finally {
-                release()
-            }
-        }
-    }
-
-    private fun finish(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, actor: UUID?, rows: String?) {
-        val owed = owedFor(ledger, total)
-        report(sender, total, read, where, apply, rows)
-        if (!apply) (sender as? Player)?.let { ghosts.show(it, total.ghosts) }
-        // A killed player gets back what fell out of them, wherever it went.
-        for (death in total.deaths.distinctBy { it.eventId to it.uuid }) {
-            val back = restitutionFor(ledger, death)
-            if (back.isEmpty()) continue
-            val victim = nameOrId(death.uuid)
-            sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
-            if (apply) confiscations.restore(death.uuid, back, actor, sender, pileBirths(ledger, death).values.flatten(), fellFrom(ledger, death))
-        }
-        // A mob let out of a bucket is no longer in it: the bucket with the mob for the one it was before.
-        for (bucket in total.buckets) {
-            val who = nameOrId(bucket.player)
-            val swap = "${confiscations.name(bucket.withMob)} from $who for ${confiscations.name(bucket.empty)}"
-            if (!apply) {
-                sender.sayNamed("  would swap back $swap.")
-                continue
-            }
-            sender.sayNamed("  swapping back $swap:")
-            confiscations.exchange(bucket.player, bucket.withMob, bucket.empty, actor, sender)
-        }
-        if (owed.isEmpty()) return
-        val whom = confiscations.describe(owed)
-        if (!apply) {
-            sender.sayNamed("  would take back from $whom.")
-            return
-        }
-        sender.sayNamed("  taking back from $whom:")
-        confiscations.take(owed, actor, sender)
-    }
-
     private fun hide(sender: CommandSender) {
         (sender as? Player)?.let(ghosts::hide)
     }
 
-    private fun report(sender: CommandSender, total: Tally, read: String, where: String, apply: Boolean, rows: String?) {
-        fun parts(vararg counts: Pair<Int, String>) = counts.filter { it.first > 0 }.joinToString(" · ") { "${it.second} ${it.first}" }
-        val blocks = parts(
-            total.changed to (if (apply) tr("put back", "возвращено") else tr("to change", "изменится")),
-            total.unchanged to tr("already as they were", "уже как были"),
-            total.conflicts to tr("stopped by a later change", "остановлено поздней переменой"),
-        )
-        val slots = parts(total.slots to (if (apply) tr("given back", "возвращено") else tr("to give back", "вернуть")))
-        val entities = parts(
-            total.entitiesBack to (if (apply) tr("brought back", "возвращено") else tr("to bring back", "вернуть")),
-            total.entitiesTaken to (if (apply) tr("taken away", "убрано") else tr("to take away", "убрать")),
-            total.entitiesReverted to (if (apply) tr("changed back", "изменено обратно") else tr("to change back", "изменить обратно")),
-            total.entitiesAlready to tr("already as they were", "уже как были"),
-        )
-        val title = if (apply) tr("Rolled back", "Откачено") else tr("Rollback preview", "Предпросмотр отката")
-        sender.sendMessage(Component.text().append(Ui.text("PfauProtect · ", Ui.FAINT)).append(Ui.text("$title: ")).append(Ui.text(Texts.translate(where), Ui.MUTED)).build())
-        for ((label, counts) in listOf(tr("blocks", "блоки") to blocks, tr("slots", "слоты") to slots, tr("entities", "сущности") to entities)) {
-            if (counts.isNotEmpty()) sender.sendMessage(Component.text().append(Ui.text("  $label: ", Ui.MUTED)).append(Ui.text(counts)).build())
+    /** One rollback from its reading on: what it reports and to whom, and the tally its chunks add to. */
+    private inner class Run(
+        val sender: CommandSender,
+        val total: Tally,
+        val read: String,
+        val where: String,
+        val apply: Boolean,
+        val rows: String?,
+    ) {
+        val actor = (sender as? Player)?.uniqueId
+
+        fun start(work: List<Pair<ServerLevel, ChunkPlan>>, release: () -> Unit, hold: ChunkHold) {
+            // Held through the taking back too: the piles it takes back lie in these chunks, and taking them is
+            // queued on the global region and then on the pile's own, after this returns. The chunks must stay
+            // loaded until then, or the piles read as gone while they still lie there.
+            val freed = {
+                release()
+                Bukkit.getGlobalRegionScheduler().runDelayed(plugin, { hold.release() }, HOLD_LINGER_TICKS)
+                Unit
+            }
+            val left = AtomicInteger(work.size)
+            val progress = Progress((sender as? Player)?.takeIf { apply }, work.size)
+            val done = {
+                val n = left.decrementAndGet()
+                progress.step(work.size - n)
+                if (n == 0) drainAll(work, apply) { entityJobs(total) { finishing(freed) } }
+            }
+            // A few chunks at a time, each starting the next as it ends: a /pp cancel then reaches the chunks not
+            // begun yet, and a big rollback does not land on every region in the same tick.
+            val queue = java.util.concurrent.ConcurrentLinkedQueue(work)
+            fun next() {
+                while (true) {
+                    val (level, chunk) = queue.poll() ?: return
+                    if (apply && stopping.get()) {
+                        total.add(Tally().apply { skipped = chunk.positions.size })
+                        done()
+                        continue
+                    }
+                    // Loaded by the hold, so this runs on the chunk's region rather than waiting for a load.
+                    level.`canvas$loadOrRunAtChunksAsync`(
+                        chunk.chunkX - 1, chunk.chunkX + 1, chunk.chunkZ - 1, chunk.chunkZ + 1, Priority.NORMAL,
+                    ) {
+                        try {
+                            total.add(chunks.run(level, chunk, actor, apply))
+                        } catch (failure: Throwable) {
+                            plugin.logger.log(Level.SEVERE, "a rollback chunk at ${chunk.chunkX} ${chunk.chunkZ} failed", failure)
+                            total.add(Tally().apply { failed = chunk.positions.size })
+                        } finally {
+                            done()
+                            next()
+                        }
+                    }
+                    return
+                }
+            }
+            repeat(minOf(CONCURRENT_CHUNKS, work.size)) { next() }
         }
-        if (!apply) {
-            sender.sendMessage(Ui.text("  " + read, Ui.FAINT))
-            if (total.leftBefore > 0) sender.say(
-                "  the window may be shorter than a full rollback needs: ${total.leftBefore} of these positions stood " +
-                    "as the same player had left them when it opened, and go back to that; a longer time: reaches further.",
-            )
-            val minutes = PENDING_MILLIS / 60_000
-            if (sender !is Player) {
-                // A world-wide lookup has no index to read by, so it cannot show the rows of a global one.
-                sender.say("  /pp apply within $minutes minutes runs it, /pp cancel drops it${if (rows == null) "" else "; /pp lookup with the same words shows the rows"}.")
+
+        // Following what was given back to whoever holds it reads the ledger, which a region thread may not.
+        fun finishing(release: () -> Unit) {
+            plugin.offThread(
+                sender,
+                "taking back what the rollback at $where gave back failed",
+                "Taking back what the rollback gave back failed; the server log has the details.",
+            ) {
+                try {
+                    finish()
+                } finally {
+                    release()
+                }
+            }
+        }
+
+        private fun finish() {
+            val owed = owedFor(ledger, total)
+            report()
+            if (!apply) (sender as? Player)?.let { ghosts.show(it, total.ghosts) }
+            // A killed player gets back what fell out of them, wherever it went.
+            for (death in total.deaths.distinctBy { it.eventId to it.uuid }) {
+                val fallen = Fallen(ledger, death)
+                val back = fallen.restitution()
+                if (back.isEmpty()) continue
+                val victim = nameOrId(death.uuid)
+                sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
+                if (apply) confiscations.restore(death.uuid, back, actor, sender, fallen.births().values.flatten(), fallen.slots())
+            }
+            // A mob let out of a bucket is no longer in it: the bucket with the mob for the one it was before.
+            for (bucket in total.buckets) {
+                val who = nameOrId(bucket.player)
+                val swap = "${confiscations.name(bucket.withMob)} from $who for ${confiscations.name(bucket.empty)}"
+                if (!apply) {
+                    sender.sayNamed("  would swap back $swap.")
+                    continue
+                }
+                sender.sayNamed("  swapping back $swap:")
+                confiscations.exchange(bucket.player, bucket.withMob, bucket.empty, actor, sender)
+            }
+            if (owed.isEmpty()) return
+            val whom = confiscations.describe(owed)
+            if (!apply) {
+                sender.sayNamed("  would take back from $whom.")
                 return
             }
-            val buttons = Component.text().append(Ui.text("  "))
-                .append(Ui.button(tr("[apply]", "[применить]"), "/pp apply", Ui.GAINED, tr("Run this rollback", "Выполнить откат"), "/pp apply"))
-                .append(Ui.text(" "))
-                .append(Ui.button(tr("[cancel]", "[отменить]"), "/pp cancel", Ui.LOST, tr("Drop the preview", "Сбросить предпросмотр"), "/pp cancel"))
-            if (rows != null) buttons.append(Ui.text(" ")).append(
-                Ui.hover(Ui.text(tr("[rows]", "[строки]"), Ui.WHO), tr("The rows it undoes", "Строки, которые он отменяет"), rows)
-                    .clickEvent(ClickEvent.runCommand(rows)),
-            )
-            buttons.append(Ui.text(tr("  expires in $minutes min", "  действует $minutes мин"), Ui.FAINT))
-            sender.sendMessage(buttons.build())
-            return
+            sender.sayNamed("  taking back from $whom:")
+            confiscations.take(owed, actor, sender)
         }
-        if (total.entitiesGoneSince > 0) sender.say("  ${total.entitiesGoneSince} entities to change back are gone since.")
-        if (total.missed > 0) sender.say("  ${total.missed} slot postings found no room or nothing left to take out.")
-        if (total.failed > 0) sender.say("  ${total.failed} positions failed; the server log has the details.")
-        if (total.skipped > 0) sender.say("  stopped by /pp cancel: ${total.skipped} positions in chunks it had not reached are left as they were.")
+
+        private fun report() {
+            fun parts(vararg counts: Pair<Int, String>) = counts.filter { it.first > 0 }.joinToString(" · ") { "${it.second} ${it.first}" }
+            val blocks = parts(
+                total.changed to (if (apply) tr("put back", "возвращено") else tr("to change", "изменится")),
+                total.unchanged to tr("already as they were", "уже как были"),
+                total.conflicts to tr("stopped by a later change", "остановлено поздней переменой"),
+            )
+            val slots = parts(total.slots to (if (apply) tr("given back", "возвращено") else tr("to give back", "вернуть")))
+            val entities = parts(
+                total.entitiesBack to (if (apply) tr("brought back", "возвращено") else tr("to bring back", "вернуть")),
+                total.entitiesTaken to (if (apply) tr("taken away", "убрано") else tr("to take away", "убрать")),
+                total.entitiesReverted to (if (apply) tr("changed back", "изменено обратно") else tr("to change back", "изменить обратно")),
+                total.entitiesAlready to tr("already as they were", "уже как были"),
+            )
+            val title = if (apply) tr("Rolled back", "Откачено") else tr("Rollback preview", "Предпросмотр отката")
+            sender.sendMessage(Component.text().append(Ui.text("PfauProtect · ", Ui.FAINT)).append(Ui.text("$title: ")).append(Ui.text(Texts.translate(where), Ui.MUTED)).build())
+            for ((label, counts) in listOf(tr("blocks", "блоки") to blocks, tr("slots", "слоты") to slots, tr("entities", "сущности") to entities)) {
+                if (counts.isNotEmpty()) sender.sendMessage(Component.text().append(Ui.text("  $label: ", Ui.MUTED)).append(Ui.text(counts)).build())
+            }
+            if (!apply) {
+                sender.sendMessage(Ui.text("  " + read, Ui.FAINT))
+                if (total.leftBefore > 0) sender.say(
+                    "  the window may be shorter than a full rollback needs: ${total.leftBefore} of these positions stood " +
+                        "as the same player had left them when it opened, and go back to that; a longer time: reaches further.",
+                )
+                val minutes = PENDING_MILLIS / 60_000
+                if (sender !is Player) {
+                    sender.say("  /pp apply within $minutes minutes runs it, /pp cancel drops it${if (rows == null) "" else "; /pp lookup with the same words shows the rows"}.")
+                    return
+                }
+                val buttons = Component.text().append(Ui.text("  "))
+                    .append(Ui.button(tr("[apply]", "[применить]"), "/pp apply", Ui.GAINED, tr("Run this rollback", "Выполнить откат"), "/pp apply"))
+                    .append(Ui.text(" "))
+                    .append(Ui.button(tr("[cancel]", "[отменить]"), "/pp cancel", Ui.LOST, tr("Drop the preview", "Сбросить предпросмотр"), "/pp cancel"))
+                if (rows != null) buttons.append(Ui.text(" ")).append(
+                    Ui.hover(Ui.text(tr("[rows]", "[строки]"), Ui.WHO), tr("The rows it undoes", "Строки, которые он отменяет"), rows)
+                        .clickEvent(ClickEvent.runCommand(rows)),
+                )
+                buttons.append(Ui.text(tr("  expires in $minutes min", "  действует $minutes мин"), Ui.FAINT))
+                sender.sendMessage(buttons.build())
+                return
+            }
+            if (total.entitiesGoneSince > 0) sender.say("  ${total.entitiesGoneSince} entities to change back are gone since.")
+            if (total.missed > 0) sender.say("  ${total.missed} slot postings found no room or nothing left to take out.")
+            if (total.failed > 0) sender.say("  ${total.failed} positions failed; the server log has the details.")
+            if (total.skipped > 0) sender.say("  stopped by /pp cancel: ${total.skipped} positions in chunks it had not reached are left as they were.")
+        }
     }
 
-    // The lookup that shows what a rollback undoes, about the place it covers; a world-wide one has no place.
+    // The lookup that shows what a rollback undoes. None for a global rollback, which reads every loaded world
+    // and the containers the players' own rows reach, where a global lookup reads only this world's actor index;
+    // nor for an event, which is read around the event and not where the preview was asked.
     private fun rowsOf(query: LookupQuery, target: LookupTarget): String? =
         if (query.global || query.event != null) null else query.pageCommand(target, 1)
 }
 
 /** How far an apply has got, above the hotbar of whoever ran it, at most a few times a second. */
-private class Progress(private val player: Player?, private val chunks: Int, private val apply: Boolean) {
+private class Progress(private val player: Player?, private val chunks: Int) {
     private val shown = AtomicLong()
 
     fun step(done: Int) {
-        if (player == null || !apply) return
+        if (player == null) return
         val now = System.currentTimeMillis()
         val last = shown.get()
         if (done < chunks && (now - last < PROGRESS_MILLIS || !shown.compareAndSet(last, now))) return

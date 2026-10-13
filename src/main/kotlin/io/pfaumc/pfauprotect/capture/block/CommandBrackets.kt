@@ -161,8 +161,7 @@ internal class Difference(
         if (replaced.isEmpty() || !plugin.isEnabled) return
         val positions = ArrayList(replaced)
         plugin.server.asyncScheduler.runNow(plugin) {
-            val forms = placed.formsAt(positions)
-            placed.clearFormsAt(positions)
+            val forms = placed.takeFormsAt(positions)
             val gone = forms.map { (at, form) -> Transfer(emptied, at, Void, form, null, 1, timestamp, actor = actor) }
             if (gone.isNotEmpty()) sink(gone)
         }
@@ -181,9 +180,9 @@ class CommandBrackets(
     private val placed: PlacedForms,
     private val sink: (List<Transfer>) -> Unit,
 ) {
-    private enum class Writes(val filled: Cause, val emptied: Cause) {
-        WRITE(Cause.CMD_SETBLOCK_FILL_FILL, Cause.CMD_SETBLOCK_FILL_VOID),
-        CLONE(Cause.CMD_CLONE_CONTAINER, Cause.CMD_CLONE_MOVE_VOID),
+    private enum class Writes(val filled: Cause, val emptied: Cause, val made: Kind) {
+        WRITE(Cause.CMD_SETBLOCK_FILL_FILL, Cause.CMD_SETBLOCK_FILL_VOID, Kind.TRANSFER),
+        CLONE(Cause.CMD_CLONE_CONTAINER, Cause.CMD_CLONE_MOVE_VOID, Kind.CLONE),
     }
 
     private inner class Bracketed(val original: Command<CommandSourceStack>, val name: String) : Command<CommandSourceStack> {
@@ -281,8 +280,7 @@ class CommandBrackets(
         if (before == null) return
         val after = read(area)
         val world = area.level.world.uid
-        val made = if (kind == Writes.CLONE) Kind.CLONE else Kind.TRANSFER
-        val difference = Difference(world, Cause.BLK_COMMAND, kind.emptied, kind.filled, made, actor, System.currentTimeMillis())
+        val difference = Difference(world, Cause.BLK_COMMAND, kind.emptied, kind.filled, kind.made, actor, System.currentTimeMillis())
         var index = 0
         for (x in area.minX..area.maxX) for (y in area.minY..area.maxY) for (z in area.minZ..area.maxZ) {
             difference.add(x, y, z, before[index], after[index])

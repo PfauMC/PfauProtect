@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit
 import io.pfaumc.pfauprotect.storage.EncodedItem
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.ownHolders
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.storage.FormKey
 import io.pfaumc.pfauprotect.model.Holder
@@ -35,6 +36,7 @@ import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.enchantment.EnchantmentEffectComponents
 import net.minecraft.world.item.enchantment.EnchantmentHelper
 import net.minecraft.world.level.block.entity.BlockEntity
+import net.minecraft.world.entity.player.Inventory as NmsInventory
 import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.block.Block
@@ -45,7 +47,6 @@ import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
-import org.bukkit.event.Event
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
@@ -63,7 +64,6 @@ import org.bukkit.event.inventory.InventoryOpenEvent
 import org.bukkit.event.inventory.InventoryType
 import org.bukkit.event.player.PlayerDropItemEvent
 import org.bukkit.event.player.PlayerEditBookEvent
-import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.player.PlayerItemBreakEvent
 import org.bukkit.event.player.PlayerItemConsumeEvent
 import org.bukkit.event.player.PlayerJoinEvent
@@ -89,9 +89,6 @@ import org.bukkit.inventory.StonecutterInventory
 import org.bukkit.plugin.Plugin
 import org.bukkit.block.Container as ContainerBlock
 import org.bukkit.inventory.ItemStack as BukkitItemStack
-
-// net.minecraft.world.entity.player.Inventory.SLOT_OFFHAND: one past the four armour slots.
-private const val OFFHAND_SLOT = 40
 
 data class Stack(val key: ItemKey, val count: Int)
 
@@ -152,11 +149,8 @@ private class Delta(val holder: Holder, val form: FormKey, val damage: Int?, var
 private class Held(val holder: Holder, val key: ItemKey, val vanishing: Boolean, var left: Int)
 
 object Netting {
-    // Loss meets gain by form, with the wear ignored: durability is not identity, so a tool losing a
-    // point of it between two passes is not a movement at all and cancels itself out where it lies.
-    // Once the pass runs after every block broken rather than only while a window is open, the other
-    // reading would fill the ledger with a pickaxe vanishing and a pickaxe appearing on every swing.
-    // The row carries the wear of the side that ended up holding the item.
+    // Durability is not identity: wear between two passes nets out in place; the row carries the wear
+    // of the side that ended up holding the item.
     fun diff(
         before: Snapshot,
         after: Snapshot,
@@ -261,24 +255,18 @@ internal fun containerHolders(inventory: Inventory): ((Int) -> Holder)? {
             }
         }
     }
-    // A block entity knows where it stands. Asking the inventory for its holder reads the block state
-    // out of the world, which only the thread ticking that region may do — and while the server shuts
-    // down no thread does, so the last pass over an open furnace failed and took the rest of the
-    // shutdown with it.
+    // Asking the inventory for its holder reads block state, which only the owning region thread may
+    // do, and no thread does during shutdown.
     val entity = (inventory as? CraftInventory)?.inventory as? BlockEntity
     val level = entity?.level
-    if (entity != null && level != null) {
+    val atEntity = if (entity != null && level != null) {
         val at = entity.blockPos
-        val container = Container(level.world.uid, at.x, at.y, at.z, 0)
-        return { slot -> container.copy(slot = slot) }
-    }
+        Container(level.world.uid, at.x, at.y, at.z, 0)
+    } else null
     // Only the position is wanted, and a snapshot holder would copy the whole block state.
-    val holder = inventory.getHolder(false)
-    val block = (holder as? BlockInventoryHolder)?.block
-    if (block != null) {
-        val container = containerAt(block, 0)
-        return { slot -> container.copy(slot = slot) }
-    }
+    val holder = if (atEntity == null) inventory.getHolder(false) else null
+    val container = atEntity ?: (holder as? BlockInventoryHolder)?.block?.let { containerAt(it, 0) }
+    if (container != null) return { slot -> container.copy(slot = slot) }
     // A minecart rides the rails, so only its uuid addresses it; its position is where something
     // happened, not what it is.
     val cart = holder as? Entity
@@ -335,15 +323,15 @@ private fun specialCraft(key: String): Cause? = when {
 // only ever rearranges whole items — a workbench, and everything folded into it: dyeing, a signed
 // book, a copied banner, a scaled map — consumes and produces rather than mutates, so its two sides
 // carry the ordinary form. The rest hand back the very item that went in, changed.
+//
+// The matched recipe is only readable while the click is delivered, so it is read here and never in the
+// deferred pass.
 internal fun shiftOf(top: Inventory): Shift? = when (top) {
-    // Read while the click is delivered, like the smithing recipe below: the match is gone after it.
     is CraftingInventory -> (top.recipe as? Keyed)?.key?.takeIf { it.namespace == "minecraft" }?.let { specialCraft(it.key) }
         ?.let { Shift(it, it, Kind.TRANSFER, Cause.CRAFT_REMAINDER) }
         ?: Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
     is AnvilInventory -> Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
     is GrindstoneInventory -> Shift(Cause.GRINDSTONE, Cause.GRINDSTONE, Kind.MUTATE)
-    // The matched recipe is only readable while the click is delivered, so it is read here and never in
-    // the deferred pass.
     // ponytail: a plugin may register a SmithingRecipe that is neither, and it books as a transform;
     // splitting that out needs a cause the dictionary does not have yet.
     is SmithingInventory -> {
@@ -436,8 +424,7 @@ internal fun loadDifferences(
                 cause = Cause.INVENTORY_LOAD,
                 from = from,
                 to = to,
-                form = form.form,
-                damage = null,
+                key = ItemKey(form.form, null),
                 qty = qty,
                 timestamp = at,
                 confidence = Confidence.INFERRED,
@@ -534,7 +521,7 @@ class ContainerCaptureListener(
         if (!plugin.isEnabled) return
         plugin.server.asyncScheduler.runNow(plugin) {
             val id = player.uniqueId
-            val own = listOf(PlayerInv(id, 0), PlayerEquip(id, 0), PlayerCursor(id), PlayerEnder(id, 0))
+            val own = ownHolders(id, craftingGrid = false)
             written(loadDifferences(live, booked(own, at), at))
         }
     }
@@ -679,7 +666,7 @@ class ContainerCaptureListener(
         if (!placesBlock(inHand.type)) return
         val form = codec.encodeOrNull(inHand)?.form ?: return
         val block = event.block
-        placed.setFormAt(block.world.uid, block.x, block.y, block.z, form)
+        placed.setFormAt(positionOf(block), form)
         intend(
             event.player,
             Intent(
@@ -692,13 +679,12 @@ class ContainerCaptureListener(
         )
     }
 
-    // The offhand is one slot past the armour in the player's own numbering, and the snapshot walks
-    // those same numbers, so a hand is nameable as a holder the moment the event says which one.
+    // The snapshot walks the player's own slot numbering, so the hand is a holder as soon as the event names it.
     internal fun handSlot(player: Player, hand: EquipmentSlot?): Holder? {
         val inventory = player.inventory
         val slot = when (hand) {
             EquipmentSlot.HAND -> inventory.heldItemSlot
-            EquipmentSlot.OFF_HAND -> OFFHAND_SLOT
+            EquipmentSlot.OFF_HAND -> NmsInventory.SLOT_OFFHAND
             else -> return null
         }
         return playerHolders(player.uniqueId, inventory)(slot)
@@ -760,17 +746,6 @@ class ContainerCaptureListener(
     fun onRecipeBook(event: PlayerRecipeBookClickEvent) {
         recompute(event.player)
         intend(event.player, Intent(Cause.RECIPE_BOOK_FILL))
-    }
-
-    // Using an empty map writes a filled one, in the hand that held it or beside it when the empty map
-    // was one of a stack. It is driven by a use rather than a click, like signing a book, and it is as
-    // much one item turning into another. A right click in the air is raised already denied, so the
-    // item's own verdict is what says whether the use went ahead.
-    @EventHandler(priority = EventPriority.MONITOR)
-    fun onUseMap(event: PlayerInteractEvent) {
-        if (!event.action.isRightClick || event.item?.type != Material.MAP) return
-        if (event.useItemInHand() == Event.Result.DENY) return
-        intend(event.player, mutation(Cause.MAP_FILL))
     }
 
     // Signing turns a writable book into a written one in the slot it is held in, driven by a packet
@@ -847,9 +822,7 @@ class ContainerCaptureListener(
                 actor = player.uniqueId,
             )
         )
-        // The entity is added to the world inside this same call and the spawn funnel writes a birth
-        // for anything nobody explained. This one is explained: the pass a tick from now names the
-        // slot it left and writes that birth itself, and two of them would read as a duplicated item.
+        // The pass writes this birth from the slot it left.
         origins.accounted(drop.uniqueId, encoded.count)
     }
 
@@ -981,17 +954,15 @@ class ContainerCaptureListener(
     fun onClose(event: InventoryCloseEvent) {
         val player = event.player as? Player ?: return
         if (!plugin.isEnabled) return
+        val top = event.view.topInventory
         // The game hands back what was left in a crafting grid or a station, and the cursor with it,
-        // without a click of its own. A label and not a quantity: it renames what the pass pairs up.
-        // A click the game applied in this same tick with no label of its own is renamed
-        // too; telling them apart needs the pass to know which snapshot each edge came from.
+        // without a click of its own.
         // A store keeps what it holds and hands back only the cursor: a shift-click out of a chest in the
         // tick it closed is a removal, not a return.
-        if (returnsOnClose(event.view.topInventory.type.name, player.itemOnCursor.isEmpty)) {
+        if (returnsOnClose(top.type.name, player.itemOnCursor.isEmpty)) {
             intents.add(player.uniqueId, Intent(Cause.MENU_CLOSE_RETURN))
         }
-        rememberClosing(player, event.view.topInventory)
-        val top = event.view.topInventory
+        rememberClosing(player, top)
         player.scheduler.run(plugin, {
             closing.remove(player.uniqueId)
             recompute(player)
@@ -1120,7 +1091,7 @@ class ContainerCaptureListener(
         val carried = was::sees
         val spent = HashSet<Intent>()
         // A transformation's reason is spent by whatever the pass gathered at all.
-        if (edges.isNotEmpty()) taken.filter { it.shift != null }.forEach(spent::add)
+        if (edges.isNotEmpty()) taken.filterTo(spent) { it.shift != null }
         val moves = Intents.explain(edges, taken, player.uniqueId, unspent, carried, used = spent::add) { form ->
             after.stacks.entries.firstOrNull { (holder, stack) ->
                 holder.heldBy(player.uniqueId) && stack.key.form.contentEquals(form)

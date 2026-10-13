@@ -21,7 +21,6 @@ import org.bukkit.event.inventory.InventoryType
 import org.bukkit.event.player.PlayerDropItemEvent
 import org.bukkit.inventory.InventoryView
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
 import org.bukkit.inventory.ItemStack as BukkitItemStack
@@ -58,7 +57,7 @@ class DisconnectDropTest {
         // the same three diamonds are born twice.
         val spot = Spot(UUID.randomUUID(), 0.0, 0.0, 0.0)
         assertEquals(3, origins.claim(dropped, spot, ItemKey(row.form, null), 3))
-        assertTrue(origins.isEmpty, "the note outlived the spawn it was left for")
+        assertEquals(0, origins.claim(dropped, spot, ItemKey(row.form, null), 3), "the note outlived the spawn it was left for")
     }
 
     private fun playerStub(): Player = stub(

@@ -5,11 +5,8 @@ import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.EntryCodec
-import io.pfaumc.pfauprotect.model.PlayerInv
-import io.pfaumc.pfauprotect.model.Transfer
-import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.storage.rawEdit
+import io.pfaumc.pfauprotect.storage.rawPut
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -25,9 +22,6 @@ class PlaneSyncTest : BothPlanes() {
     private val unopened = UUID.fromString("00000000-0000-4000-8000-000000000002")
     private val stoneForm = byteArrayOf(1, 2, 3)
 
-    private val now = System.currentTimeMillis()
-    private val longAgo = now - 10 * SETTLE_MILLIS
-
     private lateinit var sync: PlaneSync
 
     override fun openPlanes() {
@@ -36,54 +30,8 @@ class PlaneSyncTest : BothPlanes() {
     }
 
     private fun reopen() {
-        logs.close()
-        shared.close()
+        closeAll()
         openPlanes()
-    }
-
-    // The item plane takes the position over: a placement books the item onto the block it became.
-    private fun holdItem(
-        x: Int,
-        y: Int,
-        z: Int,
-        ts: Long = longAgo,
-        confidence: Confidence = Confidence.FACT,
-        at: UUID = world,
-    ) {
-        shared.submit(
-            Transfer(
-                cause = Cause.BLOCK_PLACE,
-                from = PlayerInv(alice, 0),
-                to = WorldBlock(at, x, y, z),
-                form = stoneForm,
-                damage = null,
-                qty = 1,
-                timestamp = ts,
-                confidence = confidence,
-            )
-        )
-    }
-
-    private fun releaseItem(
-        x: Int,
-        y: Int,
-        z: Int,
-        ts: Long = longAgo,
-        confidence: Confidence = Confidence.FACT,
-    ) {
-        shared.submit(
-            Transfer(
-                cause = Cause.BLOCK_DROP,
-                from = WorldBlock(world, x, y, z),
-                to = Void,
-                form = stoneForm,
-                damage = null,
-                qty = 1,
-                timestamp = ts,
-                actor = alice,
-                confidence = confidence,
-            )
-        )
     }
 
     // The store only ever clamps a stored time forward, so a row written here can never be older than
@@ -111,15 +59,14 @@ class PlaneSyncTest : BothPlanes() {
     }
 
     private fun writeRawEntry(key: ByteArray, value: ByteArray) {
-        logs.close()
-        shared.close()
-        rawEdit(dir.resolve("items")) { raw, family -> raw.put(family("entries"), key, value) }
+        closeAll()
+        rawPut(dir.resolve("items"), "entries", key, value)
         openPlanes()
     }
 
     @Test
     fun `a position the block plane calls air while the item plane still holds an item is reported`() {
-        holdItem(1, 64, 1)
+        heldAt(1, 64, 1, stoneForm)
         standAndFall(1, 64, 1)
         drainBoth()
 
@@ -138,23 +85,22 @@ class PlaneSyncTest : BothPlanes() {
 
     @Test
     fun `positions the two planes agree on are not reported`() {
-        holdItem(1, 64, 1)
+        heldAt(1, 64, 1, stoneForm)
         blockRow(1, 64, 1, AIR, STONE)
-        holdItem(2, 64, 2)
-        releaseItem(2, 64, 2)
+        heldAt(2, 64, 2, stoneForm)
+        releasedAt(2, 64, 2, stoneForm)
         standAndFall(2, 64, 2)
         drainBoth()
 
-        val report = sync.pass(100, now)
+        val report = assertPlanesAgree(now)
 
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
         assertEquals(2, report.checked)
         assertEquals(0, report.unreadable)
     }
 
     @Test
     fun `a waterlogged block broken leaves water standing and is reported`() {
-        holdItem(3, 64, 3)
+        heldAt(3, 64, 3, stoneForm)
         blockRow(3, 64, 3, AIR, WATERLOGGED)
         blockRow(3, 64, 3, WATERLOGGED, WATER)
         drainBoth()
@@ -168,13 +114,12 @@ class PlaneSyncTest : BothPlanes() {
 
     @Test
     fun `a position the block plane never recorded is counted apart from a position compared`() {
-        holdItem(4, 64, 4)
-        holdItem(4, 64, 4)
+        heldAt(4, 64, 4, stoneForm)
+        heldAt(4, 64, 4, stoneForm)
         drainBoth()
 
-        val report = sync.pass(100, now)
+        val report = assertPlanesAgree(now)
 
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
         assertEquals(1, report.unrecorded)
         assertEquals(0, report.checked)
         assertEquals(0, report.unreadable)
@@ -182,13 +127,12 @@ class PlaneSyncTest : BothPlanes() {
 
     @Test
     fun `a position that gave up what it never took is counted apart rather than called a holding`() {
-        releaseItem(9, 64, 9)
+        releasedAt(9, 64, 9, stoneForm)
         standAndFall(9, 64, 9)
         drainBoth()
 
-        val report = sync.pass(100, now)
+        val report = assertPlanesAgree(now)
 
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
         assertEquals(1, report.overdrawn)
         assertEquals(0, report.checked)
         assertEquals(0, report.unrecorded)
@@ -196,21 +140,20 @@ class PlaneSyncTest : BothPlanes() {
 
     @Test
     fun `a block that stood before the block plane saw it is not overdrawn when it goes`() {
-        releaseItem(9, 64, 9)
+        releasedAt(9, 64, 9, stoneForm)
         blockRow(9, 64, 9, STONE, AIR)
         drainBoth()
 
-        val report = sync.pass(100, now)
+        val report = assertPlanesAgree(now)
 
         assertEquals(0, report.overdrawn)
         assertEquals(1, report.unrecorded)
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
     }
 
     @Test
     fun `a confirmed holding written off by a guess is a disagreement and not a settled position`() {
-        holdItem(10, 64, 10)
-        releaseItem(10, 64, 10, confidence = Confidence.INFERRED)
+        heldAt(10, 64, 10, stoneForm)
+        releasedAt(10, 64, 10, stoneForm, confidence = Confidence.INFERRED)
         standAndFall(10, 64, 10)
         drainBoth()
 
@@ -225,9 +168,9 @@ class PlaneSyncTest : BothPlanes() {
 
     @Test
     fun `a posting landing on a settled position waits for the next cycle rather than judged alone`() {
-        holdItem(1, 64, 1)
+        heldAt(1, 64, 1, stoneForm)
         blockRow(1, 64, 1, AIR, STONE)
-        holdItem(2, 64, 2)
+        heldAt(2, 64, 2, stoneForm)
         blockRow(2, 64, 2, AIR, STONE)
         drainBoth()
 
@@ -235,33 +178,30 @@ class PlaneSyncTest : BothPlanes() {
         assertEquals(1, first.checked)
         assertFalse(first.reachedEnd)
 
-        releaseItem(1, 64, 1, ts = longAgo + 1)
+        releasedAt(1, 64, 1, stoneForm, ts = longAgo + 1)
         blockRow(1, 64, 1, STONE, AIR, ts = longAgo + 1)
         drainBoth()
 
-        val rest = sync.pass(100, now)
+        val rest = assertPlanesAgree(now)
 
-        assertEquals(emptyList<PlaneGap>(), rest.gaps)
         assertEquals(0, rest.overdrawn)
         assertEquals(1, rest.checked)
         assertTrue(rest.reachedEnd)
 
-        val cycle = sync.pass(100, now)
+        val cycle = assertPlanesAgree(now)
 
-        assertEquals(emptyList<PlaneGap>(), cycle.gaps)
         assertEquals(0, cycle.overdrawn)
         assertEquals(2, cycle.checked)
     }
 
     @Test
     fun `a position touched inside the settle window is left for a later pass`() {
-        holdItem(5, 64, 5, ts = now)
+        heldAt(5, 64, 5, stoneForm, ts = now)
         standAndFall(5, 64, 5, ts = now)
         drainBoth()
 
-        val settling = sync.pass(100, now)
+        val settling = assertPlanesAgree(now)
 
-        assertEquals(emptyList<PlaneGap>(), settling.gaps)
         assertEquals(1, settling.settling)
         assertEquals(0, settling.checked)
         assertTrue(settling.reachedEnd)
@@ -275,9 +215,9 @@ class PlaneSyncTest : BothPlanes() {
 
     @Test
     fun `a disagreement made of inferred postings is counted apart from a confirmed one`() {
-        holdItem(1, 64, 1)
+        heldAt(1, 64, 1, stoneForm)
         standAndFall(1, 64, 1)
-        holdItem(2, 64, 2, confidence = Confidence.INFERRED)
+        heldAt(2, 64, 2, stoneForm, confidence = Confidence.INFERRED)
         standAndFall(2, 64, 2)
         drainBoth()
 
@@ -294,28 +234,26 @@ class PlaneSyncTest : BothPlanes() {
 
     @Test
     fun `a posting that cannot be decoded leaves its position unreadable rather than accused`() {
-        holdItem(6, 64, 6)
+        heldAt(6, 64, 6, stoneForm)
         standAndFall(6, 64, 6)
         drainBoth()
         val key = EntryCodec.key(WorldBlock(world, 6, 64, 6), longAgo + 1, 9999, 0, shared.registries)
 
         writeRawEntry(key, byteArrayOf(0x01))
 
-        val report = sync.pass(100, now)
+        val report = assertPlanesAgree(now)
 
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
         assertEquals(1, report.unreadable)
         assertEquals(0, report.checked)
     }
 
     @Test
     fun `a world whose block base is missing is counted unreadable rather than swept clean`() {
-        holdItem(7, 64, 7, at = unopened)
+        heldAt(7, 64, 7, stoneForm, at = unopened)
         drainBoth()
 
-        val report = sync.pass(100, now)
+        val report = assertPlanesAgree(now)
 
-        assertEquals(emptyList<PlaneGap>(), report.gaps)
         assertEquals(1, report.unreadable)
         assertEquals(0, report.checked)
     }
@@ -323,7 +261,7 @@ class PlaneSyncTest : BothPlanes() {
     @Test
     fun `small passes cover what one pass covers, repeating none of it and dropping no tail`() {
         for (n in 1..4) {
-            holdItem(n, 64, n)
+            heldAt(n, 64, n, stoneForm)
             standAndFall(n, 64, n)
         }
         drainBoth()
@@ -349,7 +287,7 @@ class PlaneSyncTest : BothPlanes() {
     @Test
     fun `the cursor survives a close and reopen`() {
         for (n in 1..4) {
-            holdItem(n, 64, n)
+            heldAt(n, 64, n, stoneForm)
             standAndFall(n, 64, n)
         }
         drainBoth()
@@ -369,7 +307,7 @@ class PlaneSyncTest : BothPlanes() {
 
     @Test
     fun `a position with more postings than any page limit is settled whole`() {
-        repeat(600) { holdItem(8, 64, 8) }
+        repeat(600) { heldAt(8, 64, 8, stoneForm) }
         standAndFall(8, 64, 8)
         drainBoth()
 

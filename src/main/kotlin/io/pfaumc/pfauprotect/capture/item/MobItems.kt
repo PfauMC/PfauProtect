@@ -28,6 +28,7 @@ import org.bukkit.event.player.PlayerInteractEntityEvent
 import org.bukkit.event.player.PlayerBucketEntityEvent
 import org.bukkit.entity.AbstractArrow
 import org.bukkit.entity.AbstractHorse
+import org.bukkit.entity.Allay
 import org.bukkit.entity.Armadillo
 import org.bukkit.entity.Boat
 import org.bukkit.entity.Cat
@@ -39,8 +40,10 @@ import org.bukkit.entity.Item
 import org.bukkit.entity.ItemFrame
 import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Minecart
+import org.bukkit.entity.Piglin
 import org.bukkit.entity.Player
 import org.bukkit.entity.Sniffer
+import org.bukkit.entity.SulfurCube
 import org.bukkit.entity.Turtle
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -74,8 +77,7 @@ private const val REWARD_REACH = 3.0
 // The slots of a mob the ledger booked an item into, each with the form it booked. Kept on the entity
 // for the same reason an arrow keeps its mark: a zombie holding a picked-up sword is saved with its
 // chunk, and what it drops after the next start still has to come out of the slot it went into.
-// The form and not the count. A mob picks up one stack into one slot and gives it up whole;
-// a villager's stacked seeds are the case where a partial give-up is written as the whole of it.
+// The form and not the count. A mob picks up one stack into one slot and gives it up whole.
 private fun heldKey(slot: Int) = NamespacedKey("pfauprotect", "held_$slot")
 
 // The item an entity was placed from — a boat, a stand, a frame — kept apart from anything it wears.
@@ -109,6 +111,9 @@ internal fun unbookHeld(entity: Entity, slot: Int) {
 // Laid, dug up, shed or brought as a present: the animal made it, nobody put it in.
 internal fun giftFrom(entity: Entity) =
     entity is Chicken || entity is Cat || entity is Sniffer || entity is Armadillo || entity is Turtle || entity is Goat
+
+// Takes what a player hands it as its own to keep, rather than wearing it as gear.
+internal fun takesHandedItem(entity: Entity) = entity is Allay || entity is Piglin || entity is SulfurCube
 
 /**
  * Whether wear of this much breaks the item. A mob's own gear wears down only where the game makes it,
@@ -421,7 +426,7 @@ class MobItemListener(
                 EntitySlot(mob.uniqueId, booked)
             }
             need = spend(need, encoded.key, pocketLeft, { pockets[it].key.form.contentEquals(encoded.form) }) {
-                EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + pockets[it].slot)
+                pocketSlot(mob, pockets[it].slot)
             }
             if (need <= 0) continue
             val later = drops.subList(index + 1, drops.size).mapNotNull { it?.takeIf { d -> d.form.contentEquals(encoded.form) }?.count }
@@ -441,7 +446,7 @@ class MobItemListener(
         }
         for (slot in HELD_SLOTS) unbookHeld(mob, slot)
         pockets.forEachIndexed { index, pocket ->
-            val from = EntitySlot(mob.uniqueId, MOB_INVENTORY_BASE + pocket.slot)
+            val from = pocketSlot(mob, pocket.slot)
             pending.add(from, Void, Cause.MOB_EQUIPMENT_LOST, pocket.key, pocketLeft[index], killer)
         }
         if (carriesInventory(mob)) inventories.forget(mob)
@@ -460,7 +465,7 @@ class MobItemListener(
     private fun pocketGone(entity: Entity) {
         if (!carriesInventory(entity)) return
         for (pocket in inventories.booked(entity)) {
-            val from = EntitySlot(entity.uniqueId, MOB_INVENTORY_BASE + pocket.slot)
+            val from = pocketSlot(entity, pocket.slot)
             pending.add(from, Void, Cause.MOB_EQUIPMENT_LOST, pocket.key, pocket.count)
         }
         inventories.forget(entity)

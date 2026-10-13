@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
+import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.storage.Registries
@@ -21,10 +23,10 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import java.util.UUID
 
+@ExtendWith(Vanilla::class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class NestedItemsTest {
     private val registries = Registries(MemoryRegistryStore())
-    // Eager: building the codec brings the registries up, and most tests touch `Items` without it.
     private val codec = run {
         fillTypeRegistries(registries)
         ItemFormCodec(registries, ServerRegistries.access)

@@ -4,9 +4,8 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.EntityKind
 import java.util.UUID
 
-// Both states are mandatory and both are registry numbers of the full `blockData.asString`. A row
-// that knows only one of its sides is a write error rather than a row with a default, so neither
-// field is nullable and nothing here stands for "no state".
+// A row that knows only one of its sides is a write error rather than a row with a default, so
+// neither state is nullable and no BLOCK_STATE number is reserved for "no state".
 data class BlockRow(
     val x: Int,
     val y: Int,
@@ -82,8 +81,10 @@ object EntityCodec {
     private const val AFTER_FLAG = 0x40
     private const val DROPS_FLAG = 0x80
 
-    /** `deathId` and `viaId` are the registry numbers of [EntityRow.death] and [EntityRow.via], -1 for none. */
-    fun value(row: EntityRow, ids: IdResolver, typeId: Int, deathId: Int, viaId: Int): ByteArray {
+    fun value(row: EntityRow, ids: Registries): ByteArray {
+        val typeId = ids.idForKey(RegistryNamespace.ENTITY_TYPE, row.type)
+        val deathId = row.death?.let { ids.idForKey(RegistryNamespace.DAMAGE_TYPE, it) } ?: -1
+        val viaId = row.via?.let { ids.idForKey(RegistryNamespace.ENTITY_TYPE, it) } ?: -1
         val w = ByteWriter(48)
         val death = deathId >= 0 || viaId >= 0
         w.byte(
@@ -237,16 +238,13 @@ object BlockCodec {
 
         val k = ByteReader(key)
         val pos = Zcode.decode(k.bytes(Zcode.SIZE))
-        val timestamp = k.longBE()
-        val eventId = k.longBE()
-        val ordinal = k.byte()
         return BlockRow(
             x = pos[0],
             y = pos[1],
             z = pos[2],
-            timestamp = timestamp,
-            eventId = eventId,
-            ordinal = ordinal,
+            timestamp = k.longBE(),
+            eventId = k.longBE(),
+            ordinal = k.byte(),
             cause = cause,
             stateBefore = stateBefore,
             stateAfter = stateAfter,

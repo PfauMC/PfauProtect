@@ -1,11 +1,13 @@
 package io.pfaumc.pfauprotect
 
+import org.junit.jupiter.api.extension.ExtendWith
 import net.kyori.adventure.text.TextComponent
 import net.kyori.adventure.text.TranslatableComponent
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
+@ExtendWith(Vanilla::class)
 class TextsTest {
     @AfterEach
     fun english() {
@@ -25,7 +27,6 @@ class TextsTest {
     // The items a rollback takes back are named as the game names them, in the reader's own language.
     @Test
     fun `an item id in a line is the game's name of the item`() {
-        ServerRegistries.access
         val parts = Ui.named("  изъято 32 minecraft:diamond у Test2.").children()
         assertEquals("  изъято 32 ", (parts[0] as TextComponent).content())
         assertEquals("item.minecraft.diamond", (parts[1] as TranslatableComponent).key())

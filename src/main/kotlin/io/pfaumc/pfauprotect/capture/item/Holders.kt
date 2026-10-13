@@ -19,10 +19,7 @@ import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.Campfire
 import org.bukkit.craftbukkit.CraftEquipmentSlot
-import org.bukkit.entity.Allay
 import org.bukkit.entity.Entity
-import org.bukkit.entity.Piglin
-import org.bukkit.entity.SulfurCube
 import org.bukkit.entity.Player
 import org.bukkit.event.Event
 import org.bukkit.event.EventHandler
@@ -252,7 +249,7 @@ class HolderListener(
             val removed = codec.encodeOrNull(change.oldItem())
             if (put != null && click.form?.contentEquals(put.form) == true) {
                 bookHeld(mob, index, put.form)
-                val cause = if (mob is Allay || mob is Piglin || mob is SulfurCube) Cause.GIVE_ITEM_TO_MOB else Cause.EQUIP_MOB
+                val cause = if (takesHandedItem(mob)) Cause.GIVE_ITEM_TO_MOB else Cause.EQUIP_MOB
                 val hand = capture.handSlot(click.player, click.hand)
                 capture.intend(click.player, Intent(cause, to = EntitySlot(mob.uniqueId, index), form = put.form, qty = put.count, holder = hand))
             } else if (put == null && removed != null && click.form == null) {
@@ -276,7 +273,6 @@ class HolderListener(
         }
     }
 
-    // Out of the slot the ledger put it in, or out of nowhere for what the entity came with.
     // A saddle taken out through the horse's window is written by the window; the mark saying it sits
     // in that slot goes, or the horse's death would write the saddle off a second time.
     private fun forgetEmptied(mob: Entity, event: EntityEquipmentChangedEvent) {
@@ -289,6 +285,7 @@ class HolderListener(
         }
     }
 
+    // Out of the slot the ledger put it in, or out of nowhere for what the entity came with.
     private fun takeFrom(entity: Entity, slot: Int, form: ByteArray): Holder {
         if (heldBy(entity)[slot]?.contentEquals(form) != true) return Void
         unbookHeld(entity, slot)

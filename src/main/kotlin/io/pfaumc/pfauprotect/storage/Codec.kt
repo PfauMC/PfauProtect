@@ -25,8 +25,6 @@ class ByteWriter(initialCapacity: Int = 32) {
     private var buf = ByteArray(maxOf(initialCapacity, 1))
     private var len = 0
 
-    val size: Int get() = len
-
     fun byte(v: Int): ByteWriter {
         room(1)
         buf[len++] = v.toByte()
@@ -91,17 +89,7 @@ class ByteReader(private val buf: ByteArray) {
         return result
     }
 
-    fun varInt(): Int {
-        var result = 0
-        var shift = 0
-        while (shift < 35) {
-            val b = byte()
-            result = result or ((b and 0x7F) shl shift)
-            if (b < 0x80) return result
-            shift += 7
-        }
-        throw IllegalArgumentException("varint longer than 5 bytes at position $pos")
-    }
+    fun varInt(): Int = varLong().also { require(it ushr 32 == 0L) { "varint wider than 32 bits at position $pos" } }.toInt()
 
     fun varLong(): Long {
         var result = 0L
@@ -284,7 +272,7 @@ object EntryCodec {
         val causeId = v.byte()
         val cause = Cause.byId(causeId) ?: Cause.UNKNOWN
         val slot = v.varInt()
-        val counterparty = readCounterparty(v, names)
+        val counterparty = readHolder(v, names, null)
         val itemFormId = v.varLong()
         val qty = v.zigZagInt()
         val actor = if (header and ACTOR_FLAG != 0) names.uuid(RegistryNamespace.PLAYER, v.varInt()) else null
@@ -365,8 +353,6 @@ object EntryCodec {
         readHolder(k, names, slot).also {
             require(it.addressable) { "holder type ${it.typeId} produces no ledger rows of its own" }
         }
-
-    private fun readCounterparty(v: ByteReader, names: IdLookup): Holder = readHolder(v, names, null)
 
     private fun writePosition(w: ByteWriter, world: UUID, x: Int, y: Int, z: Int, ids: IdResolver) {
         w.shortBE(ids.id(RegistryNamespace.WORLD, world))

@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.capture.block
+import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.worldStub
 import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.alice
@@ -54,19 +56,17 @@ import java.util.UUID
 private const val SOURCE_WATER = "minecraft:water[level=0]"
 private const val AIR = "minecraft:air"
 
+@ExtendWith(Vanilla::class)
 class BlockCaptureTest : BothPlanes() {
     override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000002")
 
-    private lateinit var registries: RegistryAccess
+    private val registries: RegistryAccess = ServerRegistries.access
     private lateinit var attribution: Attribution
 
-    // A getter and not a field: touching `Blocks` before the bootstrap in `bootstrap` throws out of the
-    // class initializer, and a field is initialized before it.
-    private val signState get() = Blocks.OAK_SIGN.defaultBlockState()
+    private val signState = Blocks.OAK_SIGN.defaultBlockState()
 
     @BeforeEach
-    fun bootstrap() {
-        registries = ServerRegistries.access
+    fun openAttribution() {
         attribution = Attribution(shared.registries, logs)
     }
 
@@ -313,7 +313,7 @@ class BlockCaptureTest : BothPlanes() {
         )
         log.drain()
 
-        val rows = log.at(at.x, at.y, at.z)
+        val rows = log.at(at.x, at.y, at.z, 0, Long.MAX_VALUE, limit = 100, reverse = false)
         assertEquals(2, rows.size)
         assertEquals(listOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_PLAYER_BREAK), rows.map { it.cause })
         assertEquals(listOf(Confidence.FACT, Confidence.FACT), rows.map { it.confidence })
@@ -362,8 +362,8 @@ class BlockCaptureTest : BothPlanes() {
         )
         log.drain()
 
-        assertTrue(log.at(1, 65, 1).isEmpty())
-        assertTrue(log.at(2, 65, 1).isEmpty())
+        assertTrue(log.at(1, 65, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
+        assertTrue(log.at(2, 65, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
     }
 
     @Test
@@ -373,9 +373,9 @@ class BlockCaptureTest : BothPlanes() {
         BlockCaptureListener(logs, attribution).onPlace(placement(at, canBuild = false))
         log.drain()
 
-        assertTrue(log.at(at.x, at.y, at.z).isEmpty())
+        assertTrue(log.at(at.x, at.y, at.z, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
         // A refusal leaves the position as it was, so it must lend its player to nothing there either.
-        assertTrue(attribution.isEmpty)
+        assertNull(attribution.builderNear(WorldBlock(world, at.x, at.y, at.z), 0))
     }
 
     @Test

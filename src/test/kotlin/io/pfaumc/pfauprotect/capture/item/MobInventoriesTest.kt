@@ -1,5 +1,7 @@
 package io.pfaumc.pfauprotect.capture.item
 
+import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.capture.block.SlotChange
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
@@ -14,6 +16,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
+@ExtendWith(Vanilla::class)
 class MobInventoriesTest {
     private val wheat = ItemKey("wheat".toByteArray(), null)
     private val bread = ItemKey("bread".toByteArray(), null)
@@ -189,7 +192,6 @@ class MobInventoriesTest {
     // Only the first is a planting out of its pocket.
     @Test
     fun `a planting is a seed set into an empty cell and a composter filling up is not`() {
-        io.pfaumc.pfauprotect.ServerRegistries.access
         val air = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState()
         val wheat = net.minecraft.world.level.block.Blocks.WHEAT.defaultBlockState()
         val composter = net.minecraft.world.level.block.Blocks.COMPOSTER.defaultBlockState()

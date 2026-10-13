@@ -113,8 +113,8 @@ class Energy(private val now: () -> Long = System::currentTimeMillis) {
  * Who set this component going: a note around it, the tripwire line a hook watches, or, where
  * Alternate Current left no notes on the wire, the wire it touches. Read on the component's own
  * region; the walks stop at the region's edge rather than reach into a chunk another thread owns.
+ * A player seen pressing is a fact; that the press is what moved this component is worked out.
  */
-// A player seen pressing is a fact; that the press is what moved this component is worked out.
 internal fun energyAt(block: Block, energy: Energy): Attributed? = found(block, energy)?.inferred()
 
 private fun found(block: Block, energy: Energy): Attributed? {
@@ -147,7 +147,6 @@ private fun overWire(start: Block, energy: Energy): Attributed? {
     return energy.near(seen, reach = 1)
 }
 
-// Wire connects to wire beside it, one block up and one block down.
 private fun wireAround(from: Block): List<Block> {
     val found = ArrayList<Block>(4)
     for (face in HORIZONTAL) {
@@ -171,7 +170,6 @@ private fun readable(from: Block, face: BlockFace, distance: Int, dy: Int = 0): 
     return from.world.getBlockAt(x, y, z)
 }
 
-// The state a switch goes to under the current the event names.
 internal fun powered(data: BlockData, current: Int): BlockData = data.clone().also {
     when (it) {
         is AnaloguePowerable -> it.power = current.coerceIn(0, it.maximumPower)
@@ -236,8 +234,8 @@ class Nudges(private val now: () -> Long = System::currentTimeMillis) {
 
 /** The player behind an entity, from the first rung below that answers; null when none names a player. */
 internal fun behind(entity: Entity, nudges: Nudges, entities: EntityOrigins, depth: Int = 0): Attributed? {
-    if (entity is Player) return Attributed(entity.uniqueId, Confidence.FACT)
-    riderWith(entity)?.let { return Attributed(it.uniqueId, Confidence.FACT) }
+    if (entity is Player) return entity.witnessed()
+    riderWith(entity)?.let { return it.witnessed() }
     val thrower = when (entity) {
         is Item -> entity.thrower
         is TNTPrimed -> (entity.source as? Player)?.uniqueId
@@ -249,10 +247,10 @@ internal fun behind(entity: Entity, nudges: Nudges, entities: EntityOrigins, dep
     val shooter = (entity as? Projectile)?.shooter as? Entity
     if (shooter != null && depth < 2) behind(shooter, nudges, entities, depth + 1)?.let { return it.inferred() }
     val leashed = (entity as? Leashable)?.takeIf { it.isLeashed }?.leashHolder as? Player
-    leashed?.let { return Attributed(it.uniqueId, Confidence.FACT) }
+    leashed?.let { return it.witnessed() }
     nudges.of(entity.uniqueId)?.let { return it }
     entities.summonerOf(entity.uniqueId)?.let { return it }
-    (entity as? Tameable)?.ownerUniqueId?.let { return Attributed(it, Confidence.INFERRED) }
+    (entity as? Tameable)?.ownerUniqueId?.let { return Attributed(it) }
     return null
 }
 
@@ -271,7 +269,6 @@ private fun riderWith(entity: Entity): Player? {
     return null
 }
 
-// The nearest player within reach of the switch, named as a witness and nothing more.
 private fun witness(block: Block): Behind {
     val centre = block.location.add(0.5, 0.5, 0.5)
     val nearest = block.world.getNearbyPlayers(centre, WITNESS_REACH).minByOrNull { it.location.distance(centre) }
@@ -309,7 +306,7 @@ class RedstoneListener(
         if (event.action != Action.RIGHT_CLICK_BLOCK && event.action != Action.PHYSICAL) return
         val block = event.clickedBlock ?: return
         val at = positionOf(block)
-        val by = trapOf(block, at, event) ?: Attributed(event.player.uniqueId, Confidence.FACT)
+        val by = trapOf(block, at, event) ?: event.player.witnessed()
         energy.note(at, by)
         when {
             // A tripwire raises nothing of its own: the change is on the hook, however far along.
@@ -430,7 +427,7 @@ class RedstoneListener(
     fun onLightning(event: LightningStrikeEvent) {
         val player = event.lightning.causingPlayer ?: return
         val struck = event.lightning.location.block
-        val by = Attributed(player.uniqueId, Confidence.INFERRED)
+        val by = Attributed(player.uniqueId)
         energy.note(positionOf(struck), by)
         energy.note(positionOf(struck.getRelative(BlockFace.DOWN)), by)
     }
@@ -444,13 +441,13 @@ class RedstoneListener(
     fun onFish(event: PlayerFishEvent) {
         if (event.state != PlayerFishEvent.State.CAUGHT_ENTITY) return
         val caught = event.caught ?: return
-        nudges.nudged(caught, Attributed(event.player.uniqueId, Confidence.INFERRED))
+        nudges.nudged(caught, Attributed(event.player.uniqueId))
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onCollide(event: VehicleEntityCollisionEvent) {
         val player = event.entity as? Player ?: return
-        nudges.nudged(event.vehicle, Attributed(player.uniqueId, Confidence.INFERRED))
+        nudges.nudged(event.vehicle, Attributed(player.uniqueId))
     }
 
     // A comparator reads what a player puts into a container or takes out of it, however long after
@@ -464,7 +461,7 @@ class RedstoneListener(
     private fun touched(inventory: Inventory, who: HumanEntity) {
         if (inventory.holder !is BlockInventoryHolder) return
         val at = inventory.location ?: return
-        energy.note(positionOf(at.block), Attributed(who.uniqueId, Confidence.FACT))
+        energy.note(positionOf(at.block), who.witnessed())
     }
 
     // A cart sped along by powered rails carries whoever powered them. Every moving vehicle raises

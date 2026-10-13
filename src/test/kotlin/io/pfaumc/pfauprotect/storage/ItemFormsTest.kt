@@ -3,9 +3,9 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.ServerRegistries
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
-import net.minecraft.core.RegistryAccess
 import net.minecraft.core.component.DataComponents
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Component
@@ -21,20 +21,19 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import org.junit.jupiter.api.extension.ExtendWith
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.UUID
 import net.minecraft.core.registries.Registries as VanillaRegistries
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@ExtendWith(Vanilla::class)
 class ItemFormsTest {
     private val registries = Registries(MemoryRegistryStore())
-
-    // Eager: tests build stacks from `Items` before they reach the codec.
-    private val registryAccess: RegistryAccess = ServerRegistries.access
     private val codec = run {
         fillTypeRegistries(registries)
-        ItemFormCodec(registries, registryAccess)
+        ItemFormCodec(registries, ServerRegistries.access)
     }
 
     @Test
@@ -191,7 +190,7 @@ class ItemFormsTest {
     }
 
     private fun sharpness(level: Int): ItemEnchantments {
-        val holder = registryAccess.lookupOrThrow(VanillaRegistries.ENCHANTMENT).getOrThrow(Enchantments.SHARPNESS)
+        val holder = ServerRegistries.access.lookupOrThrow(VanillaRegistries.ENCHANTMENT).getOrThrow(Enchantments.SHARPNESS)
         val enchantments = ItemEnchantments.Mutable(ItemEnchantments.EMPTY)
         enchantments.set(holder, level)
         return enchantments.toImmutable()

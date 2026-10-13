@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.OneLedger
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
@@ -10,46 +11,29 @@ import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.storage.RocksItemLog
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
-import java.nio.file.Path
 import java.util.UUID
 
-class ConfiscationTest {
+class ConfiscationTest : OneLedger() {
     private val world = UUID.fromString("00000000-0000-4000-8000-000000000007")
     private val diamond = byteArrayOf(9)
     private val stone = byteArrayOf(3)
     private val chest = Container(world, 1, 64, 1, 0)
 
-    private lateinit var ledger: RocksItemLog
-
-    @BeforeEach
-    fun open(@TempDir dir: Path) {
-        ledger = RocksItemLog(dir)
-    }
-
-    @AfterEach
-    fun close() {
-        ledger.close()
-    }
-
     private fun returned(lead: io.pfaumc.pfauprotect.model.Holder, qty: Int): Tally {
-        val id = ledger.formId(diamond)!!
+        val id = log.forms.lookup(diamond)!!
         return Tally().apply { traces += Trace(lead, id, qty) }
     }
 
-    private fun owed(tally: Tally) = owedFor(ledger, tally).associate { it.taker to it.qty }
+    private fun owed(tally: Tally) = owedFor(log, tally).associate { it.taker to it.qty }
 
     // Taken straight out of the chest into a hand: that hand owes it.
     @Test
     fun `what went straight into a player's hands is owed by that player`() {
-        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
-        ledger.drain()
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
+        log.drain()
 
         assertEquals(mapOf(Carrier(bob) to 7), owed(returned(PlayerInv(bob, 4), 7)))
     }
@@ -60,14 +44,14 @@ class ConfiscationTest {
     fun `the chests a carrier put the loot into are where the rest is looked for`() {
         val his = Container(world, 500, 64, 500, 3)
         val older = Container(world, 600, 64, 600, 0)
-        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
-        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), older, diamond, null, 2, T0 + 1))
-        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), his, diamond, null, 5, T0 + 2))
-        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 5), chest, stone, null, 1, T0 + 3))
-        ledger.drain()
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), older, diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), his, diamond, null, 5, T0 + 2))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 5), chest, stone, null, 1, T0 + 3))
+        log.drain()
 
         val tally = returned(PlayerInv(bob, 4), 7).apply { since = T0 }
-        val owed = owedFor(ledger, tally).single()
+        val owed = owedFor(log, tally).single()
         assertEquals(listOf(his.copy(slot = 0), older), owed.stashes)
     }
 
@@ -79,26 +63,26 @@ class ConfiscationTest {
         val stood = Container(world, 20, 64, 20, 0)
         val owner = UUID.randomUUID()
         val pile = ItemEntityRef(UUID.randomUUID())
-        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 16, T0))
-        ledger.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), stood, diamond, null, 16, T0 + 1))
-        ledger.submit(
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 16, T0))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), stood, diamond, null, 16, T0 + 1))
+        log.submit(
             listOf(
                 Transfer(Cause.BLOCK_DROP, WorldBlock(world, 20, 64, 20), Void, box, null, 1, T0 + 100, actor = bob),
                 Transfer(Cause.BLOCK_DROP, Void, pile, box, null, 1, T0 + 100, actor = bob),
             )
         )
-        ledger.submit(Transfer(Cause.CONTAINER_BREAK_PACK, stood, io.pfaumc.pfauprotect.model.Nested(owner, 0), diamond, null, 16, T0 + 140))
-        ledger.drain()
+        log.submit(Transfer(Cause.CONTAINER_BREAK_PACK, stood, io.pfaumc.pfauprotect.model.Nested(owner, 0), diamond, null, 16, T0 + 140))
+        log.drain()
         val tally = returned(PlayerInv(bob, 4), 16).apply { since = T0 }
 
-        val lying = owedFor(ledger, tally).single()
+        val lying = owedFor(log, tally).single()
         assertEquals(listOf(pile.uuid), lying.boxes)
 
         val far = Container(world, 900, 64, 900, 5)
-        ledger.submit(Transfer(Cause.PICKUP, pile, PlayerInv(bob, 7), box, null, 1, T0 + 200))
-        ledger.submit(Transfer(Cause.CONTAINER_PLACE_UNPACK, io.pfaumc.pfauprotect.model.Nested(owner, 0), far, diamond, null, 16, T0 + 300))
-        ledger.drain()
-        val setDown = owedFor(ledger, tally).single()
+        log.submit(Transfer(Cause.PICKUP, pile, PlayerInv(bob, 7), box, null, 1, T0 + 200))
+        log.submit(Transfer(Cause.CONTAINER_PLACE_UNPACK, io.pfaumc.pfauprotect.model.Nested(owner, 0), far, diamond, null, 16, T0 + 300))
+        log.drain()
+        val setDown = owedFor(log, tally).single()
         assertEquals(listOf(stood, far.copy(slot = 0)), setDown.stashes)
         assertTrue(setDown.boxes.isEmpty())
     }
@@ -109,14 +93,14 @@ class ConfiscationTest {
     fun `what a carrier crafted the loot into stands for it`() {
         val block = byteArrayOf(57)
         val table = Container(world, 9, 64, 9, 0)
-        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 9, T0))
-        ledger.submit((1..9).map { Transfer(Cause.CRAFT_CONSUME, table.copy(slot = it), Void, diamond, null, 1, T0 + 1) } +
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 9, T0))
+        log.submit((1..9).map { Transfer(Cause.CRAFT_CONSUME, table.copy(slot = it), Void, diamond, null, 1, T0 + 1) } +
             Transfer(Cause.CRAFT_RESULT, Void, PlayerInv(bob, 5), block, null, 1, T0 + 1))
-        ledger.drain()
+        log.drain()
 
         val tally = returned(PlayerInv(bob, 4), 9).apply { since = T0 }
-        val conversion = owedFor(ledger, tally).single().conversions.single()
-        assertEquals(ledger.formId(block), conversion.made)
+        val conversion = owedFor(log, tally).single().conversions.single()
+        assertEquals(log.forms.lookup(block), conversion.made)
         assertEquals(9, conversion.inputsEach)
     }
 
@@ -126,16 +110,16 @@ class ConfiscationTest {
     fun `what a carrier set as blocks the rollback takes away is not owed again`() {
         val steps = WorldBlock(world, 3, 64, 3)
         val elsewhere = WorldBlock(world, 300, 64, 300)
-        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
-        ledger.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(bob, 4), steps, diamond, null, 1, T0 + 1))
-        ledger.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(bob, 4), elsewhere, diamond, null, 1, T0 + 2))
-        ledger.drain()
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
+        log.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(bob, 4), steps, diamond, null, 1, T0 + 1))
+        log.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(bob, 4), elsewhere, diamond, null, 1, T0 + 2))
+        log.drain()
 
         val tally = returned(PlayerInv(bob, 4), 7).apply { since = T0; undone += steps }
         assertEquals(mapOf(Carrier(bob) to 6), owed(tally))
         tally.undone += elsewhere
         tally.traces.clear()
-        tally.traces += Trace(PlayerInv(bob, 4), ledger.formId(diamond)!!, 2)
+        tally.traces += Trace(PlayerInv(bob, 4), log.forms.lookup(diamond)!!, 2)
         assertEquals(emptyMap<Taker, Int>(), owed(tally))
     }
 
@@ -146,24 +130,24 @@ class ConfiscationTest {
         val shield = byteArrayOf(42)
         val head = ItemEntityRef(UUID.randomUUID())
         val hand = ItemEntityRef(UUID.randomUUID())
-        ledger.submit(Transfer(Cause.DEATH_DROP, io.pfaumc.pfauprotect.model.PlayerEquip(alice, 39), head, helmet, null, 1, T0))
-        ledger.submit(Transfer(Cause.DEATH_DROP, io.pfaumc.pfauprotect.model.PlayerEquip(alice, 40), hand, shield, null, 1, T0))
-        ledger.drain()
+        log.submit(Transfer(Cause.DEATH_DROP, io.pfaumc.pfauprotect.model.PlayerEquip(alice, 39), head, helmet, null, 1, T0))
+        log.submit(Transfer(Cause.DEATH_DROP, io.pfaumc.pfauprotect.model.PlayerEquip(alice, 40), hand, shield, null, 1, T0))
+        log.drain()
         val death = io.pfaumc.pfauprotect.storage.EntityRow(
             0, 64, 0, T0, 1, 0, io.pfaumc.pfauprotect.model.EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
             "minecraft:player", alice, actor = bob, drops = listOf(head.uuid, hand.uuid),
         )
 
-        assertEquals(mapOf(ledger.formId(helmet) to listOf(39), ledger.formId(shield) to listOf(40)), fellFrom(ledger, death))
+        assertEquals(mapOf(log.forms.lookup(helmet) to listOf(39), log.forms.lookup(shield) to listOf(40)), Fallen(log, death).slots())
     }
 
     // Bob carried the diamonds to a chest of his own in the same area, and the rollback took them back
     // out of it. Taking them from his hands as well would take his own diamonds.
     @Test
     fun `what a rollback took out of the taker's own chest is not taken from him again`() {
-        ledger.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
-        ledger.drain()
-        val id = ledger.formId(diamond)!!
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
+        log.drain()
+        val id = log.forms.lookup(diamond)!!
         val tally = returned(PlayerInv(bob, 4), 7).apply { traces += Trace(PlayerInv(bob, 4), id, -5) }
 
         assertEquals(mapOf(Carrier(bob) to 2), owed(tally))
@@ -175,10 +159,10 @@ class ConfiscationTest {
     fun `a dropped pile is followed through a merge to the player who picked it up`() {
         val fell = ItemEntityRef(UUID.randomUUID())
         val other = ItemEntityRef(UUID.randomUUID())
-        ledger.submit(Transfer(Cause.CONTAINER_BREAK_DROP, chest, fell, diamond, null, 10, T0))
-        ledger.submit(Transfer(Cause.ITEM_MERGE, fell, other, diamond, null, 4, T0 + 1))
-        ledger.submit(Transfer(Cause.PICKUP, other, PlayerInv(alice, 0), diamond, null, 4, T0 + 2))
-        ledger.drain()
+        log.submit(Transfer(Cause.CONTAINER_BREAK_DROP, chest, fell, diamond, null, 10, T0))
+        log.submit(Transfer(Cause.ITEM_MERGE, fell, other, diamond, null, 4, T0 + 1))
+        log.submit(Transfer(Cause.PICKUP, other, PlayerInv(alice, 0), diamond, null, 4, T0 + 2))
+        log.drain()
 
         assertEquals(mapOf(Lying(fell.uuid) to 6, Carrier(alice) to 4), owed(returned(fell, 10)))
     }
@@ -188,9 +172,9 @@ class ConfiscationTest {
     @Test
     fun `a pile that fell out of what came back is owed whole`() {
         val pile = ItemEntityRef(UUID.randomUUID())
-        ledger.submit(Transfer(Cause.MOB_DROP, Void, pile, diamond, null, 3, T0))
-        ledger.submit(Transfer(Cause.PICKUP, pile, PlayerInv(bob, 2), diamond, null, 3, T0 + 1))
-        ledger.drain()
+        log.submit(Transfer(Cause.MOB_DROP, Void, pile, diamond, null, 3, T0))
+        log.submit(Transfer(Cause.PICKUP, pile, PlayerInv(bob, 2), diamond, null, 3, T0 + 1))
+        log.drain()
 
         assertEquals(mapOf(Carrier(bob) to 3), owed(Tally().apply { piles += pile.uuid }))
     }
@@ -204,32 +188,32 @@ class ConfiscationTest {
         val burned = ItemEntityRef(UUID.randomUUID())
         val regained = ItemEntityRef(UUID.randomUUID())
         for (pile in listOf(picked, burned, regained)) {
-            ledger.submit(Transfer(Cause.DEATH_DROP, PlayerInv(alice, 0), pile, diamond, null, 2, T0))
+            log.submit(Transfer(Cause.DEATH_DROP, PlayerInv(alice, 0), pile, diamond, null, 2, T0))
         }
-        ledger.submit(Transfer(Cause.PICKUP, picked, PlayerInv(bob, 1), diamond, null, 2, T0 + 1))
-        ledger.submit(Transfer(Cause.ITEM_DESTROY_FIRE, burned, Void, diamond, null, 2, T0 + 1))
-        ledger.submit(Transfer(Cause.PICKUP, regained, PlayerInv(alice, 3), diamond, null, 2, T0 + 1))
-        ledger.drain()
+        log.submit(Transfer(Cause.PICKUP, picked, PlayerInv(bob, 1), diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.ITEM_DESTROY_FIRE, burned, Void, diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.PICKUP, regained, PlayerInv(alice, 3), diamond, null, 2, T0 + 1))
+        log.drain()
         val death = io.pfaumc.pfauprotect.storage.EntityRow(
             0, 64, 0, T0, 1, 0, io.pfaumc.pfauprotect.model.EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
             "minecraft:player", alice, actor = bob, drops = listOf(picked.uuid, burned.uuid, regained.uuid),
         )
 
-        val back = restitutionFor(ledger, death).associate { it.taker to it.qty }
+        val back = Fallen(log, death).restitution().associate { it.taker to it.qty }
         assertEquals(mapOf(Carrier(bob) to 2, Vanished(burned.uuid) to 2), back)
 
-        ledger.submit(Transfer(Cause.ROLLBACK, Void, Void, diamond, null, 1, T0 + 2, reverts = pileBirths(ledger, death).values.flatten()))
-        ledger.drain()
-        assertTrue(restitutionFor(ledger, death).isEmpty())
+        log.submit(Transfer(Cause.ROLLBACK, Void, Void, diamond, null, 1, T0 + 2, reverts = Fallen(log, death).births().values.flatten()))
+        log.drain()
+        assertTrue(Fallen(log, death).restitution().isEmpty())
     }
 
     // A hopper took it into some other chest: past where a rollback follows, and owed by nobody.
     @Test
     fun `a pile a hopper took is beyond reach`() {
         val fell = ItemEntityRef(UUID.randomUUID())
-        ledger.submit(Transfer(Cause.CONTAINER_BREAK_DROP, chest, fell, diamond, null, 3, T0))
-        ledger.submit(Transfer(Cause.HOPPER_PULL_GROUND, fell, Container(world, 9, 60, 9, 0), diamond, null, 3, T0 + 1))
-        ledger.drain()
+        log.submit(Transfer(Cause.CONTAINER_BREAK_DROP, chest, fell, diamond, null, 3, T0))
+        log.submit(Transfer(Cause.HOPPER_PULL_GROUND, fell, Container(world, 9, 60, 9, 0), diamond, null, 3, T0 + 1))
+        log.drain()
 
         assertTrue(owed(returned(fell, 3)).isEmpty())
     }
@@ -242,16 +226,16 @@ class ConfiscationTest {
         val here = WorldBlock(world, 2, 64, 2)
         val there = WorldBlock(world, 3, 64, 2)
         val drop = ItemEntityRef(UUID.randomUUID())
-        ledger.submit(
+        log.submit(
             listOf(
                 Transfer(Cause.BLOCK_DROP, here, Void, stone, null, 1, T0, actor = bob),
                 Transfer(Cause.BLOCK_DROP, there, Void, stone, null, 1, T0, actor = bob),
                 Transfer(Cause.BLOCK_DROP, Void, drop, stone, null, 2, T0, actor = bob),
             )
         )
-        ledger.submit(Transfer(Cause.PICKUP, drop, PlayerInv(bob, 1), stone, null, 2, T0 + 1))
-        ledger.drain()
-        val loss = ledger.holderEntries(here, 0, Long.MAX_VALUE).single()
+        log.submit(Transfer(Cause.PICKUP, drop, PlayerInv(bob, 1), stone, null, 2, T0 + 1))
+        log.drain()
+        val loss = log.holderEntries(here, 0, Long.MAX_VALUE).single()
 
         val half = Tally().apply {
             restored += here

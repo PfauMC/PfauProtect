@@ -1,5 +1,7 @@
 package io.pfaumc.pfauprotect.check
 
+import io.pfaumc.pfauprotect.attribution.AIRS
+import io.pfaumc.pfauprotect.attribution.LIQUIDS
 import io.pfaumc.pfauprotect.attribution.blockNameOf
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.BlockPostings
@@ -12,12 +14,7 @@ import io.pfaumc.pfauprotect.model.WorldBlock
 // database at rest, where there is no server to ask what a state is, so this is a set of strings
 // rather than a lookup. Water belongs in it for the case worth catching rather than by oversight:
 // breaking a waterlogged block leaves water standing where the block was.
-private val BACKS_NO_ITEM = setOf(
-    "minecraft:air",
-    "minecraft:cave_air",
-    "minecraft:void_air",
-    "minecraft:water",
-    "minecraft:lava",
+private val BACKS_NO_ITEM = AIRS + LIQUIDS + setOf(
     "minecraft:fire",
     "minecraft:soul_fire",
     "minecraft:nether_portal",
@@ -91,16 +88,10 @@ class PlaneSync(private val ledger: RocksItemLog, private val blocks: BlockLogs)
         val fact = position.entries.filter { it.confidence == Confidence.FACT }.sumOf { it.qty }
         val inferred = position.entries.filter { it.confidence != Confidence.FACT }.sumOf { it.qty }
         val newest = position.entries.maxOfOrNull { it.timestamp } ?: 0L
-        // Added into one number an inferred write-off cancels a confirmed credit and the position reads
-        // as settled, which is a fact written off by a guess: each total has to stand or fall on its own.
         if (fact == 0 && inferred == 0) return Outcome.CHECKED
         if (newest > now - SETTLE_MILLIS) return Outcome.SETTLING
         val log = blocks.get(at.world) ?: return Outcome.UNREADABLE
-        // A holding stands above zero. Below it the position gave up what it was never given — the debit
-        // was booked here and the credit somewhere else or nowhere — and that is the opposite fault. Unless
-        // a block already stood there when the block plane first saw the position: a house built before the
-        // plugin gives up its planks to the first blast with no credit to set them against, and a map put
-        // under it read as thousands of faults a pass.
+        // Below zero is the opposite fault, unless a block stood there before the block plane first saw the position.
         if (fact <= 0 && inferred <= 0) {
             val first = log.oldestAt(at.x, at.y, at.z) ?: return Outcome.OVERDRAWN
             val before = ledger.registries.keyOf(RegistryNamespace.BLOCK_STATE, first.stateBefore) ?: return Outcome.UNREADABLE

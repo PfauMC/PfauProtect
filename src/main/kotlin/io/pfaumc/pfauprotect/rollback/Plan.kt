@@ -1,8 +1,15 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.attribution.AIRS
+import io.pfaumc.pfauprotect.attribution.LIQUIDS
+import io.pfaumc.pfauprotect.attribution.blockNameOf
 import io.pfaumc.pfauprotect.attribution.flowing
 import io.pfaumc.pfauprotect.capture.block.FIRES
 import io.pfaumc.pfauprotect.capture.block.reshaped
+import io.pfaumc.pfauprotect.command.RowFilter
+import io.pfaumc.pfauprotect.command.boxAround
+import io.pfaumc.pfauprotect.command.chunksAround
+import io.pfaumc.pfauprotect.command.placedIn
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntityKind
@@ -10,16 +17,14 @@ import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.model.LedgerEntry
-import io.pfaumc.pfauprotect.model.PlayerCursor
-import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.WorldBlock
+import io.pfaumc.pfauprotect.model.ownHolders
 import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.BlockRow
-import io.pfaumc.pfauprotect.storage.BlockWindow
 import io.pfaumc.pfauprotect.storage.Window
 import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
@@ -34,7 +39,6 @@ internal const val MAX_ROLLBACK_ROWS = 100_000
 // How many rows of the block plane the walk may step over in all, inside the window or not: a chunk's
 // rows are keyed by position before time, so a window costs the whole history of every chunk it reads.
 internal const val BLOCK_WALK_BUDGET = 2_000_000
-
 
 // The entity rows that say what an entity was before: the rest only mark an event at a place.
 private val STORIES = setOf(EntityKind.REMOVED, EntityKind.CREATED, EntityKind.CHANGED, EntityKind.MOVED)
@@ -76,6 +80,8 @@ internal fun originOf(older: List<BlockRow?>, keepsRow: (BlockRow) -> Boolean): 
 
 private val ROW_ORDER = compareBy<BlockRow> { it.eventId }.thenBy { it.ordinal }
 
+private val BlockRow.spot get() = Triple(x, y, z)
+
 // What dies to dirt under a block put on it.
 private val TURFS = setOf("minecraft:grass_block", "minecraft:dirt_path", "minecraft:mycelium", "minecraft:podzol", "minecraft:farmland")
 
@@ -86,21 +92,18 @@ private val TURFS = setOf("minecraft:grass_block", "minecraft:dirt_path", "minec
  * `turf` says whether a fade row is one of [TURFS] dying under what stands on it, not a fire going out.
  */
 internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>, turf: (BlockRow) -> Boolean): List<BlockRow> {
-    val first = kept.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, rows) -> rows.minWith(ROW_ORDER) }
-    // What the world did after an earlier rollback had put the position back is the world's, not part of
-    // the grief: grass a restored wall stands on going to dirt. Walked past, it took a second rollback
-    // back to the grass.
-    val undone = (kept + nature).filter { it.cause == Cause.ROLLBACK }.groupBy { Triple(it.x, it.y, it.z) }
+    val first = kept.groupBy { it.spot }.mapValues { (_, rows) -> rows.minWith(ROW_ORDER) }
+    // What the world did after an earlier rollback had put the position back (grass under a restored wall
+    // going to dirt) is the world's, not part of the grief, and is not walked past.
+    val undone = (kept + nature).filter { it.cause == Cause.ROLLBACK }.groupBy { it.spot }
         .mapValues { (_, rows) -> rows.maxWith(ROW_ORDER) }
     fun after(row: BlockRow, at: Triple<Int, Int, Int>) = first[at]?.let { ROW_ORDER.compare(row, it) > 0 } == true
-    // What came after an earlier rollback of the position — its own, or the one a fade died under — is
-    // the world's again.
     fun beforeUndone(row: BlockRow, at: Triple<Int, Int, Int>) =
         row.cause == Cause.ROLLBACK || undone[at]?.let { ROW_ORDER.compare(row, it) < 0 } != false
     // Grass or a path gone to dirt under a block the rollback takes away went because of that block, and
     // comes back with its going: it would otherwise stay dirt under the air the griefer left.
     val passed = nature.filterTo(LinkedHashSet()) { row ->
-        val at = Triple(row.x, row.y, row.z)
+        val at = row.spot
         val above = Triple(row.x, row.y + 1, row.z)
         beforeUndone(row, at) &&
             (after(row, at) || row.cause == Cause.BLK_FADE && turf(row) && after(row, above) && beforeUndone(row, above))
@@ -108,10 +111,10 @@ internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>, turf: (Block
     // What grew out of a planting the rollback takes away goes with it: the rest of a tree its sapling
     // turned into, in the same event, and a stalk of bamboo, cactus or cane above it, block by block.
     val grew = passed.filter { it.cause == Cause.BLK_GROW }.mapTo(HashSet()) { it.eventId }
-    nature.filterTo(passed) { it.cause == Cause.BLK_GROW && it.eventId in grew && beforeUndone(it, Triple(it.x, it.y, it.z)) }
-    val reached = (first.keys + passed.map { Triple(it.x, it.y, it.z) }).toHashSet()
+    nature.filterTo(passed) { it.cause == Cause.BLK_GROW && it.eventId in grew && beforeUndone(it, it.spot) }
+    val reached = (first.keys + passed.map { it.spot }).toHashSet()
     for (row in nature.filter { it.cause == Cause.BLK_GROW }.sortedBy { it.y }) {
-        val at = Triple(row.x, row.y, row.z)
+        val at = row.spot
         val below = Triple(row.x, row.y - 1, row.z)
         if (below in reached && first[below]?.let { ROW_ORDER.compare(row, it) > 0 } != false && beforeUndone(row, at)) {
             passed += row
@@ -121,10 +124,6 @@ internal fun passedBy(kept: List<BlockRow>, nature: List<BlockRow>, turf: (Block
     return passed.toList()
 }
 
-// The three airs are one block to a rollback: a cave keeps its own kind of air, and a break inside it
-// leaves the plain one behind.
-private val AIRS = setOf("minecraft:air", "minecraft:cave_air", "minecraft:void_air")
-
 /**
  * The block a state string is of, with the properties dropped and every air read as one. Liquid that
  * ran in is air too: its arrival has no row, and lava that filled a burnt-out house is no later change.
@@ -132,13 +131,15 @@ private val AIRS = setOf("minecraft:air", "minecraft:cave_air", "minecraft:void_
  */
 internal fun blockOf(state: String): String = if (passing(state)) "minecraft:air" else nameOf(state)
 
-private fun nameOf(state: String): String = state.substringBefore('[').let { if (it in AIRS) "minecraft:air" else it }
+// The three airs are one block to a rollback: a cave keeps its own kind of air, and a break inside it
+// leaves the plain one behind.
+private fun nameOf(state: String): String = blockNameOf(state).let { if (it in AIRS) "minecraft:air" else it }
 
 /**
  * Fire and running liquid: what a rollback reads as air and puts back as air. A fire lit again would burn
  * down what the rollback has just put back.
  */
-internal fun passing(state: String): Boolean = state.substringBefore('[') in FIRES || flowing(state)
+internal fun passing(state: String): Boolean = blockNameOf(state) in FIRES || flowing(state)
 
 /** One row of a position read backwards: the position went from `before` to `after`. */
 class Step(val before: String, val after: String, val payloadBefore: ByteArray?)
@@ -158,22 +159,13 @@ fun settle(standing: String, steps: List<Step>, origin: String?): Settled =
     else settle(standing, steps)
 
 /**
- * Undoes the rows of one position, newest first, from what stands there now. A row whose `after` is
- * what stands is undone; one whose `before` already stands was undone before and is stepped over; any
- * other means something this rollback does not touch changed the position since, and the walk stops
- * there with whatever it had undone.
+ * Blocks are compared, not whole states: a fence, a wire or a leaf changes its properties with its
+ * neighbours and never gets a row for it.
  *
- * A chain an earlier rollback undid stands on the `before` of its oldest row, which no newer row of it
- * starts from: a plank that burnt into fire that lava ran into is a plank again. Standing on that
- * `before`, the rest of the walk is done already, and that is not a conflict either.
+ * Standing on the `before` of the chain's oldest row means an earlier rollback already undid the chain,
+ * so the walk is done rather than in conflict.
  *
- * Blocks are compared, not whole states: a fence, a wire and a leaf change their properties with
- * their neighbours and never get a row for it, and comparing strings would make every one of them a
- * conflict. What is put back is the whole state the row recorded.
- *
- * Water and lava are one block whatever their level: a flow becomes a source by itself between two
- * sources, with no row, and the walk that met that source where its row had left a flow stopped there
- * and put the source back, which drowned the house a sponge had already dried.
+ * Water and lava are one block at any level: a flow turns into a source between two sources with no row.
  */
 fun settle(standing: String, steps: List<Step>): Settled {
     var state = standing
@@ -192,8 +184,7 @@ fun settle(standing: String, steps: List<Step>): Settled {
     return Settled(back, conflict = false)
 }
 
-private fun fluidOf(state: String): String? =
-    state.substringBefore('[').takeIf { it == "minecraft:water" || it == "minecraft:lava" }
+private fun fluidOf(state: String): String? = blockNameOf(state).takeIf { it in LIQUIDS }
 
 private fun same(a: String, b: String): Boolean = blockOf(a) == blockOf(b) || fluidOf(a)?.let { it == fluidOf(b) } == true
 
@@ -227,8 +218,8 @@ class EntityPlan(
     val before: ByteArray?,
     val slots: List<LedgerEntry>,
     val drops: List<UUID>,
-    val removed: Boolean = false,
-    val bucket: Bucketed? = null,
+    val removed: Boolean,
+    val bucket: Bucketed?,
 )
 
 /**
@@ -266,11 +257,11 @@ class PositionPlan(
     val at: WorldBlock,
     val steps: List<Step>,
     val refills: List<Refill>,
-    val breaks: List<LedgerEntry> = emptyList(),
-    val entities: List<EntityPlan> = emptyList(),
-    val dropped: List<UUID> = emptyList(),
+    val breaks: List<LedgerEntry>,
+    val entities: List<EntityPlan>,
+    val dropped: List<UUID>,
     // What the position held before the players first touched it, where the window opens on their work.
-    val origin: String? = null,
+    val origin: String?,
 )
 
 class ChunkPlan(val chunkX: Int, val chunkZ: Int, val positions: List<PositionPlan>)
@@ -285,7 +276,7 @@ class Planned(
     val chunks: List<ChunkPlan>,
     val rows: Int,
     val postings: Int,
-    val deaths: List<EntityRow> = emptyList(),
+    val deaths: List<EntityRow>,
 ) : Reading {
     val positions: Int get() = chunks.sumOf { it.positions.size }
 }
@@ -293,10 +284,7 @@ class Planned(
 // The block and entity rows of one rollback's read, gathered window by window against one walk budget:
 // the rows it undoes (those it keeps, except a liquid's flow), the nature it walks past, and the changes
 // somebody else made.
-private class Collected(
-    private val keepsRow: (BlockRow) -> Boolean,
-    private val keepsEntity: (EntityRow) -> Boolean,
-) {
+private class Collected(private val keeps: RowFilter) {
     val rows = ArrayList<BlockRow>()
     val nature = ArrayList<BlockRow>()
     val foreign = ArrayList<BlockRow>()
@@ -305,18 +293,18 @@ private class Collected(
     var budget = BLOCK_WALK_BUDGET
 
     /** False when a walk ran out of budget, which refuses the rollback; the entity walk gets what is left. */
-    fun collect(window: BlockWindow, entities: (Int) -> Window<EntityRow>): Boolean {
+    fun collect(window: Window<BlockRow>, entities: (Int) -> Window<EntityRow>): Boolean {
         if (!window.complete) return false
         budget -= window.walked
         unreadable += window.unreadable
-        window.rows.filterTo(rows) { keepsRow(it) && it.cause != Cause.BLK_LIQUID_FLOW }
-        window.rows.filterTo(nature) { passable(it) && !keepsRow(it) }
-        window.rows.filterTo(foreign) { !keepsRow(it) && !passable(it) }
+        window.rows.filterTo(rows) { keeps.keeps(it) && it.cause != Cause.BLK_LIQUID_FLOW }
+        window.rows.filterTo(nature) { passable(it) && !keeps.keeps(it) }
+        window.rows.filterTo(foreign) { !keeps.keeps(it) && !passable(it) }
         val read = entities(budget)
         if (!read.complete) return false
         budget -= read.walked
         unreadable += read.unreadable
-        read.rows.filterTo(entityRows, keepsEntity)
+        read.rows.filterTo(entityRows) { keeps.keeps(it) }
         return true
     }
 }
@@ -331,7 +319,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     private fun turf(row: BlockRow): Boolean =
         io.pfaumc.pfauprotect.command.stateName(ledger, row.stateBefore) in TURFS
 
-    fun around(
+    internal fun around(
         world: UUID,
         x: Int,
         y: Int,
@@ -339,40 +327,28 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         radius: Int,
         fromTs: Long,
         toTs: Long,
-        keepsRow: (BlockRow) -> Boolean,
-        keepsEntry: (LedgerEntry) -> Boolean,
-        keepsEntity: (EntityRow) -> Boolean = { true },
+        keeps: RowFilter,
         // The whole height of the square: a rollback of named players touches only their rows, and lava
         // they poured thirty blocks over the house is part of what burnt it. Without names it stays a
         // cube, so somebody else's build high above is not undone with it.
         column: Boolean = false,
     ): Reading {
         val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
-        val inBox = { bx: Int, by: Int, bz: Int ->
-            bx in (x - radius)..(x + radius) && (column || by in (y - radius)..(y + radius)) && bz in (z - radius)..(z + radius)
-        }
-        val read = Collected(keepsRow, keepsEntity)
-        for (cx in ((x - radius) shr 4)..((x + radius) shr 4)) {
-            for (cz in ((z - radius) shr 4)..((z + radius) shr 4)) {
-                val window = log.windowInChunk(cx, cz, fromTs, toTs, read.budget, inBox)
-                if (!read.collect(window) { log.entitiesInChunk(cx, cz, fromTs, toTs, it, inBox) }) return tooMuch()
-                if (read.rows.size + read.entityRows.size > MAX_ROLLBACK_ROWS) return tooMuch()
-            }
+        val inBox = boxAround(x, y, z, radius, column)
+        val read = Collected(keeps)
+        for ((cx, cz) in chunksAround(x, z, radius)) {
+            val window = log.windowInChunk(cx, cz, fromTs, toTs, read.budget, inBox)
+            if (!read.collect(window) { log.entitiesInChunk(cx, cz, fromTs, toTs, it, inBox) }) return tooMuch()
+            if (read.rows.size + read.entityRows.size > MAX_ROLLBACK_ROWS) return tooMuch()
         }
         val page = ledger.regionPage(
             world, x - radius, z - radius, x + radius, z + radius, fromTs, toTs,
             limit = MAX_ROLLBACK_ROWS,
-            within = { holder ->
-                when (holder) {
-                    is Container -> inBox(holder.x, holder.y, holder.z)
-                    is WorldBlock -> inBox(holder.x, holder.y, holder.z)
-                    else -> false
-                }
-            },
+            within = { it.placedIn(inBox, unplaced = false) },
         )
         if (!page.complete) return tooMuch()
-        val (slots, positions) = page.entries.filter(keepsEntry).partition { it.holder is Container }
-        return plan(world, read.rows + passedBy(read.rows, read.nature, ::turf), slots, positions.filter { it.qty < 0 }, read.entityRows, toTs, read.unreadable + page.unreadable, origins(log, world, read.rows, read.foreign, fromTs, keepsRow))
+        val (slots, positions) = page.entries.filter { keeps.keeps(it) }.partition { it.holder is Container }
+        return planOf(log, world, read, slots, positions.filter { it.qty < 0 }, fromTs, toTs, read.unreadable + page.unreadable, keeps)
     }
 
     /**
@@ -391,8 +367,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             }
         }
         for (user in users) {
-            val own = listOf(PlayerInv(user, 0), PlayerEquip(user, 0), PlayerCursor(user), PlayerEnder(user, 0), EntitySlot(user, 0))
-            for (holder in own) {
+            for (holder in ownHolders(user)) {
                 val page = ledger.holderPage(holder, fromTs, toTs, limit = MAX_ROLLBACK_ROWS)
                 if (!page.complete || page.unreadable > 0) return null
                 for (entry in page.entries) {
@@ -423,18 +398,10 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     }
 
     /** What a rollback would undo at these positions of one world, read position by position. */
-    fun at(
-        world: UUID,
-        positions: Set<WorldBlock>,
-        fromTs: Long,
-        toTs: Long,
-        keepsRow: (BlockRow) -> Boolean,
-        keepsEntry: (LedgerEntry) -> Boolean,
-        keepsEntity: (EntityRow) -> Boolean = { true },
-    ): Reading {
+    internal fun at(world: UUID, positions: Set<WorldBlock>, fromTs: Long, toTs: Long, keeps: RowFilter): Reading {
         val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
         if (positions.size > io.pfaumc.pfauprotect.Settings.maxRollbackPositions) return tooMany(positions.size)
-        val read = Collected(keepsRow, keepsEntity)
+        val read = Collected(keeps)
         val slots = ArrayList<LedgerEntry>()
         val losses = ArrayList<LedgerEntry>()
         for (at in positions) {
@@ -444,26 +411,33 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                 val page = ledger.holderPage(holder, fromTs, toTs, limit = MAX_ROLLBACK_ROWS)
                 if (!page.complete) return tooMuch()
                 read.unreadable += page.unreadable
-                for (entry in page.entries.filter(keepsEntry)) {
+                for (entry in page.entries.filter { keeps.keeps(it) }) {
                     if (entry.holder is Container) slots += entry else if (entry.qty < 0) losses += entry
                 }
             }
             if (read.rows.size + slots.size > MAX_ROLLBACK_ROWS) return tooMuch()
         }
-        return plan(world, read.rows + passedBy(read.rows, read.nature, ::turf), slots, losses, read.entityRows, toTs, read.unreadable, origins(log, world, read.rows, read.foreign, fromTs, keepsRow))
+        return planOf(log, world, read, slots, losses, fromTs, toTs, read.unreadable, keeps)
     }
 
+    private fun planOf(
+        log: BlockLog, world: UUID, read: Collected, slots: List<LedgerEntry>, losses: List<LedgerEntry>,
+        fromTs: Long, toTs: Long, unreadable: Int, keeps: RowFilter,
+    ): Reading = plan(
+        world, read.rows + passedBy(read.rows, read.nature, ::turf), slots, losses, read.entityRows, toTs, unreadable,
+        origins(log, world, read.rows, read.foreign, fromTs, keeps),
+    )
+
     // Read off the region threads with the rest of the plan; a window from the beginning has nothing before it.
-    // A position somebody else changed inside the window is not one that stands as the players found it,
-    // whatever it holds: leaves a command put back after the griefer's earlier fire, burnt by him again, were
-    // left as air.
+    // A position somebody else changed inside the window does not stand as the players found it, whatever it
+    // holds, so it gets no origin.
     private fun origins(
-        log: BlockLog, world: UUID, rows: List<BlockRow>, foreign: List<BlockRow>, fromTs: Long, keepsRow: (BlockRow) -> Boolean,
+        log: BlockLog, world: UUID, rows: List<BlockRow>, foreign: List<BlockRow>, fromTs: Long, keeps: RowFilter,
     ): Map<WorldBlock, String> {
         if (fromTs <= 0) return emptyMap()
-        val touched = foreign.mapTo(HashSet()) { Triple(it.x, it.y, it.z) }
-        return rows.mapTo(HashSet()) { Triple(it.x, it.y, it.z) }.filter { it !in touched }.mapNotNull { (x, y, z) ->
-            originOf(log.rowsBefore(x, y, z, fromTs, ORIGIN_WALK), keepsRow)?.let(::state)?.let { WorldBlock(world, x, y, z) to it }
+        val touched = foreign.mapTo(HashSet()) { it.spot }
+        return rows.mapTo(HashSet()) { it.spot }.filter { it !in touched }.mapNotNull { (x, y, z) ->
+            originOf(log.rowsBefore(x, y, z, fromTs, ORIGIN_WALK)) { keeps.keeps(it) }?.let(::state)?.let { WorldBlock(world, x, y, z) to it }
         }.toMap()
     }
 
@@ -590,7 +564,7 @@ private val LEAF_DISTANCE = Regex("(?<=[\\[,])distance=\\d+")
  * owner left on would fire.
  */
 internal fun quiet(state: String): String {
-    val name = state.substringBefore('[')
+    val name = blockNameOf(state)
     if (name == "minecraft:lever" || name.endsWith("_button") || name.endsWith("_pressure_plate")) return state
     // A leaf's distance is its neighbours' to count, as a signal is: a leaf that decayed is written down at
     // distance 7, and put back so it decayed again. Put back at 1, it counts anew on its next tick.

@@ -1,5 +1,7 @@
 package io.pfaumc.pfauprotect.rollback
 
+import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
@@ -23,7 +25,6 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import io.pfaumc.pfauprotect.ServerRegistries
 import net.minecraft.world.SimpleContainer
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.item.Items
@@ -35,6 +36,7 @@ private const val STONE = "minecraft:stone"
 private const val DIRT = "minecraft:dirt"
 private const val LAVA = "minecraft:lava[level=0]"
 
+@ExtendWith(Vanilla::class)
 class RollbackTest : BothPlanes() {
     override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000006")
     private val diamond = byteArrayOf(9)
@@ -116,8 +118,8 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(5, 64, 1, DIRT, STONE, Cause.BLK_PLAYER_PLACE, T0 + 3, actor = bob)))
         log.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
-        val stair = planned.chunks.flatMap { it.positions }.associateBy { it.at.x }
+        val planned = around(rollbackFilter(alice))
+        val stair = positions(planned).associateBy { it.at.x }
         assertEquals(setOf(1, 5), stair.keys)
         assertEquals(listOf(DIRT to grass, AIR to DIRT, grass to AIR), stair.getValue(1).steps.map { it.before to it.after })
         assertEquals(grass, settle(grass, stair.getValue(1).steps).back?.before)
@@ -136,8 +138,8 @@ class RollbackTest : BothPlanes() {
         }
         log.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
-        val steps = planned.chunks.flatMap { it.positions }.associate { it.at.x to it.steps.map { s -> s.before to s.after } }
+        val planned = around(rollbackFilter(alice))
+        val steps = positions(planned).associate { it.at.x to it.steps.map { s -> s.before to s.after } }
         assertEquals(listOf(planks to fire, AIR to planks), steps.getValue(7))
         assertEquals(listOf(AIR to planks), steps.getValue(9))
     }
@@ -159,8 +161,8 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(1, 64, 3, "minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]", AIR, Cause.BLK_FADE, T0 + 50)))
         log.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
-        val at = planned.chunks.flatMap { it.positions }.associateBy { Triple(it.at.x, it.at.y, it.at.z) }
+        val planned = around(rollbackFilter(alice))
+        val at = positions(planned).associateBy { Triple(it.at.x, it.at.y, it.at.z) }
         assertEquals(setOf(Triple(1, 65, 1), Triple(1, 64, 1), Triple(1, 65, 3), Triple(1, 65, 5)), at.keys)
         assertEquals(grass, settle(DIRT, at.getValue(Triple(1, 64, 1)).steps).back?.before)
     }
@@ -185,8 +187,8 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(9, 65, 1, AIR, bamboo, Cause.BLK_GROW, T0 + 70)))
         log.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
-        val at = planned.chunks.flatMap { it.positions }.map { Triple(it.at.x, it.at.y, it.at.z) }.toSet()
+        val planned = around(rollbackFilter(alice))
+        val at = positions(planned).map { Triple(it.at.x, it.at.y, it.at.z) }.toSet()
         assertEquals(setOf(Triple(1, 64, 1), Triple(1, 65, 1), Triple(2, 66, 1), Triple(5, 64, 1), Triple(5, 65, 1), Triple(5, 66, 1)), at)
     }
 
@@ -214,7 +216,7 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(1, 64, 1, grass, AIR, Cause.ROLLBACK, T0 + 3)))
         log.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val planned = around(rollbackFilter(alice))
         val settled = settle(AIR, steps(planned))
         assertEquals(door, settled.back?.before)
         assertFalse(settled.conflict)
@@ -231,7 +233,7 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(1, 64, 1, grass, DIRT, Cause.BLK_FADE, T0 + 2)))
         log.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
+        val planned = around(rollbackFilter(alice))
         val settled = settle(DIRT, steps(planned))
         assertNull(settled.back)
     }
@@ -249,11 +251,9 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(3, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
         log.drain()
 
-        val reader = RollbackReader(shared, logs)
-        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
-        val planned = reader.around(world, 0, 64, 0, 15, T0 + 50, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
+        val planned = around(rollbackFilter(alice), from = T0 + 50)
         assertEquals(3, planned.positions)
-        assertEquals(1, reader.leftByThemBefore(listOf(planned), setOf(alice), T0 + 50))
+        assertEquals(1, RollbackReader(shared, logs).leftByThemBefore(listOf(planned), setOf(alice), T0 + 50))
     }
 
     // Alice put dynamite down before the window and blew it up inside; an earlier rollback had already put the
@@ -266,9 +266,8 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(1, 64, 1, tnt, AIR, Cause.BLK_TNT, T0 + 100, actor = alice)))
         log.drain()
 
-        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
-        val planned = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, T0 + 50, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
-        val position = planned.chunks.flatMap { it.positions }.single()
+        val planned = around(rollbackFilter(alice), from = T0 + 50)
+        val position = positions(planned).single()
         assertEquals(AIR, position.origin)
         assertNull(settle(AIR, position.steps, position.origin).back)
         assertEquals(tnt, settle(STONE, position.steps.map { Step(it.before, STONE, null) }, position.origin).back?.before)
@@ -310,9 +309,8 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(1, 64, 1, leaf, AIR, Cause.BLK_FIRE_BURN, T0 + 200, actor = alice)))
         log.drain()
 
-        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
-        val planned = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, T0 + 50, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
-        val position = planned.chunks.flatMap { it.positions }.single()
+        val planned = around(rollbackFilter(alice), from = T0 + 50)
+        val position = positions(planned).single()
         assertNull(position.origin)
         assertEquals(leaf, settle(AIR, position.steps, position.origin).back?.before)
     }
@@ -345,8 +343,8 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(4, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
         log.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
-        assertEquals(setOf(1, 2), planned.chunks.flatMap { it.positions }.map { it.at.x }.toSet())
+        val planned = around(rollbackFilter(alice))
+        assertEquals(setOf(1, 2), positions(planned).map { it.at.x }.toSet())
     }
 
     // A narrower rollback run after a wider one would otherwise find the first rollback's rows inside
@@ -357,14 +355,12 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.ROLLBACK, T0 + 10, actor = bob)))
         log.drain()
 
-        val plain = around(RowFilter(shared, LookupQuery(), emptySet(), emptySet(), rollback = true))
-        // Walked past on the way back to before the break, the rollback's stone is where the walk ends anyway.
+        val plain = around(rollbackFilter())
         assertEquals(listOf(STONE, AIR), steps(plain).map { it.after })
         assertEquals(STONE, settle(STONE, steps(plain)).back?.before)
-        val undo = around(RowFilter(shared, LookupQuery(causes = Action.ROLLBACK.causes), emptySet(), emptySet(), rollback = true))
+        val undo = around(rollbackFilter(causes = Action.ROLLBACK.causes))
         assertEquals(listOf(STONE), steps(undo).map { it.after }, "only the rollback")
-        // A lookup is not a rollback and shows them like any other row.
-        assertTrue(RowFilter(shared, LookupQuery(), emptySet(), emptySet()).keeps(log.at(1, 64, 1).last()))
+        assertTrue(RowFilter(shared, LookupQuery(), emptySet(), emptySet()).keeps(log.at(1, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).last()))
     }
 
     @Test
@@ -376,7 +372,7 @@ class RollbackTest : BothPlanes() {
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 0), diamond, null, 7, T0 + 20))
         shared.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(), emptySet(), emptySet(), rollback = true))
+        val planned = around(rollbackFilter())
         val at = planned.chunks.single().positions.associateBy { it.at }
         assertEquals(listOf(DIRT, STONE), at.getValue(WorldBlock(world, 5, 64, 5)).steps.map { it.after })
         val refill = at.getValue(WorldBlock(world, 6, 64, 5)).refills.single()
@@ -394,8 +390,8 @@ class RollbackTest : BothPlanes() {
         shared.submit(Transfer(Cause.ROLLBACK, Void, chest, diamond, null, 7, T0 + 10, reverts = listOf(theft.ref)))
         shared.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(), emptySet(), emptySet(), rollback = true))
-        assertTrue(planned.chunks.isEmpty(), "${planned.chunks.flatMap { it.positions }.map { it.at }}")
+        val planned = around(rollbackFilter())
+        assertTrue(planned.chunks.isEmpty(), "${positions(planned).map { it.at }}")
     }
 
     // A rollback undone and then both rolled back together by `action:rollback`: the blocks of the two
@@ -410,9 +406,9 @@ class RollbackTest : BothPlanes() {
         shared.submit(Transfer(Cause.ROLLBACK, Void, chest, diamond, null, 5, T0 + 10, reverts = listOf(first.ref)))
         shared.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(causes = Action.ROLLBACK.causes), emptySet(), emptySet(), rollback = true))
+        val planned = around(rollbackFilter(causes = Action.ROLLBACK.causes))
         assertEquals(listOf(-5, 5), planned.chunks.single().positions.single().refills.map { it.qty })
-        val plain = around(RowFilter(shared, LookupQuery(), emptySet(), emptySet(), rollback = true))
+        val plain = around(rollbackFilter())
         assertTrue(plain.chunks.isEmpty(), "a rollback's rows are not touched unless named")
     }
 
@@ -431,10 +427,9 @@ class RollbackTest : BothPlanes() {
         val reader = RollbackReader(shared, logs)
         val touched = reader.touchedBy(setOf(alice), 0, Long.MAX_VALUE)!!
         assertEquals(setOf(WorldBlock(world, 1, 64, 1), WorldBlock(world, 5000, 64, -5000)), touched.getValue(world))
-        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
-        val planned = reader.at(world, touched.getValue(world) + WorldBlock(world, 1, 64, 2), 0, Long.MAX_VALUE, filter::keeps, filter::keeps)
+        val planned = reader.at(world, touched.getValue(world) + WorldBlock(world, 1, 64, 2), 0, Long.MAX_VALUE, rollbackFilter(alice))
             as Planned
-        val positions = planned.chunks.flatMap { it.positions }.associateBy { it.at }
+        val positions = positions(planned).associateBy { it.at }
         assertEquals(setOf(WorldBlock(world, 1, 64, 1), WorldBlock(world, 5000, 64, -5000)), positions.keys)
         assertEquals(3, positions.getValue(WorldBlock(world, 5000, 64, -5000)).refills.single().qty)
     }
@@ -456,8 +451,8 @@ class RollbackTest : BothPlanes() {
         shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, io.pfaumc.pfauprotect.model.EntitySlot(horse, 400), io.pfaumc.pfauprotect.model.ItemEntityRef(UUID.randomUUID()), diamond, null, 1, T0 + 10))
         shared.drain()
 
-        val planned = around(RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true))
-        val plan = planned.chunks.flatMap { it.positions }.flatMap { it.entities }.single()
+        val planned = around(rollbackFilter(alice))
+        val plan = positions(planned).flatMap { it.entities }.single()
         assertEquals(io.pfaumc.pfauprotect.model.EntityKind.CHANGED, plan.oldest.kind)
         assertEquals(untouched.toList(), plan.before!!.toList())
         assertEquals(listOf(-1), plan.slots.map { it.qty })
@@ -471,11 +466,11 @@ class RollbackTest : BothPlanes() {
     @Test
     fun `the widest radius reads and a world with no open base is refused`() {
         val reading = RollbackReader(shared, logs).around(
-            world, 0, 64, 0, 200, 0, Long.MAX_VALUE, { true }, { true },
+            world, 0, 64, 0, 200, 0, Long.MAX_VALUE, RowFilter(shared, LookupQuery(all = true), emptySet(), emptySet()),
         )
         assertTrue(reading is Planned)
         val refused = RollbackReader(shared, logs).around(
-            UUID.randomUUID(), 0, 64, 0, 4, 0, Long.MAX_VALUE, { true }, { true },
+            UUID.randomUUID(), 0, 64, 0, 4, 0, Long.MAX_VALUE, RowFilter(shared, LookupQuery(all = true), emptySet(), emptySet()),
         )
         assertTrue(refused is Refused, "a world with no open base has nothing to roll back over")
     }
@@ -484,7 +479,6 @@ class RollbackTest : BothPlanes() {
     // wherever else in the same chest it fits, and what fits nowhere is said rather than lost quietly.
     @Test
     fun `a slot posting goes back into its own slot first and then wherever it fits`() {
-        ServerRegistries.access
         val chest = ContainerSlots(SimpleContainer(3))
         val diamonds = NmsItemStack(Items.DIAMOND)
         chest.set(1, NmsItemStack(Items.DIRT, 64))
@@ -499,7 +493,6 @@ class RollbackTest : BothPlanes() {
 
     @Test
     fun `a book goes back onto a lectern and food back onto a campfire`() {
-        ServerRegistries.access
         val lectern = net.minecraft.world.level.block.entity.LecternBlockEntity(net.minecraft.core.BlockPos(1, 64, 1), net.minecraft.world.level.block.Blocks.LECTERN.defaultBlockState())
         assertEquals(1, putBack(slotsOf(lectern)!!, 0, NmsItemStack(Items.WRITABLE_BOOK), 1) { false })
         assertEquals(Items.WRITABLE_BOOK, lectern.book.item)
@@ -511,7 +504,6 @@ class RollbackTest : BothPlanes() {
 
     @Test
     fun `a slot posting taken out is looked for in the whole chest`() {
-        ServerRegistries.access
         val chest = ContainerSlots(SimpleContainer(3))
         chest.set(2, NmsItemStack(Items.TNT, 5))
         val isTnt = { stack: NmsItemStack -> stack.item == Items.TNT }
@@ -526,11 +518,9 @@ class RollbackTest : BothPlanes() {
     fun `a rollback of named players reaches the whole height of its square`() {
         log.submit(listOf(BlockChange(2, 104, 2, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
         log.drain()
-        val filter = RowFilter(shared, LookupQuery(), setOf(alice), emptySet(), rollback = true)
-        val named = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, 0, Long.MAX_VALUE, filter::keeps, filter::keeps, column = true) as Planned
-        assertEquals(listOf(WorldBlock(world, 2, 104, 2)), named.chunks.flatMap { it.positions }.map { it.at })
-        val cube = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, 0, Long.MAX_VALUE, filter::keeps, filter::keeps) as Planned
-        assertTrue(cube.chunks.flatMap { it.positions }.isEmpty())
+        val named = around(rollbackFilter(alice), column = true)
+        assertEquals(listOf(WorldBlock(world, 2, 104, 2)), positions(named).map { it.at })
+        assertTrue(positions(around(rollbackFilter(alice))).isEmpty())
     }
 
     @Test
@@ -550,24 +540,26 @@ class RollbackTest : BothPlanes() {
 
     @Test
     fun `a preview shows the nearest ghosts first`() {
-        ServerRegistries.access
         val stone = Blocks.STONE.defaultBlockState().asBlockData()
         val nether = UUID.fromString("00000000-0000-4000-8000-000000000007")
         val ghosts = listOf(
-            Ghost(world, 150, 64, 0, stone), Ghost(nether, 1, 64, 0, stone), Ghost(world, 3, 64, 0, stone),
-            Ghost(world, -40, 64, 0, stone), Ghost(world, 0, 70, 0, stone),
+            Ghost(WorldBlock(world, 150, 64, 0), stone), Ghost(WorldBlock(nether, 1, 64, 0), stone), Ghost(WorldBlock(world, 3, 64, 0), stone),
+            Ghost(WorldBlock(world, -40, 64, 0), stone), Ghost(WorldBlock(world, 0, 70, 0), stone),
         )
-        val shown = nearest(ghosts, world, 0.5, 64.0, 0.5, 4).map { Triple(it.world == world, it.x, it.y) }
+        val shown = nearest(ghosts, world, 0.5, 64.0, 0.5, 4).map { Triple(it.at.world == world, it.at.x, it.at.y) }
         assertEquals(listOf(Triple(true, 3, 64), Triple(true, 0, 70), Triple(true, -40, 64), Triple(true, 150, 64)), shown)
-        assertEquals(nether, nearest(ghosts, world, 0.5, 64.0, 0.5, 5).last().world)
+        assertEquals(nether, nearest(ghosts, world, 0.5, 64.0, 0.5, 5).last().at.world)
     }
 
-    private fun around(filter: RowFilter): Planned {
-        val reading = RollbackReader(shared, logs).around(
-            world, 0, 64, 0, 15, 0, Long.MAX_VALUE, filter::keeps, filter::keeps,
-        )
+    private fun around(filter: RowFilter, from: Long = 0, column: Boolean = false): Planned {
+        val reading = RollbackReader(shared, logs).around(world, 0, 64, 0, 15, from, Long.MAX_VALUE, filter, column)
         return reading as? Planned ?: throw AssertionError((reading as Refused).reason)
     }
 
-    private fun steps(planned: Planned) = planned.chunks.flatMap { it.positions }.flatMap { it.steps }
+    private fun rollbackFilter(vararg users: UUID, causes: Set<Cause>? = null) =
+        RowFilter(shared, LookupQuery(causes = causes), users.toSet(), emptySet(), rollback = true)
+
+    private fun positions(planned: Planned) = planned.chunks.flatMap { it.positions }
+
+    private fun steps(planned: Planned) = positions(planned).flatMap { it.steps }
 }

@@ -264,45 +264,50 @@ private fun lyingBox(ledger: RocksItemLog, at: Container, packed: Long, rowsOf: 
 }
 
 private fun wholePile(pile: UUID, rowsOf: (ItemEntityRef) -> List<LedgerEntry>): List<Owed> {
-    val births = rowsOf(ItemEntityRef(pile)).filter { it.qty > 0 && it.cause != Cause.ITEM_MERGE }
+    val births = birthsOf(rowsOf(ItemEntityRef(pile)))
     val formId = births.firstOrNull()?.itemFormId ?: return emptyList()
     return trace(ItemEntityRef(pile), formId, births.sumOf { it.qty }, rowsOf)
 }
 
-/**
- * Where everything that fell out of a killed player is now: who picked it up, what still
- * lies there, what is gone for good. The victim's own hands are left out: what they picked up again they
- * have.
- */
-internal fun restitutionFor(ledger: RocksItemLog, death: EntityRow): List<Owed> {
-    val gone = restituted(ledger, death)
-    return merged(death.drops.filter { it !in gone }.flatMap { wholePile(it, pileRows(ledger)) })
-        .filter { it.qty > 0 && it.taker != Carrier(death.uuid) }
-}
+private fun birthsOf(rows: List<LedgerEntry>) = rows.filter { it.qty > 0 && it.cause != Cause.ITEM_MERGE }
 
-/**
- * The births of the piles that fell out of a killed player, by pile: what a rollback that gave the
- * victim back their loss marks as given back, so a second rollback gives nothing twice.
- */
-internal fun pileBirths(ledger: RocksItemLog, death: EntityRow): Map<UUID, List<PostingRef>> = death.drops.associateWith { pile ->
-    pileRows(ledger)(ItemEntityRef(pile)).filter { it.qty > 0 && it.cause != Cause.ITEM_MERGE }.map { it.ref }
-}
+/** The piles that fell out of a killed player, each read from the ledger once. Off the region thread. */
+internal class Fallen(private val ledger: RocksItemLog, private val death: EntityRow) {
+    private val read = death.drops.distinct().associateWith { pileRows(ledger)(ItemEntityRef(it)) }
+    private val rowsOf = pileRows(ledger).let { fallback -> { pile: ItemEntityRef -> read[pile.uuid] ?: fallback(pile) } }
 
-/**
- * Where on the victim each item fell out of, by form: the slots its piles were born from. Armour goes back
- * onto the body and a shield into the off hand, not into the first free pocket.
- */
-internal fun fellFrom(ledger: RocksItemLog, death: EntityRow): Map<Long, List<Int>> =
-    death.drops.flatMap { pile -> pileRows(ledger)(ItemEntityRef(pile)) }
-        .filter { it.qty > 0 && it.cause == Cause.DEATH_DROP }
-        .mapNotNull { row -> (row.counterparty as? PlayerHolder)?.takeIf { it.uuid == death.uuid }?.let { row.itemFormId to it.slot } }
-        .groupBy({ it.first }, { it.second })
+    /**
+     * Where everything that fell out of the victim is now: who picked it up, what still lies there, what is
+     * gone for good. The victim's own hands are left out: what they picked up again they have.
+     */
+    fun restitution(): List<Owed> {
+        val gone = restituted()
+        return merged(death.drops.filter { it !in gone }.flatMap { wholePile(it, rowsOf) })
+            .filter { it.qty > 0 && it.taker != Carrier(death.uuid) }
+    }
 
-// Piles an earlier rollback already gave the victim back.
-private fun restituted(ledger: RocksItemLog, death: EntityRow): Set<UUID> {
-    val births = pileBirths(ledger, death)
-    val given = ledger.compensated(births.values.flatten()).keys
-    return births.filterValues { refs -> refs.any { it in given } }.keys
+    /**
+     * The births of the piles, by pile: what a rollback that gave the victim back their loss marks as given
+     * back, so a second rollback gives nothing twice.
+     */
+    fun births(): Map<UUID, List<PostingRef>> = death.drops.associateWith { pile -> birthsOf(read.getValue(pile)).map { it.ref } }
+
+    /**
+     * Where on the victim each item fell out of, by form: the slots its piles were born from. Armour goes
+     * back onto the body and a shield into the off hand, not into the first free pocket.
+     */
+    fun slots(): Map<Long, List<Int>> =
+        death.drops.flatMap { read.getValue(it) }
+            .filter { it.qty > 0 && it.cause == Cause.DEATH_DROP }
+            .mapNotNull { row -> (row.counterparty as? PlayerHolder)?.takeIf { it.uuid == death.uuid }?.let { row.itemFormId to it.slot } }
+            .groupBy({ it.first }, { it.second })
+
+    // Piles an earlier rollback already gave the victim back.
+    private fun restituted(): Set<UUID> {
+        val births = births()
+        val given = ledger.compensated(births.values.flatten()).keys
+        return births.filterValues { refs -> refs.any { it in given } }.keys
+    }
 }
 
 private fun pileRows(ledger: RocksItemLog) = { pile: ItemEntityRef -> ledger.holderEntries(pile, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
@@ -425,6 +430,10 @@ class Confiscations(
         }
     }
 
+    private fun tell(sender: CommandSender?, message: String) {
+        if (sender != null) sender.sayNamed(message) else plugin.logger.info("rollback at join:$message")
+    }
+
     // Out of nothing into a player's hands: what fits goes in now, through the pass as a reason for the
     // gain; what does not, at their next join.
     private fun give(player: UUID, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList()) {
@@ -456,7 +465,7 @@ class Confiscations(
         if (added > 0) capture.intend(player, Intent(Cause.ROLLBACK, from = Void, form = form, qty = added, actor = actor))
         if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor) }
         val message = "  gave back $added ${name(formId)} to ${player.name}" + if (left > 0) "; $left more at their next join." else "."
-        if (sender != null) sender.sayNamed(message) else plugin.logger.info("rollback at join:$message")
+        tell(sender, message)
     }
 
     /**
@@ -487,10 +496,9 @@ class Confiscations(
                         if (here.isEmpty) continue
                         val encoded = codec.encode(here)
                         if (!encoded.form.contentEquals(form)) continue
-                        val damage = encoded.damage
                         val n = minOf(left - got, here.count)
                         slots.set(slot, if (n == here.count) net.minecraft.world.item.ItemStack.EMPTY else here.copyWithCount(here.count - n))
-                        rows += Transfer(Cause.ROLLBACK, stash.copy(slot = slot), Void, form, damage, n, now, actor = actor)
+                        rows += Transfer(Cause.ROLLBACK, stash.copy(slot = slot), Void, form, encoded.damage, n, now, actor = actor)
                         got += n
                     }
                     if (rows.isNotEmpty()) {
@@ -651,7 +659,7 @@ class Confiscations(
             val rest = if (followed) "the rest is looked for where they put it and what they made of it" else "the rest is beyond reach"
             val message = if (left == 0) "  took back $got ${name(item.formId)} from ${player.name}."
             else "  ${player.name} held only $got of ${item.qty} ${name(item.formId)}; $rest."
-            if (sender != null) sender.sayNamed(message) else plugin.logger.info("rollback at join:$message")
+            tell(sender, message)
             if (left > 0 && followed) short(item, left)
         }
         if (direct.isNotEmpty()) sink(direct)

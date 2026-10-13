@@ -22,41 +22,43 @@ internal const val COMMAND_LINGER_TICKS = 5
 // finish first, and across a world that loads chunks.
 private const val GIVE_DROP_MILLIS = 5_000L
 
-// A command's words, the way the server will read them: no slash, no namespace, lower case name.
+// A command's name the way the server reads it: no slash, no namespace, lower case.
+internal fun commandName(line: String) =
+    line.trim().removePrefix("/").substringBefore(' ').substringAfter(':').lowercase()
+
 // `execute … run give …` runs the give; everything before the last `run` only changes who and where.
 internal fun commandWords(line: String): List<String> {
     val words = line.trim().removePrefix("/").split(' ').filter { it.isNotEmpty() }
     if (words.isEmpty()) return words
-    val named = listOf(words[0].substringAfter(':').lowercase()) + words.drop(1)
+    val named = listOf(commandName(words[0])) + words.drop(1)
     if (named[0] != "execute") return named
     val run = named.lastIndexOf("run")
     return if (run < 0) named else commandWords(named.drop(run + 1).joinToString(" "))
 }
 
 // Whether the line runs its command through `execute`, which can make `@s` anybody.
-internal fun executed(line: String) =
-    line.trim().removePrefix("/").substringBefore(' ').substringAfter(':').lowercase() == "execute"
+internal fun executed(line: String) = commandName(line) == "execute"
 
 // Which reasons a command leaves on the players it names, and who those players are, by argument.
 // Only commands that reach into a player's own slots are read here; one that fills a chest or spawns an
 // item on the ground has no player to explain and stays a birth or an end nobody named.
-internal class CommandUse(val targets: String?, val gain: Cause?, val loss: Cause?, val change: Cause?)
+internal class CommandUse(val targets: String?, val gain: Cause? = null, val loss: Cause? = null, val change: Cause? = null)
 
 internal fun commandUse(words: List<String>): CommandUse? {
     if (words.isEmpty()) return null
     val args = words.drop(1)
     return when (words[0]) {
-        "give" -> CommandUse(args.getOrNull(0), gain = Cause.CMD_GIVE, loss = null, change = null)
-        "clear" -> CommandUse(args.getOrNull(0), gain = null, loss = Cause.CMD_CLEAR, change = null)
-        "enchant" -> CommandUse(args.getOrNull(0), gain = null, loss = null, change = Cause.CMD_ENCHANT)
+        "give" -> CommandUse(args.getOrNull(0), gain = Cause.CMD_GIVE)
+        "clear" -> CommandUse(args.getOrNull(0), loss = Cause.CMD_CLEAR)
+        "enchant" -> CommandUse(args.getOrNull(0), change = Cause.CMD_ENCHANT)
         "item" -> when {
             args.getOrNull(1) != "entity" -> null
             args.getOrNull(0) == "replace" ->
-                CommandUse(args.getOrNull(2), gain = Cause.CMD_ITEM_REPLACE, loss = Cause.CMD_ITEM_REPLACE, change = null)
-            args.getOrNull(0) == "modify" -> CommandUse(args.getOrNull(2), gain = null, loss = null, change = Cause.CMD_ITEM_MODIFY)
+                CommandUse(args.getOrNull(2), gain = Cause.CMD_ITEM_REPLACE, loss = Cause.CMD_ITEM_REPLACE)
+            args.getOrNull(0) == "modify" -> CommandUse(args.getOrNull(2), change = Cause.CMD_ITEM_MODIFY)
             else -> null
         }
-        "loot" -> if (args.getOrNull(0) == "give") CommandUse(args.getOrNull(1), gain = Cause.CMD_LOOT, loss = null, change = null) else null
+        "loot" -> if (args.getOrNull(0) == "give") CommandUse(args.getOrNull(1), gain = Cause.CMD_LOOT) else null
         else -> null
     }
 }
@@ -112,13 +114,10 @@ class CommandListener(
 
     private fun parse(item: String) = runCatching { codec.encodeOrNull(Bukkit.getItemFactory().createItemStack(item)) }.getOrNull()
 
-    // A name, or a selector. A selector is not resolved here — that reads entities off the thread that
-    // owns them — so anything but @s names every player online.
-    // @p and @r over-name; a reason left on a player the command skipped explains nothing,
-    // unless that player had an unexplained gain of their own in the same pass.
+    // A selector is not resolved here, that reads entities off their own thread, so anything but a plain
+    // @s (under `execute as` even that) names every player online. Over-naming is harmless: a reason left
+    // on a player the command skipped explains nothing unless they had an unexplained gain of their own.
     private fun targetsOf(sender: CommandSender, target: String?, executed: Boolean): List<Player> = when {
-        // Run through `execute as`, the command's own self is whoever that named, so even @s names
-        // every player online.
         !executed && (target == null || target == "@s") -> listOfNotNull(sender as? Player)
         target == null || target.startsWith("@") -> Bukkit.getOnlinePlayers().toList()
         else -> listOfNotNull(Bukkit.getPlayerExact(target))

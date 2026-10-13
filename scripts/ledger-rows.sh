@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
 # The ledger of the Docker test server, read offline (src/test/kotlin/.../tools/LedgerRows.kt):
 #
-#   scripts/ledger-rows.sh since <millis> [CAUSE...]
-#   scripts/ledger-rows.sh holder item:<uuid>|slot:<uuid>:<n>|... [<from millis>]
+#   scripts/ledger-rows.sh since <millis> [CAUSE...]          every row since then, of these causes or all
+#   scripts/ledger-rows.sh holder <holder> [<from millis>]     one holder's rows, the holder being one of
+#       item:<uuid>, slot:<uuid>:<n>, inv:<uuid>:<n>, ender:<uuid>:<n>, container:<world>:<x>:<y>:<z>:<n>
 #
 # The copy is taken inside the container: the host sees a running RocksDB's files late. The server is
 # frozen while it is taken, so the copy is one state of the database, as after a crash, which RocksDB

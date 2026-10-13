@@ -68,19 +68,20 @@ class ProjectileListener(
     fun onShoot(event: EntityShootBowEvent) {
         val player = event.entity as? Player ?: return
         val arrow = event.projectile as? AbstractArrow
+        val shot = arrow?.takeIf { pickable(it) }
         // A crossbow paid for its ammunition when it was loaded, and firing hands the loaded crossbow
         // back empty. The arrow is born here out of what the crossbow held.
         if (event.bow?.type == Material.CROSSBOW) {
             capture.intend(player, mutation(Cause.CROSSBOW_SHOOT))
-            if (arrow != null && pickable(arrow)) {
-                val key = codec.encodeOrNull(arrow.itemStack)?.key ?: return
-                pending.add(Void, booked(arrow), Cause.CROSSBOW_SHOOT, key, 1, player.uniqueId)
+            if (shot != null) {
+                val key = codec.encodeOrNull(shot.itemStack)?.key ?: return
+                pending.add(Void, booked(shot), Cause.CROSSBOW_SHOOT, key, 1, player.uniqueId)
             }
             return
         }
         if (!event.shouldConsumeItem()) return
         val form = codec.encodeOrNull(event.consumable)?.form ?: return
-        val to = if (arrow != null && pickable(arrow)) booked(arrow) else Void
+        val to = if (shot != null) booked(shot) else Void
         capture.intend(player, Intent(Cause.PROJ_SHOT, to = to, form = form, qty = 1))
     }
 
