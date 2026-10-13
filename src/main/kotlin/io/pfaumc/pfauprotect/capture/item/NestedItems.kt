@@ -84,6 +84,18 @@ internal fun packShulker(
     return owner
 }
 
+/** The other end of [packShulker]: a box put down as a block hands its contents to the position, under its name. */
+internal fun unpackShulker(
+    owners: RocksItemLog,
+    block: Block,
+    box: ItemStack,
+    unpack: (from: Holder, to: Holder, item: ItemStack) -> Unit,
+) {
+    val owner = NestedItems.ownerOf(box) ?: UUID.randomUUID()
+    owners.setOwnerAt(block.world.uid, block.x, block.y, block.z, owner)
+    for ((index, child) in NestedItems.contents(box)) unpack(Nested(owner, index), containerAt(block, index), child)
+}
+
 // While a shulker box stands as a block its contents are addressed by the block, and as an item they
 // are addressed by its own name. Both ends of that switch are written so the chain of custody runs
 // through the cycle instead of ending at it.
@@ -97,11 +109,8 @@ class NestedCaptureListener(
     fun onPlace(event: BlockPlaceEvent) {
         val block = event.block
         if (!Tag.SHULKER_BOXES.isTagged(block.type)) return
-        val placed = CraftItemStack.asNMSCopy(event.itemInHand)
-        val owner = NestedItems.ownerOf(placed) ?: UUID.randomUUID()
-        owners.setOwnerAt(block.world.uid, block.x, block.y, block.z, owner)
-        for ((index, child) in NestedItems.contents(placed)) {
-            move(Nested(owner, index), containerAt(block, index), Cause.CONTAINER_PLACE_UNPACK, child, event.player)
+        unpackShulker(owners, block, CraftItemStack.asNMSCopy(event.itemInHand)) { from, to, child ->
+            move(from, to, Cause.CONTAINER_PLACE_UNPACK, child, event.player)
         }
     }
 

@@ -149,7 +149,7 @@ internal fun leftBehind(data: BlockData): BlockData = leftBehind((data as CraftB
  * never answers for what moves into the hole.
  */
 internal fun Attribution.cleared(block: Block, actor: UUID) {
-    for (standing in listOfNotNull(block, otherHalfOf(block))) {
+    for (standing in withOtherHalves(block)) {
         val at = positionOf(standing)
         removed(at, actor)
         // The ice melt `brokenAfter` also carries is left out: a note naming air where water ends up answers
@@ -165,7 +165,7 @@ internal fun Attribution.cleared(block: Block, actor: UUID) {
  * since the block may yet stand.
  */
 internal fun Attribution.givingWay(block: Block, actor: UUID) {
-    for (standing in listOfNotNull(block, otherHalfOf(block))) removed(positionOf(standing), actor)
+    for (standing in withOtherHalves(block)) removed(positionOf(standing), actor)
 }
 
 // How far a leaf reaches for a log, counted in steps through other leaves. The game's own number.

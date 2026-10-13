@@ -85,8 +85,9 @@ class PlaneSync(private val ledger: RocksItemLog, private val blocks: BlockLogs)
     private fun settle(position: BlockPostings, now: Long, gaps: MutableList<PlaneGap>): Outcome {
         val at = position.at
         if (at == null || position.unreadable > 0) return Outcome.UNREADABLE
-        val fact = position.entries.filter { it.confidence == Confidence.FACT }.sumOf { it.qty }
-        val inferred = position.entries.filter { it.confidence != Confidence.FACT }.sumOf { it.qty }
+        val (facts, inferences) = position.entries.partition { it.confidence == Confidence.FACT }
+        val fact = facts.sumOf { it.qty }
+        val inferred = inferences.sumOf { it.qty }
         val newest = position.entries.maxOfOrNull { it.timestamp } ?: 0L
         if (fact == 0 && inferred == 0) return Outcome.CHECKED
         if (newest > now - SETTLE_MILLIS) return Outcome.SETTLING

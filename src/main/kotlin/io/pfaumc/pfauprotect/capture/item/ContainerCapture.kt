@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.storage.FormKey
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
+import io.pfaumc.pfauprotect.storage.nmsView
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.MenuSlot
@@ -781,6 +782,8 @@ class ContainerCaptureListener(
         val player = event.player
         val drop = event.itemDrop
         val encoded = codec.encodeOrNull(drop.itemStack) ?: return
+        // Every branch writes this birth, as a row here or from the slot the pass sees it leave.
+        origins.accounted(drop.uniqueId, encoded.count)
         // A player who leaves holding something on the cursor has it dropped for them, and that happens
         // after the quit event: the pass is already gone, the intent would be left for nobody and the
         // funnel silenced on a promise nothing can keep, so the item would leave no trace at either
@@ -799,15 +802,12 @@ class ContainerCaptureListener(
                     )
                 )
             )
-            // The birth is in the row just written, so the funnel still has to stay quiet about it.
-            origins.accounted(drop.uniqueId, encoded.count)
             return
         }
         // Nothing open and the player's own inventory screen report the same type, so a drop out of
         // the survival inventory is indistinguishable from a drop out of the hand and reads as one.
         closingDrop(player, drop.uniqueId, encoded)?.let { row ->
             sink(listOf(row))
-            origins.accounted(drop.uniqueId, encoded.count)
             return
         }
         val inMenu = player.openInventory.type != InventoryType.CRAFTING
@@ -822,8 +822,6 @@ class ContainerCaptureListener(
                 actor = player.uniqueId,
             )
         )
-        // The pass writes this birth from the slot it left.
-        origins.accounted(drop.uniqueId, encoded.count)
     }
 
     // The bowl a stew leaves behind is the use remainder rather than the crafting remainder: a bowl
@@ -1162,7 +1160,7 @@ class ContainerCaptureListener(
         holder: Holder,
         stack: BukkitItemStack?,
     ) {
-        val live = (stack as? CraftItemStack)?.handle ?: CraftItemStack.asNMSCopy(stack ?: return)
+        val live = nmsView(stack ?: return)
         if (live.isEmpty) return
         val contents = NestedItems.contents(live)
         // Naming it has to happen before the form is taken, or the same item would read as a different

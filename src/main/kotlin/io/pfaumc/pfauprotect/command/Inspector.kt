@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.command
+import io.pfaumc.pfauprotect.attribution.typeOf
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -84,7 +85,7 @@ class Inspector(private val lookups: Lookups) : Listener {
 
     private fun inspect(player: Player, entity: Entity) {
         if (again(player, entity.uniqueId)) return
-        lookups.entity(player, entity.uniqueId, entity.type.key.toString(), lookupTargetAt(entity.location))
+        lookups.entity(player, entity.uniqueId, typeOf(entity), lookupTargetAt(entity.location))
     }
 
     @EventHandler

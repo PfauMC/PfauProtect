@@ -91,6 +91,7 @@ import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import net.minecraft.world.entity.Entity as NmsEntity
 
 // A frame broken by a hit is seen by the break and then once more by its removal, and only the first
@@ -98,6 +99,8 @@ import net.minecraft.world.entity.Entity as NmsEntity
 private const val SEEN_MILLIS = 10_000L
 
 private const val SEEN_CAP = 1024
+
+private const val SWEEP_MILLIS = 1_000L
 
 // Lava sets a mob burning for fifteen seconds after it climbs out; the rest is slack for a server
 // running behind, whose fifteen seconds of ticks take longer on the clock this is measured by.
@@ -151,6 +154,8 @@ internal fun snapshotOf(entity: NmsEntity): ByteArray? {
     if (!entity.saveAsPassenger(output, true, true, true)) return null
     return bytesOf(output.buildResult().also { it.remove(NmsEntity.TAG_PASSENGERS) })
 }
+
+internal fun snapshotOf(entity: Entity): ByteArray? = snapshotOf((entity as CraftEntity).handle)
 
 /**
  * Whether an entity is part of the place it stands in. A monster nobody named and nothing holds would
@@ -229,9 +234,11 @@ class EntityCapture(
     private val offThread: (() -> Unit) -> Unit,
 ) : Listener {
     private val seen = ConcurrentHashMap<UUID, Long>()
+    private val seenSwept = AtomicLong()
 
     // Who set an entity alight, and when, until it dies or the burning is long over.
     private val alight = ConcurrentHashMap<UUID, Pair<Attributed, Long>>()
+    private val alightSwept = AtomicLong()
 
     // One reading of an entity a player is handling at a time: a click raises two events on an armour stand.
     private val handling = ConcurrentHashMap.newKeySet<UUID>()
@@ -258,7 +265,7 @@ class EntityCapture(
         touch(entity)
         val log = logs.get(entity.world.uid) ?: return
         if (!handling.add(entity.uniqueId)) return
-        val before = snapshotOf((entity as CraftEntity).handle) ?: run {
+        val before = snapshotOf(entity) ?: run {
             handling.remove(entity.uniqueId)
             return
         }
@@ -288,7 +295,7 @@ class EntityCapture(
         drops: () -> List<UUID> = { emptyList() },
     ) {
         if (!always && !entity.isValid) return
-        val after = snapshotOf((entity as CraftEntity).handle) ?: return
+        val after = snapshotOf(entity) ?: return
         if (!always && !changedBetween(before, after)) return
         log.submit(
             EntityChange(
@@ -312,7 +319,7 @@ class EntityCapture(
         // A villager's window trades, and what trading changes is the item plane's and its own.
         if (entity is Player || entity is AbstractVillager || logs.get(entity.world.uid) == null) return
         touch(entity)
-        opened[event.player.uniqueId] = Opened(entity.uniqueId, snapshotOf((entity as CraftEntity).handle) ?: return, System.currentTimeMillis())
+        opened[event.player.uniqueId] = Opened(entity.uniqueId, snapshotOf(entity) ?: return, System.currentTimeMillis())
     }
 
     /**
@@ -344,7 +351,7 @@ class EntityCapture(
         val damager = (entity.lastDamageCause as? EntityDamageByEntityEvent)?.damager
         val by = (if (damager != null) byEntity(damager, Cause.ENTITY_CHANGED) else culpritOf(entity, Cause.ENTITY_CHANGED)).by ?: return
         val log = logs.get(entity.world.uid) ?: return
-        val before = snapshotOf((entity as CraftEntity).handle) ?: return
+        val before = snapshotOf(entity) ?: return
         val block = entity.location.block
         laterOn(entity, { changedSince(log, entity, block, before, by, always = true) }) {}
     }
@@ -380,7 +387,7 @@ class EntityCapture(
         touch(entity)
         if ((entity as? Tameable)?.owner?.uniqueId == player.uniqueId) return
         val log = logs.get(entity.world.uid) ?: return
-        val before = snapshotOf((entity as CraftEntity).handle) ?: return
+        val before = snapshotOf(entity) ?: return
         val block = entity.location.block
         log.submit(
             EntityChange(
@@ -636,10 +643,10 @@ class EntityCapture(
     ) {
         if (entity is LeashHitch) return
         val now = System.currentTimeMillis()
-        if (seen.size > SEEN_CAP) seen.values.removeIf { now - it > SEEN_MILLIS }
+        if (seen.size > SEEN_CAP && sweepDue(seenSwept, now)) seen.values.removeIf { now - it > SEEN_MILLIS }
         if (seen.putIfAbsent(entity.uniqueId, now) != null) return
         val log = logs.get(entity.world.uid) ?: return
-        val nbt = snapshotOf((entity as CraftEntity).handle) ?: return
+        val nbt = snapshotOf(entity) ?: return
         val block = entity.location.block
         val uuid = entity.uniqueId
         val type = typeOf(entity)
@@ -669,10 +676,16 @@ class EntityCapture(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onCombust(event: EntityCombustByBlockEvent) {
         val block = event.combuster ?: return
-        val by = attribution.placerAt(positionOf(block), block.blockData.asString) ?: return
+        val by = attribution.placerAt(positionOf(block), block) ?: return
         val now = System.currentTimeMillis()
-        if (alight.size > SEEN_CAP) alight.values.removeIf { now - it.second > BURN_MILLIS }
+        if (alight.size > SEEN_CAP && sweepDue(alightSwept, now)) alight.values.removeIf { now - it.second > BURN_MILLIS }
         alight[event.entity.uniqueId] = by to now
+    }
+
+    // A map held over its cap by entries too young to drop would otherwise be scanned whole on every event.
+    private fun sweepDue(last: AtomicLong, now: Long): Boolean {
+        val then = last.get()
+        return now - then >= SWEEP_MILLIS && last.compareAndSet(then, now)
     }
 
     /**
@@ -688,7 +701,7 @@ class EntityCapture(
         val by = when (damage?.cause) {
             DamageCause.FIRE, DamageCause.FIRE_TICK, DamageCause.LAVA ->
                 // Lava burns from the block it touches, which is not always the block the mob stands in.
-                (damage as? EntityDamageByBlockEvent)?.damager?.let { attribution.placerAt(positionOf(it), it.blockData.asString) }
+                (damage as? EntityDamageByBlockEvent)?.damager?.let { attribution.placerAt(positionOf(it), it) }
                     ?: lit?.takeIf { System.currentTimeMillis() - it.second <= BURN_MILLIS }?.first
                     ?: attribution.placerAt(at, if (damage.cause == DamageCause.LAVA) "minecraft:lava" else "minecraft:fire")
             else -> null
@@ -723,15 +736,14 @@ class EntityCapture(
     // The damage type's key, and the entity that dealt the blow when that was not a player: the dog, the arrow.
     private fun deathOf(source: DamageSource): Pair<String?, String?> =
         (source as? CraftDamageSource)?.handle?.typeHolder()?.registeredName to
-            source.directEntity?.takeIf { it !is Player }?.type?.key?.toString()
+            source.directEntity?.takeIf { it !is Player }?.let(::typeOf)
 
     private fun byEntity(damager: Entity, own: Cause): Culprit {
         val shooter = firedBy(damager)
         val exploded = damager.type in EXPLODING
         val cause = if (exploded) explosionCause(damager.type) else own
-        (damager as? Player)?.let { return Culprit(own, Attributed(it.uniqueId, Confidence.FACT)) }
-        litBy(damager)?.let { return Culprit(cause, Attributed(it.uniqueId, Confidence.FACT)) }
-        (shooter as? Player)?.let { return Culprit(cause, Attributed(it.uniqueId, Confidence.FACT)) }
+        (damager as? Player)?.let { return Culprit(own, it.witnessed()) }
+        litBy(damager)?.let { return Culprit(cause, it.witnessed()) }
         // A bolt is whoever it answers to, the weather included; a block that fell on it, whoever made it fall.
         (damager as? LightningStrike)?.let { return Culprit(cause, boltBy(it, entities::summonerOf)) }
         (damager as? FallingBlock)?.let { attribution.flying(it.uniqueId) }?.let { return Culprit(cause, it) }

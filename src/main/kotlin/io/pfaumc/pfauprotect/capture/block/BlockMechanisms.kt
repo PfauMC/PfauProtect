@@ -18,11 +18,11 @@ import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.capture.item.Stack
+import org.bukkit.block.data.Brushable
 import org.bukkit.block.data.Directional
 import org.bukkit.Tag
 import io.pfaumc.pfauprotect.storage.RocksItemLog
-import io.pfaumc.pfauprotect.model.Nested
-import io.pfaumc.pfauprotect.capture.item.NestedItems
+import io.pfaumc.pfauprotect.capture.item.unpackShulker
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
@@ -260,18 +260,17 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
         val now = clock()
         // A note that names the entity is exact, so it goes first: a note left at the same block for
         // some other reason must not take the quantity out from under it.
-        val named = take(into, key, count) { it.entity == entity }
-        val thrown = if (thrower == null) 0 else take(into, key, count - named) {
+        var left = count
+        left -= take(into, key, left) { it.entity == entity }
+        if (thrower != null) left -= take(into, key, left) {
             it.thrower == thrower && it.key == key && now <= it.until!!
         }
-        val nearby = take(into, key, count - named - thrown) { placedFor(it, at, key) }
-        val rolled = take(into, key, count - named - thrown - nearby) {
-            it.rolled && it.key == key && near(it.at!!, at, it.reach)
-        }
-        val anyForm = take(into, key, count - named - thrown - nearby - rolled) {
+        left -= take(into, key, left) { placedFor(it, at, key) }
+        left -= take(into, key, left) { it.rolled && it.key == key && near(it.at!!, at, it.reach) }
+        left -= take(into, key, left) {
             it.rolled && it.key == null && now - it.made!! <= SAME_TICK_MILLIS && near(it.at!!, at, it.reach)
         }
-        return named + thrown + nearby + rolled + anyForm
+        return count - left
     }
 
     /**
@@ -526,7 +525,7 @@ class BlockMechanismListener(
         dispensed.set(started)
         later(block) {
             if (started.equipped) return@later
-            settleDispense(block, slot, load.before, ejected(), projectile, load.actor, front, frontBefore, stack)
+            settleDispense(block, load, ejected(), projectile, front, frontBefore, stack)
         }
     }
 
@@ -538,17 +537,16 @@ class BlockMechanismListener(
 
     private fun settleDispense(
         block: Block,
-        slot: Int,
-        before: List<Stack?>,
+        load: Loaded,
         ejected: Int,
         projectile: Boolean,
-        actor: UUID?,
         front: Block?,
         frontBefore: String?,
         spent: NmsItemStack,
     ) {
         val after = contentsOf(block) ?: return
-        val changes = dispenseChanges(before, after, slot, ejected)
+        val changes = dispenseChanges(load.before, after, load.slot, ejected)
+        val actor = load.actor
         if (changes.isEmpty()) return
         if (front != null && frontBefore != null) {
             val now = front.blockData
@@ -583,14 +581,12 @@ class BlockMechanismListener(
             )
         )
         if (owners != null && Tag.SHULKER_BOXES.isTagged(front.type)) {
-            val owner = NestedItems.ownerOf(spent) ?: UUID.randomUUID()
-            owners.setOwnerAt(at.world, at.x, at.y, at.z, owner)
-            for ((index, child) in NestedItems.contents(spent)) {
+            unpackShulker(owners, front, spent) { from, to, child ->
                 val encoded = codec.encode(child)
                 moves += Transfer(
                     cause = Cause.CONTAINER_PLACE_UNPACK,
-                    from = Nested(owner, index),
-                    to = containerAt(front, index),
+                    from = from,
+                    to = to,
                     key = encoded.key,
                     qty = encoded.count,
                     timestamp = timestamp,
@@ -634,16 +630,7 @@ class BlockMechanismListener(
         placed.clearFormAt(broken.at)
         broken.partner?.let(placed::clearFormAt)
         gaveBack(remembered, codec.shellOf(state.blockData))?.let {
-            transaction += Transfer(
-                cause = Cause.BLOCK_DROP,
-                from = position,
-                to = Void,
-                form = it,
-                damage = null,
-                qty = 1,
-                timestamp = timestamp,
-                actor = actor,
-            )
+            transaction += moved(position, Void, it, Cause.BLOCK_DROP, Attributed(actor), timestamp)
         }
         // Read once: every getItem call builds a fresh mirror of the slot, and the inner loop runs
         // for each dropped entity.
@@ -683,8 +670,7 @@ class BlockMechanismListener(
     // Brushing raises the drop event with no break behind it: the find comes out of the loot table and
     // the block turns plain. The entities already exist, so their births are written here.
     private fun revealed(event: BlockDropItemEvent) {
-        val type = event.blockState.type
-        if (type != Material.SUSPICIOUS_SAND && type != Material.SUSPICIOUS_GRAVEL) return
+        if (event.blockState.blockData !is Brushable) return
         for (dropped in event.items) {
             val key = key(dropped.itemStack) ?: continue
             val amount = dropped.itemStack.amount
@@ -810,7 +796,7 @@ class BlockMechanismListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onShearBlock(event: PlayerShearBlockEvent) {
         val block = event.block
-        val hive = block.type == Material.BEEHIVE || block.type == Material.BEE_NEST
+        val hive = Tag.BEEHIVES.isTagged(block.type)
         val cause = if (hive) Cause.BEEHIVE_HARVEST else Cause.BLOCK_INTERACT_DROP
         val actor = event.player.uniqueId
         for (drop in event.drops) {

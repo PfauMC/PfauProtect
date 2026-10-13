@@ -21,6 +21,7 @@ import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.WorldBlock
+import io.pfaumc.pfauprotect.model.block
 import io.pfaumc.pfauprotect.model.ownHolders
 import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
@@ -80,7 +81,7 @@ internal fun originOf(older: List<BlockRow?>, keepsRow: (BlockRow) -> Boolean): 
 
 private val ROW_ORDER = compareBy<BlockRow> { it.eventId }.thenBy { it.ordinal }
 
-private val BlockRow.spot get() = Triple(x, y, z)
+internal val BlockRow.spot get() = Triple(x, y, z)
 
 // What dies to dirt under a block put on it.
 private val TURFS = setOf("minecraft:grass_block", "minecraft:dirt_path", "minecraft:mycelium", "minecraft:podzol", "minecraft:farmland")
@@ -212,15 +213,16 @@ class Refill(
  */
 class EntityPlan(
     val at: WorldBlock,
-    val uuid: UUID,
-    val type: String,
     val oldest: EntityRow,
     val before: ByteArray?,
     val slots: List<LedgerEntry>,
     val drops: List<UUID>,
     val removed: Boolean,
     val bucket: Bucketed?,
-)
+) {
+    val uuid: UUID get() = oldest.uuid
+    val type: String get() = oldest.type
+}
 
 /**
  * A mob taken up in a bucket: the bucket it went into, and the one it was before, in the slot of the
@@ -333,7 +335,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         // cube, so somebody else's build high above is not undone with it.
         column: Boolean = false,
     ): Reading {
-        val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
+        val log = blocks.get(world) ?: return closed()
         val inBox = boxAround(x, y, z, radius, column)
         val read = Collected(keeps)
         for ((cx, cz) in chunksAround(x, z, radius)) {
@@ -347,8 +349,9 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             within = { it.placedIn(inBox, unplaced = false) },
         )
         if (!page.complete) return tooMuch()
+        read.unreadable += page.unreadable
         val (slots, positions) = page.entries.filter { keeps.keeps(it) }.partition { it.holder is Container }
-        return planOf(log, world, read, slots, positions.filter { it.qty < 0 }, fromTs, toTs, read.unreadable + page.unreadable, keeps)
+        return planOf(log, world, read, slots, positions.filter { it.qty < 0 }, fromTs, toTs, keeps)
     }
 
     /**
@@ -371,11 +374,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                 val page = ledger.holderPage(holder, fromTs, toTs, limit = MAX_ROLLBACK_ROWS)
                 if (!page.complete || page.unreadable > 0) return null
                 for (entry in page.entries) {
-                    val at = when (val far = entry.counterparty) {
-                        is Container -> WorldBlock(far.world, far.x, far.y, far.z)
-                        is WorldBlock -> far
-                        else -> continue
-                    }
+                    val at = entry.counterparty.block ?: continue
                     if (blocks.get(at.world) != null) touched.getOrPut(at.world) { HashSet() } += at
                 }
             }
@@ -399,7 +398,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
 
     /** What a rollback would undo at these positions of one world, read position by position. */
     internal fun at(world: UUID, positions: Set<WorldBlock>, fromTs: Long, toTs: Long, keeps: RowFilter): Reading {
-        val log = blocks.get(world) ?: return Refused("the block history of this world is not open")
+        val log = blocks.get(world) ?: return closed()
         if (positions.size > io.pfaumc.pfauprotect.Settings.maxRollbackPositions) return tooMany(positions.size)
         val read = Collected(keeps)
         val slots = ArrayList<LedgerEntry>()
@@ -417,14 +416,14 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             }
             if (read.rows.size + slots.size > MAX_ROLLBACK_ROWS) return tooMuch()
         }
-        return planOf(log, world, read, slots, losses, fromTs, toTs, read.unreadable, keeps)
+        return planOf(log, world, read, slots, losses, fromTs, toTs, keeps)
     }
 
     private fun planOf(
         log: BlockLog, world: UUID, read: Collected, slots: List<LedgerEntry>, losses: List<LedgerEntry>,
-        fromTs: Long, toTs: Long, unreadable: Int, keeps: RowFilter,
+        fromTs: Long, toTs: Long, keeps: RowFilter,
     ): Reading = plan(
-        world, read.rows + passedBy(read.rows, read.nature, ::turf), slots, losses, read.entityRows, toTs, unreadable,
+        world, read.rows + passedBy(read.rows, read.nature, ::turf), slots, losses, read.entityRows, toTs, read.unreadable,
         origins(log, world, read.rows, read.foreign, fromTs, keeps),
     )
 
@@ -513,7 +512,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             // What fell out of it when it went, and what a hand took off it in passing: shorn wool.
             entities.getOrPut(at) { ArrayList() } +=
                 EntityPlan(
-                    at, uuid, oldest.type, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty(),
+                    at, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty(),
                     // Changed or led first and bucketed after: the bucket is the removal's, not the first row's.
                     bucketOf(ledger, removals.maxByOrNull { it.eventId } ?: oldest),
                 )
@@ -541,6 +540,8 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             "may write; narrow the radius or the time",
         positions,
     )
+
+    private fun closed() = Refused("the block history of this world is not open")
 
     private fun tooMuch() = Refused(
         "that window holds more history than one rollback reads; narrow the radius or the time"

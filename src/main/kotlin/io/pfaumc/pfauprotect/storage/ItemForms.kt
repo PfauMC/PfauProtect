@@ -23,6 +23,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.util.concurrent.ConcurrentHashMap
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
 class ItemKey(val form: ByteArray, val damage: Int?) {
@@ -60,17 +61,22 @@ internal fun fillTypeRegistries(registries: Registries) {
     for (type in InventoryType.entries) registries.idForKey(RegistryNamespace.MENU_TYPE, type.name)
 }
 
+// For reading only: the handle behind a CraftItemStack is the live stack, taken as it stands, since
+// asNMSCopy deep-copies the component map and the readers run once per slot or per moved item.
+internal fun nmsView(stack: BukkitItemStack): ItemStack = (stack as? CraftItemStack)?.handle ?: CraftItemStack.asNMSCopy(stack)
+
 class ItemFormCodec(
     private val registries: Registries,
     private val registryAccess: RegistryAccess,
 ) {
     private val registryOps by lazy { registryAccess.createSerializationContext(NbtOps.INSTANCE) }
 
-    // Encoding only reads, so the handle behind a CraftItemStack is taken as it stands: asNMSCopy
-    // deep-copies the component map, and this runs once per slot on every inventory pass.
+    // A registry id never changes once assigned, and the item's key string is built per slot otherwise.
+    private val itemTypeIds = ConcurrentHashMap<Item, Int>()
+
     fun encodeOrNull(stack: BukkitItemStack?): EncodedItem? {
         if (stack == null) return null
-        val nms = (stack as? CraftItemStack)?.handle ?: CraftItemStack.asNMSCopy(stack)
+        val nms = nmsView(stack)
         return if (nms.isEmpty) null else encode(nms)
     }
 
@@ -171,8 +177,9 @@ class ItemFormCodec(
         builder.set(type as DataComponentType<Any>, (codec as Codec<Any>).parse(registryOps, tag).getOrThrow())
     }
 
-    private fun itemTypeId(item: Item): Int =
-        registries.idForKey(RegistryNamespace.ITEM_TYPE, BuiltInRegistries.ITEM.getKey(item).toString())
+    private fun itemTypeId(item: Item): Int = itemTypeIds[item]
+        ?: registries.idForKey(RegistryNamespace.ITEM_TYPE, BuiltInRegistries.ITEM.getKey(item).toString())
+            .also { itemTypeIds[item] = it }
 
     private fun componentTypeId(type: DataComponentType<*>): Int {
         val key = BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type)

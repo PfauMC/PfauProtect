@@ -446,7 +446,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     // Notes are set from region threads, which must not wait on the writer, so a note goes into this
     // overlay at once (reads look here first) and the writer removes it once written. A null value is a
     // cleared note.
-    private data class NoteKey(val family: Int, val world: UUID, val x: Int, val y: Int, val z: Int)
+    private data class NoteKey(val family: Int, val at: WorldBlock)
 
     // Compared by identity: the writer takes a note off the overlay only if it is still this very write.
     private class NoteWrite(val key: NoteKey, val value: ByteArray?)
@@ -532,7 +532,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     // Unregistered ids map to -1, which encodes to a number neither registry hands out, so a scan for
     // them finds nothing.
-    private val knownIds = IdResolver { ns, uuid -> registries.lookupKey(ns, uuid.toString()) ?: UNASSIGNED }
+    private val knownIds = IdResolver { ns, uuid -> registries.lookupUuid(ns, uuid) ?: UNASSIGNED }
 
     init {
         failClosed {
@@ -595,7 +595,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         require(chunks <= MAX_REGION_CHUNKS) {
             "region spans $chunks chunks, at most $MAX_REGION_CHUNKS can be scanned in one query"
         }
-        if (registries.lookupKey(RegistryNamespace.WORLD, world.toString()) == null) {
+        if (registries.lookupUuid(RegistryNamespace.WORLD, world) == null) {
             return EntryPage(emptyList(), true)
         }
         return dbLock.read {
@@ -643,10 +643,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                 var deleted = 0
                 // A posting whose form cannot be read has no opening to stand for it, and deleting it would
                 // take its holder's balance with it: it stays.
-                val readable = HashMap<Long, Boolean>()
                 db.forEachRow(entriesCf) { key, value ->
                     val entry = EntryCodec.decodeOrNull(key, value, registries)
-                    if (entry != null && entry.timestamp < cutoff && readable.getOrPut(entry.itemFormId) { form(entry.itemFormId) != null }) {
+                    if (entry != null && entry.timestamp < cutoff && form(entry.itemFormId) != null) {
                         held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
                         deleted++
                         if (!dryRun) {
@@ -674,13 +673,17 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         }
     }
 
-    fun transactionEntries(entry: LedgerEntry): List<LedgerEntry> = dbLock.read {
+    fun transactionEntries(entry: LedgerEntry): List<LedgerEntry> = transactionEntries(entry, Int.MAX_VALUE)!!
+
+    /** Null when the transaction's index names more than [atMost] postings, which are then not read. */
+    fun transactionEntries(entry: LedgerEntry, atMost: Int): List<LedgerEntry>? = dbLock.read {
         if (closed) return listOf(entry)
         // The index has to be asked first. A transaction that reaches past the first pair holds a
         // posting at the facing ordinal that is nobody's other half, and answering from it would give
         // the same transaction a different extent depending on which of its own postings asked.
         val packed = db.get(txCf, longBytes(entry.txId))
         if (packed != null) {
+            if (ByteReader(packed).varInt() > atMost) return null
             val found = unpackKeys(packed).mapNotNull { key ->
                 db.get(entriesCf, key)?.let { EntryCodec.decodeOrNull(key, it, registries) }
             }
@@ -854,11 +857,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         found
     }
 
-    fun forgive(owed: List<OwedItem>) = dbLock.read {
-        if (closed || owed.isEmpty()) return
-        WriteBatch().use { batch ->
-            for (item in owed) batch.delete(confiscationsCf, item.key)
-            db.write(syncWriteOptions, batch)
+    fun forgive(owed: List<OwedItem>) {
+        dbLock.read {
+            if (closed || owed.isEmpty()) return
+            writeSynced { batch -> for (item in owed) batch.delete(confiscationsCf, item.key) }
         }
     }
 
@@ -866,49 +868,49 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     // not among them, so a box loses its name every time it is broken. This remembers the name for as
     // long as the box stands, and hands it back at the break so the chain of custody survives the cycle.
     fun ownerAt(world: UUID, x: Int, y: Int, z: Int): UUID? =
-        note(OWNERS, world, x, y, z)?.let { ByteReader(it).uuid() }
+        note(OWNERS, WorldBlock(world, x, y, z))?.let { ByteReader(it).uuid() }
 
     fun setOwnerAt(world: UUID, x: Int, y: Int, z: Int, owner: UUID) =
-        putNote(OWNERS, world, x, y, z, ByteWriter(16).uuid(owner).toByteArray())
+        putNote(OWNERS, WorldBlock(world, x, y, z), ByteWriter(16).uuid(owner).toByteArray())
 
-    fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int) = putNote(OWNERS, world, x, y, z, null)
+    fun clearOwnerAt(world: UUID, x: Int, y: Int, z: Int) = putNote(OWNERS, WorldBlock(world, x, y, z), null)
 
-    override fun formAt(at: WorldBlock): ByteArray? = note(FORMS, at.world, at.x, at.y, at.z)
+    override fun formAt(at: WorldBlock): ByteArray? = note(FORMS, at)
 
-    override fun setFormAt(at: WorldBlock, form: ByteArray) = putNote(FORMS, at.world, at.x, at.y, at.z, form)
+    override fun setFormAt(at: WorldBlock, form: ByteArray) = putNote(FORMS, at, form)
 
-    override fun clearFormAt(at: WorldBlock) = putNote(FORMS, at.world, at.x, at.y, at.z, null)
+    override fun clearFormAt(at: WorldBlock) = putNote(FORMS, at, null)
 
     override fun formsAt(positions: List<WorldBlock>): Map<WorldBlock, ByteArray> = dbLock.read {
         if (closed || positions.isEmpty()) return emptyMap()
         val forms = HashMap<WorldBlock, ByteArray>(positions.size)
         val unsettled = positions.filter { at ->
-            val pending = pendingNotes[NoteKey(FORMS, at.world, at.x, at.y, at.z)] ?: return@filter true
+            val pending = pendingNotes[NoteKey(FORMS, at)] ?: return@filter true
             pending.value?.let { forms[at] = it }
             false
         }
         if (unsettled.isEmpty()) return forms
-        val keys = unsettled.map { blockKey(it.world, it.x, it.y, it.z) }
+        val keys = unsettled.map(::blockKey)
         val values = db.multiGetAsList(List(keys.size) { placedFormsCf }, keys)
         unsettled.forEachIndexed { i, at -> values[i]?.let { forms[at] = it } }
         forms
     }
 
     override fun clearFormsAt(positions: List<WorldBlock>) {
-        for (at in positions) putNote(FORMS, at.world, at.x, at.y, at.z, null)
+        for (at in positions) putNote(FORMS, at, null)
     }
 
-    private fun note(family: Int, world: UUID, x: Int, y: Int, z: Int): ByteArray? {
-        pendingNotes[NoteKey(family, world, x, y, z)]?.let { return it.value }
+    private fun note(family: Int, at: WorldBlock): ByteArray? {
+        pendingNotes[NoteKey(family, at)]?.let { return it.value }
         return dbLock.read {
             if (closed) return null
-            db.get(familyOf(family), blockKey(world, x, y, z))
+            db.get(familyOf(family), blockKey(at))
         }
     }
 
-    private fun putNote(family: Int, world: UUID, x: Int, y: Int, z: Int, value: ByteArray?) {
+    private fun putNote(family: Int, at: WorldBlock, value: ByteArray?) {
         if (closed) return
-        val write = NoteWrite(NoteKey(family, world, x, y, z), value)
+        val write = NoteWrite(NoteKey(family, at), value)
         pendingNotes[write.key] = write
         // A stopped writer drains nothing, and the overlay above is all a read still gets.
         if (progress.failure != null) return
@@ -920,21 +922,23 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     // On the writer thread. A note set again while this one waited stays on the overlay: only the
     // write that is still the latest for its position comes off it.
-    private fun writeNotes(notes: List<NoteWrite>) = dbLock.read {
-        if (closed) return
-        WriteBatch().use { batch ->
-            for (note in notes) {
-                val key = blockKey(note.key.world, note.key.x, note.key.y, note.key.z)
-                val value = note.value
-                if (value == null) batch.delete(familyOf(note.key.family), key) else batch.put(familyOf(note.key.family), key, value)
+    private fun writeNotes(notes: List<NoteWrite>) {
+        dbLock.read {
+            if (closed) return
+            WriteBatch().use { batch ->
+                for (note in notes) {
+                    val key = blockKey(note.key.at)
+                    val value = note.value
+                    if (value == null) batch.delete(familyOf(note.key.family), key) else batch.put(familyOf(note.key.family), key, value)
+                }
+                db.write(writeOptions, batch)
             }
-            db.write(writeOptions, batch)
+            for (note in notes) pendingNotes.remove(note.key, note)
         }
-        for (note in notes) pendingNotes.remove(note.key, note)
     }
 
-    private fun blockKey(world: UUID, x: Int, y: Int, z: Int): ByteArray =
-        ByteWriter(16 + Zcode.SIZE).uuid(world).bytes(Zcode.encode(x, y, z)).toByteArray()
+    private fun blockKey(at: WorldBlock): ByteArray =
+        ByteWriter(16 + Zcode.SIZE).uuid(at.world).bytes(Zcode.encode(at.x, at.y, at.z)).toByteArray()
 
     // Reads run on any thread, so the native handles may only be freed once every reader has left.
     override fun close() {
@@ -1207,17 +1211,20 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
         // One lock for the same mint race as `Registries`: the block plane interns from a writer thread of its own.
         // Handed out only once staged, so a failed write never leaves a cached number nothing was written under.
-        @Synchronized
         fun idOf(value: ByteArray): Long {
-            idByValue[FormKey(value)]?.let { return it }
-            val id = nextId++
-            stage {
-                it.put(cf, longBytes(id), value)
-                it.put(metaCf, counterKey, longBytes(nextId))
+            val key = FormKey(value)
+            idByValue[key]?.let { return it }
+            synchronized(this) {
+                idByValue[key]?.let { return it }
+                val id = nextId++
+                stage {
+                    it.put(cf, longBytes(id), value)
+                    it.put(metaCf, counterKey, longBytes(nextId))
+                }
+                remember(id, value)
+                minted.get()?.add(id)
+                return id
             }
-            remember(id, value)
-            minted.get()?.add(id)
-            return id
         }
 
         fun valueOf(id: Long): ByteArray? = valueById[id]

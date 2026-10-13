@@ -10,6 +10,7 @@ import io.pfaumc.pfauprotect.attribution.culprit
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
+import io.pfaumc.pfauprotect.storage.nmsView
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
@@ -202,10 +203,11 @@ class WorldItemListener(
     // under and its contents would belong to no item at all. A name it already carries is overwritten:
     // it is the one from its last life, and the contents were packed under the position's.
     private fun nameBox(entity: Item, spot: Spot) {
-        val stack = CraftItemStack.asNMSCopy(entity.itemStack)
-        if (!NestedItems.isShulkerBox(stack)) return
-        val owner = origins.ownerFor(stack, spot) ?: return
-        if (NestedItems.ownerOf(stack) == owner) return
+        val held = nmsView(entity.itemStack)
+        if (!NestedItems.isShulkerBox(held)) return
+        val owner = origins.ownerFor(held, spot) ?: return
+        if (NestedItems.ownerOf(held) == owner) return
+        val stack = held.copy()
         NestedItems.mark(stack, owner)
         entity.itemStack = CraftItemStack.asBukkitCopy(stack)
     }
@@ -230,7 +232,7 @@ class WorldItemListener(
         pending.add(ItemEntityRef(item.uniqueId), Void, cause, encoded.key, encoded.count, by, confidence)
         // What spilled has already been claimed by its own spawn; everything else goes down with the box.
         if (spills(event.cause, item.health)) return
-        for ((inside, child) in namedContents(CraftItemStack.asNMSCopy(item.itemStack), codec)) {
+        for ((inside, child) in namedContents(nmsView(item.itemStack), codec)) {
             pending.add(inside, Void, cause, child.key, child.count, by, confidence)
         }
     }
@@ -245,7 +247,7 @@ class WorldItemListener(
     fun onDamage(event: EntityDamageEvent) {
         val item = event.entity as? Item ?: return
         if (!lethal(item.health, event.finalDamage)) return
-        val contents = namedContents(CraftItemStack.asNMSCopy(item.itemStack), codec)
+        val contents = namedContents(nmsView(item.itemStack), codec)
         if (contents.isEmpty()) return
         val spot = spotOf(item.location)
         for ((inside, child) in contents) {

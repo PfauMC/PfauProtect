@@ -58,6 +58,11 @@ class Registries(private val store: RegistryStore) : IdResolver, IdLookup {
     private val ids = RegistryNamespace.entries.associateWith { ConcurrentHashMap<String, Int>() }
     private val keys = RegistryNamespace.entries.associateWith { ConcurrentHashMap<Int, String>() }
 
+    // The uuid namespaces again, by UUID: every row names a player or a world, and going through the
+    // string would format or parse one per row.
+    private val idsByUuid = RegistryNamespace.entries.filter { it.usesUuid }.associateWith { ConcurrentHashMap<UUID, Int>() }
+    private val uuidsById = RegistryNamespace.entries.filter { it.usesUuid }.associateWith { ConcurrentHashMap<Int, UUID>() }
+
     fun load() {
         for (row in store.loadAll()) remember(row.ns, decodeKey(row.ns, row.keyBytes), row.id)
     }
@@ -68,6 +73,8 @@ class Registries(private val store: RegistryStore) : IdResolver, IdLookup {
 
     fun keyOf(ns: RegistryNamespace, id: Int): String? = keys.getValue(ns)[id]
 
+    fun lookupUuid(ns: RegistryNamespace, uuid: UUID): Int? = idsByUuid[ns]?.get(uuid)
+
     fun size(ns: RegistryNamespace): Int = ids.getValue(ns).size
 
     fun fillWarnings(): List<String> = RegistryNamespace.entries.mapNotNull { ns ->
@@ -77,9 +84,9 @@ class Registries(private val store: RegistryStore) : IdResolver, IdLookup {
             "reuses none of them: a wider field has to be in place before the last one is gone"
     }
 
-    override fun id(ns: RegistryNamespace, uuid: UUID) = idForKey(ns, uuid.toString())
+    override fun id(ns: RegistryNamespace, uuid: UUID) = idsByUuid[ns]?.get(uuid) ?: idForKey(ns, uuid.toString())
 
-    override fun uuid(ns: RegistryNamespace, id: Int): UUID? = keyOf(ns, id)?.let(UUID::fromString)
+    override fun uuid(ns: RegistryNamespace, id: Int): UUID? = uuidsById[ns]?.get(id)
 
     // The numbers a batch has minted and not yet written, seen only by the thread running it: every other
     // thread misses them in `ids` and waits in `assign` until the batch is on disk.
@@ -133,6 +140,11 @@ class Registries(private val store: RegistryStore) : IdResolver, IdLookup {
     private fun remember(ns: RegistryNamespace, key: String, id: Int) {
         ids.getValue(ns)[key] = id
         keys.getValue(ns)[id] = key
+        if (ns.usesUuid) {
+            val uuid = UUID.fromString(key)
+            idsByUuid.getValue(ns)[uuid] = id
+            uuidsById.getValue(ns)[id] = uuid
+        }
     }
 
     private fun keyBytes(ns: RegistryNamespace, key: String): ByteArray =

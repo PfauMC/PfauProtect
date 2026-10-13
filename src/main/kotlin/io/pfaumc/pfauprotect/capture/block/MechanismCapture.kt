@@ -5,13 +5,13 @@ import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
+import io.pfaumc.pfauprotect.storage.nmsView
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.capture.item.containerHolders
 import net.minecraft.core.Direction
 import net.minecraft.world.WorldlyContainer
 import org.bukkit.craftbukkit.inventory.CraftInventory
-import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Entity
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
@@ -166,7 +166,8 @@ class MechanismCaptureListener(
     fun onMove(event: InventoryMoveItemEvent) {
         // Touching the item is what keeps the event alive: when no handler reads or writes it, the
         // region stops firing it for the rest of the hopper pass and those movements are lost.
-        val moved = CraftItemStack.asNMSCopy(event.item)
+        val item = event.item
+        val moved = nmsView(item)
         val source = event.source
         val destination = event.destination
         val pulled = event.initiator == destination
@@ -194,7 +195,8 @@ class MechanismCaptureListener(
         val into = containerHolders(destination) ?: return
         val container = nms(destination) ?: return
         val entity = event.item
-        val stack = CraftItemStack.asNMSCopy(entity.itemStack)
+        val item = entity.itemStack
+        val stack = nmsView(item)
         if (stack.isEmpty) return
         val fitting = Placement.fit(container, stack, null) ?: return
         val cause = if (heldByEntity(destination)) Cause.HOPPER_MINECART_PULL else Cause.HOPPER_PULL_GROUND

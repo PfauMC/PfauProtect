@@ -206,7 +206,7 @@ class BlockDestructionTest : BothPlanes() {
         remembered: ByteArray? = null,
         went: WorldBlock? = null,
     ): List<Transfer> {
-        val site = Site(at, blockStub(at.x, at.y, at.z, before), before, after, payload = null, went = went)
+        val site = Site(blockStub(at.x, at.y, at.z, before), before, after, payload = null, went = went)
         @Suppress("UNCHECKED_CAST")
         return BlockDestructionListener::class.java
             .getDeclaredMethod(

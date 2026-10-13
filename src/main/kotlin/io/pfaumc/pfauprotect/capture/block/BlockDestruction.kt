@@ -60,6 +60,7 @@ import net.minecraft.world.level.material.PushReaction
 import org.bukkit.ExplosionResult
 import org.bukkit.Location
 import org.bukkit.Material
+import org.bukkit.Tag
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
@@ -149,13 +150,14 @@ private val AIR_DATA: BlockData by lazy { Blocks.AIR.defaultBlockState().asBlock
 // `went` is where the block that stood here has gone, for the positions a movement emptied rather
 // than a disappearance. It decides nothing about the row and everything about the item side.
 internal class Site(
-    val at: WorldBlock,
     val block: Block,
     val before: BlockData,
     val after: String,
     val payload: ByteArray? = payloadAt(block),
     val went: WorldBlock? = null,
-)
+) {
+    val at: WorldBlock = positionOf(block)
+}
 
 // How long after a break its drops are named: they spawn in the call that breaks the block, or in the
 // tick after it for a read-back.
@@ -256,7 +258,7 @@ internal fun litBy(source: Entity): Player? = when (source) {
 
 // A bolt answers to the player whose trident called it down, else to whoever summoned it, else to the weather.
 internal fun boltBy(bolt: LightningStrike, summonerOf: (UUID) -> Attributed?): Attributed =
-    (bolt.causingEntity as? Player)?.let { Attributed(it.uniqueId, Confidence.FACT) }
+    (bolt.causingEntity as? Player)?.witnessed()
         ?: summonerOf(bolt.uniqueId)
         ?: Attributed(LIGHTNING, Confidence.FACT)
 
@@ -357,13 +359,13 @@ internal fun pistonSites(
         val was = block.blockData
         if (pistonDestroys(was)) {
             for (half in withOtherHalves(listOf(block))) {
-                emptied += Site(positionOf(half), half, half.blockData, AIR, payload(half))
+                emptied += Site(half, half.blockData, AIR, payload(half))
             }
             continue
         }
         val to = block.getRelative(step)
-        emptied += Site(positionOf(block), block, was, AIR, payload(block), went = positionOf(to))
-        filled += Site(positionOf(to), to, AIR_DATA, was.asString, payload = null)
+        emptied += Site(block, was, AIR, payload(block), went = positionOf(to))
+        filled += Site(to, AIR_DATA, was.asString, payload = null)
     }
     return emptied to filled
 }
@@ -501,6 +503,8 @@ internal fun tookOver(
 /** The blocks plus the other half of each two-position block, which the server clears with no event. */
 internal fun withOtherHalves(blocks: List<Block>): Set<Block> = LinkedHashSet(blocks + blocks.mapNotNull(::otherHalfOf))
 
+internal fun withOtherHalves(block: Block): List<Block> = listOfNotNull(block, otherHalfOf(block))
+
 /**
  * The other half of a bed, from the half the event names. Both halves are gone by the time the
  * explosion is announced, so neither the block nor `otherHalfOf` can be asked and the state of the
@@ -620,7 +624,13 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
 // Properties that carry the signal rather than a hand's change; the switch rows already file those.
 private val SIGNAL_PROPERTIES = setOf("powered", "power")
 
-private val SIDES = setOf("north", "south", "east", "west", "up")
+private val SIDES = setOf("north", "south", "east", "west", "up", "attached")
+
+private val STAIR_SHAPE = setOf("shape")
+
+private val GATE_IN_WALL = setOf("in_wall")
+
+private val SNOWY = setOf("snowy")
 
 /**
  * The properties a block takes from its neighbours alone. A hand never sets them, and the server rewrites
@@ -629,10 +639,10 @@ private val SIDES = setOf("north", "south", "east", "west", "up")
  */
 internal fun shapeKeysOf(name: String): Set<String> = when {
     name.endsWith("_fence") || name.endsWith("_pane") || name.endsWith("_wall") || name.endsWith("_bars") ||
-        name == "minecraft:redstone_wire" || name == "minecraft:tripwire" -> SIDES + "attached"
-    name.endsWith("_stairs") -> setOf("shape")
-    name.endsWith("_fence_gate") -> setOf("in_wall")
-    name == "minecraft:grass_block" || name == "minecraft:podzol" || name == "minecraft:mycelium" -> setOf("snowy")
+        name == "minecraft:redstone_wire" || name == "minecraft:tripwire" -> SIDES
+    name.endsWith("_stairs") -> STAIR_SHAPE
+    name.endsWith("_fence_gate") -> GATE_IN_WALL
+    name == "minecraft:grass_block" || name == "minecraft:podzol" || name == "minecraft:mycelium" -> SNOWY
     else -> emptySet()
 }
 
@@ -645,16 +655,16 @@ internal fun reshaped(before: String, after: String): Boolean {
 }
 
 // Besides what it takes from its neighbours, what a hand flips and the block flips back by itself.
-private fun selfRevertingOf(name: String): Set<String> = shapeKeysOf(name) + when {
-    name == "minecraft:barrel" -> setOf("open")
-    name.endsWith("_bed") -> setOf("occupied")
-    name.endsWith("redstone_ore") -> setOf("lit")
-    name == "minecraft:vault" -> setOf("vault_state")
-    name == "minecraft:big_dripleaf" -> setOf("tilt")
+private fun selfRevertingKeyOf(name: String): String? = when {
+    name == "minecraft:barrel" -> "open"
+    name.endsWith("_bed") -> "occupied"
+    name.endsWith("redstone_ore") -> "lit"
+    name == "minecraft:vault" -> "vault_state"
+    name == "minecraft:big_dripleaf" -> "tilt"
     // A brush stroke dusts the block a step and the block settles back if the brushing stops; only
     // the brushing that finishes changes what stands there, and that changes the block's name.
-    name.startsWith("minecraft:suspicious_") -> setOf("dusted")
-    else -> emptySet()
+    name.startsWith("minecraft:suspicious_") -> "dusted"
+    else -> null
 }
 
 private fun propertiesOf(state: String): Map<String, String> =
@@ -672,8 +682,9 @@ internal fun handMade(before: String, after: String): Boolean {
     if (before == after) return false
     val name = blockNameOf(before)
     if (name != blockNameOf(after)) return true
-    val ignored = SIGNAL_PROPERTIES + selfRevertingOf(name)
-    return changedKeys(before, after).any { it !in ignored }
+    val shape = shapeKeysOf(name)
+    val reverting = selfRevertingKeyOf(name)
+    return changedKeys(before, after).any { it !in SIGNAL_PROPERTIES && it !in shape && it != reverting }
 }
 
 // Long enough that a read-back that never ran — its chunk gone before the region got to it — does not
@@ -812,12 +823,12 @@ class BlockDestructionListener(
         // player set them off; who put the block down is asked only when nobody clicked.
         val by = touches.toucher(positionOf(at))
             ?: partner?.let { (block, _) -> touches.toucher(positionOf(block)) }
-            ?: placerOf(positionOf(at), standing)
-            ?: partner?.let { (block, half) -> placerOf(positionOf(block), half.asString) }
+            ?: attribution.placerOrJournal(positionOf(at), standing)
+            ?: partner?.let { (block, half) -> attribution.placerOrJournal(positionOf(block), half.asString) }
         val gone = ArrayList<Site>(2)
         for ((block, was) in listOfNotNull(at to data, partner)) {
             val now = block.blockData.asString
-            if (wentAway(was.asString, now)) gone += Site(positionOf(block), block, was, now)
+            if (wentAway(was.asString, now)) gone += Site(block, was, now)
         }
         explode(event.blockList(), cause, by, gone)
     }
@@ -950,13 +961,8 @@ class BlockDestructionListener(
      * and still leaps and burns in the rest of it. It was plain fire either way, since soul fire does
      * neither, so that is what is asked about rather than what stands there now.
      */
-    private fun fireStartedBy(fire: Block): Attributed? {
-        val at = positionOf(fire)
-        attribution.placerAt(at, FIRE)?.let { return it }
-        val found = attribution.journalPlacerAt(at, FIRE, FIRING_CAUSES) ?: return null
-        found.culprit()?.let { attribution.placed(at, FIRE, it) }
-        return found
-    }
+    private fun fireStartedBy(fire: Block): Attributed? =
+        attribution.placerOrJournal(positionOf(fire), FIRE, FIRING_CAUSES, renote = true)
 
     /**
      * Ice under a snow golem and ice under a frost walker arrive here too: `EntityBlockFormEvent`
@@ -976,7 +982,7 @@ class BlockDestructionListener(
         val by = when {
             entity is Player -> entity.witnessed()
             entity != null -> entities.summonerOf(entity.uniqueId)
-            cause == Cause.BLK_LIQUID_FORM || before.material.name.endsWith("_CONCRETE_POWDER") -> formedBy(block, before.asString)
+            cause == Cause.BLK_LIQUID_FORM || Tag.CONCRETE_POWDERS.isTagged(before.material) -> formedBy(block, before.asString)
             else -> null
         }
         changed(block, before, event.newState.blockData.asString, cause, by)
@@ -1043,9 +1049,9 @@ class BlockDestructionListener(
         if (!plugin.isEnabled) return
         val log = logs.get(to.world.uid) ?: return
         val timestamp = System.currentTimeMillis()
-        plugin.server.regionScheduler.execute(plugin, to.world, to.x shr 4, to.z shr 4) {
+        onRegionOf(to) {
             val now = to.blockData
-            if (!isLiquid(now.material)) return@execute
+            if (!isLiquid(now.material)) return@onRegionOf
             log.submit(BlockChange(to.x, to.y, to.z, AIR, now.asString, Cause.BLK_LIQUID_FLOW, timestamp, by.confidence, actor = by.actor))
         }
     }
@@ -1058,7 +1064,7 @@ class BlockDestructionListener(
     private fun formedBy(block: Block, before: String): Attributed? {
         attribution.placerAt(positionOf(block), before)?.let { return it }
         val liquids = (listOf(block) + SIX_FACES.map(block::getRelative)).filter { isLiquid(it.type) }
-        return liquids.firstNotNullOfOrNull { attribution.placerAt(positionOf(it), it.blockData.asString) }
+        return liquids.firstNotNullOfOrNull { attribution.placerAt(positionOf(it), it) }
             ?: liquids.firstNotNullOfOrNull { pouredBy(it) }
     }
 
@@ -1123,7 +1129,7 @@ class BlockDestructionListener(
     fun onTouch(event: PlayerInteractEvent) {
         if (event.action == Action.LEFT_CLICK_AIR || event.action == Action.RIGHT_CLICK_AIR) return
         val clicked = event.clickedBlock ?: return
-        readBack(listOfNotNull(clicked, otherHalfOf(clicked)), event.player.witnessed())
+        readBack(withOtherHalves(clicked), event.player.witnessed())
     }
 
     /**
@@ -1135,16 +1141,15 @@ class BlockDestructionListener(
         if (!plugin.isEnabled) return
         val touched = blocks
             .filter { !commanded(it) && touches.touch(positionOf(it), cause, by) }
-            .map { Site(positionOf(it), it, it.blockData, it.blockData.asString) }
+            .map { Site(it, it.blockData, it.blockData.asString) }
         val first = touched.firstOrNull()?.block ?: return
         val marks = touched.associate { it.at to markOf(it.block) }
         val timestamp = System.currentTimeMillis()
-        plugin.server.regionScheduler.execute(plugin, first.world, first.x shr 4, first.z shr 4) {
+        onRegionOf(first) {
             val (mine, moved) = touched.partition { plugin.server.isOwnedByCurrentRegion(it.block) }
             compare(mine, marks, by, timestamp)
             for (part in moved.groupBy { (it.block.x shr 4) to (it.block.z shr 4) }.values) {
-                val at = part.first().block
-                plugin.server.regionScheduler.execute(plugin, at.world, at.x shr 4, at.z shr 4) { compare(part, marks, by, timestamp) }
+                onRegionOf(part.first().block) { compare(part, marks, by, timestamp) }
             }
         }
     }
@@ -1155,21 +1160,19 @@ class BlockDestructionListener(
         val retouched = ArrayList<BlockChange>()
         val changed = touched.mapNotNull { site ->
             val filedAs = touches.take(site.at) ?: return@mapNotNull null
-            val now = site.block.blockData.asString
+            val data = site.block.blockData
+            val now = data.asString
             if (!handMade(site.before.asString, now)) {
                 // The block is the same and only what its entity holds changed: a sign dyed or
                 // waxed, a spawner given an egg.
                 val was = marks[site.at]
                 if (was != null && !was.contentEquals(markOf(site.block) ?: was)) {
-                    retouched += BlockChange(
-                        site.at.x, site.at.y, site.at.z, now, now, filedAs, timestamp,
-                        confidence = by?.confidence ?: Confidence.FACT, actor = by?.actor,
-                        payloadBefore = site.payload, payloadAfter = payloadAt(site.block),
-                    )
+                    val same = Site(site.block, data, now, site.payload)
+                    retouched += row(same, filedAs, by, timestamp, payloadAfter = payloadAt(site.block))
                 }
                 return@mapNotNull null
             }
-            filedAs to Site(site.at, site.block, site.before, now, site.payload)
+            filedAs to Site(site.block, site.before, now, site.payload)
         }
         if (retouched.isNotEmpty()) log.submit(retouched)
         for ((filedAs, sites) in changed.groupBy({ it.first }, { it.second })) {
@@ -1303,7 +1306,7 @@ class BlockDestructionListener(
         val at = positionOf(block)
         // Only a change somebody is noted for. A world changing by itself is nobody's to roll back, and grass
         // under every snowfall would fill the journal; a radius rollback that needs more widens this.
-        val by = attribution.removerAt(at) ?: attribution.placerAt(at, block.blockData.asString) ?: return
+        val by = attribution.removerAt(at) ?: attribution.placerAt(at, block) ?: return
         if (!plugin.isEnabled || commanded(block)) return
         val log = logs.get(block.world.uid) ?: return
         val timestamp = System.currentTimeMillis()
@@ -1322,16 +1325,16 @@ class BlockDestructionListener(
             // first change's row, and the next would start from a state already half rewritten.
             val watch = ShapeWatch(before, by, timestamp)
             if (shapeWatches.putIfAbsent(there, watch) != null) continue
-            plugin.server.regionScheduler.execute(plugin, near.world, near.x shr 4, near.z shr 4) {
-                if (!shapeWatches.remove(there, watch)) return@execute
+            onRegionOf(near) {
+                if (!shapeWatches.remove(there, watch)) return@onRegionOf
                 val now = near.blockData.asString
-                if (!reshaped(before.asString, now) || readBacks.settled(there)) return@execute
-                log.submit(row(Site(there, near, before, now, payload = null), Cause.BLK_SHAPE, by, timestamp))
+                if (!reshaped(before.asString, now) || readBacks.settled(there)) return@onRegionOf
+                log.submit(row(Site(near, before, now, payload = null), Cause.BLK_SHAPE, by, timestamp))
             }
         }
     }
 
-    private fun shapedNow(block: Block) = shapeKeysOf(blockNameOf(block.blockData.asString)).isNotEmpty()
+    private fun shapedNow(block: Block) = shapeKeysOf(block.type.key.toString()).isNotEmpty()
 
     /**
      * A shaped block filed by a capture while what a change beside it made of it still waits for its read:
@@ -1340,8 +1343,10 @@ class BlockDestructionListener(
     private fun shapeFirst(log: BlockLog, at: WorldBlock, block: Block, found: BlockData) {
         val watch = shapeWatches.remove(at) ?: return
         if (!reshaped(watch.before.asString, found.asString)) return
-        log.submit(row(Site(at, block, watch.before, found.asString, payload = null), Cause.BLK_SHAPE, watch.by, watch.timestamp))
+        log.submit(row(Site(block, watch.before, found.asString, payload = null), Cause.BLK_SHAPE, watch.by, watch.timestamp))
     }
+
+    private fun onRegionOf(block: Block, task: Runnable) = plugin.server.regionScheduler.execute(plugin, block.location, task)
 
     private fun commanded(block: Block) = CommandBirths.writing(block.world.uid, block.x, block.y, block.z)
 
@@ -1377,18 +1382,17 @@ class BlockDestructionListener(
                 TNTPrimeEvent.PrimeCause.EXPLOSION -> event.primingEntity?.let(::whoSetOff)
                 TNTPrimeEvent.PrimeCause.FIRE -> event.primingBlock?.let(::fireStartedBy)
                 else -> null
-            } ?: placerOf(at, TNT)
+            } ?: attribution.placerOrJournal(at, TNT)
             if (by != null) priming[at] = by.inferred() to System.currentTimeMillis()
             return
         }
         val log = logs.get(block.world.uid) ?: return
-        val lit = event.primingEntity.let { it as? Player ?: (it as? Projectile)?.shooter as? Player }
-        val by = lit?.witnessed()
+        val who = (event.primingEntity?.let(::firedBy) as? Player)?.witnessed()
             ?: event.primingBlock?.let { energyAt(it, energy) }
             ?: energyAt(block, energy)
+            ?: attribution.placerOrJournal(at, TNT)
         val standing = block.blockData
-        val who = by ?: placerOf(at, TNT)
-        file(log, listOf(Site(at, block, standing, AIR)), Cause.BLK_TNT, who, expectsDrops = false)
+        file(log, listOf(Site(block, standing, AIR)), Cause.BLK_TNT, who, expectsDrops = false)
         who?.culprit()?.let { attribution.placed(at, standing.asString, it) }
         // The entity carries it too: dynamite lit by a redstone block in the air fell and went off where
         // nobody had put any, and the whole crater was nobody's.
@@ -1408,7 +1412,7 @@ class BlockDestructionListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onSponge(event: SpongeAbsorbEvent) {
         val sponge = event.block
-        val by = attribution.placerAt(positionOf(sponge), sponge.blockData.asString)
+        val by = attribution.placerAt(positionOf(sponge), sponge)
         readBack(listOf(sponge) + event.blocks.map { it.block }, by, Cause.BLK_SPONGE)
     }
 
@@ -1428,7 +1432,7 @@ class BlockDestructionListener(
     fun onConstruct(event: EntityConstructEvent) {
         val blocks = event.blocks
         if (blocks.isEmpty()) return
-        val placers = blocks.map { attribution.placerAt(positionOf(it), it.blockData.asString) }
+        val placers = blocks.map { attribution.placerAt(positionOf(it), it) }
         readBack(blocks, builderOf(placers, blocks.map(::positionOf), energy), Cause.BLK_FORM)
     }
 
@@ -1436,8 +1440,8 @@ class BlockDestructionListener(
         val log = logs.get(from.world.uid) ?: return
         val egg = from.blockData
         val by = touches.toucher(positionOf(from))
-        val left = Site(positionOf(from), from, egg, leftBehind(egg).asString, went = positionOf(to))
-        val arrived = Site(positionOf(to), to, to.blockData, egg.asString, payload = null)
+        val left = Site(from, egg, leftBehind(egg).asString, went = positionOf(to))
+        val arrived = Site(to, to.blockData, egg.asString, payload = null)
         file(log, listOf(left), Cause.BLK_PLAYER_USE, by, carried = listOf(arrived), expectsDrops = false)
     }
 
@@ -1476,7 +1480,7 @@ class BlockDestructionListener(
             val block = state.block
             val before = block.blockData
             val after = state.blockData.asString
-            if (before.asString == after) null else Site(positionOf(block), block, before, after)
+            if (before.asString == after) null else Site(block, before, after)
         }
         if (sites.isNotEmpty()) file(log, sites, Cause.BLK_PORTAL_CREATE, by)
     }
@@ -1510,12 +1514,12 @@ class BlockDestructionListener(
         val log = logs.get(world) ?: return
         // An explosion writes plain air over every position it clears, whatever the block was standing
         // in, so the after side is not derived from the fluid the way a break's is.
-        file(log, hit.map { Site(positionOf(it), it, it.blockData, AIR) } + extra, cause, by, dropReach = craterReach(hit))
+        file(log, hit.map { Site(it, it.blockData, AIR) } + extra, cause, by, dropReach = craterReach(hit))
     }
 
     private fun sitesOf(blocks: List<BlockState>) = blocks.map { snapshot ->
         val block = snapshot.block
-        Site(positionOf(block), block, block.blockData, snapshot.blockData.asString)
+        Site(block, block.blockData, snapshot.blockData.asString)
     }
 
     private fun grew(
@@ -1530,7 +1534,7 @@ class BlockDestructionListener(
 
     private fun changed(block: Block, before: BlockData, after: String, cause: Cause, by: Attributed?) {
         val log = logs.get(block.world.uid) ?: return
-        file(log, listOf(Site(positionOf(block), block, before, after)), cause, by)
+        file(log, listOf(Site(block, before, after)), cause, by)
     }
 
     /**
@@ -1559,15 +1563,14 @@ class BlockDestructionListener(
         val (emptied, filled) = pistonSites(moving, step)
         val head = base.getRelative(facing)
         if (extending) {
-            filled += Site(positionOf(head), head, AIR_DATA, pistonHead(notch, sticky).asString, payload = null)
+            filled += Site(head, AIR_DATA, pistonHead(notch, sticky).asString, payload = null)
         } else {
             // A retract that pulls a block takes its own head away before it says anything, and that
             // position is spoken for by what arrives in it; one that pulls nothing loses it here.
             val standing = head.blockData
-            if (standing is PistonHead) emptied += Site(positionOf(head), head, standing, AIR)
+            if (standing is PistonHead) emptied += Site(head, standing, AIR)
         }
         filled += Site(
-            positionOf(base),
             base,
             pistonBase(notch, sticky, extended = !extending),
             pistonBase(notch, sticky, extended = extending).asString,
@@ -1600,7 +1603,7 @@ class BlockDestructionListener(
             // the player who put it there is who let it fall.
             val by = attribution.supportRemoverAt(at) ?: attribution.placerAt(at, carried)
             attribution.tookOff(entity.uniqueId, Falling(at, carried, by, takeHeldForm(at, carried)))
-            val site = Site(at, block, block.blockData, becomes)
+            val site = Site(block, block.blockData, becomes)
             file(log, emptyList(), Cause.BLK_FALL_START, by, timestamp, carried = listOf(site))
             // A column comes down one block at a time, and each take-off is what the block above it
             // finds: without a note here the chain would be attributed at its first step only.
@@ -1615,11 +1618,11 @@ class BlockDestructionListener(
         // down arrives over it. A landing in air writes only the second, the first changing nothing.
         file(
             log,
-            listOf(Site(at, block, was, left.asString)),
+            listOf(Site(block, was, left.asString)),
             Cause.BLK_FALL_LAND,
             by,
             timestamp,
-            carried = listOf(Site(at, block, left, carried, payload = null)),
+            carried = listOf(Site(block, left, carried, payload = null)),
         )
         // A flight nobody watched take off — one a plugin dropped, one already in the air when this was
         // enabled — hands over nothing, and the position it came from is not this event's to name.
@@ -1736,6 +1739,7 @@ class BlockDestructionListener(
         cause: Cause,
         by: Attributed?,
         timestamp: Long,
+        payloadAfter: ByteArray? = null,
     ) = BlockChange(
         x = site.at.x,
         y = site.at.y,
@@ -1749,6 +1753,7 @@ class BlockDestructionListener(
         // leave a hole in the history of the position.
         actor = by?.actor,
         payloadBefore = site.payload,
+        payloadAfter = payloadAfter,
     )
 
     // What the position owes: handed to the position the block moved to where it moved, written off
@@ -1792,7 +1797,7 @@ class BlockDestructionListener(
         val at = positionOf(block)
         expectDrops(origins, codec, block, cause, by.culprit(), boxOwner, reach, tag = at)
         if (!plugin.isEnabled) return
-        plugin.server.regionScheduler.runDelayed(plugin, block.world, block.x shr 4, block.z shr 4, {
+        plugin.server.regionScheduler.runDelayed(plugin, block.location, {
             val drops = origins.droppedFor(at)
             if (drops.isEmpty()) return@runDelayed
             logs.get(block.world.uid)?.submit(
@@ -1823,19 +1828,19 @@ class BlockDestructionListener(
         if (expectsDrops) dropsOf(block, cause, by)
         // The log is still standing here, and by the read-back it is not.
         by.culprit()?.let { attribution.givingWay(block, it); attribution.felledBy(block, it) }
-        plugin.server.regionScheduler.execute(plugin, block.world, block.x shr 4, block.z shr 4) {
+        onRegionOf(block) {
             readBacks.done(at)
             val now = block.blockData.asString
-            if (!wentAway(before.asString, now)) return@execute
-            val log = logs.get(block.world.uid) ?: return@execute
-            if (alreadyFiled(log, at, before.asString, now)) return@execute
-            val site = Site(at, block, before, now, payload)
+            if (!wentAway(before.asString, now)) return@onRegionOf
+            val log = logs.get(block.world.uid) ?: return@onRegionOf
+            if (alreadyFiled(log, at, before.asString, now)) return@onRegionOf
+            val site = Site(block, before, now, payload)
             log.submit(row(site, cause, by, timestamp))
             by.culprit()?.let { noteRemoval(at, now, it) }
             // A tick has passed, and a position something has since been put into is no longer this
             // read's to speak for: the note standing there was written by whoever filled it, and
             // clearing it would cost that block its form when it is broken in turn.
-            if (!emptied(now)) return@execute
+            if (!emptied(now)) return@onRegionOf
             val remembered = placed.takeFormAt(at)
             released(site, remembered, cause, by, timestamp).takeIf { it.isNotEmpty() }?.let { sink(it) }
         }
@@ -1859,15 +1864,6 @@ class BlockDestructionListener(
         return registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore) == before &&
             registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) == after
     }
-
-    /**
-     * Who put down the thing that has just gone off. The tracker is a map lookup and covers the
-     * ordinary delay between a block being noted and being collected; the journal covers the horizon
-     * between a block being placed and being set off a week later, at the price of a seek, and is
-     * asked about this one position only — never once per destroyed block of an explosion.
-     */
-    private fun placerOf(at: WorldBlock, standing: String): Attributed? =
-        attribution.placerAt(at, standing) ?: attribution.journalPlacerAt(at, standing)
 
     // Who stands behind an entity that changed a block: the shooter of an arrow, a trident or a thrown
     // potion, whoever steers a boat, whoever a bolt answers to, and otherwise whoever brought the entity
@@ -1893,7 +1889,7 @@ class BlockDestructionListener(
         // Only a block that stood somewhere can be asked about, and of the entities that explode only
         // dynamite was one. A guess by where it went off, which a blast beside it may have thrown it from.
         if (source.type == EntityType.TNT) {
-            placerOf(positionOf(source.location.block), TNT)?.let { return it }
+            attribution.placerOrJournal(positionOf(source.location.block), TNT)?.let { return it }
         }
         // The last rung: a creeper goes off at whoever it was after. Led to a wall, that is the one who led
         // it; met by chance, the one it met. Either way only a witness, never rolled back on its own.

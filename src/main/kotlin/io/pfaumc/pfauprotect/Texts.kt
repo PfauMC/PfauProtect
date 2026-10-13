@@ -96,6 +96,8 @@ object Texts {
         r("A purge would delete (\\d+) item rows, (\\d+) block rows, (\\d+) entity rows; (\\d+) opening balances to write\\. /pp purge (\\S+) confirm runs it\\.") to
             "Очистка удалит строк: предметов $1, блоков $2, сущностей $3; запишет начальных остатков: $4. /pp purge $5 confirm запустит её.",
         r("The purge failed; the server log has the details\\.") to "Очистка не удалась; подробности в логе сервера.",
+        r("The chat lookup failed; the server log has the details\\.") to "Поиск по чату не удался; подробности в логе сервера.",
+        r("The status failed; the server log has the details\\.") to "Состояние не удалось получить; подробности в логе сервера.",
         r("  ledger (.*), (\\d+) transactions waiting to be written") to "  журнал предметов $1, ждут записи транзакций: $2",
         r("  (\\S+): not recorded \\(config\\.yml\\)") to "  $1: не записывается (config.yml)",
         r("  (\\S+): (.*), (\\d+) changes waiting to be written") to "  $1: $2, ждут записи изменений: $3",

@@ -6,6 +6,7 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.model.WorldBlock
+import org.bukkit.block.Block
 import org.bukkit.entity.Entity
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -129,15 +130,16 @@ class Attribution(
     private val blocks: BlockLogs,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    private class Note(val actor: UUID, val at: Long, val state: String? = null)
+    private class Note(val actor: UUID, override val at: Long, val state: String? = null) : Stamped
 
-    private class Flight(val falling: Falling, val at: Long)
+    private class Flight(val falling: Falling, override val at: Long) : Stamped
 
-    private val placements = ConcurrentHashMap<WorldBlock, Note>()
-    private val removals = ConcurrentHashMap<WorldBlock, Note>()
-    private val flights = ConcurrentHashMap<UUID, Flight>()
-    private val felled = ConcurrentHashMap<WorldBlock, Note>()
-    private val kills = ConcurrentHashMap<WorldBlock, Note>()
+    private val placements = Notes<WorldBlock, Note>(NOTE_MILLIS, now)
+    private val removals = Notes<WorldBlock, Note>(SUPPORT_MILLIS, now)
+    // An entity id handed out again before the sweep would otherwise collect a stranger's flight.
+    private val flights = Notes<UUID, Flight>(FLIGHT_MILLIS, now)
+    private val felled = Notes<WorldBlock, Note>(FELLED_MILLIS, now)
+    private val kills = Notes<WorldBlock, Note>(KILL_MILLIS, now)
 
     /**
      * `state` is what was put down, and a note answers for that block and no other. A break notes the
@@ -164,7 +166,13 @@ class Attribution(
      * state, so a re-oriented or waterlogged variant still matches itself.
      */
     fun placerAt(at: WorldBlock, standing: String): Attributed? =
-        noted(placements, at, NOTE_MILLIS, blockNameOf(standing))?.let { Attributed(it.actor) }
+        noted(placements, at, blockNameOf(standing))?.let { Attributed(it.actor) }
+
+    // Most positions carry no note, and serialising the block's state for nothing is the expensive part.
+    fun placerAt(at: WorldBlock, block: Block): Attributed? {
+        if (placements[at] == null) return null
+        return placerAt(at, block.blockData.asString)
+    }
 
     /**
      * The same question of the journal: a seek, asked once per event on its region thread and never
@@ -181,6 +189,25 @@ class Attribution(
     }
 
     /**
+     * Who put down the thing standing here: the tracker covers the ordinary delay between a block being
+     * noted and being collected, the journal the horizon between a block being placed and being set off
+     * a week later, at the price of a seek. Asked about one position per event, never once per destroyed
+     * block of an explosion. `renote` copies a journal find back into the tracker, so the chain that
+     * carries on from this position has a fresh note to find.
+     */
+    fun placerOrJournal(
+        at: WorldBlock,
+        standing: String,
+        causes: Set<Cause> = PLACING_CAUSES,
+        renote: Boolean = false,
+    ): Attributed? {
+        placerAt(at, standing)?.let { return it }
+        val found = journalPlacerAt(at, standing, causes) ?: return null
+        if (renote) found.culprit()?.let { placed(at, standing, it) }
+        return found
+    }
+
+    /**
      * The same question for a block that arrived by flowing or by catching fire, which the tracker
      * knows nothing about. A neighbour lends its actor only where its note is about the block that
      * has just arrived, and the most recent of those wins rather than whichever face is tried first.
@@ -189,7 +216,7 @@ class Attribution(
      */
     fun carriedTo(at: WorldBlock, standing: String): Attributed? {
         placerAt(at, standing)?.let { return it }
-        val found = around(placements, at, FACES, NOTE_MILLIS, blockNameOf(standing)) ?: return null
+        val found = around(placements, at, FACES, blockNameOf(standing)) ?: return null
         placed(at, standing, found.actor)
         return Attributed(found.actor)
     }
@@ -199,8 +226,7 @@ class Attribution(
      * support and are searched first; a corner neighbour counts as a hit, which is a guess and reads as one. Within either ring the most recent removal is the answer.
      */
     fun supportRemoverAt(at: WorldBlock): Attributed? {
-        val found = around(removals, at, FACES, SUPPORT_MILLIS)
-            ?: around(removals, at, DIAGONALS, SUPPORT_MILLIS)
+        val found = around(removals, at, FACES) ?: around(removals, at, DIAGONALS)
         return found?.let { Attributed(it.actor) }
     }
 
@@ -221,26 +247,24 @@ class Attribution(
         kills[at] = Note(actor, now())
     }
 
-    fun killerNear(at: WorldBlock, reach: Int): Attributed? {
-        val now = now()
-        return kills.entries.asSequence()
-            .filter { (where, note) ->
-                where.world == at.world && now - note.at <= KILL_MILLIS &&
+    fun killerNear(at: WorldBlock, reach: Int): Attributed? =
+        kills.fresh()
+            .filter { (where, _) ->
+                where.world == at.world &&
                     abs(where.x - at.x) <= reach && abs(where.y - at.y) <= reach && abs(where.z - at.z) <= reach
             }
             .maxByOrNull { it.value.at }?.let { Attributed(it.value.actor) }
-    }
 
     /** Who cut down what held this leaf up, taken once: a leaf decays only once. */
     fun fellerOf(at: WorldBlock): Attributed? =
-        noted(felled, at, FELLED_MILLIS)?.let { felled.remove(at); Attributed(it.actor) }
+        felled.remove(at)?.let { Attributed(it.actor) }
 
     /**
      * Who emptied this very position a moment ago. A silverfish comes out of the block that was broken,
      * where the support search never looks: it asks about the cells around a block, not the block.
      */
     fun removerAt(at: WorldBlock): Attributed? =
-        noted(removals, at, SUPPORT_MILLIS)?.let { Attributed(it.actor) }
+        removals[at]?.let { Attributed(it.actor) }
 
     /**
      * Who last changed this position, by the journal: the newest row there, if it is no older than
@@ -267,7 +291,7 @@ class Attribution(
      * the most recent placement around the shape rather than one at a position the event names.
      */
     fun builderNear(at: WorldBlock, reach: Int): Attributed? =
-        cube(at, reach).mapNotNull { noted(placements, it, NOTE_MILLIS) }.maxByOrNull { it.at }?.let { Attributed(it.actor) }
+        cube(at, reach).mapNotNull { placements[it] }.maxByOrNull { it.at }?.let { Attributed(it.actor) }
 
     // A falling block is attributed in two halves and positional state does not survive the flight:
     // what stands in the source position by the time the block lands is whatever took its place.
@@ -276,17 +300,15 @@ class Attribution(
     }
 
     /** Who a block still in the air answers to, without landing it: it hurts what it falls on first. */
-    fun flying(entity: UUID): Attributed? = flights[entity]?.takeIf { now() - it.at <= FLIGHT_MILLIS }?.falling?.by
+    fun flying(entity: UUID): Attributed? = flights[entity]?.falling?.by
 
-    // The window is enforced here rather than left to the sweep, because the sweep runs minutes apart
-    // and an entity id handed out again in between would otherwise collect a stranger's flight.
-    fun landed(entity: UUID): Falling? =
-        flights.remove(entity)?.takeIf { now() - it.at <= FLIGHT_MILLIS }?.falling
+    fun landed(entity: UUID): Falling? = flights.remove(entity)?.falling
 
-    // Per tick: one tick of a vein miner can park thousands of two-second notes.
+    // Per tick: one tick of a vein miner can park thousands of two-second notes. The kills go too,
+    // since every spreading sculk block scans all of them.
     fun sweepRemovals() {
-        val now = now()
-        removals.values.removeIf { now - it.at > SUPPORT_MILLIS }
+        removals.sweep()
+        kills.sweep()
     }
 
     /**
@@ -295,31 +317,51 @@ class Attribution(
      */
     fun sweep() {
         sweepRemovals()
-        val now = now()
-        placements.values.removeIf { now - it.at > NOTE_MILLIS }
-        flights.values.removeIf { now - it.at > FLIGHT_MILLIS }
-        felled.values.removeIf { now - it.at > FELLED_MILLIS }
-        kills.values.removeIf { now - it.at > KILL_MILLIS }
+        placements.sweep()
+        flights.sweep()
+        felled.sweep()
     }
 
-    private fun noted(notes: Map<WorldBlock, Note>, at: WorldBlock, window: Long, block: String? = null): Note? {
+    private fun noted(notes: Notes<WorldBlock, Note>, at: WorldBlock, block: String? = null): Note? {
         val note = notes[at] ?: return null
-        if (now() - note.at > window) return null
         if (block != null && blockNameOf(note.state ?: return null) != block) return null
         return note
     }
 
     private fun around(
-        notes: Map<WorldBlock, Note>,
+        notes: Notes<WorldBlock, Note>,
         at: WorldBlock,
         offsets: List<Triple<Int, Int, Int>>,
-        window: Long,
         block: String? = null,
-    ): Note? = offsets
-        .mapNotNull { (dx, dy, dz) ->
-            noted(notes, at.copy(x = at.x + dx, y = at.y + dy, z = at.z + dz), window, block)
-        }
+    ): Note? = offsets.mapNotNull { (dx, dy, dz) -> noted(notes, at.copy(x = at.x + dx, y = at.y + dy, z = at.z + dz), block) }
         .maxByOrNull { it.at }
+}
+
+private interface Stamped {
+    val at: Long
+}
+
+// Each table states its window once: every read refuses a note older than it, and the sweep, which only
+// reclaims heap, drops the same notes.
+private class Notes<K : Any, V : Stamped>(private val window: Long, private val now: () -> Long) {
+    private val notes = ConcurrentHashMap<K, V>()
+
+    operator fun set(key: K, note: V) {
+        notes[key] = note
+    }
+
+    operator fun get(key: K): V? = notes[key]?.takeIf(::fresh)
+
+    fun remove(key: K): V? = notes.remove(key)?.takeIf(::fresh)
+
+    fun fresh(): Sequence<Map.Entry<K, V>> = notes.entries.asSequence().filter { fresh(it.value) }
+
+    fun sweep() {
+        val now = now()
+        notes.values.removeIf { now - it.at > window }
+    }
+
+    private fun fresh(note: V) = now() - note.at <= window
 }
 
 // How long an origin stands for. An entity outlives every other note in this file: a wither built in

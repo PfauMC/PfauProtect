@@ -63,6 +63,11 @@ internal class Area(
 
     fun owned() = TickThread.isTickThreadFor(level, minX shr 4, minZ shr 4, maxX shr 4, maxZ shr 4)
 
+    // x outermost and z innermost: a read and the settle after it pair positions by this order.
+    inline fun forEachPosition(action: (x: Int, y: Int, z: Int) -> Unit) {
+        for (x in minX..maxX) for (y in minY..maxY) for (z in minZ..maxZ) action(x, y, z)
+    }
+
     fun onRegion(task: () -> Unit) = level.`canvas$loadOrRunAtChunksAsync`(
         (minX shr 4) - HOP_BUFFER_CHUNKS, (maxX shr 4) + HOP_BUFFER_CHUNKS,
         (minZ shr 4) - HOP_BUFFER_CHUNKS, (maxZ shr 4) + HOP_BUFFER_CHUNKS,
@@ -270,9 +275,7 @@ class CommandBrackets(
     private fun read(area: Area): Array<Standing> {
         val cursor = BlockPos.MutableBlockPos()
         val out = ArrayList<Standing>(area.volume.toInt())
-        for (x in area.minX..area.maxX) for (y in area.minY..area.maxY) for (z in area.minZ..area.maxZ) {
-            out += standingAt(area.level, cursor.set(x, y, z), codec)
-        }
+        area.forEachPosition { x, y, z -> out += standingAt(area.level, cursor.set(x, y, z), codec) }
         return out.toTypedArray()
     }
 
@@ -282,7 +285,7 @@ class CommandBrackets(
         val world = area.level.world.uid
         val difference = Difference(world, Cause.BLK_COMMAND, kind.emptied, kind.filled, kind.made, actor, System.currentTimeMillis())
         var index = 0
-        for (x in area.minX..area.maxX) for (y in area.minY..area.maxY) for (z in area.minZ..area.maxZ) {
+        area.forEachPosition { x, y, z ->
             difference.add(x, y, z, before[index], after[index])
             index++
         }

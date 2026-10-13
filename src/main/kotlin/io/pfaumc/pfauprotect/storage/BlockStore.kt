@@ -9,7 +9,6 @@ import org.rocksdb.ColumnFamilyHandle
 import org.rocksdb.RocksDB
 import org.rocksdb.WriteBatch
 import org.rocksdb.WriteOptions
-import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
@@ -265,7 +264,7 @@ class BlockLog(
      * `budget` bounds the index rows walked, and a walk that reaches it says so.
      */
     fun touchedBy(actor: UUID, fromTs: Long, toTs: Long, budget: Int): ActorTouches = dbLock.read {
-        val number = shared.registries.lookupKey(RegistryNamespace.PLAYER, actor.toString())
+        val number = shared.registries.lookupUuid(RegistryNamespace.PLAYER, actor)
         if (closed) return ActorTouches(emptySet(), false)
         if (number == null) return ActorTouches(emptySet(), true)
         val prefix = actorPrefix(number)
@@ -283,7 +282,7 @@ class BlockLog(
     }
 
     private fun actorPrefix(actor: Int): ByteArray =
-        ByteBuffer.allocate(4).putInt(actor).array()
+        ByteWriter(4).intBE(actor).toByteArray()
 
     // The actor's number, then the row key turned round: time, event and ordinal, then the position.
     private fun actorKey(actor: Int, rowKey: ByteArray): ByteArray =
@@ -585,9 +584,8 @@ class BlockLog(
         ordinal: Int,
         batchTs: MutableMap<Triple<Int, Int, Int>, Long>,
     ) {
-        val at = "${change.x} ${change.y} ${change.z}"
-        val before = requireNotNull(change.before) { "the block at $at was changed from nothing known" }
-        val after = requireNotNull(change.after) { "the block at $at was changed into nothing known" }
+        val before = requireNotNull(change.before) { "the block at ${change.x} ${change.y} ${change.z} was changed from nothing known" }
+        val after = requireNotNull(change.after) { "the block at ${change.x} ${change.y} ${change.z} was changed into nothing known" }
         val stateBefore = shared.registries.idForKey(RegistryNamespace.BLOCK_STATE, before)
         val stateAfter = shared.registries.idForKey(RegistryNamespace.BLOCK_STATE, after)
         val payloadBefore = change.payloadBefore?.let { shared.payloads.idOf(it) }
@@ -683,6 +681,10 @@ class BlockLogs(
     fun get(world: UUID): BlockLog? = logs[world]
 
     val worlds: Set<UUID> get() = logs.keys.toSet()
+
+    fun drain() {
+        for (log in logs.values) log.drain()
+    }
 
     @Synchronized
     fun close(world: UUID) {

@@ -74,7 +74,6 @@ import net.kyori.adventure.text.Component
 import io.pfaumc.pfauprotect.Texts
 import io.pfaumc.pfauprotect.Ui
 import io.pfaumc.pfauprotect.tr
-import net.kyori.adventure.text.event.ClickEvent
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.CraftWorld
@@ -191,8 +190,6 @@ class EntityJob(val entity: Entity, val run: (Tally) -> Unit)
 
 /** What a rollback did, or in a preview would do, counted over every chunk it touched. */
 class Tally {
-    // Positions that stood as the rolled-back players left them when the window opened; set on the total.
-    var leftBefore = 0
     // When the window opened; set on the total, for following what a thief put away since.
     var since = 0L
     var changed = 0
@@ -417,10 +414,10 @@ class ChunkRollback(
             tally.changed++
             if (reshaped) tally.undone += plan.at
             // A block back where one stands again is what lets the drops of its break be taken back.
-            val returnsBlock = reshaped && !emptied(target!!)
+            val returnsBlock = reshaped && !emptied(target)
             if (!apply) {
                 if (returnsBlock) restored(tally, plan)
-                if (reshaped) tally.ghosts += Ghost(plan.at.copy(world = world), Bukkit.createBlockData(target!!))
+                if (reshaped) tally.ghosts += Ghost(plan.at.copy(world = world), Bukkit.createBlockData(target))
                 return@forEachIndexed
             }
             try {
@@ -663,7 +660,7 @@ class ChunkRollback(
     // any entity taken out of the world.
     private fun takeAway(entity: Entity, plan: EntityPlan, actor: UUID?) {
         if (!entity.isValid) return
-        val before = snapshotOf((entity as CraftEntity).handle)
+        val before = snapshotOf(entity)
         forget(entity.uniqueId)
         entity.remove()
         filed(plan, EntityKind.REMOVED, actor, before = before)
@@ -706,7 +703,7 @@ class ChunkRollback(
             val at = entity.location
             return abs(at.x - pos.x) < 1 && abs(at.y - pos.y) < 1 && abs(at.z - pos.z) < 1
         }
-        val now = snapshotOf((entity as CraftEntity).handle) ?: return true
+        val now = snapshotOf(entity) ?: return true
         return !changedBetween(plan.before, now)
     }
 
@@ -886,7 +883,7 @@ class Rollbacks(
                 // The writers run on threads of their own, and what they still hold is history the
                 // rollback would not see.
                 ledger.drain()
-                for (world in blocks.worlds) blocks.get(world)?.drain()
+                blocks.drain()
                 val now = System.currentTimeMillis()
                 val event = query.event
                 // One event: a second either side of it, around where it happened. A window that ends in the
@@ -963,10 +960,9 @@ class Rollbacks(
             return
         }
         val total = Tally()
-        total.leftBefore = leftBefore
         total.since = since
         total.deaths += plans.flatMap { it.deaths }
-        val run = Run(sender, total, read, where, apply, rows)
+        val run = Run(sender, total, read, where, apply, rows, leftBefore)
         // Only deaths to give back for, and no place to touch: straight on to them.
         if (work.isEmpty()) return run.finishing(release)
         val hold = ChunkHold(work)
@@ -1032,6 +1028,8 @@ class Rollbacks(
         val where: String,
         val apply: Boolean,
         val rows: String?,
+        // Positions that stood as the rolled-back players left them when the window opened.
+        val leftBefore: Int,
     ) {
         val actor = (sender as? Player)?.uniqueId
 
@@ -1152,8 +1150,8 @@ class Rollbacks(
             }
             if (!apply) {
                 sender.sendMessage(Ui.text("  " + read, Ui.FAINT))
-                if (total.leftBefore > 0) sender.say(
-                    "  the window may be shorter than a full rollback needs: ${total.leftBefore} of these positions stood " +
+                if (leftBefore > 0) sender.say(
+                    "  the window may be shorter than a full rollback needs: $leftBefore of these positions stood " +
                         "as the same player had left them when it opened, and go back to that; a longer time: reaches further.",
                 )
                 val minutes = PENDING_MILLIS / 60_000
@@ -1165,10 +1163,8 @@ class Rollbacks(
                     .append(Ui.button(tr("[apply]", "[применить]"), "/pp apply", Ui.GAINED, tr("Run this rollback", "Выполнить откат"), "/pp apply"))
                     .append(Ui.text(" "))
                     .append(Ui.button(tr("[cancel]", "[отменить]"), "/pp cancel", Ui.LOST, tr("Drop the preview", "Сбросить предпросмотр"), "/pp cancel"))
-                if (rows != null) buttons.append(Ui.text(" ")).append(
-                    Ui.hover(Ui.text(tr("[rows]", "[строки]"), Ui.WHO), tr("The rows it undoes", "Строки, которые он отменяет"), rows)
-                        .clickEvent(ClickEvent.runCommand(rows)),
-                )
+                if (rows != null) buttons.append(Ui.text(" "))
+                    .append(Ui.button(tr("[rows]", "[строки]"), rows, Ui.WHO, tr("The rows it undoes", "Строки, которые он отменяет"), rows))
                 buttons.append(Ui.text(tr("  expires in $minutes min", "  действует $minutes мин"), Ui.FAINT))
                 sender.sendMessage(buttons.build())
                 return

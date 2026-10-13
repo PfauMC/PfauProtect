@@ -66,6 +66,21 @@ private fun confidenceOf(header: Int): Confidence = when {
     else -> Confidence.FACT
 }
 
+private const val ACTOR_FLAG = 0x10
+private const val BEFORE_FLAG = 0x20
+private const val AFTER_FLAG = 0x40
+
+private fun optionalBits(actor: UUID?, before: Long?, after: Long?): Int =
+    (if (actor != null) ACTOR_FLAG else 0) or
+        (if (before != null) BEFORE_FLAG else 0) or
+        (if (after != null) AFTER_FLAG else 0)
+
+private fun writeOptionals(w: ByteWriter, actor: UUID?, before: Long?, after: Long?, ids: IdResolver) {
+    if (actor != null) w.varInt(ids.id(RegistryNamespace.PLAYER, actor))
+    if (before != null) w.varLong(before)
+    if (after != null) w.varLong(after)
+}
+
 // The key is a block row's key — position, time, event, ordinal — so a walk of a chunk or a position
 // reads both planes the same way.
 object EntityCodec {
@@ -76,9 +91,6 @@ object EntityCodec {
     const val WITH_DEATH = 1
 
     private const val VERSION_MASK = 0x03
-    private const val ACTOR_FLAG = 0x10
-    private const val BEFORE_FLAG = 0x20
-    private const val AFTER_FLAG = 0x40
     private const val DROPS_FLAG = 0x80
 
     fun value(row: EntityRow, ids: Registries): ByteArray {
@@ -90,18 +102,14 @@ object EntityCodec {
         w.byte(
             (if (death) WITH_DEATH else VERSION) or
                 confidenceBits(row.confidence) or
-                (if (row.actor != null) ACTOR_FLAG else 0) or
-                (if (row.payloadBefore != null) BEFORE_FLAG else 0) or
-                (if (row.payloadAfter != null) AFTER_FLAG else 0) or
+                optionalBits(row.actor, row.payloadBefore, row.payloadAfter) or
                 (if (row.drops.isNotEmpty()) DROPS_FLAG else 0)
         )
         w.byte(row.kind.id)
         w.byte(row.cause.id)
         w.varInt(typeId)
         w.uuid(row.uuid)
-        if (row.actor != null) w.varInt(ids.id(RegistryNamespace.PLAYER, row.actor))
-        if (row.payloadBefore != null) w.varLong(row.payloadBefore)
-        if (row.payloadAfter != null) w.varLong(row.payloadAfter)
+        writeOptionals(w, row.actor, row.payloadBefore, row.payloadAfter, ids)
         if (row.drops.isNotEmpty()) {
             w.varInt(row.drops.size)
             for (drop in row.drops) w.uuid(drop)
@@ -129,8 +137,8 @@ object EntityCodec {
         val type = typeOf(typeId) ?: throw IllegalArgumentException("unknown entity type number $typeId")
         val uuid = v.uuid()
         val actor = if (header and ACTOR_FLAG != 0) names.uuid(RegistryNamespace.PLAYER, v.varInt()) else null
-        val before = if (header and BEFORE_FLAG != 0) v.varLong() else null
-        val after = if (header and AFTER_FLAG != 0) v.varLong() else null
+        val payloadBefore = if (header and BEFORE_FLAG != 0) v.varLong() else null
+        val payloadAfter = if (header and AFTER_FLAG != 0) v.varLong() else null
         val drops = if (header and DROPS_FLAG != 0) List(v.varInt()) { v.uuid() } else emptyList()
         val death = if (version == WITH_DEATH) v.varInt().takeIf { it > 0 }?.let { names.keyOf(RegistryNamespace.DAMAGE_TYPE, it - 1) } else null
         val via = if (version == WITH_DEATH) v.varInt().takeIf { it > 0 }?.let { typeOf(it - 1) } else null
@@ -141,7 +149,8 @@ object EntityCodec {
             timestamp = k.longBE(), eventId = k.longBE(), ordinal = k.byte(),
             kind = kind, cause = cause, type = type, uuid = uuid,
             confidence = confidenceOf(header),
-            actor = actor, payloadBefore = before, payloadAfter = after, drops = drops, death = death, via = via,
+            actor = actor, payloadBefore = payloadBefore, payloadAfter = payloadAfter,
+            drops = drops, death = death, via = via,
         )
     }
 }
@@ -167,9 +176,6 @@ object BlockCodec {
     // Two bits of version, the third taken by the nearby flag: the version has only ever been zero, so
     // every row written before the flag existed reads as it always did.
     private const val VERSION_MASK = 0x03
-    private const val ACTOR_FLAG = 0x10
-    private const val PAYLOAD_BEFORE_FLAG = 0x20
-    private const val PAYLOAD_AFTER_FLAG = 0x40
     private const val ALONGSIDE_FLAG = 0x80
 
     fun key(x: Int, y: Int, z: Int, timestamp: Long, eventId: Long, ordinal: Int): ByteArray {
@@ -193,9 +199,7 @@ object BlockCodec {
         w.byte(row.cause.id)
         w.shortBE(row.stateBefore)
         w.shortBE(row.stateAfter)
-        if (row.actor != null) w.varInt(ids.id(RegistryNamespace.PLAYER, row.actor))
-        if (row.payloadBefore != null) w.varLong(row.payloadBefore)
-        if (row.payloadAfter != null) w.varLong(row.payloadAfter)
+        writeOptionals(w, row.actor, row.payloadBefore, row.payloadAfter, ids)
         return w.toByteArray()
     }
 
@@ -233,8 +237,8 @@ object BlockCodec {
         val stateBefore = v.shortBE()
         val stateAfter = v.shortBE()
         val actor = if (header and ACTOR_FLAG != 0) names.uuid(RegistryNamespace.PLAYER, v.varInt()) else null
-        val payloadBefore = if (header and PAYLOAD_BEFORE_FLAG != 0) v.varLong() else null
-        val payloadAfter = if (header and PAYLOAD_AFTER_FLAG != 0) v.varLong() else null
+        val payloadBefore = if (header and BEFORE_FLAG != 0) v.varLong() else null
+        val payloadAfter = if (header and AFTER_FLAG != 0) v.varLong() else null
 
         val k = ByteReader(key)
         val pos = Zcode.decode(k.bytes(Zcode.SIZE))
@@ -259,8 +263,6 @@ object BlockCodec {
     private fun header(row: BlockRow): Int =
         VERSION or
             confidenceBits(row.confidence) or
-            (if (row.actor != null) ACTOR_FLAG else 0) or
-            (if (row.payloadBefore != null) PAYLOAD_BEFORE_FLAG else 0) or
-            (if (row.payloadAfter != null) PAYLOAD_AFTER_FLAG else 0) or
+            optionalBits(row.actor, row.payloadBefore, row.payloadAfter) or
             (if (row.alongside) ALONGSIDE_FLAG else 0)
 }

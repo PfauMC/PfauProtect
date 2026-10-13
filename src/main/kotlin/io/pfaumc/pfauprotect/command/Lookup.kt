@@ -19,6 +19,8 @@ import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.model.BLOCK_CAUSES
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.block
+import io.pfaumc.pfauprotect.rollback.spot
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
@@ -738,12 +740,13 @@ internal fun wholeTransactions(ledger: RocksItemLog, entries: List<LedgerEntry>)
     // half would print the same movement a second time, mirrored. What is worth pulling in is the
     // posting no row on screen names at all.
     val mirrors = entries.mapTo(HashSet()) { it.counterparty to it.holder }
+    val asked = HashSet<Long>()
     for (entry in entries) {
-        val whole = ledger.transactionEntries(entry)
+        if (!asked.add(entry.txId)) continue
         // A break is a handful of postings about one position and belongs on screen together. An
         // explosion is one transaction over a whole crater, and pulling it in would answer a question
         // about this position with thousands of rows about every other one.
-        if (whole.size > NEIGHBOURLY_TRANSACTION) continue
+        val whole = ledger.transactionEntries(entry, NEIGHBOURLY_TRANSACTION) ?: continue
         whole.filterNotTo(shown) { (it.holder to it.counterparty) in mirrors }
     }
     return shown.toList()
@@ -776,11 +779,8 @@ internal fun boxAround(x: Int, y: Int, z: Int, radius: Int, column: Boolean = fa
     }
 
 /** Whether a positional holder stands in `box`; a holder with no position answers `unplaced`. */
-internal fun Holder.placedIn(box: (Int, Int, Int) -> Boolean, unplaced: Boolean): Boolean = when (this) {
-    is Container -> box(x, y, z)
-    is WorldBlock -> box(x, y, z)
-    else -> unplaced
-}
+internal fun Holder.placedIn(box: (Int, Int, Int) -> Boolean, unplaced: Boolean): Boolean =
+    block?.let { box(it.x, it.y, it.z) } ?: unplaced
 
 // A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it.
 internal fun canTeleport(sender: CommandSender) = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
@@ -1056,9 +1056,9 @@ class Lookups(
      * not seen; and before the filter, which under action: would have dropped the rollback rows.
      */
     private fun marked(rows: List<BlockRow>): List<Pair<BlockRow, Boolean>> {
-        val rollbacks = rows.filter { it.cause == Cause.ROLLBACK }.groupBy { Triple(it.x, it.y, it.z) }
+        val rollbacks = rows.filter { it.cause == Cause.ROLLBACK }.groupBy { it.spot }
         return rows.map { row ->
-            val undone = row.cause != Cause.ROLLBACK && rollbacks[Triple(row.x, row.y, row.z)].orEmpty().any {
+            val undone = row.cause != Cause.ROLLBACK && rollbacks[row.spot].orEmpty().any {
                 it.timestamp >= row.timestamp && it.stateAfter == row.stateBefore
             }
             row to undone
@@ -1162,11 +1162,7 @@ class Lookups(
         val (from, to) = if (gained) entry.counterparty to entry.holder else entry.holder to entry.counterparty
         val flow = Component.text().append(holder(from)).append(Ui.text(" → ", Ui.FAINT)).append(holder(to)).build()
         val at = listOf(entry.holder, entry.counterparty).firstNotNullOfOrNull {
-            when (it) {
-                is Container -> Ui.place(it.world, it.x, it.y, it.z, clickable)
-                is WorldBlock -> Ui.place(it.world, it.x, it.y, it.z, clickable)
-                else -> null
-            }
+            it.block?.let { b -> Ui.place(b.world, b.x, b.y, b.z, clickable) }
         }
         return row(Ui.ago(entry.timestamp), who(who, entry.confidence), act, item(entry.itemFormId, amount), flow, at)
     }

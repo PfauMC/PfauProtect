@@ -92,7 +92,7 @@ class CopperGolemListener(
         val took = after != null && (before == null || !before.form.contentEquals(after.form))
         val side = (if (took) after else before) ?: return
         val form = side.form
-        val moved = if (took) after!!.count else before!!.count - (after?.takeIf { it.form.contentEquals(form) }?.count ?: 0)
+        val moved = if (took) after.count else before!!.count - (after?.takeIf { it.form.contentEquals(form) }?.count ?: 0)
         if (moved <= 0) return
         val now = contents(target.block) ?: return
         val previous = target.previous

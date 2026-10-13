@@ -18,7 +18,6 @@ import org.bukkit.GameMode
 import org.bukkit.Material
 import org.bukkit.block.Block
 import org.bukkit.block.Campfire
-import org.bukkit.craftbukkit.CraftEquipmentSlot
 import org.bukkit.entity.Entity
 import org.bukkit.entity.Player
 import org.bukkit.event.Event
@@ -177,7 +176,7 @@ class HolderListener(
     fun onArmorStand(event: PlayerArmorStandManipulateEvent) {
         val stand = event.rightClicked
         val player = event.player
-        val slot = CraftEquipmentSlot.getNMS(event.slot).ordinal
+        val slot = slotIndex(event.slot)
         codec.encodeOrNull(event.armorStandItem)?.let { taken ->
             capture.intend(player, Intent(Cause.ARMOR_STAND_SWAP, from = takeFrom(stand, slot, taken.form), form = taken.form, qty = taken.count))
         }
@@ -244,7 +243,7 @@ class HolderListener(
         val click = handed.remove(mob.uniqueId)?.takeIf { Bukkit.getCurrentTick() - it.tick <= EQUIP_TICKS }
             ?: return forgetEmptied(mob, event)
         for ((slot, change) in event.equipmentChanges) {
-            val index = CraftEquipmentSlot.getNMS(slot).ordinal
+            val index = slotIndex(slot)
             val put = codec.encodeOrNull(change.newItem())
             val removed = codec.encodeOrNull(change.oldItem())
             if (put != null && click.form?.contentEquals(put.form) == true) {
@@ -278,7 +277,7 @@ class HolderListener(
     private fun forgetEmptied(mob: Entity, event: EntityEquipmentChangedEvent) {
         val held = heldBy(mob)
         for ((slot, change) in event.equipmentChanges) {
-            val index = CraftEquipmentSlot.getNMS(slot).ordinal
+            val index = slotIndex(slot)
             val booked = held[index] ?: continue
             val now = codec.encodeOrNull(change.newItem())?.form
             if (now == null || !now.contentEquals(booked)) unbookHeld(mob, index)

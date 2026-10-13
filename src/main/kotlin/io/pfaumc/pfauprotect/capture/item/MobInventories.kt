@@ -21,7 +21,6 @@ import io.pfaumc.pfauprotect.storage.PlacedForms
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.Items
 import org.bukkit.NamespacedKey
-import org.bukkit.craftbukkit.CraftEquipmentSlot
 import org.bukkit.craftbukkit.entity.CraftVillager
 import org.bukkit.entity.AbstractHorse
 import org.bukkit.entity.Entity
@@ -234,7 +233,8 @@ class MobInventories(
     private val labels = ConcurrentHashMap<UUID, MutableList<PocketLabel>>()
 
     internal fun booked(mob: Entity): List<Pocket> =
-        decodePockets(mob.persistentDataContainer.get(POCKET_KEY, PersistentDataType.BYTE_ARRAY))
+        if (!carriesInventory(mob)) emptyList()
+        else decodePockets(mob.persistentDataContainer.get(POCKET_KEY, PersistentDataType.BYTE_ARRAY))
 
     private fun book(mob: Entity, pockets: List<Pocket>) {
         if (pockets.isEmpty()) mob.persistentDataContainer.remove(POCKET_KEY)
@@ -249,7 +249,9 @@ class MobInventories(
     private fun foodPoints(change: SlotChange) =
         (codec.decode(change.key.form, 1, null).get(DataComponents.VILLAGER_FOOD)?.nutrition() ?: 0) * change.qty
 
-    internal fun forget(mob: Entity) = book(mob, emptyList())
+    internal fun forget(mob: Entity) {
+        if (carriesInventory(mob)) book(mob, emptyList())
+    }
 
     private fun live(mob: Entity): List<Pocket> {
         val inventory = (mob as InventoryHolder).inventory
@@ -269,6 +271,7 @@ class MobInventories(
      * count the same loss again.
      */
     internal fun thrown(mob: Entity, form: ByteArray): Holder? {
+        if (!carriesInventory(mob)) return null
         val before = booked(mob)
         val now = live(mob).associateBy { it.slot }
         val left = before.firstOrNull { pocket ->
@@ -334,14 +337,11 @@ class MobInventories(
     // somewhere else — a piglin admires gold in its off hand and keeps its sword in the main one. None
     // when no hand holds it beyond what was booked there already.
     private fun handHolding(mob: Entity, form: ByteArray, guess: Int): Int? {
-        val equipment = (mob as? LivingEntity)?.equipment ?: return null
+        if (mob !is LivingEntity) return null
         val booked = heldBy(mob)
-        for (slot in listOf(guess, OFF_HAND, MAIN_HAND).distinct()) {
-            val bukkit = CraftEquipmentSlot.getSlot(NmsEquipmentSlot.entries[slot])
-            if (booked[slot]?.contentEquals(form) == true) continue
-            if (codec.encodeOrNull(equipment.getItem(bukkit))?.form?.contentEquals(form) == true) return slot
+        return listOf(guess, OFF_HAND, MAIN_HAND).distinct().firstOrNull { slot ->
+            booked[slot]?.contentEquals(form) != true && codec.holding(mob, slot, form) != null
         }
-        return null
     }
 
     private fun isWheat(form: ByteArray) = codec.decode(form, 1, null).`is`(Items.WHEAT)
@@ -386,7 +386,7 @@ class MobInventories(
         val encoded = codec.encodeOrNull(event.item.itemStack) ?: return
         val taken = encoded.count - event.remaining
         if (taken <= 0) return
-        val hand = equipmentSlotOf(mob as LivingEntity, event.item.itemStack)
+        val hand = equipmentSlotOf(mob, event.item.itemStack)
         label(mob, PocketLabel(encoded.form, true, ItemEntityRef(event.item.uniqueId), Cause.ITEM_PICKUP_BY_MOB_INV, taken, hand = hand))
     }
 

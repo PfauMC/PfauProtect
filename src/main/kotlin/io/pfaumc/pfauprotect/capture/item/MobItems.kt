@@ -92,6 +92,16 @@ internal fun horseSlot(window: Int): Int = when (window) {
     else -> ENTITY_ITEM_SLOT + window - 1
 }
 
+internal fun slotIndex(slot: org.bukkit.inventory.EquipmentSlot): Int = CraftEquipmentSlot.getNMS(slot).ordinal
+
+// How many of the form an equipment slot holds right now; nothing for a slot that is not equipment,
+// such as the item a stand was placed from.
+internal fun ItemFormCodec.holding(mob: LivingEntity, slot: Int, form: ByteArray): Int? {
+    val equipped = NmsEquipmentSlot.entries.getOrNull(slot)?.let(CraftEquipmentSlot::getSlot) ?: return null
+    val live = encodeOrNull(mob.equipment?.getItem(equipped)) ?: return null
+    return live.count.takeIf { live.form.contentEquals(form) }
+}
+
 private val HELD_SLOTS = 0..ENTITY_ITEM_SLOT
 
 internal fun bookHeld(entity: Entity, slot: Int, form: ByteArray) {
@@ -226,7 +236,7 @@ class MobItemListener(
         if (mob is Player || !wornThrough(event.item, event.damage)) return
         val gear = mob.equipment ?: return
         val slot = org.bukkit.inventory.EquipmentSlot.entries.firstOrNull { mob.canUseEquipmentSlot(it) && gear.getItem(it) == event.item } ?: return
-        val index = CraftEquipmentSlot.getNMS(slot).ordinal
+        val index = slotIndex(slot)
         val form = heldBy(mob)[index] ?: codec.encodeOrNull(event.item)?.form ?: return
         unbookHeld(mob, index)
         val damager = (mob.lastDamageCause as? EntityDamageByEntityEvent)?.damager?.let(::firedBy)
@@ -289,7 +299,7 @@ class MobItemListener(
         // A villager sharing food, an allay handing over what it collected: out of the pocket, which
         // has already given it up. Asked first, because an allay goes on holding the item it was given
         // while it hands over the same kind out of its pocket.
-        val pocket = if (carriesInventory(entity)) inventories.thrown(entity, encoded.form) else null
+        val pocket = inventories.thrown(entity, encoded.form)
         val slot = if (pocket != null) null else claimHeld(heldBy(entity), removed[entity.uniqueId], encoded.form)
         val booked = slot?.let {
             unbookHeld(entity, it)
@@ -354,7 +364,7 @@ class MobItemListener(
             for (slot in org.bukkit.inventory.EquipmentSlot.entries) {
                 if (!entity.canUseEquipmentSlot(slot)) continue
                 val stack = gear.getItem(slot)
-                if (!stack.isEmpty) booked += CraftEquipmentSlot.getNMS(slot).ordinal to stack
+                if (!stack.isEmpty) booked += slotIndex(slot) to stack
             }
         }
         (entity as? ItemFrame)?.item?.takeIf { !it.isEmpty }?.let { booked += 0 to it }
@@ -398,11 +408,11 @@ class MobItemListener(
         val left = IntArray(inventory?.size ?: 0) { inventory?.get(it)?.amount ?: 0 }
         // A piglin spills its pocket and a villager keeps it; either way the pocket booked is what
         // went, since a piglin's is already empty by the time this is raised.
-        val pockets = if (carriesInventory(mob)) inventories.booked(mob) else emptyList()
+        val pockets = inventories.booked(mob)
         val pocketLeft = IntArray(pockets.size) { pockets[it].count }
         val drops = event.drops.map { codec.encodeOrNull(it) }
         // The game clears a dying mob's equipment only after this event, so the slots still hold it.
-        val holding = held.mapNotNull { (slot, form) -> holding(mob, slot, form)?.let { slot to it } }.toMap()
+        val holding = held.mapNotNull { (slot, form) -> codec.holding(mob, slot, form)?.let { slot to it } }.toMap()
         // Takes what a drop still needs out of each slot that fits, as far as what is left in it goes,
         // and answers what none of them covered.
         fun spend(need: Int, key: ItemKey, left: IntArray, fits: (Int) -> Boolean, from: (Int) -> Holder): Int {
@@ -449,21 +459,12 @@ class MobItemListener(
             val from = pocketSlot(mob, pocket.slot)
             pending.add(from, Void, Cause.MOB_EQUIPMENT_LOST, pocket.key, pocketLeft[index], killer)
         }
-        if (carriesInventory(mob)) inventories.forget(mob)
-    }
-
-    // How many of the booked form an equipment slot holds right now; nothing for a slot that is not
-    // equipment, such as the item a stand was placed from.
-    private fun holding(mob: LivingEntity, slot: Int, form: ByteArray): Int? {
-        val nms = NmsEquipmentSlot.entries.getOrNull(slot) ?: return null
-        val live = codec.encodeOrNull(mob.equipment?.getItem(CraftEquipmentSlot.getSlot(nms))) ?: return null
-        return live.count.takeIf { live.form.contentEquals(form) }
+        inventories.forget(mob)
     }
 
     // A pocket that leaves the world other than by death or with its chunk: a villager struck into a
     // witch, a plugin removing a piglin. Nothing carries it on.
     private fun pocketGone(entity: Entity) {
-        if (!carriesInventory(entity)) return
         for (pocket in inventories.booked(entity)) {
             val from = pocketSlot(entity, pocket.slot)
             pending.add(from, Void, Cause.MOB_EQUIPMENT_LOST, pocket.key, pocket.count)

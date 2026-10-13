@@ -111,6 +111,13 @@ data class Container(
 data class WorldBlock(val world: UUID, val x: Int, val y: Int, val z: Int) :
     Holder(HolderType.WORLD_BLOCK, carriesSlot = false)
 
+val Holder.block: WorldBlock?
+    get() = when (this) {
+        is Container -> WorldBlock(world, x, y, z)
+        is WorldBlock -> this
+        else -> null
+    }
+
 data class EntitySlot(val uuid: UUID, override val slot: Int) : Holder(HolderType.ENTITY_SLOT)
 
 /**

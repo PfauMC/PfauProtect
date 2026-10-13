@@ -273,8 +273,9 @@ private fun birthsOf(rows: List<LedgerEntry>) = rows.filter { it.qty > 0 && it.c
 
 /** The piles that fell out of a killed player, each read from the ledger once. Off the region thread. */
 internal class Fallen(private val ledger: RocksItemLog, private val death: EntityRow) {
-    private val read = death.drops.distinct().associateWith { pileRows(ledger)(ItemEntityRef(it)) }
-    private val rowsOf = pileRows(ledger).let { fallback -> { pile: ItemEntityRef -> read[pile.uuid] ?: fallback(pile) } }
+    private val fromLedger = pileRows(ledger)
+    private val read = death.drops.distinct().associateWith { fromLedger(ItemEntityRef(it)) }
+    private val rowsOf = { pile: ItemEntityRef -> read[pile.uuid] ?: fromLedger(pile) }
 
     /**
      * Where everything that fell out of the victim is now: who picked it up, what still lies there, what is
@@ -418,7 +419,7 @@ class Confiscations(
                     val pile = Bukkit.getEntity(taker.entity) as? Item
                     val missing = { all.forEach { gone(it.formId, it.qty) } }
                     if (pile == null) {
-                        sender.sayNamed("  ${all.sumOf { it.qty }} ${name(all.first().formId)} were lying in the world and are gone since.")
+                        goneSince(sender, all.sumOf { it.qty }, all.first().formId)
                         missing()
                     } else {
                         pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender, gone, taken) } }, missing)
@@ -429,6 +430,9 @@ class Confiscations(
             }
         }
     }
+
+    private fun goneSince(sender: CommandSender, qty: Int, formId: Long) =
+        sender.sayNamed("  $qty ${name(formId)} were lying in the world and are gone since.")
 
     private fun tell(sender: CommandSender?, message: String) {
         if (sender != null) sender.sayNamed(message) else plugin.logger.info("rollback at join:$message")
@@ -675,7 +679,7 @@ class Confiscations(
         taken: (Long, Int) -> Unit,
     ) {
         if (!pile.isValid) {
-            sender.sayNamed("  ${owed.qty} ${name(owed.formId)} were lying in the world and are gone since.")
+            goneSince(sender, owed.qty, owed.formId)
             gone(owed.formId, owed.qty)
             return
         }

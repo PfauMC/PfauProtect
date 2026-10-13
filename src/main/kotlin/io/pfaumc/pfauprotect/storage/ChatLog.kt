@@ -1,8 +1,8 @@
 package io.pfaumc.pfauprotect.storage
 
+import io.pfaumc.pfauprotect.model.idIndex
 import org.rocksdb.Options
 import org.rocksdb.RocksDB
-import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
@@ -19,7 +19,7 @@ enum class ChatKind(val id: Int) {
     CHAT(0), COMMAND(1), JOIN(2), QUIT(3);
 
     companion object {
-        fun byId(id: Int) = entries.firstOrNull { it.id == id }
+        val byId = idIndex(entries) { it.id }
     }
 }
 
@@ -70,7 +70,7 @@ class ChatLog(dir: Path) : AutoCloseable {
         db.newIterator().use { iter ->
             iter.seekForPrev(keyOf(toTs, Int.MAX_VALUE))
             while (iter.isValid && out.size < limit) {
-                val ts = ByteBuffer.wrap(iter.key()).long
+                val ts = ByteReader(iter.key()).longBE()
                 if (ts < fromTs) break
                 decode(ts, iter.value())?.takeIf(keeps)?.let(out::add)
                 iter.prev()
@@ -97,28 +97,28 @@ class ChatLog(dir: Path) : AutoCloseable {
         }
     }
 
-    private fun keyOf(ts: Long, seq: Int): ByteArray = ByteBuffer.allocate(12).putLong(ts).putInt(seq).array()
+    private fun keyOf(ts: Long, seq: Int): ByteArray = ByteWriter(12).longBE(ts).intBE(seq).toByteArray()
 
     private fun encode(line: ChatLine): ByteArray {
         val text = line.text.toByteArray(Charsets.UTF_8)
         val world = line.world.toByteArray(Charsets.UTF_8)
-        return ByteBuffer.allocate(1 + 1 + 16 + 4 + world.size + 12 + text.size)
-            .put(VERSION.toByte()).put(line.kind.id.toByte())
-            .putLong(line.player.mostSignificantBits).putLong(line.player.leastSignificantBits)
-            .putInt(world.size).put(world).putInt(line.x).putInt(line.y).putInt(line.z)
-            .put(text).array()
+        return ByteWriter(1 + 1 + 16 + 4 + world.size + 12 + text.size)
+            .byte(VERSION).byte(line.kind.id)
+            .uuid(line.player)
+            .intBE(world.size).bytes(world).intBE(line.x).intBE(line.y).intBE(line.z)
+            .bytes(text).toByteArray()
     }
 
     private fun decode(ts: Long, value: ByteArray): ChatLine? = runCatching {
-        val b = ByteBuffer.wrap(value)
-        if (b.get().toInt() != VERSION) return null
-        val kind = ChatKind.byId(b.get().toInt()) ?: return null
-        val player = UUID(b.long, b.long)
-        val world = ByteArray(b.int).also { b.get(it) }.toString(Charsets.UTF_8)
-        val x = b.int
-        val y = b.int
-        val z = b.int
-        val text = ByteArray(b.remaining()).also { b.get(it) }.toString(Charsets.UTF_8)
+        val b = ByteReader(value)
+        if (b.byte() != VERSION) return null
+        val kind = ChatKind.byId(b.byte()) ?: return null
+        val player = b.uuid()
+        val world = b.bytes(b.intBE()).toString(Charsets.UTF_8)
+        val x = b.intBE()
+        val y = b.intBE()
+        val z = b.intBE()
+        val text = b.bytes(b.remaining).toString(Charsets.UTF_8)
         ChatLine(ts, kind, player, text, world, x, y, z)
     }.getOrNull()
 

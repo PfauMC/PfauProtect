@@ -14,6 +14,7 @@ import org.bukkit.block.BlockFace
 import org.bukkit.block.data.AnaloguePowerable
 import org.bukkit.block.data.BlockData
 import org.bukkit.block.data.Powerable
+import org.bukkit.block.data.type.SculkSensor
 import org.bukkit.block.data.type.TripwireHook
 import org.bukkit.entity.Boat
 import org.bukkit.entity.Entity
@@ -49,6 +50,7 @@ import org.bukkit.util.BoundingBox
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 // One step of a circuit: a repeater at full delay, a dispenser's own four ticks, a button held for a
 // second and a half. Every step writes a fresh note where it arrived, so a chain of any length stays
@@ -81,11 +83,23 @@ internal const val PRESS_NANOS = 50_000_000L
 class Energy(private val now: () -> Long = System::currentTimeMillis) {
     private class Note(val by: Attributed, val at: Long)
 
+    private companion object {
+        val FRESHER = compareBy<Note> { it.at }.thenByDescending { it.by.confidence.id }
+    }
+
     private val notes = ConcurrentHashMap<WorldBlock, Note>()
 
+    // Raised before the note goes in, so a reader that sees the note sees the time too.
+    private val latestNoteAt = AtomicLong(Long.MIN_VALUE / 2)
+
     fun note(at: WorldBlock, by: Attributed) {
-        notes[at] = Note(by, now())
+        val now = now()
+        latestNoteAt.accumulateAndGet(now) { a, b -> maxOf(a, b) }
+        notes[at] = Note(by, now)
     }
+
+    /** No note recent enough to answer anything: a world with no circuit running skips every walk. */
+    fun idle(time: Long = now()): Boolean = time - latestNoteAt.get() > ENERGY_MILLIS
 
     /**
      * The freshest note within `reach` of any of the centres, and of two equally fresh the surer one:
@@ -93,12 +107,16 @@ class Energy(private val now: () -> Long = System::currentTimeMillis) {
      */
     fun near(centres: Collection<WorldBlock>, reach: Int = ENERGY_REACH): Attributed? {
         val now = now()
-        return centres.asSequence()
-            .flatMap { cube(it, reach) }
-            .mapNotNull { notes[it] }
-            .filter { now - it.at <= ENERGY_MILLIS }
-            .maxWithOrNull(compareBy<Note> { it.at }.thenByDescending { it.by.confidence.id })
-            ?.by
+        if (idle(now)) return null
+        var best: Note? = null
+        for (centre in centres) {
+            for (dx in -reach..reach) for (dy in -reach..reach) for (dz in -reach..reach) {
+                val note = notes[centre.copy(x = centre.x + dx, y = centre.y + dy, z = centre.z + dz)] ?: continue
+                if (now - note.at > ENERGY_MILLIS) continue
+                if (best == null || FRESHER.compare(note, best) > 0) best = note
+            }
+        }
+        return best?.by
     }
 
     fun near(at: WorldBlock, reach: Int = ENERGY_REACH): Attributed? = near(listOf(at), reach)
@@ -118,6 +136,7 @@ class Energy(private val now: () -> Long = System::currentTimeMillis) {
 internal fun energyAt(block: Block, energy: Energy): Attributed? = found(block, energy)?.inferred()
 
 private fun found(block: Block, energy: Energy): Attributed? {
+    if (energy.idle()) return null
     energy.near(positionOf(block))?.let { return it }
     if (block.type == Material.TRIPWIRE_HOOK) return alongTripwire(block, energy)
     // A wire that found nothing around itself is one link of a line no event is walking; walking
@@ -291,14 +310,12 @@ class RedstoneListener(
     private val nudges: Nudges,
     private val attribution: Attribution,
 ) : Listener {
-    private class Pressed(val at: WorldBlock, val by: Attributed, val nanos: Long)
+    // A switch pressed by a player or stepped on by an entity, and who stands behind it, for the redstone
+    // change it raises in the same call. `type` is the entity's, null for a player.
+    private class Press(val at: WorldBlock, val behind: Behind, val type: String?, val nanos: Long)
 
-    // An entity on a switch, and who stands behind it, for the redstone change it raises in the same
-    // call.
-    private class Stepped(val at: WorldBlock, val type: String, val behind: Behind, val nanos: Long)
-
-    private val pressing = ThreadLocal<Pressed?>()
-    private val stepping = ThreadLocal<Stepped?>()
+    private val pressing = ThreadLocal<Press?>()
+    private val stepping = ThreadLocal<Press?>()
     private val blasting = ThreadLocal<Blast?>()
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -315,7 +332,7 @@ class RedstoneListener(
             // moves nothing, and a press left over from it would name the player for a mob that steps
             // on the plate right after.
             isSwitch(block.type) && (event.action == Action.PHYSICAL) == Tag.PRESSURE_PLATES.isTagged(block.type) ->
-                pressing.set(Pressed(at, by, System.nanoTime()))
+                pressing.set(Press(at, Behind(by), null, System.nanoTime()))
         }
     }
 
@@ -330,8 +347,7 @@ class RedstoneListener(
         // anything off, and only that one is worth the journal's seek on this thread.
         val data = block.blockData
         if (data is Powerable && data.isPowered || data is AnaloguePowerable && data.power > 0) return null
-        val standing = data.asString
-        val placer = attribution.placerAt(at, standing) ?: attribution.journalPlacerAt(at, standing, TRAP_CAUSES) ?: return null
+        val placer = attribution.placerOrJournal(at, data.asString, TRAP_CAUSES) ?: return null
         return placer.takeIf { it.actor != event.player.uniqueId }?.inferred()
     }
 
@@ -344,7 +360,7 @@ class RedstoneListener(
         val behind = behindSwitch(entity, block)
         behind.by?.let { energy.note(positionOf(block), it) }
         if (block.type == Material.TRIPWIRE) return tripped(block, Cause.BLK_ENTITY_SWITCH, behind, typeOf(entity))
-        stepping.set(Stepped(positionOf(block), typeOf(entity), behind, System.nanoTime()))
+        stepping.set(Press(positionOf(block), behind, typeOf(entity), System.nanoTime()))
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -352,41 +368,37 @@ class RedstoneListener(
         if (event.oldCurrent == event.newCurrent) return
         val block = event.block
         val at = positionOf(block)
-        val after = powered(block.blockData, event.newCurrent)
+        fun after() = powered(block.blockData, event.newCurrent)
         val now = System.nanoTime()
-        val press = pressing.get()
-        if (press != null && press.at == at && now - press.nanos <= PRESS_NANOS) {
-            pressing.remove()
-            switched(block, after, Cause.BLK_PLAYER_SWITCH, Behind(press.by), null)
-            return
-        }
-        val step = stepping.get()
-        if (step != null && step.at == at && now - step.nanos <= PRESS_NANOS) {
-            stepping.remove()
-            switched(block, after, Cause.BLK_ENTITY_SWITCH, step.behind, step.type)
-            return
-        }
+        pressing.takeAt(at, now)?.let { return switched(block, after(), Cause.BLK_PLAYER_SWITCH, it.behind, it.type) }
+        stepping.takeAt(at, now)?.let { return switched(block, after(), Cause.BLK_ENTITY_SWITCH, it.behind, it.type) }
         val blast = blasting.get()
         if (blast != null && isSwitch(block.type) && blast.covers(at, now)) {
-            switched(block, after, blast.cause, blast.behind, blast.type)
+            switched(block, after(), blast.cause, blast.behind, blast.type)
             return
         }
         // A detector rail raises nothing that names the cart on it, so the cart is looked for.
         if (block.type == Material.DETECTOR_RAIL && event.newCurrent > 0) {
             val cart = block.world.getNearbyEntities(BoundingBox.of(block)) { it is Minecart }.firstOrNull()
             if (cart != null) {
-                switched(block, after, Cause.BLK_ENTITY_SWITCH, behindSwitch(cart, block), typeOf(cart))
+                switched(block, after(), Cause.BLK_ENTITY_SWITCH, behindSwitch(cart, block), typeOf(cart))
                 return
             }
         }
         energyAt(block, energy)?.let { energy.note(at, it) }
     }
 
+    private fun ThreadLocal<Press?>.takeAt(at: WorldBlock, now: Long): Press? {
+        val press = get() ?: return null
+        if (press.at != at || now - press.nanos > PRESS_NANOS) return null
+        remove()
+        return press
+    }
+
     // A vibration names what made it; the sensor answers some ticks later, and finds this note then.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onVibration(event: BlockReceiveGameEvent) {
-        val type = event.block.type
-        if (type != Material.SCULK_SENSOR && type != Material.CALIBRATED_SCULK_SENSOR) return
+        if (event.block.blockData !is SculkSensor) return
         val entity = event.entity ?: return
         behindSwitch(entity, event.block).by?.let { energy.note(positionOf(event.block), it.inferred()) }
     }

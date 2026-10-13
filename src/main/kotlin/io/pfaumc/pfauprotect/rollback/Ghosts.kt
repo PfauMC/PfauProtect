@@ -2,6 +2,7 @@ package io.pfaumc.pfauprotect.rollback
 
 import io.papermc.paper.event.packet.PlayerChunkLoadEvent
 import io.papermc.paper.math.Position
+import io.pfaumc.pfauprotect.capture.item.positionOf
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.say
 import org.bukkit.Bukkit
@@ -81,7 +82,7 @@ class Ghosts(private val plugin: Plugin) : Listener {
         val clicked = event.clickedBlock ?: return
         val mine = shown[event.player.uniqueId] ?: return
         val ghosts = listOf(clicked, clicked.getRelative(event.blockFace)).mapNotNull { block ->
-            val at = WorldBlock(block.world.uid, block.x, block.y, block.z)
+            val at = positionOf(block)
             mine.byChunk[chunkOf(at)]?.find { it.at == at }
         }
         if (ghosts.isEmpty()) return

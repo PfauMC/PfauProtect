@@ -219,7 +219,7 @@ private class Running(
 ) {
     fun drainAll() {
         ledger.drain()
-        for (world in blocks.worlds) blocks.get(world)?.drain()
+        blocks.drain()
     }
 }
 
@@ -338,7 +338,8 @@ class PfauProtectPlugin : JavaPlugin() {
             mechanisms.flush()
             destruction.settleGrowth()
         }, 1, 1)
-        fun every(minutes: Long, task: () -> Unit) = server.asyncScheduler.runAtFixedRate(this, { task() }, minutes, minutes, TimeUnit.MINUTES)
+        fun every(period: Long, unit: TimeUnit = TimeUnit.MINUTES, task: () -> Unit) =
+            server.asyncScheduler.runAtFixedRate(this, { task() }, period, period, unit)
         every(NOTE_MINUTES) {
             attribution.sweep()
             entities.sweep()
@@ -348,7 +349,7 @@ class PfauProtectPlugin : JavaPlugin() {
         every(SWEEP_MINUTES) { logPass { checkLedger(ledger, 1, it) } }
         every(PLANE_MINUTES) { if (isEnabled) logPass { checkPlanes(running.planes, 1, false, it) } }
         every(RECONCILE_MINUTES) { reconcileEveryone() }
-        server.asyncScheduler.runAtFixedRate(this, { reportUncovered(uncovered) }, 1, 1, TimeUnit.DAYS)
+        every(1, TimeUnit.DAYS) { reportUncovered(uncovered) }
         warnAboutSilencedHoppers()
         registerCommand(CommandBrackets(this, blocks, codec, ledger, uncovered::submit))
         logger.info(
@@ -698,13 +699,13 @@ class PfauProtectPlugin : JavaPlugin() {
         }
         // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
         val teleports = canTeleport(sender)
-        server.asyncScheduler.runNow(this) {
-            val users = running.lookups.resolveAll(sender, query.users) ?: return@runNow
+        offThread(sender, "the chat lookup failed", "The chat lookup failed; the server log has the details.") {
+            val users = running.lookups.resolveAll(sender, query.users) ?: return@offThread
             val text = query.filter?.lowercase()
             val lines = running.chat.read(query.fromTs(), query.toTs(), query.wanted) { line ->
                 (users.isEmpty() || line.player in users) && (text == null || text in line.text.lowercase())
             }.drop(query.limit * (query.page - 1)).take(query.limit)
-            if (lines.isEmpty()) return@runNow sender.say("Nothing said or run matches.")
+            if (lines.isEmpty()) return@offThread sender.say("Nothing said or run matches.")
             sender.sendMessage(Ui.text(tr("PfauProtect · chat and commands", "PfauProtect · чат и команды"), Ui.FAINT))
             for (line in lines) {
                 val who = Ui.text(nameOrId(line.player), Ui.WHO)
@@ -722,7 +723,7 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     private fun status(source: CommandSourceStack): Int = withRunning(source) { running, sender ->
-        server.asyncScheduler.runNow(this) {
+        offThread(sender, "the status failed", "The status failed; the server log has the details.") {
             val folder = dataFolder.toPath()
             sender.sendMessage(Ui.text(tr("PfauProtect · status", "PfauProtect · состояние"), Ui.FAINT))
             sender.say("  ledger ${megabytes(folder.resolve("ledger"))}, ${running.ledger.backlog} transactions waiting to be written")

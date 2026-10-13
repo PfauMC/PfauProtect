@@ -59,6 +59,8 @@ class ByteWriter(initialCapacity: Int = 32) {
 
     fun shortBE(v: Int): ByteWriter = byte((v ushr 8) and 0xFF).byte(v and 0xFF)
 
+    fun intBE(v: Int): ByteWriter = shortBE(v ushr 16).shortBE(v)
+
     fun longBE(v: Long): ByteWriter {
         for (shift in 56 downTo 0 step 8) byte((v ushr shift).toInt() and 0xFF)
         return this
@@ -109,6 +111,8 @@ class ByteReader(private val buf: ByteArray) {
     }
 
     fun shortBE(): Int = (byte() shl 8) or byte()
+
+    fun intBE(): Int = (shortBE() shl 16) or shortBE()
 
     fun longBE(): Long {
         var result = 0L
@@ -329,21 +333,13 @@ object EntryCodec {
             HolderType.PLAYER_CURSOR -> PlayerCursor(playerUuid(r, names))
             HolderType.PLAYER_ENDER -> PlayerEnder(playerUuid(r, names), slot())
             HolderType.MENU_SLOT -> MenuSlot(r.varInt(), slot())
-            HolderType.CONTAINER -> {
-                val world = worldUuid(r, names)
-                val pos = Zcode.decode(r.bytes(Zcode.SIZE))
-                Container(world, pos[0], pos[1], pos[2], slot())
-            }
+            HolderType.CONTAINER -> readPosition(r, names).let { Container(it.world, it.x, it.y, it.z, slot()) }
 
             HolderType.ENTITY_SLOT -> EntitySlot(r.uuid(), slot())
             HolderType.ITEM_ENTITY -> ItemEntityRef(r.uuid())
             HolderType.NESTED -> Nested(r.uuid(), slot())
             HolderType.VOID -> Void
-            HolderType.WORLD_BLOCK -> {
-                val world = worldUuid(r, names)
-                val pos = Zcode.decode(r.bytes(Zcode.SIZE))
-                WorldBlock(world, pos[0], pos[1], pos[2])
-            }
+            HolderType.WORLD_BLOCK -> readPosition(r, names)
 
             else -> throw IllegalArgumentException("unknown holder type $typeId")
         }
@@ -357,6 +353,12 @@ object EntryCodec {
     private fun writePosition(w: ByteWriter, world: UUID, x: Int, y: Int, z: Int, ids: IdResolver) {
         w.shortBE(ids.id(RegistryNamespace.WORLD, world))
         w.bytes(Zcode.encode(x, y, z))
+    }
+
+    private fun readPosition(r: ByteReader, names: IdLookup): WorldBlock {
+        val world = worldUuid(r, names)
+        val pos = Zcode.decode(r.bytes(Zcode.SIZE))
+        return WorldBlock(world, pos[0], pos[1], pos[2])
     }
 
     private fun playerNo(uuid: UUID, ids: IdResolver): Int = ids.id(RegistryNamespace.PLAYER, uuid)
