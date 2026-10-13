@@ -14,8 +14,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
-// The grouping alone: what the pass hands it, and what it hands the writer. Everything here is a
-// plain value, so nothing needs a server or a database to run.
+// The grouping alone: what the pass hands it, and what it hands the writer.
 class TransformTest {
     private val world = UUID.randomUUID()
     private val player = UUID.randomUUID()
@@ -66,11 +65,8 @@ class TransformTest {
             move(Void, cursor, "furnace", 1, Cause.CONTAINER_ADD),
         )
 
-        val grouped = transactions(moves, craft)
+        val transaction = transactions(moves, craft).single()
 
-        assertEquals(1, grouped.size)
-        val transaction = grouped.single()
-        assertEquals(3, transaction.size)
         assertEquals(
             listOf(Cause.CRAFT_CONSUME, Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT),
             transaction.map { it.cause },

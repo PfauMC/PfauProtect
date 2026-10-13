@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.storage
 
+import org.junit.jupiter.api.Assertions.assertNull
 import org.rocksdb.ColumnFamilyDescriptor
 import org.rocksdb.ColumnFamilyHandle
 import org.rocksdb.ColumnFamilyOptions
@@ -60,6 +61,18 @@ internal fun storedSchemaOf(at: Path): Long {
     var found: ByteArray? = null
     rawEdit(at) { raw, families -> found = raw.get(families("meta"), "schema".toByteArray()) }
     return ByteReader(found!!).longBE()
+}
+
+internal fun stampSchema(at: Path, version: Long, families: List<String>? = null) =
+    rawEdit(at, families) { raw, family -> raw.put(family("meta"), "schema".toByteArray(), longBytes(version)) }
+
+internal fun assertEveryPrefixRejected(key: ByteArray, value: ByteArray, decode: (ByteArray, ByteArray) -> Any?) {
+    for (kept in 0 until value.size) {
+        assertNull(decode(key, value.copyOf(kept))) { "$kept bytes of a row decoded" }
+    }
+    for (kept in 0 until key.size) {
+        assertNull(decode(key.copyOf(kept), value)) { "$kept bytes of a key decoded" }
+    }
 }
 
 internal fun familiesOf(at: Path): List<String> =

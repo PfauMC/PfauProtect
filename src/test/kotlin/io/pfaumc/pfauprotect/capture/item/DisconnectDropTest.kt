@@ -3,6 +3,7 @@ package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.disabledPlugin
 import io.pfaumc.pfauprotect.NoPlacedForms
+import io.pfaumc.pfauprotect.Spawns
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemKey
@@ -10,9 +11,7 @@ import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.storage.Registries
-import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.capture.block.Spot
-import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.testCodec
@@ -41,7 +40,7 @@ class DisconnectDropTest {
     @Test
     fun `a drop by a player the pass can no longer count is written where it is seen`() {
         val written = ArrayList<List<Transfer>>()
-        val origins = SpawnOrigins(TickCoalescer { })
+        val origins = Spawns().origins
         val listener = ContainerCaptureListener(
             // Disabled, so the pass it would otherwise schedule never runs and cannot write the row instead.
             disabledPlugin(), written::add, codec,

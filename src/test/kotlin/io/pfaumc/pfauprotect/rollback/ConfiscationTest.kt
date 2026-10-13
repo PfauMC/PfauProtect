@@ -6,6 +6,11 @@ import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.EntityKind
+import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.Nested
+import io.pfaumc.pfauprotect.model.PlayerEquip
+import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Transfer
@@ -22,7 +27,7 @@ class ConfiscationTest : OneLedger() {
     private val stone = byteArrayOf(3)
     private val chest = Container(world, 1, 64, 1, 0)
 
-    private fun returned(lead: io.pfaumc.pfauprotect.model.Holder, qty: Int): Tally {
+    private fun returned(lead: Holder, qty: Int): Tally {
         val id = log.forms.lookup(diamond)!!
         return Tally().apply { traces += Trace(lead, id, qty) }
     }
@@ -73,7 +78,7 @@ class ConfiscationTest : OneLedger() {
                 Transfer(Cause.BLOCK_DROP, Void, pile, box, null, 1, T0 + 100, actor = bob),
             )
         )
-        log.submit(Transfer(Cause.CONTAINER_BREAK_PACK, stood, io.pfaumc.pfauprotect.model.Nested(owner, 0), diamond, null, 16, T0 + 140))
+        log.submit(Transfer(Cause.CONTAINER_BREAK_PACK, stood, Nested(owner, 0), diamond, null, 16, T0 + 140))
         log.drain()
         val tally = returned(PlayerInv(bob, 4), 16).apply { since = T0 }
 
@@ -82,7 +87,7 @@ class ConfiscationTest : OneLedger() {
 
         val far = Container(world, 900, 64, 900, 5)
         log.submit(Transfer(Cause.PICKUP, pile, PlayerInv(bob, 7), box, null, 1, T0 + 200))
-        log.submit(Transfer(Cause.CONTAINER_PLACE_UNPACK, io.pfaumc.pfauprotect.model.Nested(owner, 0), far, diamond, null, 16, T0 + 300))
+        log.submit(Transfer(Cause.CONTAINER_PLACE_UNPACK, Nested(owner, 0), far, diamond, null, 16, T0 + 300))
         log.drain()
         val setDown = owedFor(log, tally).single()
         assertEquals(listOf(stood, far.copy(slot = 0)), setDown.stashes)
@@ -132,11 +137,11 @@ class ConfiscationTest : OneLedger() {
         val shield = byteArrayOf(42)
         val head = ItemEntityRef(UUID.randomUUID())
         val hand = ItemEntityRef(UUID.randomUUID())
-        log.submit(Transfer(Cause.DEATH_DROP, io.pfaumc.pfauprotect.model.PlayerEquip(alice, 39), head, helmet, null, 1, T0))
-        log.submit(Transfer(Cause.DEATH_DROP, io.pfaumc.pfauprotect.model.PlayerEquip(alice, 40), hand, shield, null, 1, T0))
+        log.submit(Transfer(Cause.DEATH_DROP, PlayerEquip(alice, 39), head, helmet, null, 1, T0))
+        log.submit(Transfer(Cause.DEATH_DROP, PlayerEquip(alice, 40), hand, shield, null, 1, T0))
         log.drain()
-        val death = io.pfaumc.pfauprotect.storage.EntityRow(
-            0, 64, 0, T0, 1, 0, io.pfaumc.pfauprotect.model.EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
+        val death = EntityRow(
+            0, 64, 0, T0, 1, 0, EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
             "minecraft:player", alice, actor = bob, drops = listOf(head.uuid, hand.uuid),
         )
 
@@ -196,8 +201,8 @@ class ConfiscationTest : OneLedger() {
         log.submit(Transfer(Cause.ITEM_DESTROY_FIRE, burned, Void, diamond, null, 2, T0 + 1))
         log.submit(Transfer(Cause.PICKUP, regained, PlayerInv(alice, 3), diamond, null, 2, T0 + 1))
         log.drain()
-        val death = io.pfaumc.pfauprotect.storage.EntityRow(
-            0, 64, 0, T0, 1, 0, io.pfaumc.pfauprotect.model.EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
+        val death = EntityRow(
+            0, 64, 0, T0, 1, 0, EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
             "minecraft:player", alice, actor = bob, drops = listOf(picked.uuid, burned.uuid, regained.uuid),
         )
 

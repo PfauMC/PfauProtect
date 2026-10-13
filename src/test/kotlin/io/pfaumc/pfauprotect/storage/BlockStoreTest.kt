@@ -38,27 +38,20 @@ class BlockStoreTest : BothPlanes() {
         before: String? = AIR,
         after: String? = STONE,
         ts: Long = T0,
-    ) = BlockChange(
-        x = x,
-        y = y,
-        z = z,
-        before = before,
-        after = after,
-        cause = Cause.BLK_PLAYER_PLACE,
-        timestamp = ts,
-        actor = alice,
-    )
+    ) = BlockChange(x, y, z, before, after, Cause.BLK_PLAYER_PLACE, ts, actor = alice)
 
-    private fun writeRawRow(key: ByteArray, value: ByteArray) {
+    private fun BlockLog.rowsAt(x: Int, y: Int, z: Int) = at(x, y, z, 0, Long.MAX_VALUE, limit = 100, reverse = false)
+
+    private fun <T> whileClosed(edit: (base: Path) -> T): T {
         logs.close(world)
-        rawPut(root.resolve(world.toString()), "rows", key, value)
+        val result = edit(root.resolve(world.toString()))
         log = logs.open(world)
+        return result
     }
 
-    // Rows written to the world alone, with every state and player they name already interned in the
-    // ledger, still show in the ledger's cache. Payloads would be no proof: they are interned in the ledger.
-    // Some megabytes of rows and index entries, against a reservation that moves in steps of a quarter of
-    // one and memtable arenas of one.
+    // Megabytes of rows, well past the cache's quarter-megabyte reservation steps and one-megabyte arenas,
+    // written to the world alone with every state and player already interned and no payloads (the ledger
+    // interns those), so only the world's memtable can account for the growth.
     @Test
     fun `a world base keeps its memtable inside the ledger's cache`() {
         log.submit(listOf(placed(0, 64, 0)))
@@ -120,9 +113,7 @@ class BlockStoreTest : BothPlanes() {
         shared.registries.id(RegistryNamespace.PLAYER, bob)
         log.submit(listOf(placed(100, 64, -200, ts = T0)))
         log.drain()
-        logs.close(world)
-        val byActor = rawRowsOf(root.resolve(world.toString()), "by_actor")
-        log = logs.open(world)
+        val byActor = whileClosed { base -> rawRowsOf(base, "by_actor") }
 
         // The first event of a fresh base.
         val key = "00000001" + "0000018bcfe56800" + "0000000000000000" + "00" + "95555555552d488040"
@@ -188,12 +179,7 @@ class BlockStoreTest : BothPlanes() {
     @Test
     fun `an entity row whose bytes stop short or name an unknown version is skipped`() {
         val names = entityNames()
-        for (kept in 0 until deathValue.size) {
-            assertNull(EntityCodec.decodeOrNull(deathKey, deathValue.copyOf(kept), names)) { "$kept bytes of a row decoded" }
-        }
-        for (kept in 0 until deathKey.size) {
-            assertNull(EntityCodec.decodeOrNull(deathKey.copyOf(kept), deathValue, names)) { "$kept bytes of a key decoded" }
-        }
+        assertEveryPrefixRejected(deathKey, deathValue) { k, v -> EntityCodec.decodeOrNull(k, v, names) }
         for (version in 2..3) {
             val unknown = deathValue.copyOf().also { it[0] = ((it[0].toInt() and 0x03.inv()) or version).toByte() }
             assertNull(EntityCodec.decodeOrNull(deathKey, unknown, names)) { "version $version decoded" }
@@ -202,18 +188,7 @@ class BlockStoreTest : BothPlanes() {
 
     @Test
     fun `the half that went along with the struck one says so through the bytes`() {
-        val row = BlockRow(
-            x = 1,
-            y = 2,
-            z = 3,
-            timestamp = T0,
-            eventId = 1,
-            ordinal = 0,
-            cause = Cause.BLK_PLAYER_BREAK,
-            stateBefore = 1,
-            stateAfter = 2,
-            alongside = true,
-        )
+        val row = BlockRow(1, 2, 3, T0, 1, 0, Cause.BLK_PLAYER_BREAK, 1, 2, alongside = true)
         val key = BlockCodec.key(row.x, row.y, row.z, row.timestamp, row.eventId, row.ordinal)
         val value = BlockCodec.value(row, IdResolver { _, _ -> 0 })
         val names = IdLookup { _, _ -> null }
@@ -258,12 +233,7 @@ class BlockStoreTest : BothPlanes() {
         val names = IdLookup { _, _ -> alice }
 
         assertEquals(row, BlockCodec.decodeOrNull(key, value, names))
-        for (kept in 0 until value.size) {
-            assertNull(BlockCodec.decodeOrNull(key, value.copyOf(kept), names)) { "$kept bytes of a row decoded" }
-        }
-        for (kept in 0 until key.size) {
-            assertNull(BlockCodec.decodeOrNull(key.copyOf(kept), value, names)) { "$kept bytes of a key decoded" }
-        }
+        assertEveryPrefixRejected(key, value) { k, v -> BlockCodec.decodeOrNull(k, v, names) }
     }
 
     // A torn row costs only itself, and a rollback, which acts on everything it read, is told of it.
@@ -273,9 +243,9 @@ class BlockStoreTest : BothPlanes() {
         log.submit(listOf(placed(2, 64, 2, before = STONE, after = DIRT, ts = T0 + 10)))
         log.submit(listOf(placed(9, 64, 9, ts = T0 + 20)))
         log.drain()
-        writeRawRow(BlockCodec.key(2, 64, 2, T0 + 5, 999, 0), ByteArray(0))
+        whileClosed { base -> rawPut(base, "rows", BlockCodec.key(2, 64, 2, T0 + 5, 999, 0), ByteArray(0)) }
 
-        assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), log.at(2, 64, 2, 0, Long.MAX_VALUE, limit = 100, reverse = false).map { it.stateAfter })
+        assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), log.rowsAt(2, 64, 2).map { it.stateAfter })
         assertEquals(3, log.inChunk(0, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
         assertEquals(stateOf(DIRT), log.standingAt(2, 64, 2).row?.stateAfter)
 
@@ -331,7 +301,7 @@ class BlockStoreTest : BothPlanes() {
         assertNull(row.payloadAfter)
         assertEquals(listOf(drop), row.drops)
         assertEquals(listOf(row), log.entitiesInChunk(0, 0, 0, Long.MAX_VALUE, 100) { _, _, _ -> true }.rows)
-        assertEquals(1, log.at(5, 64, 6, 0, Long.MAX_VALUE, limit = 100, reverse = false).size, "the block plane keeps its own row beside it")
+        assertEquals(1, log.rowsAt(5, 64, 6).size, "the block plane keeps its own row beside it")
         assertEquals(setOf(listOf(5, 64, 6)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
     }
 
@@ -359,20 +329,19 @@ class BlockStoreTest : BothPlanes() {
     fun `a base from before the entity plane opens and gains it`() {
         log.submit(listOf(placed(8, 64, 8, ts = T0)))
         log.drain()
-        logs.close(world)
-        val base = root.resolve(world.toString())
-        val current = storedSchemaOf(base)
-        rawEdit(base) { raw, family ->
-            raw.dropColumnFamily(family("entities"))
-            raw.put(family("meta"), "schema".toByteArray(), longBytes(2L))
+        val current = whileClosed { base ->
+            storedSchemaOf(base).also {
+                rawEdit(base) { raw, family -> raw.dropColumnFamily(family("entities")) }
+                stampSchema(base, 2L)
+            }
         }
-        log = logs.open(world)
 
-        assertEquals(1, log.at(8, 64, 8, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
+        assertEquals(1, log.rowsAt(8, 64, 8).size)
         assertTrue(log.entitiesAt(8, 64, 8, 0, Long.MAX_VALUE, 100).rows.isEmpty())
-        logs.close(world)
-        assertEquals(current, storedSchemaOf(base))
-        assertEquals(everyBlockFamily, familiesOf(base).sorted())
+        whileClosed { base ->
+            assertEquals(current, storedSchemaOf(base))
+            assertEquals(everyBlockFamily, familiesOf(base).sorted())
+        }
     }
 
     private val everyBlockFamily = listOf("by_actor", "default", "entities", "meta", "rows")
@@ -381,31 +350,28 @@ class BlockStoreTest : BothPlanes() {
     // not know, so a family added or dropped without a new version number has to fail here.
     @Test
     fun `a fresh base is stamped with the version that matches its families`() {
-        logs.close(world)
-        val base = root.resolve(world.toString())
-
-        assertEquals(3L, storedSchemaOf(base))
-        assertEquals(everyBlockFamily, familiesOf(base).sorted())
-        log = logs.open(world)
+        whileClosed { base ->
+            assertEquals(3L, storedSchemaOf(base))
+            assertEquals(everyBlockFamily, familiesOf(base).sorted())
+        }
     }
 
     @Test
     fun `a base stamped by a newer build is refused and left as it was`() {
         log.submit(listOf(placed(8, 64, 8, ts = T0)))
         log.drain()
-        logs.close(world)
-        val base = root.resolve(world.toString())
-        val current = storedSchemaOf(base)
-        val families = familiesOf(base)
-        rawPut(base, "meta", "schema".toByteArray(), longBytes(current + 1))
+        whileClosed { base ->
+            val current = storedSchemaOf(base)
+            val families = familiesOf(base)
+            stampSchema(base, current + 1)
 
-        assertThrows(IllegalArgumentException::class.java) { logs.open(world) }
-        assertEquals(current + 1, storedSchemaOf(base))
-        assertEquals(families, familiesOf(base))
+            assertThrows(IllegalArgumentException::class.java) { logs.open(world) }
+            assertEquals(current + 1, storedSchemaOf(base))
+            assertEquals(families, familiesOf(base))
 
-        rawPut(base, "meta", "schema".toByteArray(), longBytes(current))
-        log = logs.open(world)
-        assertEquals(1, log.at(8, 64, 8, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
+            stampSchema(base, current)
+        }
+        assertEquals(1, log.rowsAt(8, 64, 8).size)
     }
 
     // A base from before the index has every row it ever wrote and no index of them; the first open
@@ -414,18 +380,15 @@ class BlockStoreTest : BothPlanes() {
     fun `a base from before the index is indexed on its first open`() {
         log.submit(listOf(placed(7, 64, 7, ts = T0)))
         log.drain()
-        logs.close(world)
-        val base = root.resolve(world.toString())
-        val current = storedSchemaOf(base)
-        rawEdit(base) { raw, family ->
-            raw.dropColumnFamily(family("by_actor"))
-            raw.put(family("meta"), "schema".toByteArray(), longBytes(1L))
+        val current = whileClosed { base ->
+            storedSchemaOf(base).also {
+                rawEdit(base) { raw, family -> raw.dropColumnFamily(family("by_actor")) }
+                stampSchema(base, 1L)
+            }
         }
-        log = logs.open(world)
 
         assertEquals(setOf(listOf(7, 64, 7)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
-        logs.close(world)
-        assertEquals(current, storedSchemaOf(base))
+        whileClosed { base -> assertEquals(current, storedSchemaOf(base)) }
     }
 
     // Every reopen flushes what was written since to a file of its own, enough of them for the rows to be
@@ -465,7 +428,7 @@ class BlockStoreTest : BothPlanes() {
         for ((i, at) in spots.withIndex()) {
             val (x, y, z) = at
             val kept = if (i % 3 == 1) T0 + 10 else T0 + 200
-            assertEquals(listOf(kept), log.at(x, y, z, 0, Long.MAX_VALUE, limit = 100, reverse = false).map { it.timestamp }, "rows at $at")
+            assertEquals(listOf(kept), log.rowsAt(x, y, z).map { it.timestamp }, "rows at $at")
             val entities = if (i % 3 == 2) listOf(T0 + 200) else emptyList()
             assertEquals(entities, log.entitiesAt(x, y + 1, z, 0, Long.MAX_VALUE, 100).rows.map { it.timestamp }, "entities at $at")
         }
@@ -498,7 +461,7 @@ class BlockStoreTest : BothPlanes() {
         shared.close()
         openPlanes()
 
-        assertEquals(bob, log.at(3, 64, 3, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().actor)
+        assertEquals(bob, log.rowsAt(3, 64, 3).single().actor)
     }
 
     // A block the checksum rejects ends a walk exactly as the last row does, and an answer cut short there
@@ -508,14 +471,11 @@ class BlockStoreTest : BothPlanes() {
         log.submit((0 until 200).map { placed(it, 64, 0, ts = T0 + it) })
         log.drain()
         // The reopen flushes the rows from the log into a table file.
-        logs.close(world)
-        logs.open(world)
-        logs.close(world)
-        damageTables(root.resolve(world.toString()), "rows")
-        log = logs.open(world)
+        whileClosed {}
+        whileClosed { base -> damageTables(base, "rows") }
 
         assertThrows(RocksDBException::class.java) { log.inChunk(0, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false) }
-        assertThrows(RocksDBException::class.java) { log.at(0, 64, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false) }
+        assertThrows(RocksDBException::class.java) { log.rowsAt(0, 64, 0) }
         assertThrows(RocksDBException::class.java) { log.purgeBefore(T0 + 1_000, dryRun = true) }
     }
 
@@ -530,8 +490,8 @@ class BlockStoreTest : BothPlanes() {
             watch = { world, changes -> changes.forEach { seen += world to it } },
             keeps = { _, change -> change.x != 9 },
         ).use { watched ->
-            val change = BlockChange(1, 2, 3, AIR, STONE, Cause.BLK_PLAYER_PLACE, actor = alice)
-            val unkept = BlockChange(9, 2, 3, AIR, STONE, Cause.BLK_PLAYER_PLACE, actor = alice)
+            val change = placed(1, 2, 3)
+            val unkept = placed(9, 2, 3)
             watched.open(world).submit(listOf(change, unkept))
             assertEquals(listOf(world to change), seen)
         }
@@ -553,7 +513,7 @@ class BlockStoreTest : BothPlanes() {
 
         shared.close()
 
-        assertEquals(1, log.at(1, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
+        assertEquals(1, log.rowsAt(1, 64, 1).size)
         assertThrows(IllegalStateException::class.java) { logs.open(UUID.randomUUID()) }
     }
 
@@ -569,10 +529,10 @@ class BlockStoreTest : BothPlanes() {
         )
         log.drain()
 
-        assertEquals(1, log.at(1, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
-        assertTrue(log.at(2, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
-        assertTrue(log.at(3, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
-        assertEquals(stateOf(DIRT), log.at(4, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().stateAfter)
+        assertEquals(1, log.rowsAt(1, 64, 1).size)
+        assertTrue(log.rowsAt(2, 64, 1).isEmpty())
+        assertTrue(log.rowsAt(3, 64, 1).isEmpty())
+        assertEquals(stateOf(DIRT), log.rowsAt(4, 64, 1).single().stateAfter)
     }
 
     @Test
@@ -586,7 +546,7 @@ class BlockStoreTest : BothPlanes() {
         )
         log.drain()
 
-        val here = log.at(100, 64, -200, 0, Long.MAX_VALUE, limit = 100, reverse = false)
+        val here = log.rowsAt(100, 64, -200)
         assertEquals(1, here.size)
         assertEquals(listOf(100, 64, -200), listOf(here[0].x, here[0].y, here[0].z))
         assertEquals(stateOf(STONE), here[0].stateAfter)
@@ -609,7 +569,7 @@ class BlockStoreTest : BothPlanes() {
         )
         log.drain()
 
-        val rows = log.at(0, 64, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false)
+        val rows = log.rowsAt(0, 64, 0)
         assertEquals(2, rows.size)
         assertEquals(listOf(stateOf(AIR), stateOf(WATER)), rows.map { it.stateBefore })
         assertEquals(listOf(stateOf(WATER), stateOf(STONE)), rows.map { it.stateAfter })
@@ -626,7 +586,7 @@ class BlockStoreTest : BothPlanes() {
         log.submit(wide)
         log.drain()
 
-        val rows = wide.map { log.at(it.x, 64, 40, 0, Long.MAX_VALUE, limit = 100, reverse = false) }
+        val rows = wide.map { log.rowsAt(it.x, 64, 40) }
         assertEquals(600, rows.count { it.size == 1 })
     }
 
@@ -652,12 +612,12 @@ class BlockStoreTest : BothPlanes() {
         log.drain()
 
         val event = setOf(
-            log.at(1, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId,
-            log.at(2, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId,
-            log.at(3, 64, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId,
+            log.rowsAt(1, 64, 1).single().eventId,
+            log.rowsAt(2, 64, 1).single().eventId,
+            log.rowsAt(3, 64, 1).single().eventId,
         )
         assertEquals(1, event.size)
-        assertNotEquals(event.single(), log.at(1, 65, 1, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId)
+        assertNotEquals(event.single(), log.rowsAt(1, 65, 1).single().eventId)
     }
 
     // The second change is behind the world's newest time and its position's first row is not on disk yet,
@@ -672,7 +632,7 @@ class BlockStoreTest : BothPlanes() {
         )
         log.drain()
 
-        val rows = log.at(3, 64, 3, 0, Long.MAX_VALUE, limit = 100, reverse = false)
+        val rows = log.rowsAt(3, 64, 3)
         assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
         assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
         assertEquals(stateOf(DIRT), log.standingAt(3, 64, 3).row?.stateAfter)
@@ -687,7 +647,7 @@ class BlockStoreTest : BothPlanes() {
         log.submit(listOf(placed(3, 64, 3, before = STONE, after = DIRT, ts = T0)))
         log.drain()
 
-        val rows = log.at(3, 64, 3, 0, Long.MAX_VALUE, limit = 100, reverse = false)
+        val rows = log.rowsAt(3, 64, 3)
         assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
         assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
         assertEquals(stateOf(DIRT), log.standingAt(3, 64, 3).row?.stateAfter)
@@ -705,7 +665,7 @@ class BlockStoreTest : BothPlanes() {
         reopened.submit(listOf(placed(8, 64, 8, before = STONE, after = DIRT, ts = T0)))
         reopened.drain()
 
-        val rows = reopened.at(8, 64, 8, 0, Long.MAX_VALUE, limit = 100, reverse = false)
+        val rows = reopened.rowsAt(8, 64, 8)
         assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
         assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
         assertEquals(stateOf(DIRT), reopened.standingAt(8, 64, 8).row?.stateAfter)
@@ -715,14 +675,14 @@ class BlockStoreTest : BothPlanes() {
     fun `rows and the event counter survive a close and a reopen`() {
         log.submit(listOf(placed(5, 64, 5)))
         log.drain()
-        val firstEvent = log.at(5, 64, 5, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId
+        val firstEvent = log.rowsAt(5, 64, 5).single().eventId
         logs.close(world)
 
         val reopened = logs.open(world)
-        assertEquals(stateOf(STONE), reopened.at(5, 64, 5, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().stateAfter)
+        assertEquals(stateOf(STONE), reopened.rowsAt(5, 64, 5).single().stateAfter)
         reopened.submit(listOf(placed(6, 64, 5, ts = T0 + 10)))
         reopened.drain()
-        assertTrue(reopened.at(6, 64, 5, 0, Long.MAX_VALUE, limit = 100, reverse = false).single().eventId > firstEvent)
+        assertTrue(reopened.rowsAt(6, 64, 5).single().eventId > firstEvent)
     }
 
     @Test
@@ -731,11 +691,11 @@ class BlockStoreTest : BothPlanes() {
         log.drain()
         logs.close(world)
 
-        assertTrue(log.at(5, 64, 5, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
+        assertTrue(log.rowsAt(5, 64, 5).isEmpty())
         assertTrue(log.inChunk(0, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
         assertNull(log.standingAt(5, 64, 5).row)
         assertFalse(log.submit(listOf(placed(9, 64, 9))))
         log.drain()
-        assertTrue(logs.open(world).at(9, 64, 9, 0, Long.MAX_VALUE, limit = 100, reverse = false).isEmpty())
+        assertTrue(logs.open(world).rowsAt(9, 64, 9).isEmpty())
     }
 }

@@ -28,7 +28,6 @@ import org.bukkit.inventory.EquipmentSlot
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.CsvSource
@@ -40,14 +39,9 @@ private const val AIR = "minecraft:air"
 class BlockCaptureTest : BothPlanes() {
     override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000002")
 
-    private lateinit var attribution: Attribution
+    private val attribution by lazy { Attribution(shared.registries, logs) }
 
     private val signState = Blocks.OAK_SIGN.defaultBlockState()
-
-    @BeforeEach
-    fun openAttribution() {
-        attribution = Attribution(shared.registries, logs)
-    }
 
     // A block that is not the server's own turns reading anything off it, its block entity aside, into a
     // failure rather than a quiet row, so a handler that must read nothing more is caught by the stub refusing.
@@ -63,7 +57,11 @@ class BlockCaptureTest : BothPlanes() {
         ),
     )
 
-    private fun player(uuid: UUID) = stub(Player::class.java, mapOf("getUniqueId" to uuid))
+    private fun doorAt(foot: BlockPos): Block {
+        val lower = Blocks.SPRUCE_DOOR.defaultBlockState()
+        val head = blockStub(foot.above(), lower.setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER).asBlockData())
+        return blockStub(foot, lower.asBlockData(), relative = head)
+    }
 
     private fun placement(at: BlockPos, canBuild: Boolean, inHand: Item = Items.OAK_SIGN): BlockPlaceEvent {
         val data = signState.asBlockData()
@@ -73,7 +71,7 @@ class BlockCaptureTest : BothPlanes() {
             stub(BlockState::class.java, mapOf("getBlock" to block, "getBlockData" to data)),
             block,
             CraftItemStack.asBukkitMirror(NmsItemStack(inHand)),
-            player(bob),
+            stub(Player::class.java, mapOf("getUniqueId" to bob)),
             canBuild,
             EquipmentSlot.HAND,
         )
@@ -123,19 +121,14 @@ class BlockCaptureTest : BothPlanes() {
 
     @Test
     fun `a break notes the removal in both positions the block stood in and clears the placement note`() {
-        val lower = Blocks.SPRUCE_DOOR.defaultBlockState()
-        val door = lower.asBlockData()
         val foot = BlockPos(5, 64, 5)
+        val door = doorAt(foot)
         val standing = WorldBlock(world, foot.x, foot.y, foot.z)
-        attribution.placed(standing, door.asString, alice)
+        attribution.placed(standing, door.blockData.asString, alice)
 
-        val head = blockStub(
-            BlockPos(5, 65, 5),
-            lower.setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER).asBlockData(),
-        )
-        attribution.cleared(blockStub(foot, door, relative = head), bob)
+        attribution.cleared(door, bob)
 
-        assertNull(attribution.placerAt(standing, door.asString))
+        assertNull(attribution.placerAt(standing, door.blockData.asString))
         assertEquals(bob, attribution.placerAt(standing, AIR)?.actor)
         assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 63, 5))?.actor)
         // The other half goes with it under no event of its own, two cells away from the first note.
@@ -146,19 +139,14 @@ class BlockCaptureTest : BothPlanes() {
     // goes in the same tick, before any read-back of the lower one has run.
     @Test
     fun `a block giving way is noted at once so what it holds up finds its culprit`() {
-        val lower = Blocks.SPRUCE_DOOR.defaultBlockState()
-        val door = lower.asBlockData()
         val foot = BlockPos(5, 64, 5)
-        attribution.placed(WorldBlock(world, foot.x, foot.y, foot.z), door.asString, alice)
-        val head = blockStub(
-            BlockPos(5, 65, 5),
-            lower.setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER).asBlockData(),
-        )
+        val door = doorAt(foot)
+        attribution.placed(WorldBlock(world, foot.x, foot.y, foot.z), door.blockData.asString, alice)
 
-        attribution.givingWay(blockStub(foot, door, relative = head), bob)
+        attribution.givingWay(door, bob)
 
         assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 65, 5))?.actor)
         assertEquals(bob, attribution.supportRemoverAt(WorldBlock(world, 5, 66, 5))?.actor)
-        assertEquals(alice, attribution.placerAt(WorldBlock(world, foot.x, foot.y, foot.z), door.asString)?.actor)
+        assertEquals(alice, attribution.placerAt(WorldBlock(world, foot.x, foot.y, foot.z), door.blockData.asString)?.actor)
     }
 }

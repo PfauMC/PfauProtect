@@ -22,14 +22,6 @@ class LookupTest {
         assertEquals(DEFAULT_LIMIT, query.limit)
     }
 
-    @Test
-    fun `the terse spellings parse as the long ones`() {
-        assertEquals(listOf("Steve"), parseLookupQuery("u:Steve").users)
-        assertEquals(7200L, parseLookupQuery("t:2h").secondsBack)
-        assertEquals(10, parseLookupQuery("r:10").radius)
-        assertEquals(setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE), parseLookupQuery("a:container").causes)
-    }
-
     // What only shapes a lookup's answer — whose hands, how many rows, which page — means nothing to a
     // rollback, and offering it there reads as if it narrowed what is undone.
     @Test

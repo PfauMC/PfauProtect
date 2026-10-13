@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.capture.block
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
+import io.pfaumc.pfauprotect.Spawns
 import io.pfaumc.pfauprotect.worldStub
 import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.alice
@@ -242,9 +243,9 @@ class MechanismTest {
     @Test
     fun `a smelt consumes one item however full the input slot is`(@TempDir dir: Path) = RocksItemLog(dir).use { owners ->
         val written = ArrayList<List<Transfer>>()
-        val coalescer = TickCoalescer { }
+        val spawns = Spawns()
         val listener = BlockMechanismListener(
-            codec, coalescer, SpawnOrigins(coalescer), NoPlacedForms, written::add,
+            codec, spawns.coalescer, spawns.origins, NoPlacedForms, written::add,
             owners = owners, intend = { _, _ -> }, later = { _, _ -> },
         )
         val at = BukkitItemStack(Material.RAW_IRON, 8)
@@ -269,10 +270,9 @@ class MechanismTest {
 
     private fun furnaceBlock(): Block {
         val furnace = stub(Furnace::class.java)
-        val stubWorld = worldStub(world)
         return stub(
             Block::class.java,
-            mapOf("getWorld" to stubWorld, "getX" to 7, "getY" to 65, "getZ" to -12, "getState" to furnace),
+            mapOf("getWorld" to worldStub(world), "getX" to 7, "getY" to 65, "getZ" to -12, "getState" to furnace),
         )
     }
 

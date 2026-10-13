@@ -6,6 +6,8 @@ import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.storage.BlockChange
+import io.pfaumc.pfauprotect.storage.EntityChange
+import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
@@ -53,11 +55,12 @@ class LookupReadTest : BothPlanes() {
         query: LookupQuery = LookupQuery(),
         // Stands in for the server's player cache, which a test has none of.
         players: Map<String, UUID> = emptyMap(),
+        target: LookupTarget = LookupTarget(world, 10, 64, -3, "stone at 10 64 -3"),
     ): List<String> {
         val lines = ArrayList<String>()
         val names = players.entries.associate { (name, id) -> id to name }
         Lookups(stub(Plugin::class.java), shared, logs, codec, players::get, names::get)
-            .report(senderInto(lines, ::flat), LookupTarget(world, 10, 64, -3, "stone at 10 64 -3"), query)
+            .report(senderInto(lines, ::flat), target, query)
         return lines
     }
 
@@ -104,7 +107,6 @@ class LookupReadTest : BothPlanes() {
 
         val lines = said()
 
-        // Newest first, so the explosion is above the placement in both planes.
         assertTrue(lines.any { it.contains("- block.minecraft.tnt") && it.contains("minecraft:stone → minecraft:air") }, "$lines")
         assertTrue(lines.any { it.contains("{blk_player_place}") && it.contains("minecraft:air → minecraft:stone") }, "$lines")
         assertTrue(lines.any { it.contains("{block_place}") && it.contains("∅") }, "the item plane is still there: $lines")
@@ -155,8 +157,8 @@ class LookupReadTest : BothPlanes() {
     fun `an entity row reads beside the block rows and answers to its type`() {
         log.submit(
             listOf(
-                io.pfaumc.pfauprotect.storage.EntityChange(
-                    10, 64, -3, io.pfaumc.pfauprotect.model.EntityKind.REMOVED, Cause.BLK_TNT, "minecraft:cow",
+                EntityChange(
+                    10, 64, -3, EntityKind.REMOVED, Cause.BLK_TNT, "minecraft:cow",
                     UUID.randomUUID(), T0, actor = alice, before = byteArrayOf(10, 0, 0, 0),
                 )
             )
@@ -263,17 +265,26 @@ class LookupReadTest : BothPlanes() {
 
     // A read that stopped early answers about what it saw, not about what is there. Saying "no
     // entries" for a position it never reached clears somebody of what the rows behind the cut say.
+    // With every matched row on the page there is no next page to offer either: page 2 starts past
+    // them and is empty. It says the read stopped and how to see further instead.
     @Test
-    fun `an empty answer says so when the read stopped early`() {
+    fun `a read that stopped early says so and offers no next page`() {
         val nextDoor = WorldBlock(world, 11, 64, -3)
-        repeat(40) { i ->
-            shared.submit(Transfer(Cause.BLK_TNT, nextDoor, Void, stone, null, 1, T0 + i))
-        }
+        repeat(40) { i -> shared.submit(Transfer(Cause.BLK_TNT, nextDoor, Void, stone, null, 1, T0 + i)) }
+        shared.drain()
+        // Forty rows inside the box, more than one row's worth of read, and none of them the kind asked for.
+        val query = LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE))
+
+        val empty = said(query)
+        assertTrue(empty.single().contains("limit:4"), "$empty")
+
+        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, WorldBlock(world, 10, 64, -3), stone, null, 1, T0 + 100))
         shared.drain()
 
-        // Forty rows inside the box, more than one row's worth of read, and none of them the kind asked for.
-        val lines = said(LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE)))
-        assertTrue(lines.single().contains("limit:4"), "$lines")
+        val lines = said(query)
+        assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
+        assertTrue(lines.none { it.contains("page:2") }, "$lines")
+        assertTrue(lines.last().contains("limit:4"), "$lines")
     }
 
     // A filter by action drops the rollback rows themselves, and a mark read among what the filter kept
@@ -283,8 +294,8 @@ class LookupReadTest : BothPlanes() {
         val cat = UUID.randomUUID()
         log.submit(
             listOf(
-                io.pfaumc.pfauprotect.storage.EntityChange(
-                    10, 64, -3, io.pfaumc.pfauprotect.model.EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:cat",
+                EntityChange(
+                    10, 64, -3, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:cat",
                     cat, T0, before = byteArrayOf(10, 0, 0, 0),
                 )
             )
@@ -292,8 +303,8 @@ class LookupReadTest : BothPlanes() {
         log.submit(listOf(BlockChange(10, 65, -3, STONE, AIR, Cause.BLK_FIRE_BURN, T0)))
         log.submit(
             listOf(
-                io.pfaumc.pfauprotect.storage.EntityChange(
-                    10, 64, -3, io.pfaumc.pfauprotect.model.EntityKind.CREATED, Cause.ROLLBACK, "minecraft:cat",
+                EntityChange(
+                    10, 64, -3, EntityKind.CREATED, Cause.ROLLBACK, "minecraft:cat",
                     cat, T0 + 1000, after = byteArrayOf(10, 0, 0, 0),
                 )
             )
@@ -323,21 +334,6 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.single { it.contains("{rollback}") }.let { !it.contains("rolled back") }, "$lines")
         val back = said(LookupQuery(rolledBack = true)).drop(1)
         assertTrue(back.single().contains("{container_remove}"), "$back")
-    }
-
-    // A read cut short with every matched row on the page has no next page to offer: page 2 starts past
-    // them and is empty. It says the read stopped and how to see further instead.
-    @Test
-    fun `a read cut short with nothing more matched offers no next page`() {
-        val nextDoor = WorldBlock(world, 11, 64, -3)
-        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, WorldBlock(world, 10, 64, -3), stone, null, 1, T0 + 100))
-        repeat(40) { i -> shared.submit(Transfer(Cause.BLK_TNT, nextDoor, Void, stone, null, 1, T0 + i)) }
-        shared.drain()
-
-        val lines = said(LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE)))
-        assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
-        assertTrue(lines.none { it.contains("page:2") }, "$lines")
-        assertTrue(lines.last().contains("limit:4"), "$lines")
     }
 
     // What a player carried has no position, and a crafting grid is booked to them as an entity. Both
@@ -423,9 +419,7 @@ class LookupReadTest : BothPlanes() {
         )
         shared.drain()
 
-        val lines = ArrayList<String>()
-        Lookups(stub(Plugin::class.java), shared, logs, codec)
-            .report(senderInto(lines, ::flat), LookupTarget(other, 1, 64, 1, "stone at 1 64 1"), LookupQuery())
+        val lines = said(target = LookupTarget(other, 1, 64, 1, "stone at 1 64 1"))
 
         assertTrue(lines.any { it.contains("placed") }, "$lines")
         assertEquals(1, lines.indexOfFirst { it.startsWith("PfauProtect") }, "one notice before the answer: $lines")

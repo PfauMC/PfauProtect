@@ -1,9 +1,9 @@
 package io.pfaumc.pfauprotect.attribution
+import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.Vanilla
-import io.pfaumc.pfauprotect.world
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.storage.BlockChange
 import net.minecraft.core.registries.BuiltInRegistries
@@ -28,13 +28,10 @@ import org.junit.jupiter.api.extension.ExtendWith
 import net.minecraft.core.registries.Registries as VanillaRegistries
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.storage.BlockLogs
-import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.stub
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
 import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.block.Block
@@ -47,11 +44,10 @@ import org.bukkit.entity.Pig
 import org.bukkit.entity.Player
 import org.bukkit.entity.Skeleton
 import org.bukkit.entity.Wolf
-import java.nio.file.Path
 import java.util.UUID
 
 @ExtendWith(Vanilla::class)
-class RedstoneTest {
+class RedstoneTest : BothPlanes() {
     companion object {
         private val server = Bukkit::class.java.getDeclaredField("server").apply { isAccessible = true }
 
@@ -97,15 +93,11 @@ class RedstoneTest {
     // Each component that changes copies the note onto itself, so the chain outruns the reach of its
     // first note; past the press itself every step is worked out.
     @Test
-    fun `a chain carries its note further than one reach, as a guess`(@TempDir dir: Path) {
-        RocksItemLog(dir.resolve("items")).use { shared ->
-            BlockLogs(dir.resolve("blocks"), shared).use { logs ->
-                val listener = RedstoneListener(energy, logs, origins, nudges, Attribution(shared.registries, logs))
-                energy.note(at(0), Attributed(alice, Confidence.FACT))
-                for (x in 1..20) listener.onRedstone(BlockRedstoneEvent(repeater(at(x)), 0, 15))
-                assertEquals(Attributed(alice, Confidence.INFERRED), energy.near(at(20), reach = 0))
-            }
-        }
+    fun `a chain carries its note further than one reach, as a guess`() {
+        val listener = RedstoneListener(energy, logs, origins, nudges, Attribution(shared.registries, logs))
+        energy.note(at(0), Attributed(alice, Confidence.FACT))
+        for (x in 1..20) listener.onRedstone(BlockRedstoneEvent(repeater(at(x)), 0, 15))
+        assertEquals(Attributed(alice, Confidence.INFERRED), energy.near(at(20), reach = 0))
     }
 
     // Unloaded around it, so a component that finds no note does not go walking wire.
@@ -227,7 +219,7 @@ class RedstoneTest {
     // behind the press: the presser, the one who laid a trap somebody else stepped into, or for a mob
     // nobody stands behind, the nearest player, as a witness only.
     @Test
-    fun `a switch is written on whoever stands behind the press that moved it`(@TempDir dir: Path) {
+    fun `a switch is written on whoever stands behind the press that moved it`() {
         val button = Blocks.STONE_BUTTON.defaultBlockState().asBlockData()
         val plate = Blocks.STONE_PRESSURE_PLATE.defaultBlockState().asBlockData()
         val zombie = stub(Zombie::class.java, mapOf("getUniqueId" to UUID.randomUUID(), "getType" to EntityType.ZOMBIE), lenient = true)
@@ -255,51 +247,46 @@ class RedstoneTest {
                 redstone()
             },
         )
-        RocksItemLog(dir.resolve("items")).use { shared ->
-            BlockLogs(dir.resolve("blocks"), shared).use { logs ->
-                val log = logs.open(world)
-                val found = cases.mapIndexed { i, case ->
-                    // Far enough apart that no case's energy note reaches another's switch.
-                    val x = i * 10
-                    case.placedBy?.let {
-                        log.submit(listOf(BlockChange(x, 64, 0, "minecraft:air", case.data.asString, Cause.BLK_PLAYER_PLACE, actor = it)))
-                        log.drain()
-                    }
-                    lateinit var ground: World
-                    fun player(id: UUID, dx: Double) = stub(Player::class.java, mapOf(
-                        "getUniqueId" to id,
-                        "getLocation" to { _: Array<out Any?> -> Location(ground, x + 0.5 + dx, 64.5, 0.5) },
-                    ))
-                    val players = mapOf(alice to player(alice, 10.0), bob to player(bob, 3.0))
-                    ground = stub(World::class.java, mapOf(
-                        "getUID" to world,
-                        "isChunkLoaded" to false,
-                        "getNearbyPlayers" to { _: Array<out Any?> -> players.values.toList() },
-                    ))
-                    val block = stub(Block::class.java, mapOf(
-                        "getWorld" to ground,
-                        "getX" to x,
-                        "getY" to 64,
-                        "getZ" to 0,
-                        "getType" to case.data.material,
-                        "getBlockData" to case.data,
-                        "getLocation" to { _: Array<out Any?> -> Location(ground, x.toDouble(), 64.0, 0.0) },
-                    ))
-                    val listener = RedstoneListener(energy, logs, origins, nudges, Attribution(shared.registries, logs))
-                    Switching(listener, block, players).(case.act)()
-                    log.drain()
-                    val row = log.at(x, 64, 0, 0, Long.MAX_VALUE, 10, reverse = false).lastOrNull()
-                        ?.takeIf { it.cause != Cause.BLK_PLAYER_PLACE }
-                    case.name to row?.let { Triple(it.cause, it.actor, it.confidence) }
-                }
-                assertEquals(cases.map { it.name to it.expected }, found)
-
-                // The witness's distance goes with the mob's type, to the tenth of a block.
-                val mob = cases.indexOfFirst { it.data == plate && it.expected?.first == Cause.BLK_ENTITY_SWITCH } * 10
-                val witnessed = log.at(mob, 64, 0, 0, Long.MAX_VALUE, 10, reverse = false).single()
-                assertEquals("minecraft:zombie 3.0", String(shared.payload(witnessed.payloadAfter!!)!!))
+        val found = cases.mapIndexed { i, case ->
+            // Far enough apart that no case's energy note reaches another's switch.
+            val x = i * 10
+            case.placedBy?.let {
+                log.submit(listOf(BlockChange(x, 64, 0, "minecraft:air", case.data.asString, Cause.BLK_PLAYER_PLACE, actor = it)))
+                log.drain()
             }
+            lateinit var ground: World
+            fun player(id: UUID, dx: Double) = stub(Player::class.java, mapOf(
+                "getUniqueId" to id,
+                "getLocation" to { _: Array<out Any?> -> Location(ground, x + 0.5 + dx, 64.5, 0.5) },
+            ))
+            val players = mapOf(alice to player(alice, 10.0), bob to player(bob, 3.0))
+            ground = stub(World::class.java, mapOf(
+                "getUID" to world,
+                "isChunkLoaded" to false,
+                "getNearbyPlayers" to { _: Array<out Any?> -> players.values.toList() },
+            ))
+            val block = stub(Block::class.java, mapOf(
+                "getWorld" to ground,
+                "getX" to x,
+                "getY" to 64,
+                "getZ" to 0,
+                "getType" to case.data.material,
+                "getBlockData" to case.data,
+                "getLocation" to { _: Array<out Any?> -> Location(ground, x.toDouble(), 64.0, 0.0) },
+            ))
+            val listener = RedstoneListener(energy, logs, origins, nudges, Attribution(shared.registries, logs))
+            Switching(listener, block, players).(case.act)()
+            log.drain()
+            val row = log.at(x, 64, 0, 0, Long.MAX_VALUE, 10, reverse = false).lastOrNull()
+                ?.takeIf { it.cause != Cause.BLK_PLAYER_PLACE }
+            case.name to row?.let { Triple(it.cause, it.actor, it.confidence) }
         }
+        assertEquals(cases.map { it.name to it.expected }, found)
+
+        // The witness's distance goes with the mob's type, to the tenth of a block.
+        val mob = cases.indexOfFirst { it.data == plate && it.expected?.first == Cause.BLK_ENTITY_SWITCH } * 10
+        val witnessed = log.at(mob, 64, 0, 0, Long.MAX_VALUE, 10, reverse = false).single()
+        assertEquals("minecraft:zombie 3.0", String(shared.payload(witnessed.payloadAfter!!)!!))
     }
 
     // A witness is not a culprit: an item row, which cannot say how sure it is of its actor, leaves them

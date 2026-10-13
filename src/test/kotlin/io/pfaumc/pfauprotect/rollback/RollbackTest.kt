@@ -15,7 +15,6 @@ import io.pfaumc.pfauprotect.command.Lookups
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.MAX_REGION_RADIUS
 import org.bukkit.plugin.Plugin
-import io.pfaumc.pfauprotect.capture.block.Standing
 import io.pfaumc.pfauprotect.command.Action
 import io.pfaumc.pfauprotect.command.EventRef
 import io.pfaumc.pfauprotect.command.LookupQuery
@@ -23,6 +22,10 @@ import io.pfaumc.pfauprotect.command.RowFilter
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.EntityKind
+import io.pfaumc.pfauprotect.model.EntitySlot
+import io.pfaumc.pfauprotect.model.ItemEntityRef
+import io.pfaumc.pfauprotect.storage.EntityChange
 import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Transfer
@@ -397,9 +400,9 @@ class RollbackTest : BothPlanes() {
     @Test
     fun `a purge's opening balance in an entity's slot is not undone with the entity`() {
         val horse = UUID.randomUUID()
-        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(3, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:horse", horse, T0, actor = alice, before = byteArrayOf(10, 0, 0, 1), after = byteArrayOf(10, 0, 0, 2))))
+        log.submit(listOf(EntityChange(3, 64, 3, EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:horse", horse, T0, actor = alice, before = byteArrayOf(10, 0, 0, 1), after = byteArrayOf(10, 0, 0, 2))))
         log.drain()
-        shared.submit(Transfer(Cause.PURGE_OPENING, Void, io.pfaumc.pfauprotect.model.EntitySlot(horse, 400), diamond, null, 1, T0 + 5))
+        shared.submit(Transfer(Cause.PURGE_OPENING, Void, EntitySlot(horse, 400), diamond, null, 1, T0 + 5))
         shared.drain()
 
         val plan = positions(around(rollbackFilter(alice))).flatMap { it.entities }.single()
@@ -457,15 +460,15 @@ class RollbackTest : BothPlanes() {
         val cut = UUID.randomUUID()
         val untouched = byteArrayOf(10, 0, 0, 1)
         val renamed = byteArrayOf(10, 0, 0, 2)
-        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(3, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:horse", horse, T0, actor = alice, before = untouched, after = renamed, drops = listOf(cut))))
-        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(4, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:horse", horse, T0 + 10, actor = alice, before = renamed, drops = listOf(pile))))
+        log.submit(listOf(EntityChange(3, 64, 3, EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:horse", horse, T0, actor = alice, before = untouched, after = renamed, drops = listOf(cut))))
+        log.submit(listOf(EntityChange(4, 64, 3, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:horse", horse, T0 + 10, actor = alice, before = renamed, drops = listOf(pile))))
         log.drain()
-        shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, io.pfaumc.pfauprotect.model.EntitySlot(horse, 400), io.pfaumc.pfauprotect.model.ItemEntityRef(UUID.randomUUID()), diamond, null, 1, T0 + 10))
+        shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, EntitySlot(horse, 400), ItemEntityRef(UUID.randomUUID()), diamond, null, 1, T0 + 10))
         shared.drain()
 
         val planned = around(rollbackFilter(alice))
         val plan = positions(planned).flatMap { it.entities }.single()
-        assertEquals(io.pfaumc.pfauprotect.model.EntityKind.CHANGED, plan.oldest.kind)
+        assertEquals(EntityKind.CHANGED, plan.oldest.kind)
         assertEquals(untouched.toList(), plan.before!!.toList())
         assertEquals(listOf(-1), plan.slots.map { it.qty })
         assertEquals(setOf(cut, pile), plan.drops.toSet())
@@ -478,10 +481,10 @@ class RollbackTest : BothPlanes() {
     @Test
     fun `an entity slot posting already given back is not planned again`() {
         val horse = UUID.randomUUID()
-        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(4, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:horse", horse, T0 + 10, actor = alice, before = byteArrayOf(10, 0, 0, 1))))
+        log.submit(listOf(EntityChange(4, 64, 3, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:horse", horse, T0 + 10, actor = alice, before = byteArrayOf(10, 0, 0, 1))))
         log.drain()
-        val saddle = io.pfaumc.pfauprotect.model.EntitySlot(horse, 400)
-        shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, saddle, io.pfaumc.pfauprotect.model.ItemEntityRef(UUID.randomUUID()), diamond, null, 1, T0 + 10))
+        val saddle = EntitySlot(horse, 400)
+        shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, saddle, ItemEntityRef(UUID.randomUUID()), diamond, null, 1, T0 + 10))
         shared.drain()
         val fell = shared.holderEntries(saddle, 0, Long.MAX_VALUE).single()
         shared.submit(Transfer(Cause.ROLLBACK, Void, saddle, diamond, null, 1, T0 + 20, reverts = listOf(fell.ref)))
@@ -491,7 +494,7 @@ class RollbackTest : BothPlanes() {
         assertEquals(emptyList<Int>(), plan.slots.map { it.qty })
 
         // Undoing that rollback takes the horse away again, and the saddle it was given back with it.
-        log.submit(listOf(io.pfaumc.pfauprotect.storage.EntityChange(4, 64, 3, io.pfaumc.pfauprotect.model.EntityKind.CREATED, Cause.ROLLBACK, "minecraft:horse", horse, T0 + 20, after = byteArrayOf(10, 0, 0, 1))))
+        log.submit(listOf(EntityChange(4, 64, 3, EntityKind.CREATED, Cause.ROLLBACK, "minecraft:horse", horse, T0 + 20, after = byteArrayOf(10, 0, 0, 1))))
         log.drain()
         val undo = positions(around(rollbackFilter(causes = Action.ROLLBACK.causes))).flatMap { it.entities }.single()
         assertEquals(listOf(1), undo.slots.map { it.qty })

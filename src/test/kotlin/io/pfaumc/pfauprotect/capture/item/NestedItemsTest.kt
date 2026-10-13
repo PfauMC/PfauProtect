@@ -5,14 +5,13 @@ import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.ServerRegistries
+import io.pfaumc.pfauprotect.Spawns
 import io.pfaumc.pfauprotect.storage.fillTypeRegistries
 import io.pfaumc.pfauprotect.storage.RocksItemLog
-import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Nested
-import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.worldStub
 import org.bukkit.block.Block
@@ -146,10 +145,9 @@ class NestedItemsTest {
                     "setItemStack" to { args: Array<out Any?> -> droppedStack = args[0] as org.bukkit.inventory.ItemStack; null },
                 ),
             )
-            val rows = ArrayList<Transfer>()
-            val coalescer = TickCoalescer(rows::add)
-            NestedCaptureListener(log, codec, coalescer).onBreak(BlockDropItemEvent(block, state, player, mutableListOf(dropped)))
-            coalescer.flush()
+            val spawns = Spawns()
+            NestedCaptureListener(log, codec, spawns.coalescer).onBreak(BlockDropItemEvent(block, state, player, mutableListOf(dropped)))
+            val rows = spawns.rows()
 
             assertEquals(
                 setOf(

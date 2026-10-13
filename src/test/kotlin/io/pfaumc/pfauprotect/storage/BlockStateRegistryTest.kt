@@ -107,12 +107,13 @@ class BlockStateRegistryTest : OneLedger() {
 
     @Test
     fun `the space says it is filling while it still has numbers to give`() {
-        val below = loadedTo(ceil(state.maxId * REGISTRY_HIGH_WATER).toInt() - 1)
+        val mark = ceil(state.maxId * REGISTRY_HIGH_WATER).toInt()
+        val below = loadedTo(mark - 1)
         assertTrue(below.fillWarnings().none { it.contains(state.name.lowercase()) })
-        val registries = loadedTo(ceil(state.maxId * REGISTRY_HIGH_WATER).toInt())
+        val registries = loadedTo(mark)
 
         assertTrue(registries.fillWarnings().any { it.contains(state.name.lowercase()) })
-        assertEquals(ceil(state.maxId * REGISTRY_HIGH_WATER).toInt(), registries.idForKey(state, east))
+        assertEquals(mark, registries.idForKey(state, east))
     }
 
     @Test

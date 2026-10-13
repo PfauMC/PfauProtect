@@ -9,6 +9,7 @@ import io.pfaumc.pfauprotect.command.EventRef
 import io.pfaumc.pfauprotect.command.parseLookupQuery
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Void
@@ -23,6 +24,10 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import net.minecraft.world.SimpleContainer
 import net.minecraft.world.level.block.Blocks
+import net.minecraft.core.BlockPos
+import net.minecraft.world.level.block.entity.CampfireBlockEntity
+import net.minecraft.world.level.block.entity.LecternBlockEntity
+import net.minecraft.world.level.block.entity.SignBlockEntity
 import net.minecraft.world.item.Items
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
@@ -42,10 +47,10 @@ class RollbackRulesTest {
     private fun planOf(vararg steps: Step) =
         PositionPlan(WorldBlock(world, 1, 64, 1), steps.toList(), emptyList(), emptyList(), emptyList(), emptyList(), null)
 
-    private fun counted(standing: String, payload: ByteArray? = null, hasSlots: Boolean = false, vararg steps: Step): Pair<Tally, Boolean> {
+    private fun counted(standing: String, payload: ByteArray? = null, vararg steps: Step): Pair<Tally, Boolean> {
         val plan = planOf(*steps)
         val tally = Tally()
-        val changes = tally.count(plan, decide(standing, payload, { hasSlots }, plan))
+        val changes = tally.count(plan, decide(standing, payload, { false }, plan))
         return tally to changes
     }
 
@@ -215,15 +220,15 @@ class RollbackRulesTest {
 
     @Test
     fun `a book goes back onto a lectern and food back onto a campfire`() {
-        val lectern = net.minecraft.world.level.block.entity.LecternBlockEntity(net.minecraft.core.BlockPos(1, 64, 1), net.minecraft.world.level.block.Blocks.LECTERN.defaultBlockState())
+        val lectern = LecternBlockEntity(BlockPos(1, 64, 1), Blocks.LECTERN.defaultBlockState())
         assertEquals(1, putBack(slotsOf(lectern)!!, 0, NmsItemStack(Items.WRITABLE_BOOK), 1) { false })
         assertEquals(Items.WRITABLE_BOOK, lectern.book.item)
 
-        val campfire = net.minecraft.world.level.block.entity.CampfireBlockEntity(net.minecraft.core.BlockPos(2, 64, 1), net.minecraft.world.level.block.Blocks.CAMPFIRE.defaultBlockState())
+        val campfire = CampfireBlockEntity(BlockPos(2, 64, 1), Blocks.CAMPFIRE.defaultBlockState())
         assertEquals(2, putBack(slotsOf(campfire)!!, 1, NmsItemStack(Items.BEEF), 2) { false })
         assertEquals(listOf(true, true, false, false), campfire.items.map { it.item == Items.BEEF })
 
-        assertNull(slotsOf(net.minecraft.world.level.block.entity.SignBlockEntity(net.minecraft.core.BlockPos(3, 64, 1), net.minecraft.world.level.block.Blocks.OAK_SIGN.defaultBlockState())))
+        assertNull(slotsOf(SignBlockEntity(BlockPos(3, 64, 1), Blocks.OAK_SIGN.defaultBlockState())))
     }
 
     @Test
@@ -266,20 +271,20 @@ class RollbackRulesTest {
 
     @Test
     fun `a position is counted as changed, as it was, or stopped by a later change`() {
-        val (broken, changes) = counted(STONE, null, false, step(AIR, STONE))
+        val (broken, changes) = counted(STONE, null, step(AIR, STONE))
         assertTrue(changes)
         assertEquals(listOf(1, 0, 0), listOf(broken.changed, broken.unchanged, broken.conflicts))
         assertEquals(listOf(WorldBlock(world, 1, 64, 1)), broken.undone)
 
-        val (already, _) = counted(AIR, null, false, step(AIR, STONE))
+        val (already, _) = counted(AIR, null, step(AIR, STONE))
         assertEquals(listOf(0, 1, 0), listOf(already.changed, already.unchanged, already.conflicts))
 
-        val (stopped, _) = counted(DIRT, null, false, step(AIR, STONE))
+        val (stopped, _) = counted(DIRT, null, step(AIR, STONE))
         assertEquals(listOf(0, 0, 1), listOf(stopped.changed, stopped.unchanged, stopped.conflicts))
 
         // Walked back past the newest row and then stopped by an older one: what it got to is put back, and
         // the stop is said all the same.
-        val (partial, _) = counted(DIRT, null, false, step(STONE, DIRT), step(AIR, LAVA))
+        val (partial, _) = counted(DIRT, null, step(STONE, DIRT), step(AIR, LAVA))
         assertEquals(listOf(1, 0, 1), listOf(partial.changed, partial.unchanged, partial.conflicts))
     }
 
@@ -294,14 +299,14 @@ class RollbackRulesTest {
         assertTrue(retagged.retagged)
         assertFalse(decide(sign, byteArrayOf(2), { true }, plan).retagged, "a container's contents are its postings' to give back")
         assertFalse(decide(sign, byteArrayOf(1), { false }, plan).retagged)
-        assertEquals(listOf(1, 0), counted(sign, byteArrayOf(2), false, written).first.let { listOf(it.changed, it.undone.size) })
+        assertEquals(listOf(1, 0), counted(sign, byteArrayOf(2), written).first.let { listOf(it.changed, it.undone.size) })
     }
 
     @Test
     fun `the postings of a container the rollback took away are given back with it`() {
         val chest = Container(world, 1, 64, 1, 0)
         val player = PlayerInv(alice, 0)
-        fun refill(ordinal: Int, qty: Int, lead: io.pfaumc.pfauprotect.model.Holder) =
+        fun refill(ordinal: Int, qty: Int, lead: Holder) =
             Refill(chest, diamond, 5, null, qty, PostingRef(9, ordinal), lead)
         val hopper = refill(0, 3, Container(world, 1, 63, 1, 0))
         val carried = refill(1, 2, player)

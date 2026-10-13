@@ -35,24 +35,15 @@ class StorageTest : OneLedger() {
     private val cobblestone = byteArrayOf(1, 2, 3)
     private val pickaxe = byteArrayOf(4, 5)
     private val torch = byteArrayOf(6, 7, 8, 9)
+    // Above any world, so no posting to it has a key.
+    private val unreachable = Container(world, 100, 1_000_000, -200, 0)
 
     @BeforeEach
     fun seed() {
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, cobblestone, null, 32, T0))
         log.submit(Transfer(Cause.CONTAINER_REMOVE, chestUpperSlot, aliceInv, cobblestone, null, 5, T0 + 10))
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, pickaxe, 7, 1, T0 + 20))
-        log.submit(
-            Transfer(
-                cause = Cause.ITEM_DESPAWN,
-                from = chest,
-                to = Void,
-                form = cobblestone,
-                damage = null,
-                qty = 3,
-                timestamp = T0 + 30,
-                confidence = Confidence.INFERRED,
-            )
-        )
+        log.submit(Transfer(Cause.ITEM_DESPAWN, chest, Void, cobblestone, null, 3, T0 + 30, confidence = Confidence.INFERRED))
         log.drain()
     }
 
@@ -158,13 +149,17 @@ class StorageTest : OneLedger() {
         log.submit(Transfer(Cause.BLOCK_DROP, position, Void, cobblestone, null, 1, T0 + 90, actor = alice))
         log.drain()
 
+        assertEquals(6, sweptInSteps(100), "the rest of the seeded rows plus the one written since the pause")
+        assertEquals(1, log.holderEntries(position, 0, Long.MAX_VALUE).size)
+    }
+
+    private fun sweptInSteps(step: Int): Int {
         var seen = 0
         do {
-            val pass = log.sweep(100)
+            val pass = log.sweep(step)
             seen += pass.checked
         } while (!pass.reachedEnd)
-        assertEquals(6, seen, "the rest of the seeded rows plus the one written since the pause")
-        assertEquals(1, log.holderEntries(position, 0, Long.MAX_VALUE).size)
+        return seen
     }
 
     // A newer build may have changed what the keys mean, and going back to it has to stay possible.
@@ -172,10 +167,10 @@ class StorageTest : OneLedger() {
     fun `a database stamped by a newer build refuses to open and is left as it was`() {
         reopen {
             val current = storedSchemaOf(dir)
-            stampSchemaVersion(current + 1)
+            stampSchema(dir, current + 1)
             assertThrows(IllegalArgumentException::class.java) { RocksItemLog(dir) }
             assertEquals(current + 1, storedSchemaOf(dir))
-            stampSchemaVersion(current)
+            stampSchema(dir, current)
         }
         assertEquals(4, log.holderEntries(chest, 0, Long.MAX_VALUE).size)
     }
@@ -198,8 +193,8 @@ class StorageTest : OneLedger() {
             }
             rawEdit(base) { raw, family ->
                 for (added in everyColumnFamily - earlier.toSet()) raw.dropColumnFamily(family(added))
-                raw.put(family("meta"), "schema".toByteArray(), ByteWriter(8).longBE(version).toByteArray())
             }
+            stampSchema(base, version)
             assertEquals(earlier.sorted(), familiesOf(base).sorted(), "version $version as it was left")
 
             RocksItemLog(base).use { widened ->
@@ -299,9 +294,7 @@ class StorageTest : OneLedger() {
     @Test
     fun `a database refused for its schema is left as it was found`(@TempDir older: Path) {
         val earlier = everyColumnFamily - "block_payloads"
-        rawEdit(older, earlier) { raw, family ->
-            raw.put(family("meta"), "schema".toByteArray(), ByteWriter(8).longBE(2L).toByteArray())
-        }
+        stampSchema(older, 2L, earlier)
 
         val refused = assertThrows(IllegalArgumentException::class.java) { RocksItemLog(older) }
 
@@ -322,10 +315,6 @@ class StorageTest : OneLedger() {
             assertEquals(6L, storedSchemaOf(dir))
             assertEquals(everyColumnFamily.sorted(), familiesOf(dir).sorted())
         }
-    }
-
-    private fun stampSchemaVersion(version: Long) {
-        rawPut(dir, "meta", "schema".toByteArray(), ByteWriter(8).longBE(version).toByteArray())
     }
 
     private val aliceHex = "000000000000400080000000000000a1"
@@ -455,18 +444,18 @@ class StorageTest : OneLedger() {
         val world = UUID.randomUUID()
         val here = WorldBlock(world, 1, 2, 3)
         val there = WorldBlock(world, 4, 5, 6)
-        log.setFormAt(WorldBlock(world, 4, 5, 6), pickaxe)
+        log.setFormAt(there, pickaxe)
         log.drain()
 
-        log.setFormAt(WorldBlock(world, 1, 2, 3), pickaxe)
-        assertArrayEquals(pickaxe, log.formAt(WorldBlock(world, 1, 2, 3)))
+        log.setFormAt(here, pickaxe)
+        assertArrayEquals(pickaxe, log.formAt(here))
         assertEquals(setOf(here, there), log.formsAt(listOf(here, there)).keys)
         log.clearFormsAt(listOf(there))
         assertEquals(setOf(here), log.formsAt(listOf(here, there)).keys)
 
         log.drain()
-        assertArrayEquals(pickaxe, log.formAt(WorldBlock(world, 1, 2, 3)))
-        assertNull(log.formAt(WorldBlock(world, 4, 5, 6)))
+        assertArrayEquals(pickaxe, log.formAt(here))
+        assertNull(log.formAt(there))
     }
 
     // A shulker loses its mark when it is broken, so the name has to outlive the box standing there,
@@ -522,9 +511,9 @@ class StorageTest : OneLedger() {
         val bare = WorldBlock(world, 3, 2, 3)
         val also = WorldBlock(world, 4, 2, 3)
         val elsewhere = WorldBlock(UUID.randomUUID(), 1, 2, 3)
-        log.setFormAt(WorldBlock(world, 1, 2, 3), pickaxe)
-        log.setFormAt(WorldBlock(world, 2, 2, 3), torch)
-        log.setFormAt(WorldBlock(world, 4, 2, 3), cobblestone)
+        log.setFormAt(here, pickaxe)
+        log.setFormAt(next, torch)
+        log.setFormAt(also, cobblestone)
         log.drain()
 
         val forms = log.formsAt(listOf(here, next, bare, elsewhere))
@@ -536,9 +525,9 @@ class StorageTest : OneLedger() {
 
         log.clearFormsAt(listOf(here, bare, also))
 
-        assertNull(log.formAt(WorldBlock(world, 1, 2, 3)))
-        assertNull(log.formAt(WorldBlock(world, 4, 2, 3)))
-        assertArrayEquals(torch, log.formAt(WorldBlock(world, 2, 2, 3)))
+        assertNull(log.formAt(here))
+        assertNull(log.formAt(also))
+        assertArrayEquals(torch, log.formAt(next))
         assertEquals(setOf(next), log.formsAt(listOf(here, next, bare, also)).keys)
     }
 
@@ -585,17 +574,11 @@ class StorageTest : OneLedger() {
         assertTrue(log.regionPage(UUID.randomUUID(), 96, -208, 112, -192, 0, Long.MAX_VALUE).complete)
     }
 
-    // A row this build cannot decode is not a row without gaps, and a sweep that folds the two
-    // together reports a clean pass over a ledger it can no longer read. A row torn by a half-written
-    // page reads as a version this build knows and then runs out of bytes; a throw would end the pass on
-    // the spot and leave every row after it unswept for as long as the row is there.
+    // An undecodable row (unknown version, or torn after the header) is counted apart, neither checked nor thrown out of the pass.
     @Test
     fun `rows this build cannot read are counted apart from the ones it checked`() {
         val unreadable = listOf(
-            // A version this build does not know, which is the one thing decoding rejects before it has
-            // read anything else.
             byteArrayOf(0x07),
-            // Nothing but the header: the version is this build's, and the cause byte after it is gone.
             byteArrayOf(EntryCodec.header(Kind.TRANSFER, Confidence.FACT).toByte()),
         )
         val readable = log.sweep(1000).checked
@@ -697,12 +680,7 @@ class StorageTest : OneLedger() {
         assertTrue(whole.reachedEnd)
         assertEquals(everyRow, whole.checked, "the walk of the whole ledger did not see every row")
         assertEquals(emptyList<String>(), whole.gaps)
-        var resumed = 0
-        do {
-            val pass = log.sweep(3)
-            resumed += pass.checked
-        } while (!pass.reachedEnd)
-        assertEquals(whole.checked, resumed, "a resumed walk lost rows the one from the start could see")
+        assertEquals(whole.checked, sweptInSteps(3), "a resumed walk lost rows the one from the start could see")
     }
 
     @Test
@@ -734,7 +712,6 @@ class StorageTest : OneLedger() {
     // kept in order to be trusted must fail on the row rather than on everything after it.
     @Test
     fun `a movement that cannot be written costs only itself`() {
-        val unreachable = Container(world, 100, 1_000_000, -200, 0)
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 40))
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, unreachable, torch, null, 2, T0 + 41))
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 3, T0 + 42))
@@ -810,7 +787,7 @@ class StorageTest : OneLedger() {
     @Test
     fun `a form first named by a dropped transaction is written when it comes again`() {
         val fresh = byteArrayOf(42, 43)
-        log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, Container(world, 100, 1_000_000, -200, 0), fresh, null, 1, T0 + 40))
+        log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, unreachable, fresh, null, 1, T0 + 40))
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, fresh, null, 1, T0 + 41))
         log.drain()
         reopen()

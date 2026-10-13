@@ -118,18 +118,7 @@ abstract class BothPlanes {
         confidence: Confidence = Confidence.FACT,
         at: UUID = world,
     ) {
-        shared.submit(
-            Transfer(
-                cause = Cause.BLOCK_PLACE,
-                from = PlayerInv(alice, 0),
-                to = WorldBlock(at, x, y, z),
-                form = form,
-                damage = null,
-                qty = 1,
-                timestamp = ts,
-                confidence = confidence,
-            )
-        )
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 0), WorldBlock(at, x, y, z), form, null, 1, ts, confidence = confidence))
     }
 
     protected fun releasedAt(
@@ -142,19 +131,7 @@ abstract class BothPlanes {
         ts: Long = longAgo,
         confidence: Confidence = Confidence.FACT,
     ) {
-        shared.submit(
-            Transfer(
-                cause = cause,
-                from = WorldBlock(world, x, y, z),
-                to = Void,
-                form = form,
-                damage = null,
-                qty = 1,
-                timestamp = ts,
-                actor = actor,
-                confidence = confidence,
-            )
-        )
+        shared.submit(Transfer(cause, WorldBlock(world, x, y, z), Void, form, null, 1, ts, confidence = confidence, actor = actor))
     }
 
     protected fun stateOf(blockData: String): Int? =

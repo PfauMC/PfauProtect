@@ -72,34 +72,20 @@ class AttributionTest : BothPlanes() {
         cause: Cause = Cause.BLK_PLAYER_PLACE,
         confidence: Confidence = Confidence.FACT,
     ) {
-        log.submit(
-            listOf(
-                BlockChange(
-                    x = at.x,
-                    y = at.y,
-                    z = at.z,
-                    before = before,
-                    after = after,
-                    cause = cause,
-                    timestamp = ts,
-                    confidence = confidence,
-                    actor = actor,
-                )
-            )
-        )
+        log.submit(listOf(BlockChange(at.x, at.y, at.z, before, after, cause, ts, confidence, actor = actor)))
         log.drain()
     }
 
     // Sculk spreads off the newest death a player stood behind within reach, for a minute and no longer.
     @Test
     fun `sculk answers to the newest kill near it`() {
-        attribution.killed(WorldBlock(world, 0, 64, 0), alice)
+        attribution.killed(at(0, 64, 0), alice)
         clock += 1_000
-        attribution.killed(WorldBlock(world, 5, 64, 0), bob)
-        assertEquals(bob, attribution.killerNear(WorldBlock(world, 3, 64, 0), 12)?.actor)
-        assertEquals(null, attribution.killerNear(WorldBlock(world, 40, 64, 0), 12))
+        attribution.killed(at(5, 64, 0), bob)
+        assertEquals(bob, attribution.killerNear(at(3, 64, 0), 12)?.actor)
+        assertNull(attribution.killerNear(at(40, 64, 0), 12))
         clock += KILL_MILLIS + 1
-        assertEquals(null, attribution.killerNear(WorldBlock(world, 3, 64, 0), 12))
+        assertNull(attribution.killerNear(at(3, 64, 0), 12))
     }
 
     // A fire spreading on from a block the journal found has to find a note there: without one, the
@@ -152,7 +138,7 @@ class AttributionTest : BothPlanes() {
     }
 
     // Lava that ran far from its bucket sets fire where no walk back to the source reaches, and the flow row
-    // of the lava block itself names who let it run: 6595 ignitions on a real map were nobody's.
+    // of the lava block itself names who let it run.
     @Test
     fun `the journal names who let a flow run`() {
         val here = at(10, 64, 10)
@@ -287,8 +273,7 @@ class AttributionTest : BothPlanes() {
         assertNull(attribution.supportRemoverAt(at(6, 65, 6)))
     }
 
-    // Concrete powder under a griefer's TNT came down 206 ms after the planks under it, the server
-    // running behind on the very blast, and was filed on nobody while the window was 100 ms.
+    // A lagging server can drop a column ~200 ms after the blast that took its support.
     @Test
     fun `a fall late behind a lagging blast still finds who took its support`() {
         attribution.removed(at(5, 64, 5), alice)

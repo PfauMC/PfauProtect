@@ -1,5 +1,9 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.Vanilla
+import net.minecraft.world.entity.EquipmentSlot
+import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.Items
+import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
@@ -21,12 +25,12 @@ class MobItemsTest {
     // of three, and what has no durability never wears through.
     @Test
     fun `gear breaks on the wear that takes its last point`() {
-        fun mirror(stack: net.minecraft.world.item.ItemStack) = org.bukkit.craftbukkit.inventory.CraftItemStack.asBukkitMirror(stack)
-        val armor = net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.WOLF_ARMOR)
+        fun mirror(stack: ItemStack) = CraftItemStack.asBukkitMirror(stack)
+        val armor = ItemStack(Items.WOLF_ARMOR)
         assertEquals(false, wornThrough(mirror(armor), 3))
         armor.damageValue = armor.maxDamage - 1
         assertEquals(true, wornThrough(mirror(armor), 1))
-        assertEquals(false, wornThrough(mirror(net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.SADDLE)), 100))
+        assertEquals(false, wornThrough(mirror(ItemStack(Items.SADDLE)), 100))
     }
 
     // A boat is removed before it drops: its drop still finds the slot, once, and the rest is left to
@@ -46,8 +50,8 @@ class MobItemsTest {
 
     @Test
     fun `a horse window names its slots the way its equipment does`() {
-        assertEquals(net.minecraft.world.entity.EquipmentSlot.SADDLE.ordinal, horseSlot(0))
-        assertEquals(net.minecraft.world.entity.EquipmentSlot.BODY.ordinal, horseSlot(1))
+        assertEquals(EquipmentSlot.SADDLE.ordinal, horseSlot(0))
+        assertEquals(EquipmentSlot.BODY.ordinal, horseSlot(1))
         assertEquals(17, horseSlot(2))
     }
 }

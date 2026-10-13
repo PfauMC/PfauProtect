@@ -95,7 +95,6 @@ class BlockDestructionTest : BothPlanes() {
     // Late enough for every row the handlers write at the wall clock to have settled.
     private val settled get() = System.currentTimeMillis() + 10 * SETTLE_MILLIS
 
-
     private fun listener(
         attribution: Attribution = Attribution(shared.registries, logs),
         sink: (List<Transfer>) -> Unit = {},
@@ -116,7 +115,6 @@ class BlockDestructionTest : BothPlanes() {
         touches = touches,
         later = later,
     )
-
 
     /**
      * The choice between writing a position off and exchanging what it holds, driven where the listener
@@ -301,7 +299,7 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(listOf(AIR, DIRT), through.drop(1).map { stateAfter(it) })
         assertEquals(GRASS, stateAfter(log.standingAt(3, 64, 0).row!!))
         assertEquals(listOf(PISTON to PISTON_EXTENDED), rowsAt(0, 64, 0).map {
-            shared.registries.keyOf(RegistryNamespace.BLOCK_STATE, it.stateBefore) to stateAfter(it)
+            stateBefore(it) to stateAfter(it)
         })
 
         assertEquals(0, shared.holderEntries(first, 0, Long.MAX_VALUE).sumOf { it.qty })

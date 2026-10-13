@@ -239,10 +239,7 @@ class ForeignSlotTest {
         assertEquals(listOf(Cause.DEATH_DROP, Cause.DEATH_DROP), dropped.map { it.cause })
     }
 
-    // A stonecutter hands back the stone it was given as slabs: one item turned into another rather
-    // than a loss and a gain nobody can tie together.
-    @Test
-    fun `taking a stonecutter's result is one transformation of what went in`() {
+    private fun cutStone(consumed: Boolean): List<Transfer> {
         val cutter = arrayOfNulls<BukkitItemStack>(2)
         cutter[0] = BukkitItemStack(Material.STONE, 1)
         val (clicker, view) = seated(
@@ -255,12 +252,18 @@ class ForeignSlotTest {
         listener.onClick(
             InventoryClickEvent(view, InventoryType.SlotType.RESULT, 1, ClickType.LEFT, InventoryAction.PICKUP_ALL),
         )
-        cutter[0] = null
+        if (consumed) cutter[0] = null
         cutter[1] = null
         cursor = BukkitItemStack(Material.STONE_SLAB, 2)
         listener.recompute(clicker)
+        return written.single()
+    }
 
-        val transaction = written.single()
+    // A stonecutter hands back the stone it was given as slabs: one item turned into another rather
+    // than a loss and a gain nobody can tie together.
+    @Test
+    fun `taking a stonecutter's result is one transformation of what went in`() {
+        val transaction = cutStone(consumed = true)
         assertEquals(
             setOf(Container(world, 1, 2, 3, 0) to Void to 1, Void to PlayerCursor(player) to 2),
             transaction.map { it.from to it.to to it.qty }.toSet(),
@@ -274,23 +277,7 @@ class ForeignSlotTest {
     // In creative the input stays where it was, so the result has no item it could have changed from.
     @Test
     fun `a station result with nothing consumed is a movement and not a mutation`() {
-        val cutter = arrayOfNulls<BukkitItemStack>(2)
-        cutter[0] = BukkitItemStack(Material.STONE, 1)
-        val (clicker, view) = seated(
-            inventoryStub(cutter, InventoryType.STONECUTTER, StonecutterInventory::class.java),
-            InventoryType.STONECUTTER,
-        )
-
-        listener.onOpen(InventoryOpenEvent(view))
-        cutter[1] = BukkitItemStack(Material.STONE_SLAB, 2)
-        listener.onClick(
-            InventoryClickEvent(view, InventoryType.SlotType.RESULT, 1, ClickType.LEFT, InventoryAction.PICKUP_ALL),
-        )
-        cutter[1] = null
-        cursor = BukkitItemStack(Material.STONE_SLAB, 2)
-        listener.recompute(clicker)
-
-        val row = written.single().single()
+        val row = cutStone(consumed = false).single()
         assertEquals(Void to PlayerCursor(player), row.from to row.to)
         assertEquals(Kind.TRANSFER, row.kind)
     }

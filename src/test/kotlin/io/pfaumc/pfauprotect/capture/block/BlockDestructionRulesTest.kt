@@ -114,19 +114,14 @@ internal fun blockStub(
 @ExtendWith(Vanilla::class)
 class BlockDestructionRulesTest {
     private val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000004")
-    private val now = T0
 
     private val codec by lazy { testCodec() }
     private val spawns = Spawns()
     private val origins = spawns.origins
 
-
     private fun doorHalf(half: DoubleBlockHalf) = Blocks.OAK_DOOR.defaultBlockState()
         .setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, half)
         .asBlockData()
-
-    private fun handlers() = BlockDestructionListener::class.java.declaredMethods
-        .mapNotNull { method -> method.getAnnotation(EventHandler::class.java)?.let { method to it } }
 
     // A player stripping a log raises the change event too and is no mob griefing anything; a falling
     // block is a movement with two ends and belongs to the capture that owns both. An entity answers with
@@ -236,7 +231,7 @@ class BlockDestructionRulesTest {
     // plugin goes down), and a claim held for ever would refuse every later read-back of that position.
     @Test
     fun `a read-back holds its position until it runs or its tick is over`() {
-        var clock = now
+        var clock = T0
         val readBacks = ReadBacks { clock }
         val at = WorldBlock(world, 5, 64, 5)
         val neighbour = WorldBlock(world, 5, 65, 5)
@@ -264,7 +259,7 @@ class BlockDestructionRulesTest {
 
     @Test
     fun `a change filed this tick is known before the journal has it`() {
-        var clock = now
+        var clock = T0
         val readBacks = ReadBacks { clock }
         val at = WorldBlock(world, 6, 64, 6)
 
@@ -478,7 +473,8 @@ class BlockDestructionRulesTest {
     // forming one, which already take it: a second handler would file the change twice.
     @Test
     fun `no handler takes an entity forming a block on its own`() {
-        assertFalse(handlers().any { (method, _) -> method.parameterTypes.single() == EntityBlockFormEvent::class.java })
+        val handlers = BlockDestructionListener::class.java.declaredMethods.filter { it.isAnnotationPresent(EventHandler::class.java) }
+        assertFalse(handlers.any { it.parameterTypes.single() == EntityBlockFormEvent::class.java })
     }
 
     /**

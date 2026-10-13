@@ -16,7 +16,6 @@ import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
@@ -28,14 +27,9 @@ class ReconcileTest : OneLedger() {
     private val pickaxe = byteArrayOf(2, 2)
     private val bread = byteArrayOf(3, 3)
 
-    private lateinit var reconcile: Reconciliation
+    private val reconcile by lazy { Reconciliation(log) }
 
     private var clock = T0
-
-    @BeforeEach
-    fun openReconciliation() {
-        reconcile = Reconciliation(log)
-    }
 
     private fun move(cause: Cause, from: Holder, to: Holder, form: ByteArray, qty: Int, damage: Int? = null) {
         log.submit(Transfer(cause, from, to, form, damage, qty, clock++))

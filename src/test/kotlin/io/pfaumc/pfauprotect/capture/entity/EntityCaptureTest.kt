@@ -130,20 +130,20 @@ class EntityCaptureTest : BothPlanes() {
     @Test
     fun `an entity's removal is written once however often it is heard`() {
         val capture = capture()
-        val mob = dying(ground, 0f) { EntityDamageEvent(it, DamageCause.STARVATION, stub(DamageSource::class.java), 1.0) }
+        val mob = dying(ground, 0f, ::starve)
         summoned.appeared(mob.uniqueId, alice)
         repeat(2) { capture.onDeath(EntityDeathEvent(mob, stub(DamageSource::class.java), mutableListOf())) }
         runTasks()
         log.drain()
-        assertEquals(1, log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.count { it.uuid == mob.uniqueId })
+        assertEquals(1, rowsHere().count { it.uuid == mob.uniqueId })
 
-        val takenAway = dying(ground, 0f) { EntityDamageEvent(it, DamageCause.STARVATION, stub(DamageSource::class.java), 1.0) }
+        val takenAway = dying(ground, 0f, ::starve)
         summoned.appeared(takenAway.uniqueId, alice)
         capture.forget(takenAway.uniqueId)
         capture.onDeath(EntityDeathEvent(takenAway, stub(DamageSource::class.java), mutableListOf()))
         runTasks()
         log.drain()
-        assertEquals(0, log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.count { it.uuid == takenAway.uniqueId })
+        assertEquals(0, rowsHere().count { it.uuid == takenAway.uniqueId })
     }
 
     // A player who dies of their own arrow or their own dynamite is no grief between players. What fell
@@ -152,10 +152,6 @@ class EntityCaptureTest : BothPlanes() {
     fun `a player killed by another is written with their drops and one killed by themselves is not`() {
         val spawns = Spawns()
         val capture = capture(spawns)
-        val ground = stub(World::class.java, mapOf(
-            "getUID" to world,
-            "getBlockAt" to { _: Array<out Any?> -> blockStub(world, 3, 64, 3, Blocks.AIR.defaultBlockState().asBlockData()) },
-        ))
         fun player(id: UUID, killer: Player? = null) = stub(Player::class.java, mapOf(
             "getUniqueId" to id,
             "getKiller" to killer,
@@ -170,7 +166,7 @@ class EntityCaptureTest : BothPlanes() {
         }
 
         die(player(alice, killer = player(alice)))
-        assertTrue(log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.isEmpty())
+        assertTrue(rowsHere().isEmpty())
 
         val spot = Spot(world, 3.5, 64.0, 3.5)
         val drop = UUID.randomUUID()
@@ -180,7 +176,7 @@ class EntityCaptureTest : BothPlanes() {
             assertEquals(1, spawns.origins.claim(drop, spot, key("diamond"), 1))
             assertEquals(1, spawns.origins.claim(UUID.randomUUID(), spot, key("diamond"), 1))
         }
-        val row = log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.single()
+        val row = rowsHere().single()
         assertEquals(EntityKind.PLAYER_DIED, row.kind)
         assertEquals(alice, row.uuid)
         assertEquals(bob, row.actor)
@@ -196,13 +192,15 @@ class EntityCaptureTest : BothPlanes() {
         ))
     }
 
+    private fun rowsHere() = log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows
+
     private fun mobDies(damage: (Dying) -> EntityDamageEvent, fell: Float = 0f): EntityRow {
         val capture = capture()
         val mob = dying(ground, fell, damage)
         capture.onDeath(EntityDeathEvent(mob, stub(DamageSource::class.java), mutableListOf()))
         runTasks()
         log.drain()
-        return log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.single { it.uuid == mob.uniqueId }
+        return rowsHere().single { it.uuid == mob.uniqueId }
     }
 
     // The floor a mob fell from went away while Alice only stood near the piston that pulled it: the
@@ -212,7 +210,7 @@ class EntityCaptureTest : BothPlanes() {
         log.submit(listOf(BlockChange(3, 83, 3, "minecraft:stone", "minecraft:air", Cause.BLK_PISTON_RETRACT, now, Confidence.NEARBY, actor = alice)))
         log.drain()
 
-        val row = mobDies({ EntityDamageEvent(it, DamageCause.FALL, stub(DamageSource::class.java), 20.0) }, fell = 20f)
+        val row = mobDies(::fall, fell = 20f)
         assertEquals(EntityKind.REMOVED, row.kind)
         assertNull(row.actor)
         assertEquals(Confidence.NEARBY, row.confidence)
@@ -223,7 +221,7 @@ class EntityCaptureTest : BothPlanes() {
         log.submit(listOf(BlockChange(3, 83, 3, "minecraft:stone", "minecraft:air", Cause.BLK_PLAYER_BREAK, now, actor = bob)))
         log.drain()
 
-        val row = mobDies({ EntityDamageEvent(it, DamageCause.FALL, stub(DamageSource::class.java), 20.0) }, fell = 20f)
+        val row = mobDies(::fall, fell = 20f)
         assertEquals(bob, row.actor)
         assertEquals(Confidence.INFERRED, row.confidence)
     }
@@ -245,7 +243,7 @@ class EntityCaptureTest : BothPlanes() {
         runTasks()
         log.drain()
 
-        val row = log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.single()
+        val row = rowsHere().single()
         assertEquals(EntityKind.REMOVED, row.kind)
         assertEquals(frame.uniqueId, row.uuid)
         assertEquals(bob, row.actor)
@@ -254,7 +252,7 @@ class EntityCaptureTest : BothPlanes() {
     // What a rollback brings the mob back from; its riders are entities of their own.
     @Test
     fun `a removed mob keeps its whole NBT without its passengers`() {
-        val row = mobDies({ EntityDamageEvent(it, DamageCause.FALL, stub(DamageSource::class.java), 20.0) }, fell = 20f)
+        val row = mobDies(::fall, fell = 20f)
         val saved = nbtOf(shared.payload(row.payloadBefore!!)!!)
         assertEquals("minecraft:cow", saved.getStringOr("id", ""))
         assertFalse(saved.contains("Passengers"))
@@ -264,7 +262,7 @@ class EntityCaptureTest : BothPlanes() {
     fun `a mob brought in that dies of nothing anybody did names its summoner and not a witness`() {
         fun diesOf(confidence: Confidence) = mobDies({ mob ->
             summoned.appeared(mob.uniqueId, alice, confidence)
-            EntityDamageEvent(mob, DamageCause.STARVATION, stub(DamageSource::class.java), 1.0)
+            starve(mob)
         })
         val summoner = diesOf(Confidence.FACT)
         assertEquals(alice, summoner.actor)
@@ -336,9 +334,12 @@ private class Hung(server: CraftServer, handle: HangingEntity) : CraftHanging(se
     override fun getAttachedFace(): BlockFace = face
 }
 
+private fun <T : CraftEntity> shell(cls: Class<T>, type: EntityType): T = cls.cast(unsafe.allocateInstance(cls)).also {
+    CraftEntity::class.java.getDeclaredField("entityType").apply { isAccessible = true }.set(it, type)
+}
+
 private fun hung(ground: World, face: BlockFace): Hung {
-    val frame = unsafe.allocateInstance(Hung::class.java) as Hung
-    CraftEntity::class.java.getDeclaredField("entityType").apply { isAccessible = true }.set(frame, EntityType.ITEM_FRAME)
+    val frame = shell(Hung::class.java, EntityType.ITEM_FRAME)
     frame.id = UUID.randomUUID()
     frame.ground = ground
     frame.face = face
@@ -347,8 +348,7 @@ private fun hung(ground: World, face: BlockFace): Hung {
 }
 
 private fun dying(ground: World, fell: Float, damage: (Dying) -> EntityDamageEvent): Dying {
-    val mob = unsafe.allocateInstance(Dying::class.java) as Dying
-    CraftEntity::class.java.getDeclaredField("entityType").apply { isAccessible = true }.set(mob, EntityType.COW)
+    val mob = shell(Dying::class.java, EntityType.COW)
     mob.id = UUID.randomUUID()
     mob.ground = ground
     mob.fell = fell
@@ -356,3 +356,7 @@ private fun dying(ground: World, fell: Float, damage: (Dying) -> EntityDamageEve
     mob.damage = damage(mob)
     return mob
 }
+
+private fun fall(mob: Dying) = EntityDamageEvent(mob, DamageCause.FALL, stub(DamageSource::class.java), 20.0)
+
+private fun starve(mob: Dying) = EntityDamageEvent(mob, DamageCause.STARVATION, stub(DamageSource::class.java), 1.0)

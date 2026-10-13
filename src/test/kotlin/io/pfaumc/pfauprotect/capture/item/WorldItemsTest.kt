@@ -50,30 +50,16 @@ class WorldItemsTest {
 
     @Test
     fun `the kind of destruction is read off the damage that caused it`() {
-        assertEquals(
-            Cause.ITEM_DESTROY_FIRE to Confidence.FACT,
-            end(EntityRemoveEvent.Cause.DEATH, DamageCause.LAVA),
-        )
-        assertEquals(
-            Cause.ITEM_DESTROY_FIRE to Confidence.FACT,
-            end(EntityRemoveEvent.Cause.DEATH, DamageCause.FIRE_TICK),
-        )
-        assertEquals(
-            Cause.ITEM_DESTROY_FIRE to Confidence.FACT,
-            end(EntityRemoveEvent.Cause.DEATH, DamageCause.FIRE),
-        )
-        assertEquals(
-            Cause.ITEM_DESTROY_CACTUS to Confidence.FACT,
-            end(EntityRemoveEvent.Cause.DEATH, DamageCause.CONTACT),
-        )
-        assertEquals(
-            Cause.ITEM_DESTROY_EXPLOSION to Confidence.FACT,
-            end(EntityRemoveEvent.Cause.DEATH, DamageCause.BLOCK_EXPLOSION),
-        )
-        assertEquals(
-            Cause.ITEM_DESTROY_EXPLOSION to Confidence.FACT,
-            end(EntityRemoveEvent.Cause.DEATH, DamageCause.ENTITY_EXPLOSION),
-        )
+        mapOf(
+            DamageCause.LAVA to Cause.ITEM_DESTROY_FIRE,
+            DamageCause.FIRE_TICK to Cause.ITEM_DESTROY_FIRE,
+            DamageCause.FIRE to Cause.ITEM_DESTROY_FIRE,
+            DamageCause.CONTACT to Cause.ITEM_DESTROY_CACTUS,
+            DamageCause.BLOCK_EXPLOSION to Cause.ITEM_DESTROY_EXPLOSION,
+            DamageCause.ENTITY_EXPLOSION to Cause.ITEM_DESTROY_EXPLOSION,
+        ).forEach { (damage, cause) ->
+            assertEquals(cause to Confidence.FACT, end(EntityRemoveEvent.Cause.DEATH, damage), "$damage")
+        }
     }
 
     @Test

@@ -199,14 +199,7 @@ class CodecTest {
         val holder = PlayerInv(alice, 0)
         val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
         val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
-        for (kept in 0 until value.size) {
-            val torn = value.copyOf(kept)
-            assertNull(EntryCodec.decodeOrNull(key, torn, registries)) { "$kept bytes of a record decoded" }
-        }
-        for (kept in 0 until key.size) {
-            val torn = key.copyOf(kept)
-            assertNull(EntryCodec.decodeOrNull(torn, value, registries)) { "$kept bytes of a key decoded" }
-        }
+        assertEveryPrefixRejected(key, value) { k, v -> EntryCodec.decodeOrNull(k, v, registries) }
     }
 
     // Causes are added without touching the record version, so a row from a newer build lands in a

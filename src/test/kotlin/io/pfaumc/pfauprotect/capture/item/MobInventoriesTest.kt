@@ -10,6 +10,8 @@ import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.ItemKey
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.ComposterBlock
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -28,8 +30,13 @@ class MobInventoriesTest {
 
     private fun <T> bag(items: List<T>) = items.groupingBy { it }.eachCount()
 
-    private fun changes(before: List<Pocket>, after: List<Pocket>) =
-        bag(pocketChanges(before, after).map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) })
+    private fun signed(changes: List<SlotChange>) =
+        changes.map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) }
+
+    private fun moved(shifts: List<Pair<Pocket, Pocket>>) =
+        shifts.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) }
+
+    private fun changes(before: List<Pocket>, after: List<Pocket>) = bag(signed(pocketChanges(before, after)))
 
     // Bread baked from wheat in one slot is two changes, and a stack only partly spent is one.
     @Test
@@ -66,7 +73,7 @@ class MobInventoriesTest {
     @Test
     fun `a pocket packed by loading is the same stacks in other slots and what changed besides`() {
         fun moves(before: List<Pocket>, after: List<Pocket>) =
-            bag(pocketShifts(before, after).first.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) })
+            bag(moved(pocketShifts(before, after).first))
         val before = listOf(Pocket(0, wheat, 2), Pocket(2, bread, 5), Pocket(3, hoe, 1))
         val after = listOf(Pocket(0, wheat, 2), Pocket(1, bread, 5), Pocket(2, hoe, 1))
 
@@ -76,10 +83,8 @@ class MobInventoriesTest {
 
         val carrot = key("carrot")
         val ate = pocketShifts(listOf(Pocket(0, carrot, 12)) + after.map { Pocket(it.slot + 1, it.key, it.count) }, after)
-        assertEquals(bag(listOf(Triple("wheat", 1, 0), Triple("bread", 2, 1), Triple("hoe", 3, 2))), bag(ate.first.map { (was, now) ->
-            Triple(String(was.key.form), was.slot, now.slot)
-        }))
-        assertEquals(listOf(Triple(0, "carrot", -12)), ate.second.map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) })
+        assertEquals(bag(listOf(Triple("wheat", 1, 0), Triple("bread", 2, 1), Triple("hoe", 3, 2))), bag(moved(ate.first)))
+        assertEquals(listOf(Triple(0, "carrot", -12)), signed(ate.second))
     }
 
     // A villager that ate its bread and part of its carrots just before it was saved: the carrots left
@@ -88,7 +93,6 @@ class MobInventoriesTest {
     @Test
     fun `a stack partly eaten and moved down by loading is a move and a loss`() {
         val carrot = key("carrot")
-        fun signed(changes: List<SlotChange>) = bag(changes.map { Triple(it.slot, String(it.key.form), if (it.gain) it.qty else -it.qty) })
         val (moves, rest) = pocketShifts(
             listOf(Pocket(0, bread, 3), Pocket(1, carrot, 12), Pocket(2, wheat, 5)),
             listOf(Pocket(0, carrot, 7), Pocket(1, wheat, 5)),
@@ -96,14 +100,14 @@ class MobInventoriesTest {
 
         assertEquals(
             bag(listOf(Triple("wheat", 2, 1), Triple("carrot", 1, 0))),
-            bag(moves.map { (was, now) -> Triple(String(was.key.form), was.slot, now.slot) }),
+            bag(moved(moves)),
         )
         assertEquals(7, moves.single { (was, _) -> String(was.key.form) == "carrot" }.second.count)
-        assertEquals(bag(listOf(Triple(0, "bread", -3), Triple(1, "carrot", -5))), signed(rest))
+        assertEquals(bag(listOf(Triple(0, "bread", -3), Triple(1, "carrot", -5))), bag(signed(rest)))
 
         val (none, up) = pocketShifts(listOf(Pocket(0, carrot, 5)), listOf(Pocket(1, carrot, 3)))
         assertEquals(emptyList<Pair<Pocket, Pocket>>(), none)
-        assertEquals(bag(listOf(Triple(0, "carrot", -5), Triple(1, "carrot", 3))), signed(up))
+        assertEquals(bag(listOf(Triple(0, "carrot", -5), Triple(1, "carrot", 3))), bag(signed(up)))
     }
 
     // Three bread from nothing leaves a villager where it was, three bread and a carrot from nothing
@@ -202,11 +206,11 @@ class MobInventoriesTest {
     // Only the first is a planting out of its pocket.
     @Test
     fun `a planting is a seed set into an empty cell and a composter filling up is not`() {
-        val air = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState()
-        val wheat = net.minecraft.world.level.block.Blocks.WHEAT.defaultBlockState()
-        val composter = net.minecraft.world.level.block.Blocks.COMPOSTER.defaultBlockState()
+        val air = Blocks.AIR.defaultBlockState()
+        val wheat = Blocks.WHEAT.defaultBlockState()
+        val composter = Blocks.COMPOSTER.defaultBlockState()
         assertTrue(planting(air, wheat))
-        assertFalse(planting(composter, composter.setValue(net.minecraft.world.level.block.ComposterBlock.LEVEL, 4)))
+        assertFalse(planting(composter, composter.setValue(ComposterBlock.LEVEL, 4)))
         assertFalse(planting(wheat, air))
     }
 }

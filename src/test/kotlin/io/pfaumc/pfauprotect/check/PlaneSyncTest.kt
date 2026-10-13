@@ -31,39 +31,16 @@ class PlaneSyncTest : BothPlanes() {
         sync = PlaneSync(shared, logs)
     }
 
-    private fun reopen() {
-        closeAll()
-        openPlanes()
-    }
-
     // The store only ever clamps a stored time forward, so a row written here can never be older than
     // one written before it: within a test the calls have to run oldest first.
     private fun blockRow(x: Int, y: Int, z: Int, before: String, after: String, ts: Long = longAgo) {
-        log.submit(
-            listOf(
-                BlockChange(
-                    x = x,
-                    y = y,
-                    z = z,
-                    before = before,
-                    after = after,
-                    cause = if (after == AIR || after == WATER) Cause.BLK_PLAYER_BREAK else Cause.BLK_PLAYER_PLACE,
-                    timestamp = ts,
-                    actor = alice,
-                )
-            )
-        )
+        val cause = if (after == AIR || after == WATER) Cause.BLK_PLAYER_BREAK else Cause.BLK_PLAYER_PLACE
+        log.submit(listOf(BlockChange(x, y, z, before, after, cause, ts, actor = alice)))
     }
 
     private fun standAndFall(x: Int, y: Int, z: Int, ts: Long = longAgo) {
         blockRow(x, y, z, AIR, STONE, ts)
         blockRow(x, y, z, STONE, AIR, ts)
-    }
-
-    private fun writeRawEntry(key: ByteArray, value: ByteArray) {
-        closeAll()
-        rawPut(dir.resolve("items"), "entries", key, value)
-        openPlanes()
     }
 
     @Test
@@ -241,7 +218,9 @@ class PlaneSyncTest : BothPlanes() {
         drainBoth()
         val key = EntryCodec.key(WorldBlock(world, 6, 64, 6), longAgo + 1, 9999, 0, shared.registries)
 
-        writeRawEntry(key, byteArrayOf(0x01))
+        closeAll()
+        rawPut(dir.resolve("items"), "entries", key, byteArrayOf(0x01))
+        openPlanes()
 
         val report = assertPlanesAgree(now)
 
@@ -293,7 +272,8 @@ class PlaneSyncTest : BothPlanes() {
         assertEquals(1, first.checked)
         assertFalse(first.reachedEnd)
 
-        reopen()
+        closeAll()
+        openPlanes()
 
         val rest = sync.pass(100, now)
 
