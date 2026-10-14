@@ -3,6 +3,7 @@ package io.pfaumc.pfauprotect.rollback
 import io.pfaumc.pfauprotect.AIR
 import io.pfaumc.pfauprotect.STONE
 import io.pfaumc.pfauprotect.DIRT
+import io.pfaumc.pfauprotect.SOURCE_WATER
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.T0
@@ -100,7 +101,7 @@ class RollbackRulesTest {
         assertTrue(settle(LAVA, listOf(burnt)).conflict)
         // Her water ran in, became a source by itself between two others, and her sponge drank it twice
         // over: the source the walk meets where her row left a flow is the same water.
-        val drunk = settle(AIR, listOf(step("minecraft:water[level=0]", AIR), step("minecraft:water[level=0]", AIR), step(AIR, "minecraft:water[level=3]")))
+        val drunk = settle(AIR, listOf(step(SOURCE_WATER, AIR), step(SOURCE_WATER, AIR), step(AIR, "minecraft:water[level=3]")))
         assertEquals(AIR, drunk.back?.before)
         assertFalse(drunk.conflict)
     }
@@ -250,13 +251,15 @@ class RollbackRulesTest {
         assertEquals("minecraft:redstone_wire[east=side,north=none,power=0,south=side,west=none]", quiet("minecraft:redstone_wire[east=side,north=none,power=15,south=side,west=none]"))
         assertEquals("minecraft:observer[facing=north,powered=false]", quiet("minecraft:observer[facing=north,powered=true]"))
         assertEquals("minecraft:redstone_torch[lit=true]", quiet("minecraft:redstone_torch[lit=false]"))
-        assertEquals("minecraft:lever[face=floor,facing=east,powered=true]", quiet("minecraft:lever[face=floor,facing=east,powered=true]"))
-        assertEquals("minecraft:light_weighted_pressure_plate[power=4]", quiet("minecraft:light_weighted_pressure_plate[power=4]"))
-        assertEquals("minecraft:dispenser[facing=east,triggered=true]", quiet("minecraft:dispenser[facing=east,triggered=true]"))
         // A leaf's distance is its neighbours'; one a player placed keeps it, never decaying anyway.
         assertEquals("minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]", quiet("minecraft:oak_leaves[distance=7,persistent=false,waterlogged=false]"))
-        assertEquals("minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]", quiet("minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]"))
-        assertEquals("minecraft:stone", quiet("minecraft:stone"))
+        for (kept in listOf(
+            "minecraft:lever[face=floor,facing=east,powered=true]",
+            "minecraft:light_weighted_pressure_plate[power=4]",
+            "minecraft:dispenser[facing=east,triggered=true]",
+            "minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]",
+            "minecraft:stone",
+        )) assertEquals(kept, quiet(kept))
     }
 
     @Test

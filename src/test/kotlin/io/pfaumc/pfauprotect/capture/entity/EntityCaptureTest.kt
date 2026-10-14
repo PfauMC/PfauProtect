@@ -132,17 +132,13 @@ class EntityCaptureTest : BothPlanes() {
         val capture = capture()
         val mob = dying(ground, 0f, ::starve)
         summoned.appeared(mob.uniqueId, alice)
-        repeat(2) { capture.onDeath(EntityDeathEvent(mob, stub(DamageSource::class.java), mutableListOf())) }
-        runTasks()
-        log.drain()
+        die(capture, mob, heard = 2)
         assertEquals(1, rowsHere().count { it.uuid == mob.uniqueId })
 
         val takenAway = dying(ground, 0f, ::starve)
         summoned.appeared(takenAway.uniqueId, alice)
         capture.forget(takenAway.uniqueId)
-        capture.onDeath(EntityDeathEvent(takenAway, stub(DamageSource::class.java), mutableListOf()))
-        runTasks()
-        log.drain()
+        die(capture, takenAway)
         assertEquals(0, rowsHere().count { it.uuid == takenAway.uniqueId })
     }
 
@@ -194,12 +190,16 @@ class EntityCaptureTest : BothPlanes() {
 
     private fun rowsHere() = log.entitiesAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows
 
+    private fun die(capture: EntityCapture, mob: Dying, heard: Int = 1) {
+        repeat(heard) { capture.onDeath(EntityDeathEvent(mob, stub(DamageSource::class.java), mutableListOf())) }
+        runTasks()
+        log.drain()
+    }
+
     private fun mobDies(damage: (Dying) -> EntityDamageEvent, fell: Float = 0f): EntityRow {
         val capture = capture()
         val mob = dying(ground, fell, damage)
-        capture.onDeath(EntityDeathEvent(mob, stub(DamageSource::class.java), mutableListOf()))
-        runTasks()
-        log.drain()
+        die(capture, mob)
         return rowsHere().single { it.uuid == mob.uniqueId }
     }
 

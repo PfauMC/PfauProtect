@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.world
 
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
@@ -24,7 +25,6 @@ class MobInventoriesTest {
     private val wheat = key("wheat")
     private val bread = key("bread")
     private val hoe = key("hoe", 12)
-    private val world = UUID.randomUUID()
 
     private fun slot(i: Int): Holder = Container(world, 0, 64, 0, i)
 
@@ -191,12 +191,7 @@ class MobInventoriesTest {
         assertEquals(listOf(slot(1) to 10), golemSlots(previous, now, bread.form, took = true, moved = 10))
         assertEquals(emptyList<Pair<Holder, Int>>(), golemSlots(now, now, bread.form, took = false, moved = 5))
         assertEquals(emptyList<Pair<Holder, Int>>(), golemSlots(null, now, bread.form, took = false, moved = 5))
-    }
-
-    @Test
-    fun `a golem's move is never more than its hand changed by`() {
-        val previous = mapOf(slot(0) to Stack(wheat, 16))
-
+        // The chest lost 16 wheat but the hand only gained 10: the move is capped at what the hand shows.
         assertEquals(listOf(slot(0) to 10), golemSlots(previous, emptyMap(), wheat.form, took = true, moved = 10))
     }
 

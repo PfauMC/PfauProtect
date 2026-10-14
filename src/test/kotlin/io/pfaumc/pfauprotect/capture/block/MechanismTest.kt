@@ -89,47 +89,51 @@ class MechanismTest {
     }
 
     @Test
-    fun `bone meal spent by a dispenser leaves its slot`() {
-        val before = listOf(null, held("bone_meal", 8))
-        val after = listOf(null, held("bone_meal", 7))
-        assertEquals(setOf("1 -1 bone_meal"), dispenseChanges(before, after, 1, ejected = 0).described())
+    fun `what a dispenser spends or fills changes only the slots it touched`() {
+        data class Case(val name: String, val before: List<Stack?>, val after: List<Stack?>, val slot: Int, val expected: Set<String>)
+        val cases = listOf(
+            Case(
+                "bone meal spent leaves its slot",
+                listOf(null, held("bone_meal", 8)), listOf(null, held("bone_meal", 7)), 1,
+                setOf("1 -1 bone_meal"),
+            ),
+            Case(
+                "a bucket filled changes in its own slot",
+                listOf(held("bucket", 1)), listOf(held("water_bucket", 1)), 0,
+                setOf("0 -1 bucket", "0 +1 water_bucket"),
+            ),
+            Case(
+                "a bottle filled from a stack lands in another slot as the product",
+                listOf(held("glass_bottle", 4), null, held("glass_bottle", 2)),
+                listOf(held("glass_bottle", 3), held("potion", 1), held("glass_bottle", 2)), 0,
+                setOf("0 -1 glass_bottle", "1 +1 potion"),
+            ),
+        )
+        for (case in cases) {
+            assertEquals(case.expected, dispenseChanges(case.before, case.after, case.slot, ejected = 0).described(), case.name)
+        }
     }
 
     @Test
-    fun `a bucket filled by a dispenser changes in its own slot`() {
-        val before = listOf(held("bucket", 1))
-        val after = listOf(held("water_bucket", 1))
-        assertEquals(setOf("0 -1 bucket", "0 +1 water_bucket"), dispenseChanges(before, after, 0, ejected = 0).described())
-    }
-
-    @Test
-    fun `a bottle filled from a stack lands in another slot as the product`() {
-        val before = listOf(held("glass_bottle", 4), null, held("glass_bottle", 2))
-        val after = listOf(held("glass_bottle", 3), held("potion", 1), held("glass_bottle", 2))
-        assertEquals(setOf("0 -1 glass_bottle", "1 +1 potion"), dispenseChanges(before, after, 0, ejected = 0).described())
-    }
-
-    @Test
-    fun `an empty container takes the whole stack into its first slot`() {
-        assertEquals(Fitting(0, 8), Placement.fit(chest(), stone(8), null))
-    }
-
-    @Test
-    fun `a stack merges into the first slot already holding its form`() {
-        val destination = chest(fill = mapOf(0 to dirt(1), 1 to stone(60)))
-        assertEquals(Fitting(1, 4), Placement.fit(destination, stone(4), null))
-    }
-
-    @Test
-    fun `a container with no room for the form takes nothing`() {
-        val full = chest(size = 3, fill = mapOf(0 to dirt(64), 1 to dirt(64), 2 to dirt(64)))
-        assertNull(Placement.fit(full, stone(1), null))
-    }
-
-    @Test
-    fun `only the room summed over every slot the form can reach counts as moved`() {
-        val spread = chest(size = 3, fill = mapOf(0 to stone(60), 1 to dirt(64), 2 to stone(61)))
-        assertEquals(Fitting(0, 7), Placement.fit(spread, stone(20), null))
+    fun `a container takes a stack where its form fits and counts only the room there is`() {
+        val cases = listOf(
+            Triple("an empty container takes the whole stack into its first slot", chest() to stone(8), Fitting(0, 8)),
+            Triple(
+                "a stack merges into the first slot already holding its form",
+                chest(fill = mapOf(0 to dirt(1), 1 to stone(60))) to stone(4), Fitting(1, 4),
+            ),
+            Triple(
+                "a container with no room for the form takes nothing",
+                chest(size = 3, fill = mapOf(0 to dirt(64), 1 to dirt(64), 2 to dirt(64))) to stone(1), null,
+            ),
+            Triple(
+                "only the room summed over every slot the form can reach counts as moved",
+                chest(size = 3, fill = mapOf(0 to stone(60), 1 to dirt(64), 2 to stone(61))) to stone(20), Fitting(0, 7),
+            ),
+        )
+        for ((name, input, expected) in cases) {
+            assertEquals(expected, Placement.fit(input.first, input.second, null), name)
+        }
     }
 
     @Test
@@ -245,7 +249,6 @@ class MechanismTest {
         listener.onCook(BlockCookEvent(furnaceBlock(), at, out))
 
         // One call: the two halves have to share a transaction or neither names the other.
-        assertEquals(1, written.size, "$written")
         val transaction = written.single()
         assertEquals(2, transaction.size)
         assertTrue(transaction.all { it.kind == Kind.MUTATE && it.cause == Cause.SMELT }, "$transaction")

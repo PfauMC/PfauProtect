@@ -143,23 +143,6 @@ class BlockStoreTest : BothPlanes() {
         id(RegistryNamespace.PLAYER, alice)
     }
 
-    @Test
-    fun `an entity row written before deaths were kept still reads`() {
-        val names = entityNames()
-        val key = BlockCodec.key(1, 2, 3, T0, 4, 0)
-        val value = byteArrayOf(
-            // version 0, inferred, actor present, payload before present
-            0x38, 0x00, 0xD2.toByte(), 0x01, *sheepBytes, 0x01, 0xAC.toByte(), 0x02,
-        )
-        val row = EntityRow(
-            1, 2, 3, T0, 4, 0, EntityKind.REMOVED, Cause.BLK_TNT, "minecraft:sheep", sheep,
-            Confidence.INFERRED, alice, payloadBefore = 300,
-        )
-
-        assertEquals(row, EntityCodec.decodeOrNull(key, value, names))
-        assertArrayEquals(value, EntityCodec.value(row, names))
-    }
-
     private val firstDrop = UUID.fromString("00000000-0000-4000-8000-0000000000d1")
     private val secondDrop = UUID.fromString("00000000-0000-4000-8000-0000000000d2")
     private val deathKey = BlockCodec.key(1, 2, 3, T0, 4, 0)
@@ -173,16 +156,33 @@ class BlockStoreTest : BothPlanes() {
         0x02, 0x03,
     )
 
+    // Only a row with a damage type or a dealer is written in the longer version; one of the two alone
+    // writes zero for the other.
     @Test
-    fun `an entity death keeps its drops, its damage type and what dealt it through the bytes`() {
+    fun `entity rows read and write their pinned bytes`() {
         val names = entityNames()
-        val row = EntityRow(
-            1, 2, 3, T0, 4, 0, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:sheep", sheep,
-            actor = alice, drops = listOf(firstDrop, secondDrop), death = "minecraft:mob_attack", via = "minecraft:wolf",
+        val legacy = EntityRow(
+            1, 2, 3, T0, 4, 0, EntityKind.REMOVED, Cause.BLK_TNT, "minecraft:sheep", sheep,
+            Confidence.INFERRED, alice, payloadBefore = 300,
         )
-
-        assertEquals(row, EntityCodec.decodeOrNull(deathKey, deathValue, names))
-        assertArrayEquals(deathValue, EntityCodec.value(row, names))
+        val bare = EntityRow(
+            1, 2, 3, T0, 4, 0, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:sheep", sheep,
+            actor = alice, drops = listOf(firstDrop, secondDrop),
+        )
+        val shapes = mapOf(
+            legacy to byteArrayOf(
+                // version 0, inferred, actor present, payload before present
+                0x38, 0x00, 0xD2.toByte(), 0x01, *sheepBytes, 0x01, 0xAC.toByte(), 0x02,
+            ),
+            bare.copy(death = "minecraft:mob_attack", via = "minecraft:wolf") to deathValue,
+            bare to deathValue.copyOf(deathValue.size - 2).also { it[0] = 0x90.toByte() },
+            bare.copy(death = "minecraft:fall") to deathValue.copyOf().also { it[it.size - 2] = 0x01; it[it.size - 1] = 0 },
+            bare.copy(via = "minecraft:wolf") to deathValue.copyOf().also { it[it.size - 2] = 0 },
+        )
+        for ((row, bytes) in shapes) {
+            assertArrayEquals(bytes, EntityCodec.value(row, names)) { "$row" }
+            assertEquals(row, EntityCodec.decodeOrNull(deathKey, bytes, names)) { "$row" }
+        }
     }
 
     @Test
@@ -291,26 +291,6 @@ class BlockStoreTest : BothPlanes() {
         assertEquals(setOf(listOf(5, 64, 6)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
     }
 
-    // Only a row with a damage type or a dealer is written in the longer version; one of the two alone
-    // writes zero for the other.
-    @Test
-    fun `an entity death without a damage type or a dealer is written without them`() {
-        val names = entityNames()
-        val bare = EntityRow(
-            1, 2, 3, T0, 4, 0, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:sheep", sheep,
-            actor = alice, drops = listOf(firstDrop, secondDrop),
-        )
-        val shapes = mapOf(
-            bare to deathValue.copyOf(deathValue.size - 2).also { it[0] = 0x90.toByte() },
-            bare.copy(death = "minecraft:fall") to deathValue.copyOf().also { it[it.size - 2] = 0x01; it[it.size - 1] = 0 },
-            bare.copy(via = "minecraft:wolf") to deathValue.copyOf().also { it[it.size - 2] = 0 },
-        )
-        for ((row, bytes) in shapes) {
-            assertArrayEquals(bytes, EntityCodec.value(row, names)) { "$row" }
-            assertEquals(row, EntityCodec.decodeOrNull(deathKey, bytes, names))
-        }
-    }
-
     @Test
     fun `a base from before the entity plane opens and gains it`() {
         log.submit(listOf(placed(8, 64, 8, ts = T0)))
@@ -332,9 +312,7 @@ class BlockStoreTest : BothPlanes() {
 
     private val everyBlockFamily = listOf("by_actor", "default", "entities", "meta", "rows")
 
-    // The stamp is the only thing that keeps an older build from reading a base whose families it does
-    // not know. This is only a reminder: when a family is added or dropped and this fails, the fix is a
-    // new version number, not just an edit to the list.
+    // Fails when the families change: bump the schema version, don't just edit the list.
     @Test
     fun `a fresh base is stamped with the version that matches its families`() {
         whileClosed { base ->

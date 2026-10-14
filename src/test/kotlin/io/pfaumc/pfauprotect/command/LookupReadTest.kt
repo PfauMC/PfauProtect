@@ -50,7 +50,6 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 // block plane nobody can check.
 @ExtendWith(Vanilla::class)
 class LookupReadTest : BothPlanes() {
-    override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000005")
     private val stone = byteArrayOf(3)
     private val codec by lazy { ItemFormCodec(shared.registries, ServerRegistries.access) }
 

@@ -161,7 +161,6 @@ class LookupTest {
         assertEquals(null, spanOrNull("1h-1h"))
     }
 
-    // The filters a lookup narrows by besides place and time.
     @Test
     fun `amounts, undone rows, theft and a count are understood`() {
         assertEquals(5..Int.MAX_VALUE, amountOrNull(">=5"))

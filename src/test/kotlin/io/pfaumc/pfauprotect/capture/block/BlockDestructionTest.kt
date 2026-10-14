@@ -38,7 +38,6 @@ import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import org.bukkit.ExplosionResult
 import org.bukkit.Location
-import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.block.BlockState
 import org.bukkit.block.data.BlockData
@@ -127,9 +126,8 @@ class BlockDestructionTest : BothPlanes() {
         before: BlockData,
         after: String,
         remembered: ByteArray? = null,
-        went: WorldBlock? = null,
     ): List<Transfer> {
-        val site = Site(blockStub(world, at.x, at.y, at.z, before), before, after, payload = null, went = went)
+        val site = Site(blockStub(world, at.x, at.y, at.z, before), before, after, payload = null)
         return listener.released(site, remembered, Cause.BLK_FADE, null, now)
     }
 
@@ -346,7 +344,6 @@ class BlockDestructionTest : BothPlanes() {
         assertArrayEquals(sandForm, move.form)
         assertEquals(Cause.BLK_FALL_LAND, move.cause)
         assertEquals(bob, move.actor)
-        // The guess is about who, not whether: the sand did land here.
         assertEquals(Confidence.FACT, move.confidence)
 
         shared.submit(listOf(move))

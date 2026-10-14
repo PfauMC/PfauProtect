@@ -138,11 +138,8 @@ class StorageTest : OneLedger() {
         assertEquals(listOf(intoVoid), log.transactionEntries(intoVoid))
     }
 
-    // The sweep resumes by seeking to the key it stopped at, and under a prefix extractor a seek is
-    // answered per prefix: a memtable holding none of the prefix sought is skipped whole. So a row
-    // written after the pause, under a prefix of its own and not yet flushed, is exactly what a walk
-    // in prefix mode stops being able to see — and the sweep going quiet is the one failure it must
-    // not have. Asking for total order is what keeps it honest.
+    // A resumed sweep seeks per prefix, so an unflushed row under a fresh prefix stays invisible unless the
+    // walk asks for total order.
     @Test
     fun `a resumed sweep sees a row written since the pause and never flushed`() {
         val paused = log.sweep(2)
@@ -151,8 +148,6 @@ class StorageTest : OneLedger() {
         // Everything above is now on disk and the memtable below is empty.
         reopen()
 
-        // Neither end shares a prefix with the row the walk stopped at, so nothing puts that prefix
-        // into the fresh memtable alongside this row.
         val position = WorldBlock(world, 900, 40, 900)
         log.submit(Transfer(Cause.BLOCK_DROP, position, Void, cobblestone, null, 1, T0 + 90, actor = alice))
         log.drain()
@@ -325,9 +320,7 @@ class StorageTest : OneLedger() {
         "block_payloads", "compensated", "confiscations",
     )
 
-    // The stamp is the only thing that keeps an older build from reading a ledger whose families it
-    // does not know. This is only a reminder: when a family is added or dropped and this fails, the fix
-    // is a new version number, not just an edit to the list.
+    // Fails when the families change: bump the schema version, don't just edit the list.
     @Test
     fun `a fresh ledger is stamped with the version that matches its families`() {
         reopen {
@@ -577,8 +570,8 @@ class StorageTest : OneLedger() {
         assertTrue(log.holderEntries(PlayerInv(UUID.randomUUID(), 0), 0, Long.MAX_VALUE).isEmpty())
     }
 
-    // The old answer to this was the size of the list, which is wrong both ways: a range that ends
-    // exactly on the limit looks cut off, and rows the time window dropped look like room to spare.
+    // Not the size of the list: a range ending exactly on the limit is complete, and rows the time window
+    // dropped are not room to spare.
     @Test
     fun `a page says whether it ran out of rows or out of room`() {
         assertTrue(log.holderPage(aliceInv, 0, Long.MAX_VALUE, limit = 3).complete)
@@ -645,10 +638,8 @@ class StorageTest : OneLedger() {
         }
     }
 
-    // A prefix extractor changes what an iterator is allowed to return, and every read below answered
-    // with nothing at all the first time it met one. A scan may only be written the way these expect:
-    // bounded at both ends, seeking backwards to a key that still belongs to the prefix, and asking
-    // for total order wherever the prefix is too short for the extractor. This is the standing proof.
+    // Under a prefix extractor a scan must be bounded at both ends, seek backwards only to a key inside the
+    // prefix, and ask for total order wherever the prefix is shorter than the extractor.
     @Test
     fun `every scan still answers with the ledger under a prefix extractor`() {
         val position = WorldBlock(world, 100, 70, -200)
@@ -661,11 +652,10 @@ class StorageTest : OneLedger() {
         assertEveryScanAnswers(position)
 
         reopen()
-        assertTrue(sstFiles() > 0, "nothing was flushed, so the table's own prefix filter never had a turn")
+        val sstFiles = dir.toFile().listFiles().orEmpty().count { it.name.endsWith(".sst") }
+        assertTrue(sstFiles > 0, "nothing was flushed, so the table's own prefix filter never had a turn")
         assertEveryScanAnswers(position)
     }
-
-    private fun sstFiles(): Int = dir.toFile().listFiles().orEmpty().count { it.name.endsWith(".sst") }
 
     private fun assertEveryScanAnswers(position: WorldBlock) {
         // A position: its prefix is exactly the width the extractor is sized for, which is the case
@@ -725,9 +715,7 @@ class StorageTest : OneLedger() {
         assertNull(log.form(9999))
     }
 
-    // One movement the capture cannot encode is a bug in the capture. Letting it stop the writer would
-    // turn that single bad row into a session that records nothing at all from then on, and a ledger
-    // kept in order to be trusted must fail on the row rather than on everything after it.
+    // A row the capture cannot encode must cost only itself, not stop the writer.
     @Test
     fun `a movement that cannot be written costs only itself`() {
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 40))
@@ -739,7 +727,6 @@ class StorageTest : OneLedger() {
             .filter { it.itemFormId == log.forms.lookup(torch) }
         assertEquals(listOf(1, 3), landed.map { it.qty })
 
-        // Still alive afterwards: the next movement is written like nothing happened.
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 5, T0 + 43))
         log.drain()
         assertEquals(

@@ -3,6 +3,7 @@ package io.pfaumc.pfauprotect.rollback
 import io.pfaumc.pfauprotect.AIR
 import io.pfaumc.pfauprotect.STONE
 import io.pfaumc.pfauprotect.DIRT
+import io.pfaumc.pfauprotect.GRASS
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.BothPlanes
@@ -35,9 +36,7 @@ import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockChange
-import io.pfaumc.pfauprotect.storage.BlockCodec
 import io.pfaumc.pfauprotect.storage.BlockRow
-import io.pfaumc.pfauprotect.storage.rawPut
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -48,7 +47,6 @@ import java.util.UUID
 
 @ExtendWith(Vanilla::class)
 class RollbackTest : BothPlanes() {
-    override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000006")
     private val diamond = byteArrayOf(9)
 
     // Alice's dirt stair grew grass, which nobody answers for: the walk passes it and the dirt goes. Grass
@@ -56,12 +54,11 @@ class RollbackTest : BothPlanes() {
     // dirt still stops it.
     @Test
     fun `nature on a position being undone is walked past and a player still stops the walk`() {
-        val grass = "minecraft:grass_block[snowy=false]"
-        log.submit(listOf(BlockChange(1, 64, 1, DIRT, grass, Cause.BLK_GROW, T0)))
-        log.submit(listOf(BlockChange(1, 64, 1, grass, AIR, Cause.BLK_PLAYER_BREAK, T0 + 1, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, DIRT, GRASS, Cause.BLK_GROW, T0)))
+        log.submit(listOf(BlockChange(1, 64, 1, GRASS, AIR, Cause.BLK_PLAYER_BREAK, T0 + 1, actor = alice)))
         log.submit(listOf(BlockChange(1, 64, 1, AIR, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 2, actor = alice)))
-        log.submit(listOf(BlockChange(1, 64, 1, DIRT, grass, Cause.BLK_GROW, T0 + 3)))
-        log.submit(listOf(BlockChange(3, 64, 1, DIRT, grass, Cause.BLK_GROW, T0 + 3)))
+        log.submit(listOf(BlockChange(1, 64, 1, DIRT, GRASS, Cause.BLK_GROW, T0 + 3)))
+        log.submit(listOf(BlockChange(3, 64, 1, DIRT, GRASS, Cause.BLK_GROW, T0 + 3)))
         log.submit(listOf(BlockChange(5, 64, 1, AIR, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 2, actor = alice)))
         log.submit(listOf(BlockChange(5, 64, 1, DIRT, STONE, Cause.BLK_PLAYER_PLACE, T0 + 3, actor = bob)))
         log.drain()
@@ -69,8 +66,8 @@ class RollbackTest : BothPlanes() {
         val planned = around(rollbackFilter(alice))
         val stair = positions(planned).associateBy { it.at.x }
         assertEquals(setOf(1, 5), stair.keys)
-        assertEquals(listOf(DIRT to grass, AIR to DIRT, grass to AIR), stair.getValue(1).steps.map { it.before to it.after })
-        assertEquals(grass, settle(grass, stair.getValue(1).steps).back?.before)
+        assertEquals(listOf(DIRT to GRASS, AIR to DIRT, GRASS to AIR), stair.getValue(1).steps.map { it.before to it.after })
+        assertEquals(GRASS, settle(GRASS, stair.getValue(1).steps).back?.before)
         assertTrue(settle(STONE, stair.getValue(5).steps).conflict)
     }
 
@@ -96,14 +93,13 @@ class RollbackTest : BothPlanes() {
     // brings the grass back. Grass that died under nothing of his stays as the world left it.
     @Test
     fun `grass gone to dirt under a block taken away comes back`() {
-        val grass = "minecraft:grass_block[snowy=false]"
         log.submit(listOf(BlockChange(1, 65, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
-        log.submit(listOf(BlockChange(1, 64, 1, grass, DIRT, Cause.BLK_FADE, T0 + 50)))
-        log.submit(listOf(BlockChange(3, 64, 1, grass, DIRT, Cause.BLK_FADE, T0 + 50)))
+        log.submit(listOf(BlockChange(1, 64, 1, GRASS, DIRT, Cause.BLK_FADE, T0 + 50)))
+        log.submit(listOf(BlockChange(3, 64, 1, GRASS, DIRT, Cause.BLK_FADE, T0 + 50)))
         // Rolled back once: the planks are back, and the grass that died under them since is the world's.
         log.submit(listOf(BlockChange(1, 65, 5, "minecraft:oak_planks", AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
         log.submit(listOf(BlockChange(1, 65, 5, AIR, "minecraft:oak_planks", Cause.ROLLBACK, T0 + 10)))
-        log.submit(listOf(BlockChange(1, 64, 5, grass, DIRT, Cause.BLK_FADE, T0 + 60)))
+        log.submit(listOf(BlockChange(1, 64, 5, GRASS, DIRT, Cause.BLK_FADE, T0 + 60)))
         // Fire under the stone went out: a fade too, and never to be lit again.
         log.submit(listOf(BlockChange(1, 65, 3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
         log.submit(listOf(BlockChange(1, 64, 3, "minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]", AIR, Cause.BLK_FADE, T0 + 50)))
@@ -112,7 +108,7 @@ class RollbackTest : BothPlanes() {
         val planned = around(rollbackFilter(alice))
         val at = positions(planned).associateBy { Triple(it.at.x, it.at.y, it.at.z) }
         assertEquals(setOf(Triple(1, 65, 1), Triple(1, 64, 1), Triple(1, 65, 3), Triple(1, 65, 5)), at.keys)
-        assertEquals(grass, settle(DIRT, at.getValue(Triple(1, 64, 1)).steps).back?.before)
+        assertEquals(GRASS, settle(DIRT, at.getValue(Triple(1, 64, 1)).steps).back?.before)
     }
 
     // The griefer planted a sapling and a stalk of bamboo; both grew on their own after. Taking the planting
@@ -146,11 +142,10 @@ class RollbackTest : BothPlanes() {
     @Test
     fun `an earlier rollback on a position being undone is walked past`() {
         val door = "minecraft:oak_door[half=lower]"
-        val grass = "minecraft:grass_block[snowy=false]"
         log.submit(listOf(BlockChange(1, 64, 1, door, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
         log.submit(listOf(BlockChange(1, 64, 1, AIR, DIRT, Cause.BLK_PLAYER_PLACE, T0 + 1, actor = alice)))
-        log.submit(listOf(BlockChange(1, 64, 1, DIRT, grass, Cause.BLK_GROW, T0 + 2)))
-        log.submit(listOf(BlockChange(1, 64, 1, grass, AIR, Cause.ROLLBACK, T0 + 3)))
+        log.submit(listOf(BlockChange(1, 64, 1, DIRT, GRASS, Cause.BLK_GROW, T0 + 2)))
+        log.submit(listOf(BlockChange(1, 64, 1, GRASS, AIR, Cause.ROLLBACK, T0 + 3)))
         log.drain()
 
         val planned = around(rollbackFilter(alice))
@@ -164,10 +159,9 @@ class RollbackTest : BothPlanes() {
     // has nothing to do here and must not dig the dirt up for grass again.
     @Test
     fun `nature after an earlier rollback is not walked past`() {
-        val grass = "minecraft:grass_block[snowy=false]"
-        log.submit(listOf(BlockChange(1, 64, 1, grass, AIR, Cause.BLK_TNT, T0, actor = alice)))
-        log.submit(listOf(BlockChange(1, 64, 1, AIR, grass, Cause.ROLLBACK, T0 + 1)))
-        log.submit(listOf(BlockChange(1, 64, 1, grass, DIRT, Cause.BLK_FADE, T0 + 2)))
+        log.submit(listOf(BlockChange(1, 64, 1, GRASS, AIR, Cause.BLK_TNT, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, GRASS, Cause.ROLLBACK, T0 + 1)))
+        log.submit(listOf(BlockChange(1, 64, 1, GRASS, DIRT, Cause.BLK_FADE, T0 + 2)))
         log.drain()
 
         val planned = around(rollbackFilter(alice))
@@ -310,11 +304,8 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
         log.submit(listOf(BlockChange(2, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
         log.drain()
-        val unknown = BlockRow(2, 64, 1, T0 + 5, 999, 0, Cause.BLK_PLAYER_PLACE, 60_000, 60_001)
         logs.close(world)
-        val base = dir.resolve("blocks").resolve(world.toString())
-        rawPut(base, "rows", BlockCodec.key(1, 64, 1, T0 + 5, 998, 0), ByteArray(0))
-        rawPut(base, "rows", BlockCodec.key(2, 64, 1, T0 + 5, 999, 0), BlockCodec.value(unknown) { _, _ -> error("no actor") })
+        putUnreadableRows(torn = 1 to 1, unknown = 2 to 1, ts = T0 + 5)
         log = logs.open(world)
 
         val reader = RollbackReader(shared, logs)

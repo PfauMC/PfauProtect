@@ -2,6 +2,7 @@ package io.pfaumc.pfauprotect.attribution
 import io.pfaumc.pfauprotect.AIR
 import io.pfaumc.pfauprotect.STONE
 import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.blockAt
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.T0
@@ -11,11 +12,9 @@ import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.WorldBlock
-import io.pfaumc.pfauprotect.worldStub
 import net.minecraft.world.item.Items
 import org.bukkit.Location
 import org.bukkit.World
-import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.damage.DamageSource
@@ -423,7 +422,7 @@ class AttributionTest : BothPlanes() {
         val listener = EntityOriginListener(attribution, origins)
         val ground = stub(World::class.java, mapOf(
             "getUID" to world,
-            "getBlockAt" to { _: Array<out Any?> -> stub(Block::class.java, mapOf("getWorld" to worldStub(world), "getX" to 3, "getY" to 64, "getZ" to 3)) },
+            "getBlockAt" to { _: Array<out Any?> -> blockAt(world, 3, 64, 3) },
         ))
         fun cow() = stub(Cow::class.java, mapOf("getUniqueId" to UUID.randomUUID(), "getLocation" to { _: Array<out Any?> -> Location(ground, 3.5, 64.0, 3.5) }))
         val egg = CraftItemStack.asBukkitCopy(NmsItemStack(Items.COW_SPAWN_EGG))

@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.world
 import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
@@ -18,12 +20,10 @@ import org.junit.jupiter.params.provider.CsvSource
 import java.util.UUID
 
 class IntentTest {
-    private val world = UUID.randomUUID()
-    private val player = UUID.randomUUID()
     private val ground = ItemEntityRef(UUID.randomUUID())
     private val placed = WorldBlock(world, 10, 65, -3)
 
-    private fun bag(slot: Int) = PlayerInv(player, slot)
+    private fun bag(slot: Int) = PlayerInv(alice, slot)
 
     private fun lost(name: String, qty: Int, from: Holder = bag(0)) =
         Edge(from, Void, key(name), qty, Confidence.INFERRED)
@@ -38,7 +38,7 @@ class IntentTest {
         val clear = Intent(Cause.CMD_CLEAR, to = Void, untilTick = 1)
         val give = Intent(Cause.CMD_GIVE, from = Void, form = "stone".toByteArray(), untilTick = 1)
         val spent = HashSet<Intent>()
-        val moves = Intents.explain(listOf(lost("dirt", 5)), listOf(clear, give), player, used = spent::add)
+        val moves = Intents.explain(listOf(lost("dirt", 5)), listOf(clear, give), alice, used = spent::add)
         assertEquals(setOf(clear), spent)
         assertEquals(Cause.CMD_CLEAR, moves.single().cause)
     }
@@ -47,11 +47,11 @@ class IntentTest {
     fun `an intent explains a gain the pass could not pair`() {
         val moves = Intents.explain(
             listOf(gained("cobblestone", 3)),
-            listOf(Intent(Cause.PICKUP, from = ground, qty = 3, actor = player)),
-            player,
+            listOf(Intent(Cause.PICKUP, from = ground, qty = 3, actor = alice)),
+            alice,
         )
         assertEquals(
-            listOf(Move(ground, bag(0), key("cobblestone"), 3, Cause.PICKUP, Confidence.FACT, player)),
+            listOf(Move(ground, bag(0), key("cobblestone"), 3, Cause.PICKUP, Confidence.FACT, alice)),
             moves,
         )
     }
@@ -67,18 +67,18 @@ class IntentTest {
                 Move(bag(0), bag(1), key("stone"), 30, Cause.COLLECT_ALL, Confidence.FACT),
                 Move(bag(0), bag(2), key("stone"), 34, Cause.COLLECT_ALL, Confidence.FACT),
             ),
-            Intents.explain(edges, listOf(Intent(Cause.COLLECT_ALL)), player),
+            Intents.explain(edges, listOf(Intent(Cause.COLLECT_ALL)), alice),
         )
 
         val between = Edge(Container(world, 0, 64, 0, 0), Container(world, 0, 64, 0, 1), key("stone"), 5, Confidence.FACT)
-        assertEquals(causeOf(between), Intents.explain(listOf(between), listOf(Intent(Cause.COLLECT_ALL)), player).single().cause)
+        assertEquals(causeOf(between), Intents.explain(listOf(between), listOf(Intent(Cause.COLLECT_ALL)), alice).single().cause)
 
         val notLabels = listOf(
             Intent(Cause.CRAFT_RESULT, shift = Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER)),
             Intent(Cause.DEATH_DROP, recorded = true),
         )
         for (intent in notLabels) {
-            assertEquals(Cause.QUICK_MOVE, Intents.explain(edges.take(1), listOf(intent), player).single().cause, "${intent.cause}")
+            assertEquals(Cause.QUICK_MOVE, Intents.explain(edges.take(1), listOf(intent), alice).single().cause, "${intent.cause}")
         }
     }
 
@@ -86,10 +86,10 @@ class IntentTest {
     // end is theirs; that is still a movement they made.
     @Test
     fun `a closed window labels what the grid hands back`() {
-        val grid = EntitySlot(player, 1)
+        val grid = EntitySlot(alice, 1)
         val edges = listOf(Edge(grid, bag(5), key("diamond"), 9, Confidence.FACT))
 
-        val moves = Intents.explain(edges, listOf(Intent(Cause.MENU_CLOSE_RETURN)), player)
+        val moves = Intents.explain(edges, listOf(Intent(Cause.MENU_CLOSE_RETURN)), alice)
 
         assertEquals(listOf(Move(grid, bag(5), key("diamond"), 9, Cause.MENU_CLOSE_RETURN, Confidence.FACT)), moves)
     }
@@ -98,14 +98,14 @@ class IntentTest {
     // unexplained movements read as shift-clicks nobody could account for.
     @Test
     fun `an end nothing explains is named as turning up or going`() {
-        val moves = Intents.explain(listOf(gained("stone", 2), lost("dirt", 1)), emptyList(), player)
+        val moves = Intents.explain(listOf(gained("stone", 2), lost("dirt", 1)), emptyList(), alice)
         assertEquals(listOf(Cause.DIRECT_NEW_ITEM, Cause.ITEM_VANISHED), moves.map { it.cause })
     }
 
     @Test
     fun `a remainder nothing explains stays inferred and faces the void`() {
         val moves =
-            Intents.explain(listOf(lost("stone", 4)), listOf(Intent(Cause.PICKUP, from = ground)), player)
+            Intents.explain(listOf(lost("stone", 4)), listOf(Intent(Cause.PICKUP, from = ground)), alice)
         assertEquals(listOf(Move(bag(0), Void, key("stone"), 4, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
 
@@ -114,7 +114,7 @@ class IntentTest {
         val moves = Intents.explain(
             listOf(lost("stone", 5)),
             listOf(Intent(Cause.DROP_FROM_HAND, to = ground, qty = 2), Intent(Cause.BLOCK_PLACE, to = placed)),
-            player,
+            alice,
         )
         assertEquals(
             listOf(
@@ -130,7 +130,7 @@ class IntentTest {
         val moves = Intents.explain(
             listOf(lost("stone", 2), lost("dirt", 1, from = bag(1))),
             listOf(Intent(Cause.DROP_FROM_HAND, to = ground)),
-            player,
+            alice,
         )
         assertEquals(
             listOf(
@@ -145,7 +145,7 @@ class IntentTest {
     fun `a movement already written is swallowed rather than written again`() {
         assertEquals(
             emptyList<Move>(),
-            Intents.explain(listOf(lost("stone", 3)), listOf(Intent(Cause.DEATH_DROP, recorded = true)), player),
+            Intents.explain(listOf(lost("stone", 3)), listOf(Intent(Cause.DEATH_DROP, recorded = true)), alice),
         )
     }
 
@@ -157,21 +157,21 @@ class IntentTest {
                 Intent(Cause.DROP_FROM_HAND, to = ground, qty = 1),
                 Intent(Cause.DEATH_DROP, to = Void, qty = 1, recorded = true),
             ),
-            player,
+            alice,
         )
         assertEquals(emptyList<Move>(), moves)
     }
 
     @Test
     fun `a written movement swallows only the amount it was written for`() {
-        val cursor = PlayerCursor(player)
+        val cursor = PlayerCursor(alice)
         val moves = Intents.explain(
             listOf(lost("stone", 2), lost("stone", 1, from = cursor)),
             listOf(
                 Intent(Cause.DEATH_DROP, qty = 2, recorded = true),
                 Intent(Cause.DROP_FROM_HAND, to = ground, qty = 1),
             ),
-            player,
+            alice,
         )
         assertEquals(
             listOf(Move(cursor, ground, key("stone"), 1, Cause.DROP_FROM_HAND, Confidence.FACT)),
@@ -184,7 +184,7 @@ class IntentTest {
         val moves = Intents.explain(
             listOf(lost("stone", 1)),
             listOf(Intent(Cause.BLOCK_PLACE, to = placed, form = "dirt".toByteArray(), qty = 1)),
-            player,
+            alice,
         )
         assertEquals(listOf(Move(bag(0), Void, key("stone"), 1, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
@@ -195,7 +195,7 @@ class IntentTest {
         val moves = Intents.explain(
             listOf(Edge(chest, Void, key("stone"), 1, Confidence.INFERRED), lost("stone", 1)),
             listOf(Intent(Cause.DROP_FROM_HAND, to = ground, qty = 1)),
-            player,
+            alice,
         )
         assertEquals(
             listOf(
@@ -212,7 +212,7 @@ class IntentTest {
         val moves = Intents.explain(
             listOf(lost("stone", 1, from = stranger)),
             listOf(Intent(Cause.DROP_FROM_HAND, to = ground, qty = 1)),
-            player,
+            alice,
         )
         assertEquals(listOf(Move(stranger, Void, key("stone"), 1, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
     }
@@ -222,7 +222,7 @@ class IntentTest {
         fun handBack(losses: List<Edge>): Pair<List<Move>, List<Pair<Cause, Int>>> {
             val unspent = ArrayList<Pair<Cause, Int>>()
             val dropped = Intent(Cause.DROP_FROM_MENU, to = ground, form = "stone".toByteArray(), qty = 5)
-            val moves = Intents.explain(losses, listOf(dropped), player, { intent, qty -> unspent += intent.cause to qty })
+            val moves = Intents.explain(losses, listOf(dropped), alice, { intent, qty -> unspent += intent.cause to qty })
             return moves to unspent
         }
 
@@ -238,7 +238,7 @@ class IntentTest {
     @Test
     fun `one unspent intent is never written on its own authority`() {
         val place = Intent(Cause.BLOCK_PLACE, to = placed, form = "cobble".toByteArray(), qty = 1)
-        assertEquals(emptyList<Move>(), Intents.explain(emptyList(), listOf(place), player) { bag(3) })
+        assertEquals(emptyList<Move>(), Intents.explain(emptyList(), listOf(place), alice) { bag(3) })
     }
 
     // Two opposite movements that cancelled in one slot run through a slot of the player's: the one
@@ -254,13 +254,13 @@ class IntentTest {
         val handed = ArrayList<Cause>()
         val intents = listOf(
             Intent(Cause.BLOCK_PLACE, to = placed, form = "cobble".toByteArray(), qty = 2, holder = named(placedFrom)),
-            Intent(Cause.PICKUP, from = ground, form = "cobble".toByteArray(), qty = 2, actor = player, holder = named(pickedInto)),
+            Intent(Cause.PICKUP, from = ground, form = "cobble".toByteArray(), qty = 2, actor = alice, holder = named(pickedInto)),
         )
-        val moves = Intents.explain(emptyList(), intents, player, { intent, _ -> handed += intent.cause }) { bag(7) }
+        val moves = Intents.explain(emptyList(), intents, alice, { intent, _ -> handed += intent.cause }) { bag(7) }
         assertEquals(
             listOf(
                 Move(bag(through), placed, key("cobble"), 2, Cause.BLOCK_PLACE, Confidence.FACT),
-                Move(ground, bag(through), key("cobble"), 2, Cause.PICKUP, Confidence.FACT, player),
+                Move(ground, bag(through), key("cobble"), 2, Cause.PICKUP, Confidence.FACT, alice),
             ),
             moves,
         )
@@ -275,7 +275,7 @@ class IntentTest {
             Intent(Cause.DROP_FROM_HAND, to = ground, form = "cobble".toByteArray(), qty = 1),
             Intent(Cause.PICKUP, from = other, form = "cobble".toByteArray(), qty = 1),
         )
-        val moves = Intents.explain(emptyList(), intents, player, { intent, _ -> handed += intent.cause })
+        val moves = Intents.explain(emptyList(), intents, alice, { intent, _ -> handed += intent.cause })
         assertEquals(emptyList<Move>(), moves)
         assertEquals(setOf(Cause.DROP_FROM_HAND, Cause.PICKUP), handed.toSet())
         assertEquals(2, handed.size)
@@ -287,7 +287,7 @@ class IntentTest {
             Intent(Cause.BLOCK_PLACE, to = placed, qty = 1, holder = bag(3)),
             Intent(Cause.PICKUP, from = ground, form = "cobble".toByteArray(), qty = 1),
         )
-        assertEquals(emptyList<Move>(), Intents.explain(emptyList(), intents, player) { bag(3) })
+        assertEquals(emptyList<Move>(), Intents.explain(emptyList(), intents, alice) { bag(3) })
     }
 
     // An event that still knew the slot speaks for that slot only, whether it already wrote the row or
@@ -299,12 +299,12 @@ class IntentTest {
         val stone = "stone".toByteArray()
 
         val written = Intent(Cause.DEATH_DROP, form = stone, qty = 1, recorded = true, holder = bag(0))
-        assertEquals(listOf(vanished), Intents.explain(edges, listOf(written), player))
+        assertEquals(listOf(vanished), Intents.explain(edges, listOf(written), alice))
 
         val used = Intent(Cause.ITEM_USED, to = Void, form = stone, holder = bag(0))
         assertEquals(
             listOf(vanished, Move(bag(0), Void, key("stone"), 1, Cause.ITEM_USED, Confidence.FACT)),
-            Intents.explain(edges, listOf(used), player),
+            Intents.explain(edges, listOf(used), alice),
         )
     }
 
@@ -312,7 +312,7 @@ class IntentTest {
     fun `an intent that names both ends is not married to itself`() {
         val entity = ItemEntityRef(UUID.randomUUID())
         val both = Intent(Cause.PICKUP, from = entity, to = entity, form = "stone".toByteArray(), qty = 4)
-        val moves = Intents.explain(emptyList(), listOf(both), player) { bag(0) }
+        val moves = Intents.explain(emptyList(), listOf(both), alice) { bag(0) }
         assertEquals(emptyList<Move>(), moves)
     }
 
@@ -322,15 +322,15 @@ class IntentTest {
         val other = UUID.randomUUID()
         val mine = Intent(Cause.BLOCK_PLACE, to = placed, qty = 1)
         val theirs = Intent(Cause.PICKUP, from = ground, qty = 3)
-        queue.add(player, mine)
+        queue.add(alice, mine)
         queue.add(other, theirs)
 
-        assertEquals(listOf(mine), queue.take(player))
-        assertEquals(emptyList<Intent>(), queue.take(player))
+        assertEquals(listOf(mine), queue.take(alice))
+        assertEquals(emptyList<Intent>(), queue.take(alice))
 
-        queue.add(player, mine)
-        queue.forget(player)
-        assertEquals(emptyList<Intent>(), queue.take(player))
+        queue.add(alice, mine)
+        queue.forget(alice)
+        assertEquals(emptyList<Intent>(), queue.take(alice))
         assertEquals(listOf(theirs), queue.take(other))
     }
 }

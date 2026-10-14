@@ -13,7 +13,6 @@ import net.minecraft.world.item.enchantment.Enchantments
 import net.minecraft.world.item.enchantment.ItemEnchantments
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -25,17 +24,6 @@ import net.minecraft.core.registries.Registries as VanillaRegistries
 @ExtendWith(Vanilla::class)
 class ItemFormsTest {
     private val codec = testCodec(vanillaIds = true)
-
-    @Test
-    fun `explicitly removed damage stays in the form`() {
-        val stripped = ItemStack(Items.DIAMOND_SWORD)
-        stripped.remove(DataComponents.DAMAGE)
-
-        val encoded = codec.encode(stripped)
-        assertNull(encoded.damage)
-        assertFalse(encoded.form.contentEquals(codec.encode(ItemStack(Items.DIAMOND_SWORD)).form))
-        assertRoundTrip(stripped)
-    }
 
     // A compound is an open-addressing hash map, and "a" and "f" hash to the same slot at every table size
     // up to 16, so it walks them in the order they were put in. Keys that never collide would come out in
@@ -111,8 +99,11 @@ class ItemFormsTest {
 
         // The item, nothing added, two removed, then their ids in order.
         val pinned = byteArrayOf(0x01, 0x00, 0x02, 0x00, 0x01)
-        assertArrayEquals(pinned, ownCodec.encode(stripped).form)
+        val encoded = ownCodec.encode(stripped)
+        assertArrayEquals(pinned, encoded.form)
+        assertNull(encoded.damage)
         assertArrayEquals(pinned, ownCodec.encode(strippedInAnotherOrder).form)
+        assertRoundTrip(stripped)
     }
 
     private val String.bytes: ByteArray get() = toByteArray(Charsets.US_ASCII)
@@ -171,10 +162,8 @@ class ItemFormsTest {
         return enchantments.toImmutable()
     }
 
-    private fun customData(): CompoundTag {
-        val tag = CompoundTag()
-        tag.putString("owner", "pfau")
-        tag.putInt("charges", 4)
-        return tag
+    private fun customData() = CompoundTag().apply {
+        putString("owner", "pfau")
+        putInt("charges", 4)
     }
 }

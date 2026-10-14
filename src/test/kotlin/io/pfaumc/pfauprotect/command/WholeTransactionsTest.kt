@@ -41,8 +41,7 @@ class WholeTransactionsTest : OneLedger() {
 
         // Both halves already in hand must not double the answer: a break of a double block puts two
         // positions of one transaction on the same screen.
-        assertEquals(shown.toSet(), wholeTransactions(log, shown).toSet())
-        assertEquals(shown.size, wholeTransactions(log, shown).size)
+        assertEquals(shown, wholeTransactions(log, shown))
     }
 
     // An ordinary movement already names both ends on the one row the position holds, so pulling its

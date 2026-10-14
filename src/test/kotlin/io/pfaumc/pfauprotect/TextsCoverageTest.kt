@@ -9,10 +9,7 @@ import java.nio.file.Path
 import kotlin.io.path.extension
 import kotlin.io.path.readText
 
-/**
- * Scans the sources for `say("...")`, `LiteralMessage("...")` and `Refused("...")`, with what they fill in
- * set to a stand-in. A message built in a variable is not seen here; the live run with PPT_LANG=ru reads it.
- */
+// A message built in a variable is not seen here; the live run with PPT_LANG=ru catches it.
 class TextsCoverageTest {
     @AfterEach
     fun english() {

@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.world
 import io.pfaumc.pfauprotect.key
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
@@ -20,14 +22,12 @@ import java.util.UUID
 import kotlin.random.Random
 
 class DiffTest {
-    private val world = UUID.randomUUID()
-    private val player = UUID.randomUUID()
 
     private fun stack(name: String, count: Int, damage: Int? = null) = Stack(key(name, damage), count)
     private fun chest(slot: Int) = Container(world, 10, 64, -3, slot)
     private fun edge(from: Holder, to: Holder) = Edge(from, to, key("stone"), 1, Confidence.FACT)
-    private fun bag(slot: Int) = PlayerInv(player, slot)
-    private val cursor = PlayerCursor(player)
+    private fun bag(slot: Int) = PlayerInv(alice, slot)
+    private val cursor = PlayerCursor(alice)
 
     private fun seen(vararg rows: Pair<Holder, Stack>, containers: Set<UUID> = emptySet()) =
         Snapshot(mapOf(*rows), containers)
@@ -69,7 +69,7 @@ class DiffTest {
 
     @Test
     fun `the cause of an edge follows the ends it connects`() {
-        val ender = PlayerEnder(player, 0)
+        val ender = PlayerEnder(alice, 0)
         val mob = EntitySlot(UUID.randomUUID(), 0)
         val inside = Nested(UUID.randomUUID(), 0)
         val cases = listOf(
@@ -101,7 +101,7 @@ class DiffTest {
             seen(bag(0) to stack("cobble", 5)),
             seen(bag(0) to stack("cobble", 1), bag(1) to stack("cobble", 3), bag(9) to stack("cobble", 3)),
             intents,
-            player,
+            alice,
         )
         assertEquals(
             setOf(
@@ -109,7 +109,7 @@ class DiffTest {
                 Move(bag(0), bag(1), key("cobble"), 3, Cause.QUICK_MOVE, Confidence.FACT),
                 Move(entity, bag(9), key("cobble"), 3, Cause.PICKUP, Confidence.FACT),
             ),
-            Intents.explain(edges, intents, player).toSet(),
+            Intents.explain(edges, intents, alice).toSet(),
         )
     }
 
@@ -124,14 +124,14 @@ class DiffTest {
         val after = seen(bag(0) to stack("bundle", 1), bag(3) to stack("gold", 5), containers = setOf(bundle))
         val carried = before::sees
 
-        val edges = Netting.diff(before, after, listOf(drop), player, carried = carried)
+        val edges = Netting.diff(before, after, listOf(drop), alice, carried = carried)
 
         assertEquals(
             setOf(
                 Move(Nested(bundle, 0), dropped, key("gold"), 5, Cause.BUNDLE_DUMP, Confidence.FACT),
                 Move(Void, bag(3), key("gold"), 5, Cause.DIRECT_NEW_ITEM, Confidence.INFERRED),
             ),
-            Intents.explain(edges, listOf(drop), player, carried = carried).toSet(),
+            Intents.explain(edges, listOf(drop), alice, carried = carried).toSet(),
         )
     }
 
@@ -216,7 +216,7 @@ class DiffTest {
             seen(bag(1) to stack("stone", 1), bag(0) to stack("stone", 1)),
             seen(bag(5) to stack("stone", 1)),
             intents,
-            player,
+            alice,
         )
 
         assertEquals(
@@ -224,7 +224,7 @@ class DiffTest {
                 Move(bag(0), pile, key("stone"), 1, Cause.DROP_FROM_HAND, Confidence.FACT),
                 Move(Void, bag(5), key("stone"), 1, Cause.DIRECT_NEW_ITEM, Confidence.INFERRED),
             ),
-            Intents.explain(edges, intents, player).toSet(),
+            Intents.explain(edges, intents, alice).toSet(),
         )
     }
 
@@ -261,7 +261,7 @@ class DiffTest {
             val intents = List(random.nextInt(3)) { intent() }
             val unpaired = holders.filter { random.nextInt(5) == 0 }.toSet()
 
-            val edges = Netting.diff(before, after, intents, player, unpaired)
+            val edges = Netting.diff(before, after, intents, alice, unpaired)
 
             val expected = HashMap<Pair<Holder, String>, Int>()
             fun count(snapshot: Snapshot, sign: Int) {
@@ -281,7 +281,7 @@ class DiffTest {
                 }
                 return netted.filterValues { it != 0 }
             }
-            val moves = Intents.explain(edges, intents, player)
+            val moves = Intents.explain(edges, intents, alice)
 
             val context = "round $round: $edges"
             assertTrue(edges.all { it.qty > 0 }, context)

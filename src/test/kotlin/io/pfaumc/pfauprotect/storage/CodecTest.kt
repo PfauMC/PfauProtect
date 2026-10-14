@@ -221,8 +221,7 @@ class CodecTest {
     }
 
     // Written out by hand rather than taken from the encoder: a round trip cannot notice a layout
-    // change applied to both sides, and a silent change to the layout is a database that reads back
-    // as something other than what was written.
+    // change applied to both sides.
     @Test
     fun `stored bytes keep the layout the database was written with`() {
         assertArrayEquals(

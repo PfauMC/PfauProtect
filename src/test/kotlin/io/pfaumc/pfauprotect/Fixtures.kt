@@ -18,7 +18,9 @@ import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockLog
+import io.pfaumc.pfauprotect.storage.BlockCodec
 import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
@@ -26,6 +28,7 @@ import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.storage.fillTypeRegistries
+import io.pfaumc.pfauprotect.storage.rawPut
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.ItemStackTemplate
@@ -166,6 +169,15 @@ abstract class BothPlanes {
         confidence: Confidence = Confidence.FACT,
     ) {
         shared.submit(Transfer(Cause.BLOCK_DROP, WorldBlock(world, x, y, z), Void, form, null, 1, ts, confidence = confidence, actor = alice))
+    }
+
+    // The world's base must be closed: one row too short to decode, and one naming block states the ledger
+    // never interned, which only a hand-written row can do.
+    protected fun putUnreadableRows(torn: Pair<Int, Int>, unknown: Pair<Int, Int>, ts: Long) {
+        val base = dir.resolve("blocks").resolve(world.toString())
+        rawPut(base, "rows", BlockCodec.key(torn.first, 64, torn.second, ts, 998, 0), ByteArray(0))
+        val row = BlockRow(unknown.first, 64, unknown.second, ts, 999, 0, Cause.BLK_PLAYER_PLACE, 60_000, 60_001)
+        rawPut(base, "rows", BlockCodec.key(unknown.first, 64, unknown.second, ts, 999, 0), BlockCodec.value(row) { _, _ -> error("no actor") })
     }
 
     protected fun stateOf(blockData: String): Int? =

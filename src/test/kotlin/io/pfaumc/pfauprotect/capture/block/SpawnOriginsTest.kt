@@ -139,17 +139,11 @@ class SpawnOriginsTest {
     }
 
     @Test
-    fun `another form spawning nearby claims nothing`() {
+    fun `another form nearby or the same form out of reach claims nothing`() {
         origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 1)
-        origins.claim(UUID.randomUUID(), at, honeycomb, 1)
-        assertTrue(spawns.rows().isEmpty())
-    }
-
-    @Test
-    fun `a spawn out of reach claims nothing`() {
-        origins.expect(dropper, Cause.DROPPER_EJECT, stone, at, 1)
-        origins.claim(UUID.randomUUID(), Spot(world, 12.0, 70.0, 8.0), stone, 1)
-        origins.claim(UUID.randomUUID(), Spot(UUID.randomUUID(), 4.0, 70.0, 8.0), stone, 1)
+        assertEquals(0, origins.claim(UUID.randomUUID(), at, honeycomb, 1), "another form")
+        assertEquals(0, origins.claim(UUID.randomUUID(), Spot(world, 12.0, 70.0, 8.0), stone, 1), "too far")
+        assertEquals(0, origins.claim(UUID.randomUUID(), Spot(UUID.randomUUID(), 4.0, 70.0, 8.0), stone, 1), "another world")
         assertTrue(spawns.rows().isEmpty())
     }
 

@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.world
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
@@ -12,19 +14,15 @@ import io.pfaumc.pfauprotect.key
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import java.util.UUID
 
-// The grouping alone: what the pass hands it, and what it hands the writer.
 class TransformTest {
-    private val world = UUID.randomUUID()
-    private val player = UUID.randomUUID()
 
     private val craft = Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER, Cause.CRAFT_REMAINDER)
     private val anvil = Shift(Cause.ANVIL_COMBINE, Cause.ANVIL_COMBINE, Kind.MUTATE)
 
-    private fun grid(slot: Int) = EntitySlot(player, slot)
+    private fun grid(slot: Int) = EntitySlot(alice, slot)
     private fun table(slot: Int) = Container(world, 8, 70, 2, slot)
-    private val cursor = PlayerCursor(player)
+    private val cursor = PlayerCursor(alice)
 
     private fun move(from: Holder, to: Holder, name: String, qty: Int, cause: Cause) =
         Move(from, to, key(name), qty, cause, Confidence.INFERRED)
@@ -33,7 +31,7 @@ class TransformTest {
     fun `without a transformation every movement stays on its own`() {
         val moves = listOf(
             move(grid(1), Void, "cobblestone", 8, Cause.CONTAINER_REMOVE),
-            move(PlayerInv(player, 0), PlayerInv(player, 1), "stick", 1, Cause.QUICK_MOVE),
+            move(PlayerInv(alice, 0), PlayerInv(alice, 1), "stick", 1, Cause.QUICK_MOVE),
         )
 
         assertEquals(moves.map { listOf(it) }, transactions(moves, null))
@@ -113,7 +111,7 @@ class TransformTest {
     // A movement that happened for its own reasons in the same tick keeps that reason and its own row.
     @Test
     fun `a movement with both ends named is left out of the transformation`() {
-        val elsewhere = move(PlayerInv(player, 3), PlayerInv(player, 4), "stick", 2, Cause.QUICK_MOVE)
+        val elsewhere = move(PlayerInv(alice, 3), PlayerInv(alice, 4), "stick", 2, Cause.QUICK_MOVE)
         val moves = listOf(
             move(grid(1), Void, "cobblestone", 8, Cause.CONTAINER_REMOVE),
             elsewhere,
@@ -144,7 +142,7 @@ class TransformTest {
     // another arrived, and only the shift says they are the same book.
     @Test
     fun `signing a book is one book changing and not two strangers`() {
-        val slot = PlayerInv(player, 0)
+        val slot = PlayerInv(alice, 0)
         val sign = Shift(Cause.BOOK_SIGN, Cause.BOOK_SIGN, Kind.MUTATE)
         val intents = listOf(Intent(sign.consume, shift = sign))
 
@@ -152,9 +150,9 @@ class TransformTest {
             Snapshot(mapOf(slot to Stack(key("writable_book"), 1)), emptySet()),
             Snapshot(mapOf(slot to Stack(key("written_book"), 1)), emptySet()),
             intents,
-            player,
+            alice,
         )
-        val moves = Intents.explain(edges, intents, player)
+        val moves = Intents.explain(edges, intents, alice)
         val transaction = transactions(moves, sign).single()
 
         assertEquals(2, transaction.size)

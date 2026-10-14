@@ -40,7 +40,16 @@ class DisconnectDropTest {
         val origins = Spawns().origins
         val listener = captureListener(codec, origins, written::add)
 
-        listener.onDropItem(PlayerDropItemEvent(playerStub(), itemStub(BukkitItemStack(Material.DIAMOND, 3))))
+        val quitter = stub(
+            Player::class.java,
+            mapOf(
+                "getUniqueId" to player,
+                // What the pass reads to tell a drop out of a window from one out of the hand.
+                "getOpenInventory" to stub(InventoryView::class.java, mapOf("getType" to InventoryType.CRAFTING)),
+            ),
+        )
+        val item = stub(Item::class.java, mapOf("getUniqueId" to dropped, "getItemStack" to BukkitItemStack(Material.DIAMOND, 3)))
+        listener.onDropItem(PlayerDropItemEvent(quitter, item))
 
         val row = written.single().single()
         assertEquals(
@@ -53,16 +62,4 @@ class DisconnectDropTest {
         assertEquals(3, origins.claim(dropped, spot, ItemKey(row.form, null), 3))
         assertEquals(0, origins.claim(dropped, spot, ItemKey(row.form, null), 3), "the note outlived the spawn it was left for")
     }
-
-    private fun playerStub(): Player = stub(
-        Player::class.java,
-        mapOf(
-            "getUniqueId" to player,
-            // What the pass reads to tell a drop out of a window from one out of the hand.
-            "getOpenInventory" to stub(InventoryView::class.java, mapOf("getType" to InventoryType.CRAFTING)),
-        ),
-    )
-
-    private fun itemStub(stack: BukkitItemStack): Item =
-        stub(Item::class.java, mapOf("getUniqueId" to dropped, "getItemStack" to stack))
 }

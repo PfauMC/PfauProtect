@@ -1,11 +1,10 @@
 package io.pfaumc.pfauprotect.check
 import io.pfaumc.pfauprotect.AIR
 import io.pfaumc.pfauprotect.STONE
+import io.pfaumc.pfauprotect.SOURCE_WATER
 import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.storage.BlockChange
-import io.pfaumc.pfauprotect.storage.BlockCodec
-import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.EntryCodec
@@ -17,7 +16,6 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
-private const val WATER = "minecraft:water[level=0]"
 private const val WATERLOGGED = "minecraft:oak_slab[type=bottom,waterlogged=true]"
 
 class PlaneSyncTest : BothPlanes() {
@@ -34,7 +32,7 @@ class PlaneSyncTest : BothPlanes() {
     // The store only ever clamps a stored time forward, so a row written here can never be older than
     // one written before it: within a test the calls have to run oldest first.
     private fun blockRow(x: Int, y: Int, z: Int, before: String, after: String, ts: Long = longAgo) {
-        val cause = if (after == AIR || after == WATER) Cause.BLK_PLAYER_BREAK else Cause.BLK_PLAYER_PLACE
+        val cause = if (after == AIR || after == SOURCE_WATER) Cause.BLK_PLAYER_BREAK else Cause.BLK_PLAYER_PLACE
         log.submit(listOf(BlockChange(x, y, z, before, after, cause, ts, actor = alice)))
     }
 
@@ -66,13 +64,13 @@ class PlaneSyncTest : BothPlanes() {
     fun `a waterlogged block broken leaves water standing and is reported`() {
         heldAt(3, 64, 3, stoneForm)
         blockRow(3, 64, 3, AIR, WATERLOGGED)
-        blockRow(3, 64, 3, WATERLOGGED, WATER)
+        blockRow(3, 64, 3, WATERLOGGED, SOURCE_WATER)
         drainBoth()
 
         val gap = sync.pass(100, now).gaps.single()
 
         assertEquals(WorldBlock(world, 3, 64, 3), gap.at)
-        assertEquals(WATER, gap.standing)
+        assertEquals(SOURCE_WATER, gap.standing)
         assertEquals(1, gap.fact)
     }
 
@@ -238,10 +236,7 @@ class PlaneSyncTest : BothPlanes() {
         standAndFall(9, 64, 9)
         drainBoth()
         closeAll()
-        val base = dir.resolve("blocks").resolve(world.toString())
-        rawPut(base, "rows", BlockCodec.key(8, 64, 8, longAgo + 5, 998, 0), ByteArray(0))
-        val unknown = BlockRow(9, 64, 9, longAgo + 5, 999, 0, Cause.BLK_PLAYER_BREAK, 60_000, 60_001)
-        rawPut(base, "rows", BlockCodec.key(9, 64, 9, longAgo + 5, 999, 0), BlockCodec.value(unknown) { _, _ -> error("no actor") })
+        putUnreadableRows(torn = 8 to 8, unknown = 9 to 9, ts = longAgo + 5)
         openPlanes()
 
         val report = assertPlanesAgree(now)

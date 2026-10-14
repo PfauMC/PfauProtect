@@ -142,13 +142,25 @@ class BlockDestructionRulesTest {
         "changes, FALLING_BLOCK,",
         "forms, SNOW_GOLEM, BLK_SNOWMAN",
         "forms, PLAYER, BLK_FROST_WALKER",
+        "forms over, 'minecraft:lava[level=0]', BLK_LIQUID_FORM",
+        "forms over, 'minecraft:water[level=3]', BLK_LIQUID_FORM",
+        // Ice forming over water forms in the position the water is still in, which is air above it.
+        "forms over, minecraft:air, BLK_FORM",
+        "forms over, 'minecraft:pointed_dripstone[thickness=tip]', BLK_FORM",
+        "spreads, 'minecraft:fire[age=3]', BLK_FIRE_SPREAD",
+        "spreads, minecraft:soul_fire, BLK_FIRE_SPREAD",
+        "spreads, minecraft:sculk, BLK_SCULK",
+        "spreads, 'minecraft:sculk_vein[down=true]', BLK_SCULK",
+        "spreads, 'minecraft:grass_block[snowy=false]', BLK_GROW",
     )
     fun `what set a block change off names its cause`(what: String, by: String, expected: String?) {
         val cause = when (what) {
             "explodes" -> explosionCause(EntityType.valueOf(by))
             "goes off" -> explosionCause(by)
             "changes" -> entityBlockCause(EntityType.valueOf(by))
-            else -> entityFormCause(EntityType.valueOf(by))
+            "forms" -> entityFormCause(EntityType.valueOf(by))
+            "forms over" -> formCause(by)
+            else -> spreadCause(by)
         }
         assertEquals(expected?.let(Cause::valueOf), cause)
     }
@@ -162,21 +174,6 @@ class BlockDestructionRulesTest {
         assertEquals(Attributed(alice, Confidence.FACT), boltBy(bolt(thrower), summoned))
         assertEquals(Attributed(bob), boltBy(bolt(null), summoned))
         assertEquals(Attributed(LIGHTNING, Confidence.FACT), boltBy(bolt(null)) { null })
-    }
-
-    @Test
-    fun `a block formed where a liquid stood is the liquid's doing and one formed elsewhere is not`() {
-        assertEquals(Cause.BLK_LIQUID_FORM, formCause("minecraft:lava[level=0]"))
-        assertEquals(Cause.BLK_LIQUID_FORM, formCause("minecraft:water[level=3]"))
-        // Ice forming over water forms in the position the water is still in, which is air above it.
-        assertEquals(Cause.BLK_FORM, formCause(AIR))
-        assertEquals(Cause.BLK_FORM, formCause("minecraft:pointed_dripstone[thickness=tip]"))
-
-        assertEquals(Cause.BLK_FIRE_SPREAD, spreadCause("minecraft:fire[age=3]"))
-        assertEquals(Cause.BLK_FIRE_SPREAD, spreadCause("minecraft:soul_fire"))
-        assertEquals(Cause.BLK_SCULK, spreadCause("minecraft:sculk"))
-        assertEquals(Cause.BLK_SCULK, spreadCause("minecraft:sculk_vein[down=true]"))
-        assertEquals(Cause.BLK_GROW, spreadCause("minecraft:grass_block[snowy=false]"))
     }
 
     // The difference between an honest transaction and a phantom loss booked against every block water
@@ -483,13 +480,15 @@ class BlockDestructionRulesTest {
 
     // A shulker box a piston broke drops with its contents inside, and those were packed under the
     // name the position kept. The box that appears has to carry that name, and a second box broken
-    // beside it must not be handed the first one's.
+    // beside it must not be handed the first one's. A box broken by hand before already carries the
+    // name it was given then, which the loot may or may not copy onto the drop; either way the drop is
+    // expected, and named, under the name its contents were just packed under.
     @Test
     fun `a box broken by the world is expected under the name its contents were packed under`() {
         fun box(item: net.minecraft.world.item.Item, count: Int) = NmsItemStack(Items.SHULKER_BOX).apply {
             set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(NmsItemStack(item, count))))
         }
-        val diamonds = box(Items.DIAMOND, 5)
+        val diamonds = box(Items.DIAMOND, 5).apply { NestedItems.mark(this, UUID.randomUUID()) }
         val stone = box(Items.STONE, 64)
         val first = UUID.randomUUID()
         val second = UUID.randomUUID()
@@ -515,29 +514,6 @@ class BlockDestructionRulesTest {
 
         assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(stoneDrop).key, 1))
         assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(diamondDrop).key, 1))
-    }
-
-    // A box broken by hand before carries the name it was given then, and the loot of its next break
-    // may or may not copy it onto the drop. Either way the drop is expected, and named, under the name
-    // its contents were just packed under.
-    @Test
-    fun `a box used before is given the name its contents were packed under`() {
-        val packed = UUID.randomUUID()
-        val box = NmsItemStack(Items.SHULKER_BOX).apply {
-            set(DataComponents.CONTAINER, ItemContainerContents.fromItems(listOf(NmsItemStack(Items.DIAMOND, 5))))
-            NestedItems.mark(this, UUID.randomUUID())
-        }
-        val state = Blocks.SHULKER_BOX.defaultBlockState().asBlockData()
-        expectDrops(
-            origins, codec, blockStub(world, 5, 64, 7, state, drops = listOf(CraftItemStack.asBukkitMirror(box.copy()))),
-            Cause.BLK_TNT, null, packed,
-        )
-        val spot = Spot(world, 5.2, 64.0, 7.4)
-
-        val spawned = box.copy()
-        assertEquals(packed, origins.ownerFor(spawned, spot))
-        NestedItems.mark(spawned, packed)
-        assertEquals(1, origins.claim(UUID.randomUUID(), spot, codec.encode(spawned).key, 1))
     }
 
     // An explosion drops a pile where the first block of its kind stood, so a diamond from one corner of
