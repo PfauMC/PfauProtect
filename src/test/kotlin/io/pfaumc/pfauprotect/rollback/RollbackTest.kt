@@ -371,7 +371,11 @@ class RollbackTest : BothPlanes() {
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 0), diamond, null, 7, T0))
         shared.drain()
         val theft = shared.holderEntries(chest, 0, Long.MAX_VALUE).single()
-        assertEquals(listOf(7), positions(around(rollbackFilter())).flatMap { p -> p.refills.map { it.qty } })
+        // The lead is who the diamonds are taken back from.
+        assertEquals(
+            listOf(7 to PlayerInv(alice, 0)),
+            positions(around(rollbackFilter())).flatMap { p -> p.refills.map { it.qty to it.lead } },
+        )
         shared.submit(Transfer(Cause.ROLLBACK, Void, chest, diamond, null, 7, T0 + 10, reverts = listOf(theft.ref)))
         shared.drain()
 

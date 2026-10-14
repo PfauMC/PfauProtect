@@ -23,6 +23,7 @@ import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
+import io.pfaumc.pfauprotect.storage.OwedItem
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
@@ -186,6 +187,15 @@ internal fun followed(
     val stashes = stashesOf(ledger, player, formId, since)
     val (setDown, boxes) = boxesOf(ledger, stashes, formId, since, rowsOf)
     return Owed(Carrier(player), formId, qty, stashes + setDown, conversionsOf(ledger, player, formId, since), boxes, since)
+}
+
+/**
+ * What a player who was offline owes, followed as a rollback run while they were online would follow it,
+ * from when its window opened; only what is nowhere to be found is forgiven.
+ */
+internal fun trailsOf(ledger: RocksItemLog, player: UUID, owed: List<OwedItem>): Map<OwedItem, Owed> {
+    val rowsOf = pileRows(ledger)
+    return owed.filter { it.qty > 0 }.associateWith { followed(ledger, player, it.formId, it.qty, it.since, rowsOf) }
 }
 
 /** How many of the item a player set as blocks since then, at positions among `undone`. */
@@ -734,10 +744,8 @@ class Confiscations(
         Bukkit.getAsyncScheduler().runNow(plugin) {
             val owedItems = ledger.owedBy(player.uniqueId)
             if (owedItems.isEmpty()) return@runNow
-            // Read here, off the player's thread: what they no longer hold is followed as a rollback run while
-            // they were online would follow it, and only what is nowhere to be found is forgiven.
-            val rowsOf = pileRows(ledger)
-            val trails = owedItems.filter { it.qty > 0 }.associateWith { followed(ledger, player.uniqueId, it.formId, it.qty, it.since, rowsOf) }
+            // Read here, off the player's thread.
+            val trails = trailsOf(ledger, player.uniqueId, owedItems)
             player.scheduler.runDelayed(plugin, {
                 try {
                     for ((actor, group) in owedItems.groupBy { it.actor }) {

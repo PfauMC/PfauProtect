@@ -96,6 +96,8 @@ class ItemUseTest {
     @Test
     fun `a block that keeps what is put into it has its own reckoning`() {
         assertEquals(true, keepsItems(Material.OAK_SHELF))
+        assertEquals(true, keepsItems(Material.JUKEBOX))
+        assertEquals(true, keepsItems(Material.CHISELED_BOOKSHELF))
         assertEquals(false, keepsItems(Material.CHEST))
     }
 

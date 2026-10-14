@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.Vanilla
+import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import org.bukkit.craftbukkit.inventory.CraftItemStack
@@ -30,6 +31,13 @@ class MobItemsTest {
         armor.damageValue = armor.maxDamage - 1
         assertEquals(true, wornThrough(mirror(armor), 1))
         assertEquals(false, wornThrough(mirror(ItemStack(Items.SADDLE)), 100))
+    }
+
+    @Test
+    fun `a horse window names its slots the way its equipment does`() {
+        assertEquals(EquipmentSlot.SADDLE.ordinal, horseSlot(0))
+        assertEquals(EquipmentSlot.BODY.ordinal, horseSlot(1))
+        assertEquals(17, horseSlot(2))
     }
 
     // A boat is removed before it drops: its drop still finds the slot, once, and the rest is left to

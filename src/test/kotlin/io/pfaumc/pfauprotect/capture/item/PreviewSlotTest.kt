@@ -5,10 +5,15 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.stub
 import org.bukkit.NamespacedKey
+import org.bukkit.inventory.AnvilInventory
+import org.bukkit.inventory.CartographyInventory
 import org.bukkit.inventory.ComplexRecipe
 import org.bukkit.inventory.CraftingInventory
 import org.bukkit.inventory.FurnaceInventory
+import org.bukkit.inventory.GrindstoneInventory
 import org.bukkit.inventory.Inventory
+import org.bukkit.inventory.LoomInventory
+import org.bukkit.inventory.MerchantInventory
 import org.bukkit.inventory.RecipeChoice
 import org.bukkit.inventory.SmithingInventory
 import org.bukkit.inventory.SmithingTrimRecipe
@@ -34,6 +39,8 @@ class PreviewSlotTest {
     private fun smithing(recipe: Any?): Inventory =
         stub(SmithingInventory::class.java, mapOf("getSize" to 4, "getRecipe" to recipe))
 
+    private fun <T : Inventory> station(type: Class<T>): Inventory = stub(type, mapOf("getSize" to 3))
+
     // A workbench rearranges whole items and runs a recipe; a station hands back the item that went in,
     // changed. Only the recipe the grid matched tells a copy or a recolour from an ordinary craft.
     @Test
@@ -54,6 +61,11 @@ class PreviewSlotTest {
             "leather_chestplate_dyed" to grid("leather_chestplate_dyed") to same(Cause.DYE_ITEM, Kind.TRANSFER),
             "red_shulker_box" to grid("red_shulker_box") to same(Cause.DYE_ITEM, Kind.TRANSFER),
             "white_banner_duplicate" to grid("white_banner_duplicate") to same(Cause.BANNER_DUPLICATE, Kind.TRANSFER),
+            "anvil" to station(AnvilInventory::class.java) to same(Cause.ANVIL_COMBINE, Kind.MUTATE),
+            "grindstone" to station(GrindstoneInventory::class.java) to same(Cause.GRINDSTONE, Kind.MUTATE),
+            "loom" to station(LoomInventory::class.java) to same(Cause.LOOM, Kind.MUTATE),
+            "cartography" to station(CartographyInventory::class.java) to same(Cause.CARTOGRAPHY, Kind.MUTATE),
+            "trade" to station(MerchantInventory::class.java) to listOf(Cause.TRADE_PAYMENT, Cause.TRADE_RESULT, Kind.TRANSFER),
             "trim" to smithing(trim) to same(Cause.SMITHING_TRIM, Kind.MUTATE),
             // A result-slot click that matched nothing is ordinary traffic, and the default carries it.
             "smithing, no recipe" to smithing(null) to same(Cause.SMITHING_TRANSFORM, Kind.MUTATE),

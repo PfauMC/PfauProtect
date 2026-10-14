@@ -131,6 +131,9 @@ class BlockDestructionRulesTest {
     @CsvSource(
         "explodes, CREEPER, BLK_CREEPER",
         "explodes, WITHER_SKULL, BLK_WITHER",
+        "explodes, TNT, BLK_TNT",
+        "explodes, TNT_MINECART, BLK_TNT",
+        "explodes, END_CRYSTAL, BLK_END_CRYSTAL",
         // A fireball and whatever a plugin blows up with are an explosion and nothing more precise.
         "explodes, FIREBALL, BLK_EXPLOSION",
         "goes off, 'minecraft:white_bed[facing=east,occupied=false,part=head]', BLK_BED_EXPLOSION",
@@ -138,6 +141,10 @@ class BlockDestructionRulesTest {
         "goes off, minecraft:air, BLK_EXPLOSION",
         "changes, CREEPER, BLK_CREEPER",
         "changes, SHEEP, BLK_MOB_GRIEF",
+        "changes, ENDERMAN, BLK_ENDERMAN",
+        "changes, RAVAGER, BLK_RAVAGER",
+        "changes, SILVERFISH, BLK_SILVERFISH",
+        "changes, SNOW_GOLEM, BLK_SNOWMAN",
         "changes, PLAYER,",
         "changes, FALLING_BLOCK,",
         "forms, SNOW_GOLEM, BLK_SNOWMAN",

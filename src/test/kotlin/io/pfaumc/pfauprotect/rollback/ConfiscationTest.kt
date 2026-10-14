@@ -60,6 +60,19 @@ class ConfiscationTest : OneLedger() {
         assertEquals(T0, owed.since)
     }
 
+    // A debt with no window behind it has nothing to follow, and the loot bob hid would stay his.
+    @Test
+    fun `an offline carrier's debt is followed on join from when its window opened`() {
+        val his = Container(world, 500, 64, 500, 3)
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 4), his, diamond, null, 7, T0 + 2))
+        log.drain()
+        log.owe(bob, log.forms.lookup(diamond)!!, 7, alice, since = T0)
+
+        val trail = trailsOf(log, bob, log.owedBy(bob)).values.single()
+        assertEquals(listOf(his.copy(slot = 0)), trail.stashes)
+    }
+
     // Bob packed the loot into a shulker box and broke it. Left lying, the box is the pile the loot is
     // taken out of; picked up and set down again far away, it is a container like the chests.
     @Test
