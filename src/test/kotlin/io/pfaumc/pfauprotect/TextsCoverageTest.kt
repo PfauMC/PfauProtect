@@ -10,10 +10,8 @@ import kotlin.io.path.extension
 import kotlin.io.path.readText
 
 /**
- * Every message the plugin writes is read out of its sources, as `say("...")`, an error's
- * `LiteralMessage("...")` or a rollback's `Refused("...")`, with whatever it fills in set to a stand-in, and has to come out in Russian. A
- * message built in a variable first is not seen here; a live run on a server started with PPT_LANG=ru
- * reads those.
+ * Scans the sources for `say("...")`, `LiteralMessage("...")` and `Refused("...")`, with what they fill in
+ * set to a stand-in. A message built in a variable is not seen here; the live run with PPT_LANG=ru reads it.
  */
 class TextsCoverageTest {
     @AfterEach

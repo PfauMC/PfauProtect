@@ -1,16 +1,14 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.pfaumc.pfauprotect.worldStub
-import io.pfaumc.pfauprotect.disabledPlugin
+import io.pfaumc.pfauprotect.blockAt
+import io.pfaumc.pfauprotect.captureListener
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.Kind
-import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.Void
-import io.pfaumc.pfauprotect.storage.Registries
-import io.pfaumc.pfauprotect.NoPlacedForms
 import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.Spawns
 import io.pfaumc.pfauprotect.ServerRegistries
@@ -30,7 +28,6 @@ import io.pfaumc.pfauprotect.testCodec
 import io.pfaumc.pfauprotect.Vanilla
 import org.junit.jupiter.api.extension.ExtendWith
 import org.bukkit.Material
-import org.bukkit.block.Block
 import org.bukkit.entity.Player
 import org.bukkit.event.inventory.ClickType
 import org.bukkit.event.inventory.InventoryAction
@@ -68,9 +65,8 @@ class ForeignSlotTest {
     private val spawns = Spawns()
 
     private val listener by lazy {
-        ContainerCaptureListener(
-            disabledPlugin(), written::add, codec,
-            Registries(MemoryRegistryStore()), spawns.origins, NoPlacedForms,
+        captureListener(
+            codec, spawns.origins, written::add,
             unspent = { intent, qty -> unspent += intent to qty },
             currentTick = { tick },
         )
@@ -110,13 +106,16 @@ class ForeignSlotTest {
         return clicker to view
     }
 
+    private fun atFurnace(slots: Array<BukkitItemStack?> = arrayOfNulls(3)) =
+        seated(inventoryStub(slots, InventoryType.FURNACE, Inventory::class.java), InventoryType.FURNACE)
+
     // A furnace fills its result slot on its own listener, under the baseline of whoever has it open.
     // Taking the ingots out has to read as taking them out of the furnace, not as ingots from nowhere
     // and a furnace that still holds them.
     @Test
     fun `taking what the furnace made is a removal from the furnace`() {
         val furnace = arrayOfNulls<BukkitItemStack>(3)
-        val (clicker, view) = seated(inventoryStub(furnace, InventoryType.FURNACE, Inventory::class.java), InventoryType.FURNACE)
+        val (clicker, view) = atFurnace(furnace)
 
         listener.onOpen(InventoryOpenEvent(view))
         furnace[2] = BukkitItemStack(Material.IRON_INGOT, 4)
@@ -128,21 +127,17 @@ class ForeignSlotTest {
         cursor = BukkitItemStack(Material.IRON_INGOT, 4)
         listener.recompute(clicker)
 
-        val rows = written.flatten()
-        assertEquals(1, rows.size, "expected one movement, got $rows")
-        val row = rows.single()
-        assertEquals(Container(world, 1, 2, 3, 2), row.from)
-        assertEquals(PlayerCursor(player), row.to)
-        assertEquals(4, row.qty)
-        assertEquals(Cause.CONTAINER_REMOVE, row.cause)
-        assertEquals(Confidence.FACT, row.confidence)
+        assertEquals(
+            listOf(listOf(Container(world, 1, 2, 3, 2), PlayerCursor(player), 4, Cause.CONTAINER_REMOVE, Confidence.FACT)),
+            written.flatten().map { listOf(it.from, it.to, it.qty, it.cause, it.confidence) },
+        )
     }
 
     // A player who was online before the plugin came up has no window seen yet. The event that left a
     // reason for the pass relies on it to write the row, and has to hear that it did not.
     @Test
     fun `a pass with no window seen yet hands its reasons back once and does not drop them`() {
-        val (clicker, view) = seated(inventoryStub(arrayOfNulls(3), InventoryType.FURNACE, Inventory::class.java), InventoryType.FURNACE)
+        val (clicker, view) = atFurnace()
         val drop = Intent(Cause.DROP_FROM_MENU, to = ItemEntityRef(UUID.randomUUID()), qty = 5)
         listener.intend(clicker, drop)
         listener.intend(clicker, Intent(Cause.CURSOR_TAKE))
@@ -156,7 +151,7 @@ class ForeignSlotTest {
     }
 
     private fun furnaceOpen(): Player {
-        val (clicker, view) = seated(inventoryStub(arrayOfNulls(3), InventoryType.FURNACE, Inventory::class.java), InventoryType.FURNACE)
+        val (clicker, view) = atFurnace()
         listener.onOpen(InventoryOpenEvent(view))
         return clicker
     }
@@ -269,9 +264,10 @@ class ForeignSlotTest {
             transaction.map { it.from to it.to to it.qty }.toSet(),
         )
         assertEquals(2, transaction.size)
-        assertEquals(listOf(Kind.MUTATE, Kind.MUTATE), transaction.map { it.kind })
-        assertEquals(listOf(Cause.STONECUTTER, Cause.STONECUTTER), transaction.map { it.cause })
-        assertEquals(listOf(Confidence.FACT, Confidence.FACT), transaction.map { it.confidence })
+        assertEquals(
+            setOf(Triple(Kind.MUTATE, Cause.STONECUTTER, Confidence.FACT)),
+            transaction.map { Triple(it.kind, it.cause, it.confidence) }.toSet(),
+        )
     }
 
     // In creative the input stays where it was, so the result has no item it could have changed from.
@@ -304,10 +300,7 @@ class ForeignSlotTest {
     }
 
     private fun <T : Inventory> inventoryStub(slots: Array<BukkitItemStack?>, type: InventoryType, kind: Class<T>): T {
-        val block = stub(
-            Block::class.java,
-            mapOf("getWorld" to worldStub(world), "getX" to 1, "getY" to 2, "getZ" to 3),
-        )
+        val block = blockAt(world, 1, 2, 3)
         return stub(
             kind,
             mapOf(

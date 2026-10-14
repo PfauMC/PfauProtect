@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.attribution
+import io.pfaumc.pfauprotect.AIR
+import io.pfaumc.pfauprotect.STONE
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.BothPlanes
@@ -36,9 +38,7 @@ import org.junit.jupiter.api.extension.ExtendWith
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
-private const val AIR = "minecraft:air"
 private const val TNT = "minecraft:tnt"
-private const val STONE = "minecraft:stone"
 private const val WATER = "minecraft:water[level=1]"
 private const val SAND = "minecraft:sand"
 private const val CHEST_RIGHT = "minecraft:chest[facing=north,type=right]"
@@ -48,11 +48,11 @@ private const val CHEST_SINGLE = "minecraft:chest[facing=north,type=single]"
 class AttributionTest : BothPlanes() {
     private var clock = T0
     private val attribution by lazy { Attribution(shared.registries, logs) { clock } }
+    private val origins = EntityOrigins { clock }
 
     private fun at(x: Int, y: Int, z: Int) = WorldBlock(world, x, y, z)
 
     // Every read enforces its own window, so a note the sweep left behind reads as nobody all the same.
-    // Read from the moment the notes were written, only a note that is really gone answers with nobody.
     private fun <T> asOf(time: Long, read: () -> T): T {
         val now = clock
         clock = time
@@ -405,7 +405,6 @@ class AttributionTest : BothPlanes() {
     // of the world before its blast asks who struck it.
     @Test
     fun `an origin outlives an unload and a crystal's removal and ends with the entity`() {
-        val origins = EntityOrigins { clock }
         val listener = EntityOriginListener(attribution, origins)
         val golem = stub(IronGolem::class.java, mapOf("getUniqueId" to UUID.randomUUID()))
         val crystal = stub(EnderCrystal::class.java, mapOf("getUniqueId" to UUID.randomUUID()))
@@ -424,7 +423,6 @@ class AttributionTest : BothPlanes() {
 
     @Test
     fun `a spawn egg names its player on the one mob that comes out of it`() {
-        val origins = EntityOrigins { clock }
         val listener = EntityOriginListener(attribution, origins)
         val ground = stub(World::class.java, mapOf(
             "getUID" to world,
@@ -445,7 +443,6 @@ class AttributionTest : BothPlanes() {
 
     @Test
     fun `an origin nobody saw end stops answering once its window has passed`() {
-        val origins = EntityOrigins { clock }
         val golem = UUID.randomUUID()
         origins.appeared(golem, alice)
 
@@ -458,7 +455,6 @@ class AttributionTest : BothPlanes() {
 
     @Test
     fun `a crystal struck by a mob keeps how sure the mob's origin was`() {
-        val origins = EntityOrigins { clock }
         val creeper = stub(Creeper::class.java, mapOf("getUniqueId" to UUID.randomUUID()))
         val crystalId = UUID.randomUUID()
         val crystal = stub(EnderCrystal::class.java, mapOf("getUniqueId" to crystalId))

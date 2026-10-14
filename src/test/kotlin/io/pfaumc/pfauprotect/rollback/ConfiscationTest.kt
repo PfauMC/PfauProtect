@@ -36,7 +36,11 @@ class ConfiscationTest : OneLedger() {
     private fun owed(tally: Tally): Map<Taker, Int> =
         owedFor(log, tally).groupingBy { it.taker }.fold(0) { sum, owed -> sum + owed.qty }
 
-    // Taken straight out of the chest into a hand: that hand owes it.
+    private fun deathOf(vararg drops: ItemEntityRef) = EntityRow(
+        0, 64, 0, T0, 1, 0, EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
+        "minecraft:player", alice, actor = bob, drops = drops.map { it.uuid },
+    )
+
     @Test
     fun `what went straight into a player's hands is owed by that player`() {
         log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
@@ -140,12 +144,8 @@ class ConfiscationTest : OneLedger() {
         log.submit(Transfer(Cause.DEATH_DROP, PlayerEquip(alice, 39), head, helmet, null, 1, T0))
         log.submit(Transfer(Cause.DEATH_DROP, PlayerEquip(alice, 40), hand, shield, null, 1, T0))
         log.drain()
-        val death = EntityRow(
-            0, 64, 0, T0, 1, 0, EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
-            "minecraft:player", alice, actor = bob, drops = listOf(head.uuid, hand.uuid),
-        )
 
-        assertEquals(mapOf(log.forms.lookup(helmet) to listOf(39), log.forms.lookup(shield) to listOf(40)), Fallen(log, death).slots())
+        assertEquals(mapOf(log.forms.lookup(helmet) to listOf(39), log.forms.lookup(shield) to listOf(40)), Fallen(log, deathOf(head, hand)).slots())
     }
 
     // Bob carried the diamonds to a chest of his own in the same area, and the rollback took them back
@@ -201,10 +201,7 @@ class ConfiscationTest : OneLedger() {
         log.submit(Transfer(Cause.ITEM_DESTROY_FIRE, burned, Void, diamond, null, 2, T0 + 1))
         log.submit(Transfer(Cause.PICKUP, regained, PlayerInv(alice, 3), diamond, null, 2, T0 + 1))
         log.drain()
-        val death = EntityRow(
-            0, 64, 0, T0, 1, 0, EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED,
-            "minecraft:player", alice, actor = bob, drops = listOf(picked.uuid, burned.uuid, regained.uuid),
-        )
+        val death = deathOf(picked, burned, regained)
 
         val back = Fallen(log, death).restitution().associate { it.taker to it.qty }
         assertEquals(mapOf(Carrier(bob) to 2, Vanished(burned.uuid) to 2), back)

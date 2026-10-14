@@ -1,20 +1,16 @@
 package io.pfaumc.pfauprotect.capture.item
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
-import io.pfaumc.pfauprotect.storage.ItemFormCodec
-import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
-import io.pfaumc.pfauprotect.storage.Registries
-import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.Spawns
-import io.pfaumc.pfauprotect.storage.fillTypeRegistries
+import io.pfaumc.pfauprotect.blockAt
+import io.pfaumc.pfauprotect.bundleOf
+import io.pfaumc.pfauprotect.testCodec
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.stub
-import io.pfaumc.pfauprotect.worldStub
-import org.bukkit.block.Block
 import org.bukkit.block.ShulkerBox
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Item
@@ -26,9 +22,7 @@ import java.nio.file.Path
 import net.minecraft.core.NonNullList
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStack
-import net.minecraft.world.item.ItemStackTemplate
 import net.minecraft.world.item.Items
-import net.minecraft.world.item.component.BundleContents
 import net.minecraft.world.item.component.ItemContainerContents
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -45,11 +39,7 @@ import java.util.UUID
 @ExtendWith(Vanilla::class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class NestedItemsTest {
-    private val registries = Registries(MemoryRegistryStore())
-    private val codec = run {
-        fillTypeRegistries(registries)
-        ItemFormCodec(registries, ServerRegistries.access)
-    }
+    private val codec = testCodec(vanillaIds = true)
 
     private fun shulker(vararg items: Pair<Int, ItemStack>): ItemStack {
         val box = ItemStack(Items.SHULKER_BOX)
@@ -58,12 +48,6 @@ class NestedItemsTest {
         for ((slot, item) in items) slots[slot] = item
         box.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(slots))
         return box
-    }
-
-    private fun bundle(vararg items: ItemStack): ItemStack {
-        val bag = ItemStack(Items.BUNDLE)
-        bag.set(DataComponents.BUNDLE_CONTENTS, BundleContents(items.map(ItemStackTemplate::fromNonEmptyStack)))
-        return bag
     }
 
     private fun form(stack: ItemStack) = codec.encode(stack).form
@@ -96,7 +80,7 @@ class NestedItemsTest {
     @ValueSource(booleans = [true, false])
     fun `a container reads the same full or empty`(isShulker: Boolean) {
         val owner = UUID.randomUUID()
-        val full = if (isShulker) shulker(0 to ItemStack(Items.DIAMOND, 4)) else bundle(ItemStack(Items.DIAMOND, 4))
+        val full = if (isShulker) shulker(0 to ItemStack(Items.DIAMOND, 4)) else bundleOf(ItemStack(Items.DIAMOND, 4))
         val empty = if (isShulker) shulker() else ItemStack(Items.BUNDLE)
         for (stack in listOf(full, empty)) NestedItems.mark(stack, owner)
         assertArrayEquals(form(empty), form(full))
@@ -115,7 +99,7 @@ class NestedItemsTest {
     fun `a placed box hands its contents to the position and takes them back under the same name`(@TempDir dir: Path) {
         val world = UUID.randomUUID()
         val at = { slot: Int -> Container(world, 4, 70, -2, slot) }
-        val block = stub(Block::class.java, mapOf("getWorld" to worldStub(world), "getX" to 4, "getY" to 70, "getZ" to -2))
+        val block = blockAt(world, 4, 70, -2)
         val box = shulker(0 to ItemStack(Items.DIAMOND, 4), 5 to ItemStack(Items.STONE, 12))
         val owner = NestedItems.own(box)
         RocksItemLog(dir).use { log ->

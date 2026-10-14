@@ -1,4 +1,7 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.AIR
+import io.pfaumc.pfauprotect.STONE
+import io.pfaumc.pfauprotect.DIRT
 import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
@@ -22,9 +25,6 @@ import org.junit.jupiter.api.Test
 import java.nio.file.Path
 import java.util.UUID
 
-private const val AIR = "minecraft:air"
-private const val STONE = "minecraft:stone"
-private const val DIRT = "minecraft:dirt"
 private const val WATER = "minecraft:water"
 private const val STAIRS = "minecraft:oak_stairs[facing=north]"
 
@@ -390,8 +390,7 @@ class BlockStoreTest : BothPlanes() {
         val spots = (0 until 40).map { listOf(it * 112 - 2000, 64, it * 48 - 500) }
         fun reopen() {
             log.drain()
-            logs.close(world)
-            log = logs.open(world)
+            whileClosed {}
         }
         fun entity(at: List<Int>, ts: Long) =
             EntityChange(at[0], at[1] + 1, at[2], EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:cow", UUID.randomUUID(), ts, actor = alice)
@@ -622,10 +621,7 @@ class BlockStoreTest : BothPlanes() {
         )
         log.drain()
 
-        val rows = log.rowsAt(3, 64, 3)
-        assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
-        assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
-        assertEquals(stateOf(DIRT), log.standingAt(3, 64, 3).row?.stateAfter)
+        assertDirtClampedBehindStone(3, 64, 3)
     }
 
     @Test
@@ -637,10 +633,7 @@ class BlockStoreTest : BothPlanes() {
         log.submit(listOf(placed(3, 64, 3, before = STONE, after = DIRT, ts = T0)))
         log.drain()
 
-        val rows = log.rowsAt(3, 64, 3)
-        assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
-        assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
-        assertEquals(stateOf(DIRT), log.standingAt(3, 64, 3).row?.stateAfter)
+        assertDirtClampedBehindStone(3, 64, 3)
     }
 
     // Without the world mark on disk the reopened log would take every time as ahead of everything
@@ -649,16 +642,19 @@ class BlockStoreTest : BothPlanes() {
     fun `a clock that steps backwards over a reopen does not reorder a position`() {
         log.submit(listOf(placed(8, 64, 8, before = AIR, after = STONE, ts = T0 + 100)))
         log.drain()
-        logs.close(world)
+        whileClosed {}
 
-        val reopened = logs.open(world)
-        reopened.submit(listOf(placed(8, 64, 8, before = STONE, after = DIRT, ts = T0)))
-        reopened.drain()
+        log.submit(listOf(placed(8, 64, 8, before = STONE, after = DIRT, ts = T0)))
+        log.drain()
 
-        val rows = reopened.rowsAt(8, 64, 8)
+        assertDirtClampedBehindStone(8, 64, 8)
+    }
+
+    private fun assertDirtClampedBehindStone(x: Int, y: Int, z: Int) {
+        val rows = log.rowsAt(x, y, z)
         assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), rows.map { it.stateAfter })
         assertEquals(listOf(T0 + 100, T0 + 100), rows.map { it.timestamp })
-        assertEquals(stateOf(DIRT), reopened.standingAt(8, 64, 8).row?.stateAfter)
+        assertEquals(stateOf(DIRT), log.standingAt(x, y, z).row?.stateAfter)
     }
 
     @Test
@@ -666,13 +662,12 @@ class BlockStoreTest : BothPlanes() {
         log.submit(listOf(placed(5, 64, 5)))
         log.drain()
         val firstEvent = log.rowsAt(5, 64, 5).single().eventId
-        logs.close(world)
+        whileClosed {}
 
-        val reopened = logs.open(world)
-        assertEquals(stateOf(STONE), reopened.rowsAt(5, 64, 5).single().stateAfter)
-        reopened.submit(listOf(placed(6, 64, 5, ts = T0 + 10)))
-        reopened.drain()
-        assertTrue(reopened.rowsAt(6, 64, 5).single().eventId > firstEvent)
+        assertEquals(stateOf(STONE), log.rowsAt(5, 64, 5).single().stateAfter)
+        log.submit(listOf(placed(6, 64, 5, ts = T0 + 10)))
+        log.drain()
+        assertTrue(log.rowsAt(6, 64, 5).single().eventId > firstEvent)
     }
 
     @Test

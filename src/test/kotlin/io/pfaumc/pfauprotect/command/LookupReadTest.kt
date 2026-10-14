@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.command
+import io.pfaumc.pfauprotect.AIR
+import io.pfaumc.pfauprotect.STONE
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.BothPlanes
@@ -34,6 +36,8 @@ import net.minecraft.world.level.block.entity.SignTextSlot
 import io.pfaumc.pfauprotect.senderInto
 import org.bukkit.plugin.Plugin
 import net.kyori.adventure.text.Component as AdventureComponent
+import net.kyori.adventure.text.TextComponent
+import net.kyori.adventure.text.TranslatableComponent
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -41,11 +45,9 @@ import org.junit.jupiter.api.Test
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
-private const val AIR = "minecraft:air"
-private const val STONE = "minecraft:stone"
 
 // Both planes are read through the one command a moderator has. A block plane nothing can read is a
-// block plane nobody can check, which is how a whole class of capture went unverified before.
+// block plane nobody can check.
 @ExtendWith(Vanilla::class)
 class LookupReadTest : BothPlanes() {
     override val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000005")
@@ -70,8 +72,8 @@ class LookupReadTest : BothPlanes() {
     private fun flat(component: AdventureComponent): String = buildString {
         fun walk(c: AdventureComponent) {
             when (c) {
-                is net.kyori.adventure.text.TextComponent -> append(c.content())
-                is net.kyori.adventure.text.TranslatableComponent -> append(c.key())
+                is TextComponent -> append(c.content())
+                is TranslatableComponent -> append(c.key())
                 else -> {}
             }
             c.children().forEach(::walk)
@@ -111,7 +113,6 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.any { it.contains("- block.minecraft.tnt") && it.contains("minecraft:stone → minecraft:air") }, "$lines")
         assertTrue(lines.any { it.contains("{blk_player_place}") && it.contains("minecraft:air → minecraft:stone") }, "$lines")
         assertTrue(lines.any { it.contains("{block_place}") && it.contains("∅") }, "the item plane is still there: $lines")
-        // Newest first across both planes: both explosion rows above both placements.
         val causes = listOf("{blk_tnt}", "{block_place}", "{blk_player_place}")
         val read = lines.mapNotNull { line -> causes.firstOrNull { it in line } }.map { if (it == "{blk_tnt}") "tnt" else "place" }
         assertEquals(listOf("tnt", "tnt", "place", "place"), read, "$lines")
@@ -171,7 +172,6 @@ class LookupReadTest : BothPlanes() {
         assertTrue(said(LookupQuery(excluded = listOf("cow"))).none { it.contains("entity.minecraft.cow") })
     }
 
-    // A run folds what one player did; two players breaking at the same place are two acts.
     @Test
     fun `a run of the same change by two players reads as a line for each`() {
         log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
@@ -294,10 +294,8 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.any { it.contains("event:") }, "the block plane lost it: $lines")
     }
 
-    // A read that stopped early answers about what it saw, not about what is there. Saying "no
-    // entries" for a position it never reached clears somebody of what the rows behind the cut say.
-    // With every matched row on the page there is no next page to offer either: page 2 starts past
-    // them and is empty. It says the read stopped and how to see further instead.
+    // A read cut short must say so rather than answer "no entries", which would clear somebody of the
+    // rows behind the cut, and it offers no page 2: that page starts past every matched row and is empty.
     @Test
     fun `a read that stopped early says so and offers no next page`() {
         val nextDoor = WorldBlock(world, 11, 64, -3)

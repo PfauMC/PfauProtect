@@ -1,16 +1,13 @@
 package io.pfaumc.pfauprotect.capture.item
 
 import io.pfaumc.pfauprotect.Vanilla
-import io.pfaumc.pfauprotect.disabledPlugin
-import io.pfaumc.pfauprotect.NoPlacedForms
+import io.pfaumc.pfauprotect.captureListener
 import io.pfaumc.pfauprotect.Spawns
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.model.Kind
-import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.model.PlayerCursor
-import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.capture.block.Spot
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.stub
@@ -41,21 +38,15 @@ class DisconnectDropTest {
     fun `a drop by a player the pass can no longer count is written where it is seen`() {
         val written = ArrayList<List<Transfer>>()
         val origins = Spawns().origins
-        val listener = ContainerCaptureListener(
-            // Disabled, so the pass it would otherwise schedule never runs and cannot write the row instead.
-            disabledPlugin(), written::add, codec,
-            Registries(MemoryRegistryStore()), origins, NoPlacedForms,
-        )
+        val listener = captureListener(codec, origins, written::add)
 
         listener.onDropItem(PlayerDropItemEvent(playerStub(), itemStub(BukkitItemStack(Material.DIAMOND, 3))))
 
-        assertEquals(1, written.size, "the drop left no row at all: $written")
         val row = written.single().single()
-        assertEquals(Cause.DROP_ON_DISCONNECT, row.cause)
-        assertEquals(PlayerCursor(player), row.from)
-        assertEquals(ItemEntityRef(dropped), row.to)
-        assertEquals(3, row.qty)
-        assertEquals(Kind.TRANSFER, row.kind)
+        assertEquals(
+            listOf(Cause.DROP_ON_DISCONNECT, PlayerCursor(player), ItemEntityRef(dropped), 3, Kind.TRANSFER),
+            listOf(row.cause, row.from, row.to, row.qty, row.kind),
+        )
         // The row is itself the birth of the entity, so the spawn funnel has to stay quiet about it or
         // the same three diamonds are born twice.
         val spot = Spot(UUID.randomUUID(), 0.0, 0.0, 0.0)

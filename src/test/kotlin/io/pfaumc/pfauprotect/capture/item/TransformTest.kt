@@ -140,9 +140,8 @@ class TransformTest {
         assertEquals(Confidence.INFERRED, transaction.single().confidence)
     }
 
-    // The whole pure path in one go: two snapshots of one slot, the intent the event left, and the
-    // grouping. A signed book never leaves the hand it was written in, so the slot reads as one form
-    // gone and another arrived, and only the shift says they are the same book.
+    // A signed book never leaves the hand it was written in, so the slot reads as one form gone and
+    // another arrived, and only the shift says they are the same book.
     @Test
     fun `signing a book is one book changing and not two strangers`() {
         val slot = PlayerInv(player, 0)

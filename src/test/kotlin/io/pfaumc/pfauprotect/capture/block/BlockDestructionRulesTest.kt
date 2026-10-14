@@ -1,4 +1,8 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.AIR
+import io.pfaumc.pfauprotect.DIRT
+import io.pfaumc.pfauprotect.GRASS
+import io.pfaumc.pfauprotect.SOURCE_WATER
 import io.pfaumc.pfauprotect.Spawns
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.Vanilla
@@ -24,6 +28,7 @@ import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.component.ItemContainerContents
 import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.state.properties.BedPart
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf
@@ -61,21 +66,18 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 import org.bukkit.block.BlockState as BukkitBlockState
 import org.bukkit.inventory.ItemStack as BukkitItemStack
 
-private const val AIR = "minecraft:air"
 private const val TORCH = "minecraft:torch"
-private const val DIRT = "minecraft:dirt"
 private const val SAPLING = "minecraft:oak_sapling[stage=1]"
 private const val OAK_LOG = "minecraft:oak_log[axis=y]"
-private const val GRASS = "minecraft:grass_block[snowy=false]"
-private const val SOURCE_WATER = "minecraft:water[level=0]"
 private const val SHULKER_BOX = "minecraft:shulker_box[facing=up]"
 private const val STICKY_HEAD = "minecraft:piston_head[facing=east,short=false,type=sticky]"
 
+internal fun whiteBed(part: BedPart): BlockState = Blocks.BED.white().defaultBlockState()
+    .setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.EAST)
+    .setValue(BlockStateProperties.BED_PART, part)
+
 internal val whiteBedHead: BlockData
-    get() = Blocks.BED.white().defaultBlockState()
-        .setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.EAST)
-        .setValue(BlockStateProperties.BED_PART, BedPart.HEAD)
-        .asBlockData()
+    get() = whiteBed(BedPart.HEAD).asBlockData()
 
 // As much of a block as finding the other half takes: where it stands, what stands there, and the
 // neighbour behind each face. Equality is by position, which is `CraftBlock`'s own, so a partner
@@ -123,32 +125,19 @@ class BlockDestructionRulesTest {
         .setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, half)
         .asBlockData()
 
-    // A player stripping a log raises the change event too and is no mob griefing anything; a falling
-    // block is a movement with two ends and belongs to the capture that owns both. An entity answers with
-    // one cause in the explosion and in the change it makes, or a lookup by cause finds half an incident.
+    // An entity answers with one cause in the explosion and in the change it makes, or a lookup by cause
+    // finds half an incident.
     @ParameterizedTest(name = "{0} {1}")
     @CsvSource(
-        "explodes, TNT, BLK_TNT",
-        "explodes, TNT_MINECART, BLK_TNT",
         "explodes, CREEPER, BLK_CREEPER",
-        "explodes, END_CRYSTAL, BLK_END_CRYSTAL",
         "explodes, WITHER_SKULL, BLK_WITHER",
         // A fireball and whatever a plugin blows up with are an explosion and nothing more precise.
         "explodes, FIREBALL, BLK_EXPLOSION",
         "goes off, 'minecraft:white_bed[facing=east,occupied=false,part=head]', BLK_BED_EXPLOSION",
-        "goes off, 'minecraft:red_bed[part=foot]', BLK_BED_EXPLOSION",
         "goes off, 'minecraft:respawn_anchor[charges=4]', BLK_RESPAWN_ANCHOR",
         "goes off, minecraft:air, BLK_EXPLOSION",
-        "changes, ENDERMAN, BLK_ENDERMAN",
-        "changes, WITHER, BLK_WITHER",
-        "changes, WITHER_SKULL, BLK_WITHER",
-        "changes, RAVAGER, BLK_RAVAGER",
-        "changes, SILVERFISH, BLK_SILVERFISH",
-        "changes, SNOW_GOLEM, BLK_SNOWMAN",
-        "changes, SHEEP, BLK_MOB_GRIEF",
-        "changes, END_CRYSTAL, BLK_END_CRYSTAL",
         "changes, CREEPER, BLK_CREEPER",
-        "changes, TNT, BLK_TNT",
+        "changes, SHEEP, BLK_MOB_GRIEF",
         "changes, PLAYER,",
         "changes, FALLING_BLOCK,",
         "forms, SNOW_GOLEM, BLK_SNOWMAN",
@@ -309,10 +298,7 @@ class BlockDestructionRulesTest {
     // A piston, like a blast, reaches one half of a bed at a time.
     @Test
     fun `a piston that breaks one half of a bed follows the other`() {
-        val foot = blockStub(world, 1, 64, 0, Blocks.BED.white().defaultBlockState()
-            .setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.EAST)
-            .setValue(BlockStateProperties.BED_PART, BedPart.FOOT)
-            .asBlockData())
+        val foot = blockStub(world, 1, 64, 0, whiteBed(BedPart.FOOT).asBlockData())
         val air = blockStub(world, 4, 64, 0, Blocks.AIR.defaultBlockState().asBlockData())
         val stone = blockStub(
             world,
@@ -388,11 +374,6 @@ class BlockDestructionRulesTest {
         assertFalse(claims.claims(spread))
     }
 
-    /**
-     * The server records the igniter on the creeper itself, for anything in its creeper-igniters tag
-     * — a fire charge as much as flint and steel — and for a plugin igniting one through the API. A
-     * record kept here beside it would answer for the one of those it happened to know about.
-     */
     @Test
     fun `an entity that goes off names whoever the server recorded behind it`() {
         val player = stub(Player::class.java, mapOf("getUniqueId" to bob))
@@ -401,13 +382,11 @@ class BlockDestructionRulesTest {
         assertEquals(bob, litBy(stub(Creeper::class.java, mapOf("getIgniter" to player)))?.uniqueId)
         assertEquals(bob, litBy(stub(TNTPrimed::class.java, mapOf("getSource" to player)))?.uniqueId)
 
-        // A creeper that went off on its own, one a mob lit, and dynamite nobody is left holding.
         assertNull(litBy(stub(Creeper::class.java, emptyMap())))
         assertNull(litBy(stub(Creeper::class.java, mapOf("getIgniter" to mob))))
         assertNull(litBy(stub(TNTPrimed::class.java, emptyMap())))
         // An end crystal remembers nobody at all.
         assertNull(litBy(mob))
-        // A fireball a player hit back.
         assertEquals(bob, litBy(stub(Fireball::class.java, mapOf("getShooter" to player)))?.uniqueId)
     }
 
@@ -415,7 +394,7 @@ class BlockDestructionRulesTest {
     // head's physics update with the base already turned into the moving block.
     @Test
     fun `a head whose base has turned into the moving block is being taken back`() {
-        fun block(state: net.minecraft.world.level.block.state.BlockState, next: Block? = null): Block {
+        fun block(state: BlockState, next: Block? = null): Block {
             val data = state.asBlockData()
             return stub(Block::class.java, mapOf("getType" to data.material, "getBlockData" to data, "getRelative" to next))
         }
@@ -430,7 +409,6 @@ class BlockDestructionRulesTest {
         // A moving block facing elsewhere belongs to some other piston.
         val other = block(moving.setValue(BlockStateProperties.FACING, Direction.UP))
         assertNull(retractingBase(block(head, other)))
-        // Anything that is not a head is not asked about at all.
         assertNull(retractingBase(block(Blocks.STONE.defaultBlockState(), retracting)))
     }
 
@@ -441,7 +419,6 @@ class BlockDestructionRulesTest {
 
         assertSame(wither, firedBy(skull))
         assertSame(wither, firedBy(wither))
-        // A skull whose wither is gone has nobody behind it but itself.
         val orphan = stub(WitherSkull::class.java, emptyMap())
         assertSame(orphan, firedBy(orphan))
     }

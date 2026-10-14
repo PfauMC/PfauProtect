@@ -160,8 +160,8 @@ class MechanismTest {
     // filed on another, or a guess passed off as a fact.
     @Test
     fun `movements sharing both ends, the form, the actor and the confidence leave as one`() {
-        val written = ArrayList<Transfer>()
-        val coalescer = TickCoalescer(written::add)
+        val spawns = Spawns()
+        val coalescer = spawns.coalescer
         val from = Container(world, 1, 64, 1, 0)
         val to = Container(world, 1, 63, 1, 0)
         repeat(5) { coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1) }
@@ -170,7 +170,7 @@ class MechanismTest {
         coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1, alice)
         coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1, bob)
         coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1, bob, Confidence.INFERRED)
-        coalescer.flush()
+        val written = spawns.rows()
 
         assertEquals(
             setOf(
@@ -221,22 +221,11 @@ class MechanismTest {
         val upper = WorldBlock(world, 2, -59, 22)
         val single = WorldBlock(world, 44, -60, -27)
         val paidLower = { at: WorldBlock -> form(Items.TALL_GRASS).takeIf { at == lower } }
-        for ((struck, partner, remembered, expected) in listOf(
-            Debit(upper, lower, paidLower, lower),
-            Debit(lower, upper, paidLower, lower),
-            Debit(upper, lower, { null }, upper),
-            Debit(single, null, { form(Items.STONE) }, single),
-        )) {
-            assertEquals(expected, paidHalf(struck, partner, remembered), "$struck")
-        }
+        assertEquals(lower, paidHalf(upper, lower, paidLower))
+        assertEquals(lower, paidHalf(lower, upper, paidLower))
+        assertEquals(upper, paidHalf(upper, lower) { null })
+        assertEquals(single, paidHalf(single, null) { form(Items.STONE) })
     }
-
-    private data class Debit(
-        val struck: WorldBlock,
-        val partner: WorldBlock?,
-        val remembered: (WorldBlock) -> ByteArray?,
-        val expected: WorldBlock,
-    )
 
     // The event carries a mirror of the whole input slot while the smelt takes exactly one item out of
     // it, so a furnace loaded with a stack must still book a loss of one per ingot.

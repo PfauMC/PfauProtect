@@ -5,6 +5,7 @@ import io.pfaumc.pfauprotect.storage.PlacedForms
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import org.bukkit.World
+import org.bukkit.block.Block
 import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
 import java.lang.reflect.Proxy
@@ -30,6 +31,9 @@ internal fun <T : Any> stub(type: Class<T>, answers: Map<String, Any?> = emptyMa
 }
 
 internal fun worldStub(uid: UUID): World = stub(World::class.java, mapOf("getUID" to uid))
+
+internal fun blockAt(world: UUID, x: Int, y: Int, z: Int): Block =
+    stub(Block::class.java, mapOf("getWorld" to worldStub(world), "getX" to x, "getY" to y, "getZ" to z))
 
 internal fun disabledPlugin(): Plugin = stub(Plugin::class.java, mapOf("isEnabled" to false))
 

@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.AIR
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.worldStub
@@ -33,7 +34,6 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.CsvSource
 import java.util.UUID
 
-private const val AIR = "minecraft:air"
 
 @ExtendWith(Vanilla::class)
 class BlockCaptureTest : BothPlanes() {

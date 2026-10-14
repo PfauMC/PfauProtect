@@ -1,4 +1,6 @@
 package io.pfaumc.pfauprotect.check
+import io.pfaumc.pfauprotect.AIR
+import io.pfaumc.pfauprotect.STONE
 import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.storage.BlockChange
@@ -15,8 +17,6 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
-private const val AIR = "minecraft:air"
-private const val STONE = "minecraft:stone"
 private const val WATER = "minecraft:water[level=0]"
 private const val WATERLOGGED = "minecraft:oak_slab[type=bottom,waterlogged=true]"
 

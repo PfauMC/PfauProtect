@@ -1,6 +1,8 @@
 package io.pfaumc.pfauprotect
 
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
+import io.pfaumc.pfauprotect.capture.item.ContainerCaptureListener
+import io.pfaumc.pfauprotect.capture.item.Intent
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.check.PlaneGap
 import io.pfaumc.pfauprotect.check.PlaneReport
@@ -23,6 +25,13 @@ import io.pfaumc.pfauprotect.storage.MemoryRegistryStore
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
+import io.pfaumc.pfauprotect.storage.fillTypeRegistries
+import net.minecraft.core.component.DataComponents
+import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.ItemStackTemplate
+import net.minecraft.world.item.Items
+import net.minecraft.world.item.component.BundleContents
+import org.bukkit.Bukkit
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeEach
@@ -31,6 +40,12 @@ import java.nio.file.Path
 import java.util.UUID
 
 internal const val T0 = 1_700_000_000_000L
+
+internal const val AIR = "minecraft:air"
+internal const val STONE = "minecraft:stone"
+internal const val DIRT = "minecraft:dirt"
+internal const val GRASS = "minecraft:grass_block[snowy=false]"
+internal const val SOURCE_WATER = "minecraft:water[level=0]"
 
 internal val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000001")
 internal val alice: UUID = UUID.fromString("00000000-0000-4000-8000-0000000000a1")
@@ -43,7 +58,28 @@ internal fun ledgerEntry(holder: Holder, counterparty: Holder, actor: UUID? = nu
     confidence = Confidence.FACT, counterparty = counterparty, itemFormId = 12L, qty = 1, damage = null, actor = actor,
 )
 
-internal fun testCodec() = ItemFormCodec(Registries(MemoryRegistryStore()), ServerRegistries.access)
+internal fun testCodec(vanillaIds: Boolean = false): ItemFormCodec {
+    val registries = Registries(MemoryRegistryStore())
+    if (vanillaIds) fillTypeRegistries(registries)
+    return ItemFormCodec(registries, ServerRegistries.access)
+}
+
+internal fun bundleOf(vararg items: ItemStack) = ItemStack(Items.BUNDLE).apply {
+    set(DataComponents.BUNDLE_CONTENTS, BundleContents(items.map(ItemStackTemplate::fromNonEmptyStack)))
+}
+
+// Disabled, so the pass it would otherwise schedule never runs: only what a handler writes itself, or
+// what the test runs by hand, reaches the sink.
+internal fun captureListener(
+    codec: ItemFormCodec,
+    origins: SpawnOrigins,
+    sink: (List<Transfer>) -> Unit = {},
+    unspent: (Intent, Int) -> Unit = { _, _ -> },
+    currentTick: () -> Int = Bukkit::getCurrentTick,
+) = ContainerCaptureListener(
+    disabledPlugin(), sink, codec, Registries(MemoryRegistryStore()), origins, NoPlacedForms,
+    currentTick = currentTick, unspent = unspent,
+)
 
 // The coalescer only hands a row on at the end of its tick, so `rows` flushes it first.
 internal class Spawns {
@@ -126,12 +162,10 @@ abstract class BothPlanes {
         y: Int,
         z: Int,
         form: ByteArray,
-        cause: Cause = Cause.BLOCK_DROP,
-        actor: UUID? = alice,
         ts: Long = longAgo,
         confidence: Confidence = Confidence.FACT,
     ) {
-        shared.submit(Transfer(cause, WorldBlock(world, x, y, z), Void, form, null, 1, ts, confidence = confidence, actor = actor))
+        shared.submit(Transfer(Cause.BLOCK_DROP, WorldBlock(world, x, y, z), Void, form, null, 1, ts, confidence = confidence, actor = alice))
     }
 
     protected fun stateOf(blockData: String): Int? =

@@ -1,13 +1,15 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.SOURCE_WATER
+import io.pfaumc.pfauprotect.AIR
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.ServerRegistries
+import io.pfaumc.pfauprotect.capture.entity.nbtOf
 import io.pfaumc.pfauprotect.stub
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.core.RegistryAccess
 import net.minecraft.core.registries.Registries
-import net.minecraft.nbt.NbtIo
 import net.minecraft.network.chat.Component
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.entity.BlockEntity
@@ -28,11 +30,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
-import java.io.ByteArrayInputStream
-import java.io.DataInputStream
 
-private const val SOURCE_WATER = "minecraft:water[level=0]"
-private const val AIR = "minecraft:air"
 
 @ExtendWith(Vanilla::class)
 class BlockCaptureRulesTest {
@@ -62,9 +60,8 @@ class BlockCaptureRulesTest {
         assertEquals(BlockFace.UP, partnerOf(door))
         assertEquals(BlockFace.DOWN, partnerOf(door.setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER)))
 
-        val bed = Blocks.BED.white().defaultBlockState().setValue(BlockStateProperties.HORIZONTAL_FACING, Direction.EAST)
-        assertEquals(BlockFace.EAST, partnerOf(bed.setValue(BlockStateProperties.BED_PART, BedPart.FOOT)))
-        assertEquals(BlockFace.WEST, partnerOf(bed.setValue(BlockStateProperties.BED_PART, BedPart.HEAD)))
+        assertEquals(BlockFace.EAST, partnerOf(whiteBed(BedPart.FOOT)))
+        assertEquals(BlockFace.WEST, partnerOf(whiteBed(BedPart.HEAD)))
 
         val sunflower = Blocks.SUNFLOWER.defaultBlockState()
         assertEquals(BlockFace.UP, partnerOf(sunflower))
@@ -199,7 +196,7 @@ class BlockCaptureRulesTest {
 
         val at = BlockPos(4, 65, -9)
         val payload = payloadOf(sign(at, "первая строка"), registries)!!
-        val tag = NbtIo.read(DataInputStream(ByteArrayInputStream(payload)))
+        val tag = nbtOf(payload)
         val restored = BlockEntity.loadStatic(at, signState, tag, registries) as SignBlockEntity
 
         assertEquals("первая строка", restored.getText(SignTextSlot.FRONT).getMessages(false)[0].string)

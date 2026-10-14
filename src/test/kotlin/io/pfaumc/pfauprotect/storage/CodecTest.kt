@@ -183,12 +183,17 @@ class CodecTest {
         }
     }
 
+    private val drained = PlayerInv(alice, 0)
+
+    private fun drainedKey() = EntryCodec.key(drained, 1L, 1L, 0, registries)
+
+    private fun drainedValue() = EntryCodec.value(ledgerEntry(drained, Void), registries)
+
     @Test
     fun `records of another version are skipped rather than decoded`() {
-        val holder = PlayerInv(alice, 0)
-        val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
+        val key = drainedKey()
         for (version in 1..7) {
-            val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
+            val value = drainedValue()
             value[0] = ((value[0].toInt() and 0xF8) or version).toByte()
             assertNull(EntryCodec.decodeOrNull(key, value, registries)) { "version $version was decoded" }
         }
@@ -196,9 +201,8 @@ class CodecTest {
 
     @Test
     fun `a record too short to read is skipped rather than throwing`() {
-        val holder = PlayerInv(alice, 0)
-        val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
-        val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
+        val key = drainedKey()
+        val value = drainedValue()
         assertEveryPrefixRejected(key, value) { k, v -> EntryCodec.decodeOrNull(k, v, registries) }
     }
 
@@ -206,9 +210,8 @@ class CodecTest {
     // scan of an older one. Throwing there would take the whole scan down over a label.
     @Test
     fun `a cause with no name in this build decodes rather than stopping the scan`() {
-        val holder = PlayerInv(alice, 0)
-        val key = EntryCodec.key(holder, 1L, 1L, 0, registries)
-        val value = EntryCodec.value(ledgerEntry(holder, Void), registries)
+        val key = drainedKey()
+        val value = drainedValue()
         value[1] = (0..255).first { id -> Cause.entries.none { it.id == id } }.toByte()
 
         val decoded = EntryCodec.decodeOrNull(key, value, registries)

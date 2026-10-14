@@ -16,7 +16,6 @@ class TextsTest {
         Settings.language = "en"
     }
 
-    // In Russian a sentence goes over whole, with what it names translated word by word; in English as it is.
     @Test
     fun `a line goes out in the language asked for`() {
         val line = "  took back 32 minecraft:diamond from Test2."
@@ -33,7 +32,6 @@ class TextsTest {
         for (value in values) assertTrue(value in translated, "$value lost from \"$translated\"")
     }
 
-    // The items a rollback takes back are named as the game names them, in the reader's own language.
     @Test
     fun `an item id in a line is the game's name of the item`() {
         val parts = Ui.named("  изъято 32 minecraft:diamond у Test2.").children()

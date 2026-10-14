@@ -1,4 +1,8 @@
 package io.pfaumc.pfauprotect.capture.block
+import io.pfaumc.pfauprotect.AIR
+import io.pfaumc.pfauprotect.DIRT
+import io.pfaumc.pfauprotect.GRASS
+import io.pfaumc.pfauprotect.SOURCE_WATER
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.worldStub
@@ -59,11 +63,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
-private const val AIR = "minecraft:air"
-private const val DIRT = "minecraft:dirt"
 private const val OAK_LOG = "minecraft:oak_log[axis=y]"
-private const val GRASS = "minecraft:grass_block[snowy=false]"
-private const val SOURCE_WATER = "minecraft:water[level=0]"
 private const val SHULKER_BOX = "minecraft:shulker_box[facing=up]"
 private const val SAND = "minecraft:sand"
 private const val PISTON = "minecraft:piston[extended=false,facing=east]"
@@ -133,9 +133,7 @@ class BlockDestructionTest : BothPlanes() {
         return listener.released(site, remembered, Cause.BLK_FADE, null, now)
     }
 
-    private fun stateAfter(row: BlockRow) = shared.registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter)
-
-    private fun stateBefore(row: BlockRow) = shared.registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateBefore)
+    private fun nameOf(stateId: Int) = shared.registries.keyOf(RegistryNamespace.BLOCK_STATE, stateId)
 
     private fun rowsAt(x: Int, y: Int, z: Int) = log.at(x, y, z, 0, Long.MAX_VALUE, limit = 100, reverse = false)
 
@@ -209,8 +207,8 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(Confidence.INFERRED, footRows[1].confidence)
         assertEquals(alice, footRows[1].actor)
         assertEquals(footRows[1].eventId, headRows[1].eventId)
-        assertEquals(listOf(AIR, AIR), listOf(footRows[1], headRows[1]).map { stateAfter(it) })
-        assertEquals(listOf(WHITE_BED_FOOT, WHITE_BED_HEAD), listOf(footRows[1], headRows[1]).map { stateBefore(it) })
+        assertEquals(listOf(AIR, AIR), listOf(footRows[1], headRows[1]).map { nameOf(it.stateAfter) })
+        assertEquals(listOf(WHITE_BED_FOOT, WHITE_BED_HEAD), listOf(footRows[1], headRows[1]).map { nameOf(it.stateBefore) })
 
         val report = assertPlanesAgree(settled)
         assertEquals(1, report.checked)
@@ -295,11 +293,11 @@ class BlockDestructionTest : BothPlanes() {
         val through = rowsAt(2, 64, 0)
         assertEquals(1, (left.drop(1) + through.drop(1) + rowsAt(0, 64, 0)).map { it.eventId }.distinct().size)
         // The middle position is both a position a block left and one a block arrived in, in that order.
-        assertEquals(listOf(AIR, PISTON_HEAD), left.drop(1).map { stateAfter(it) })
-        assertEquals(listOf(AIR, DIRT), through.drop(1).map { stateAfter(it) })
-        assertEquals(GRASS, stateAfter(log.standingAt(3, 64, 0).row!!))
+        assertEquals(listOf(AIR, PISTON_HEAD), left.drop(1).map { nameOf(it.stateAfter) })
+        assertEquals(listOf(AIR, DIRT), through.drop(1).map { nameOf(it.stateAfter) })
+        assertEquals(GRASS, nameOf(log.standingAt(3, 64, 0).row!!.stateAfter))
         assertEquals(listOf(PISTON to PISTON_EXTENDED), rowsAt(0, 64, 0).map {
-            stateBefore(it) to stateAfter(it)
+            nameOf(it.stateBefore) to nameOf(it.stateAfter)
         })
 
         assertEquals(0, shared.holderEntries(first, 0, Long.MAX_VALUE).sumOf { it.qty })
@@ -361,8 +359,8 @@ class BlockDestructionTest : BothPlanes() {
         // Who took the support away is the ladder's guess, and the landing carries that same guess on.
         assertEquals(listOf(bob, bob), listOf(start.actor, land.actor))
         assertEquals(listOf(Confidence.INFERRED, Confidence.INFERRED), listOf(start.confidence, land.confidence))
-        assertEquals(AIR, stateAfter(start))
-        assertEquals(SAND, stateAfter(land))
+        assertEquals(AIR, nameOf(start.stateAfter))
+        assertEquals(SAND, nameOf(land.stateAfter))
 
         assertEquals(0, shared.holderEntries(from, 0, Long.MAX_VALUE).sumOf { it.qty })
         assertEquals(1, shared.holderEntries(to, 0, Long.MAX_VALUE).sumOf { it.qty })

@@ -38,7 +38,6 @@ class MobInventoriesTest {
 
     private fun changes(before: List<Pocket>, after: List<Pocket>) = bag(signed(pocketChanges(before, after)))
 
-    // Bread baked from wheat in one slot is two changes, and a stack only partly spent is one.
     @Test
     fun `a pocket read twice gives what went out and what came in, slot by slot`() {
         assertEquals(

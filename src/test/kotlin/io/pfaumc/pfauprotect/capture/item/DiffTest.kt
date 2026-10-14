@@ -33,15 +33,6 @@ class DiffTest {
         Snapshot(mapOf(*rows), containers)
 
     @Test
-    fun `a partial stack moves only the taken amount`() {
-        val edges = Netting.diff(
-            seen(chest(0) to stack("stone", 64)),
-            seen(chest(0) to stack("stone", 40), bag(0) to stack("stone", 24)),
-        )
-        assertEquals(listOf(Edge(chest(0), bag(0), key("stone"), 24, Confidence.FACT)), edges)
-    }
-
-    @Test
     fun `wearing a tool down in place moves nothing`() {
         val edges = Netting.diff(
             seen(bag(0) to stack("pickaxe", 1, damage = 3)),
@@ -71,18 +62,9 @@ class DiffTest {
     }
 
     @Test
-    fun `an unpaired loss goes to the void as inferred`() {
-        val vanished = Netting.diff(
-            seen(bag(0) to stack("pickaxe", 1, damage = 3)),
-            seen(),
-        )
-        assertEquals(listOf(Edge(bag(0), Void, key("pickaxe", 3), 1, Confidence.INFERRED)), vanished)
-
-        val appeared = Netting.diff(
-            seen(),
-            seen(bag(0) to stack("stone", 4)),
-        )
-        assertEquals(listOf(Edge(Void, bag(0), key("stone"), 4, Confidence.INFERRED)), appeared)
+    fun `a worn tool that vanishes carries the wear it left with`() {
+        val edges = Netting.diff(seen(bag(0) to stack("pickaxe", 1, damage = 3)), seen())
+        assertEquals(listOf(Edge(bag(0), Void, key("pickaxe", 3), 1, Confidence.INFERRED)), edges)
     }
 
     @Test

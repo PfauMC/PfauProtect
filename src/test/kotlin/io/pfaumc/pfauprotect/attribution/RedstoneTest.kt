@@ -137,7 +137,6 @@ class RedstoneTest : BothPlanes() {
         assertEquals(Attributed(alice, Confidence.FACT), energy.near(at(1)))
     }
 
-    // An entity stands in for itself with only what the ladder asks of it answered.
     private fun <T : Entity> entity(type: Class<T>, id: UUID, answers: Map<String, Any?> = emptyMap()): T =
         stub(type, mapOf("getUniqueId" to id) + answers, lenient = true)
 

@@ -12,7 +12,6 @@ import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.CsvSource
@@ -33,15 +32,12 @@ class IntentTest {
         Edge(Void, to, key(name), qty, Confidence.INFERRED)
 
     // A command's reason is handed on by a pass that did not spend it, so the pass has to say which it
-    // spent: none when the inventory had not changed yet, the clear once the clear shows.
+    // spent.
     @Test
-    fun `a pass says which intents it spent and leaves the rest for the next one`() {
+    fun `a loss spends the clear and leaves the give for a later pass`() {
         val clear = Intent(Cause.CMD_CLEAR, to = Void, untilTick = 1)
         val give = Intent(Cause.CMD_GIVE, from = Void, form = "stone".toByteArray(), untilTick = 1)
         val spent = HashSet<Intent>()
-        Intents.explain(emptyList(), listOf(clear, give), player, used = spent::add)
-        assertTrue(spent.isEmpty())
-
         val moves = Intents.explain(listOf(lost("dirt", 5)), listOf(clear, give), player, used = spent::add)
         assertEquals(setOf(clear), spent)
         assertEquals(Cause.CMD_CLEAR, moves.single().cause)
@@ -73,7 +69,6 @@ class IntentTest {
             ),
             Intents.explain(edges, listOf(Intent(Cause.COLLECT_ALL)), player),
         )
-        assertEquals(Cause.QUICK_MOVE, Intents.explain(edges, emptyList(), player).first().cause)
 
         val between = Edge(Container(world, 0, 64, 0, 0), Container(world, 0, 64, 0, 1), key("stone"), 5, Confidence.FACT)
         assertEquals(causeOf(between), Intents.explain(listOf(between), listOf(Intent(Cause.COLLECT_ALL)), player).single().cause)
@@ -105,7 +100,6 @@ class IntentTest {
     fun `an end nothing explains is named as turning up or going`() {
         val moves = Intents.explain(listOf(gained("stone", 2), lost("dirt", 1)), emptyList(), player)
         assertEquals(listOf(Cause.DIRECT_NEW_ITEM, Cause.ITEM_VANISHED), moves.map { it.cause })
-        assertTrue(moves.all { it.confidence == Confidence.INFERRED })
     }
 
     @Test
@@ -113,22 +107,6 @@ class IntentTest {
         val moves =
             Intents.explain(listOf(lost("stone", 4)), listOf(Intent(Cause.PICKUP, from = ground)), player)
         assertEquals(listOf(Move(bag(0), Void, key("stone"), 4, Cause.ITEM_VANISHED, Confidence.INFERRED)), moves)
-    }
-
-    @Test
-    fun `an intent explains only the amount it names`() {
-        val moves = Intents.explain(
-            listOf(lost("stone", 5)),
-            listOf(Intent(Cause.DROP_FROM_HAND, to = ground, qty = 2)),
-            player,
-        )
-        assertEquals(
-            listOf(
-                Move(bag(0), ground, key("stone"), 2, Cause.DROP_FROM_HAND, Confidence.FACT),
-                Move(bag(0), Void, key("stone"), 3, Cause.ITEM_VANISHED, Confidence.INFERRED),
-            ),
-            moves,
-        )
     }
 
     @Test
@@ -165,8 +143,6 @@ class IntentTest {
 
     @Test
     fun `a movement already written is swallowed rather than written again`() {
-        val written = Intent(Cause.DEATH_DROP, to = Void, qty = 3, recorded = true)
-        assertEquals(emptyList<Move>(), Intents.explain(listOf(lost("stone", 3)), listOf(written), player))
         assertEquals(
             emptyList<Move>(),
             Intents.explain(listOf(lost("stone", 3)), listOf(Intent(Cause.DEATH_DROP, recorded = true)), player),

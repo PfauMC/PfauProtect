@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.storage
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.Vanilla
+import io.pfaumc.pfauprotect.testCodec
 import net.minecraft.core.component.DataComponents
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.nbt.ListTag
@@ -23,11 +24,7 @@ import net.minecraft.core.registries.Registries as VanillaRegistries
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @ExtendWith(Vanilla::class)
 class ItemFormsTest {
-    private val registries = Registries(MemoryRegistryStore())
-    private val codec = run {
-        fillTypeRegistries(registries)
-        ItemFormCodec(registries, ServerRegistries.access)
-    }
+    private val codec = testCodec(vanillaIds = true)
 
     @Test
     fun `damage travels outside the form`() {

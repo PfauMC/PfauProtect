@@ -1,7 +1,7 @@
 package io.pfaumc.pfauprotect.capture.item
-import io.pfaumc.pfauprotect.disabledPlugin
-import io.pfaumc.pfauprotect.NoPlacedForms
 import io.pfaumc.pfauprotect.Spawns
+import io.pfaumc.pfauprotect.bundleOf
+import io.pfaumc.pfauprotect.captureListener
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.model.Cause
@@ -13,15 +13,11 @@ import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.attribution.Attribution
-import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.testCodec
 import io.pfaumc.pfauprotect.Vanilla
-import net.minecraft.core.component.DataComponents
-import net.minecraft.world.item.ItemStackTemplate
 import net.minecraft.world.item.Items
-import net.minecraft.world.item.component.BundleContents
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Item
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
@@ -43,8 +39,6 @@ import net.minecraft.world.item.ItemStack as NmsItemStack
 class WorldItemsTest {
     private val spawns = Spawns()
 
-    // An item that is hurt and lives keeps the damage that hurt it, and only an item whose health ran
-    // out was killed by what it carries, so the two are given separately.
     private fun end(cause: EntityRemoveEvent.Cause, damage: DamageCause? = null, health: Int = 0) =
         itemEnd(cause, damage, health)
 
@@ -123,11 +117,7 @@ class WorldItemsTest {
 
     private val codec by lazy { testCodec() }
 
-    private fun bundle(owner: UUID?) = NmsItemStack(Items.BUNDLE).apply {
-        set(
-            DataComponents.BUNDLE_CONTENTS,
-            BundleContents(listOf(ItemStackTemplate(Items.DIAMOND, 3), ItemStackTemplate(Items.STONE, 16))),
-        )
+    private fun bundle(owner: UUID?) = bundleOf(NmsItemStack(Items.DIAMOND, 3), NmsItemStack(Items.STONE, 16)).apply {
         owner?.let { NestedItems.mark(this, it) }
     }
 
@@ -138,11 +128,7 @@ class WorldItemsTest {
         val owner = UUID.randomUUID()
         val thrower = UUID.randomUUID()
         val entity = UUID.randomUUID()
-        val origins = SpawnOrigins(spawns.coalescer)
-        val capture = ContainerCaptureListener(
-            disabledPlugin(), {}, codec,
-            Registries(MemoryRegistryStore()), origins, NoPlacedForms,
-        )
+        val capture = captureListener(codec, spawns.origins)
         val item = stub(
             Item::class.java,
             mapOf(
@@ -155,7 +141,7 @@ class WorldItemsTest {
         )
 
         val attribution = Attribution(Registries(MemoryRegistryStore()), BlockLogs(dir.resolve("blocks"), ledger))
-        WorldItemListener(codec, spawns.coalescer, origins, capture, attribution)
+        WorldItemListener(codec, spawns.coalescer, spawns.origins, capture, attribution)
             .onRemove(EntityRemoveEvent(item, EntityRemoveEvent.Cause.OUT_OF_WORLD))
 
         val rows = spawns.rows()

@@ -15,10 +15,7 @@ import java.nio.file.Path
 import java.util.UUID
 
 /**
- * Reads a copy of the ledger offline, for what `/pp lookup` has no view of: the rows of a pile on the
- * ground, of a mob's pocket, of every holder at once. The bot's scenarios run it through
- * `scripts/ledger-rows.sh`, which takes the copy from inside the test server's container; the arguments
- * are the ledger directory followed by those described there.
+ * Reads a copy of the ledger offline; `scripts/ledger-rows.sh` takes the copy and describes the arguments.
  *
  * One row a line: `ts=… cause=… holder=… qty=… item=… counterparty=… actor=… confidence=… tx=…`.
  */

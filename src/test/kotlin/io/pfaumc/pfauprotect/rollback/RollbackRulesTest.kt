@@ -1,9 +1,13 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.AIR
+import io.pfaumc.pfauprotect.STONE
+import io.pfaumc.pfauprotect.DIRT
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.world
 import io.pfaumc.pfauprotect.capture.block.Standing
 import io.pfaumc.pfauprotect.command.EventRef
 import io.pfaumc.pfauprotect.command.parseLookupQuery
@@ -32,14 +36,10 @@ import net.minecraft.world.item.Items
 import java.util.UUID
 import net.minecraft.world.item.ItemStack as NmsItemStack
 
-private const val AIR = "minecraft:air"
-private const val STONE = "minecraft:stone"
-private const val DIRT = "minecraft:dirt"
 private const val LAVA = "minecraft:lava[level=0]"
 
 @ExtendWith(Vanilla::class)
 class RollbackRulesTest {
-    private val world: UUID = UUID.fromString("00000000-0000-4000-8000-000000000006")
     private val diamond = byteArrayOf(9)
 
     private fun step(before: String, after: String) = Step(before, after, null)
@@ -122,8 +122,8 @@ class RollbackRulesTest {
     @Test
     fun `air left by a break is not the running water the block was put into`() {
         val flow = "minecraft:water[level=3]"
-        assertEquals(STONE, settle(AIR, listOf(Step(STONE, AIR, null)), flow).back?.before)
-        assertNull(settle(AIR, listOf(Step(STONE, AIR, null)), AIR).back)
+        assertEquals(STONE, settle(AIR, listOf(step(STONE, AIR)), flow).back?.before)
+        assertNull(settle(AIR, listOf(step(STONE, AIR)), AIR).back)
     }
 
     // A row this build cannot read may be anybody's change, so no beginning is known past it.

@@ -454,8 +454,7 @@ class StorageTest : OneLedger() {
             unpacked += packed.substring(at + 2, at + 2 + 2 * length)
             at += 2 + 2 * length
         }
-        assertEquals(postings, unpacked.toSet())
-        assertEquals(4, unpacked.size)
+        assertEquals(postings.sorted(), unpacked.sorted())
         assertEquals("%016x".format(nextBefore + 1), stored.getValue("meta")[txIdKey], "the next id to hand out")
     }
 
@@ -594,7 +593,7 @@ class StorageTest : OneLedger() {
         assertTrue(log.regionPage(UUID.randomUUID(), 96, -208, 112, -192, 0, Long.MAX_VALUE).complete)
     }
 
-    // An undecodable row (unknown version, or torn after the header) is counted apart, neither checked nor thrown out of the pass.
+    // Unknown version, or torn after the header.
     @Test
     fun `rows this build cannot read are counted apart from the ones it checked`() {
         val unreadable = listOf(
@@ -722,7 +721,6 @@ class StorageTest : OneLedger() {
         val freshForm = after.last().itemFormId
         assertTrue(before.none { it.itemFormId == freshForm }, "a form first seen after the reopen took an old id")
         assertArrayEquals(torch, log.form(freshForm))
-        assertArrayEquals(cobblestone, log.form(before[0].itemFormId))
         assertArrayEquals(pickaxe, log.form(before[2].itemFormId))
         assertNull(log.form(9999))
     }

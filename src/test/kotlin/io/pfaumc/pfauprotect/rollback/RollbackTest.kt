@@ -1,5 +1,8 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.AIR
+import io.pfaumc.pfauprotect.STONE
+import io.pfaumc.pfauprotect.DIRT
 import org.junit.jupiter.api.extension.ExtendWith
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.BothPlanes
@@ -42,9 +45,6 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
-private const val AIR = "minecraft:air"
-private const val STONE = "minecraft:stone"
-private const val DIRT = "minecraft:dirt"
 
 @ExtendWith(Vanilla::class)
 class RollbackTest : BothPlanes() {
@@ -324,7 +324,6 @@ class RollbackTest : BothPlanes() {
         }
     }
 
-    // Excluding Bob drops what he did in both planes, and only that.
     @Test
     fun `an excluded player's blocks and postings are left out`() {
         log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))

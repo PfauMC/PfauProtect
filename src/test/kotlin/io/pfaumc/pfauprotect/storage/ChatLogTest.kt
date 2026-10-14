@@ -8,8 +8,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 
 class ChatLogTest {
-    // Lines come back newest first, by time and by what the filter keeps; reopening loses none of them,
-    // nor one of two said in the same millisecond.
+    // Reopening loses no line, nor one of two said in the same millisecond.
     @Test
     fun `what was said comes back newest first and by filter`(@TempDir dir: Path) {
         ChatLog(dir).use { log ->
