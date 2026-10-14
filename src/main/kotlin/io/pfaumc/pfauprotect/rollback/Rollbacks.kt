@@ -836,6 +836,11 @@ internal fun refusalOf(query: LookupQuery): String? = when {
     query.players.isNotEmpty() -> "player: reads what a player carries and has no place to roll back; use user:."
     query.radius == null -> "A rollback needs radius: the blocks around you it covers, or global with user:."
     query.global && query.users.isEmpty() -> "radius:global undoes what named players did; give user: as well."
+    // These narrow only what a lookup shows: a rollback would read past them and undo more, or less, than
+    // the lookup it was checked against.
+    query.amount != null -> "amount: narrows a lookup to item rows; a rollback does not take it."
+    query.rolledBack != null -> "rolledback: narrows what a lookup shows; a rollback does not take it."
+    query.steal -> "action:steal is worked out for a lookup only; roll back action:withdraw instead."
     else -> null
 }
 

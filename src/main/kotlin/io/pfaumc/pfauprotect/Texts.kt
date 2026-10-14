@@ -31,6 +31,9 @@ object Texts {
         r("player: reads what a player carries and has no place to roll back; use user:\\.") to "player: читает то, что игрок несёт, и откатывать там нечего; используй user:.",
         r("A rollback needs radius: the blocks around you it covers, or global with user:\\.") to "Откату нужен radius: сколько блоков вокруг тебя он охватывает, или 'global' вместе с user:.",
         r("radius:global undoes what named players did; give user: as well\\.") to "radius:global отменяет сделанное названными игроками; укажи и user:.",
+        r("amount: narrows a lookup to item rows; a rollback does not take it\\.") to "amount: сужает поиск до строк предметов; откат его не принимает.",
+        r("rolledback: narrows what a lookup shows; a rollback does not take it\\.") to "rolledback: сужает только то, что показывает поиск; откат его не принимает.",
+        r("action:steal is worked out for a lookup only; roll back action:withdraw instead\\.") to "action:steal вычисляется только для поиска; для отката укажи action:withdraw.",
         r("Rollback preview dropped\\.") to "Предпросмотр отката сброшен.",
         r("  you see the blocks as they would stand; nothing changes before /pp apply\\.") to "  вы видите блоки такими, какими они станут; до /pp apply в мире ничего не меняется.",
         r("  you see the nearest blocks \\((\\d+) of (\\d+)\\) as they would stand; nothing changes before /pp apply\\.") to
