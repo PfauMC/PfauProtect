@@ -29,7 +29,7 @@ object Texts {
         // Rollback
         r("A rollback needs time: how far back to undo, for example time:1h\\.") to "Откату нужно time: насколько назад отменять, например time:1h.",
         r("player: reads what a player carries and has no place to roll back; use user:\\.") to "player: читает то, что игрок несёт, и откатывать там нечего; используй user:.",
-        r("A rollback needs radius: the blocks around you it covers, or global with user:\\.") to "Откату нужен radius: сколько блоков вокруг тебя он охватывает, или 'global' вместе с user:.",
+        r("A rollback needs radius: the blocks around you it covers, or user: for all they did\\.") to "Откату нужен radius: сколько блоков вокруг тебя он охватывает, или user: — тогда всё, что сделал игрок.",
         r("radius:global undoes what named players did; give user: as well\\.") to "radius:global отменяет сделанное названными игроками; укажи и user:.",
         r("amount: narrows a lookup to item rows; a rollback does not take it\\.") to "amount: сужает поиск до строк предметов; откат его не принимает.",
         r("rolledback: narrows what a lookup shows; a rollback does not take it\\.") to "rolledback: сужает только то, что показывает поиск; откат его не принимает.",

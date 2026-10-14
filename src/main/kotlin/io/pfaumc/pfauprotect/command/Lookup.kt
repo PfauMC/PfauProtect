@@ -397,7 +397,7 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
     var query = LookupQuery(words = reader.remaining)
     while (true) {
         while (reader.canRead() && reader.peek() == ' ') reader.skip()
-        if (!reader.canRead()) return query
+        if (!reader.canRead()) return query.userEverywhere()
         val tokenStart = reader.cursor
         while (reader.canRead() && reader.peek() != ' ') reader.skip()
         val token = reader.string.substring(tokenStart, reader.cursor)
@@ -452,6 +452,12 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
         reader.cursor = tokenStart + token.length
     }
 }
+
+// CoreProtect reads `u:Name` without `r:` as everywhere, and admins coming from it ask that way; read as the
+// one block in sight it answers "nothing recorded" and the plugin looks broken. `player:` takes no radius at
+// all, and `event:` is one row already.
+private fun LookupQuery.userEverywhere() =
+    if (users.isNotEmpty() && radius == null && players.isEmpty() && event == null) copy(radius = GLOBAL_RADIUS) else this
 
 private fun fail(reader: StringReader, type: DynamicCommandExceptionType, value: String): Nothing =
     throw type.createWithContext(reader, value)

@@ -129,10 +129,10 @@ internal const val TELEPORT_PERMISSION = "pfauprotect.teleport"
 private class Help(val permission: String, val usage: String, val typed: String, val en: String, val ru: String)
 
 private val HELP = listOf(
-    Help(LOOKUP_PERMISSION, "/pp l [user: time: radius: action: …]", "/pp l ", "what happened here, or around", "что было здесь или вокруг"),
+    Help(LOOKUP_PERMISSION, "/pp l [user: time: radius: action: …]", "/pp l ", "what happened here, or around; with user: everywhere", "что было здесь или вокруг; с user: — везде"),
     Help(LOOKUP_PERMISSION, "/pp near [radius]", "/pp near ", "what happened around you", "что было вокруг тебя"),
     Help(INSPECT_PERMISSION, "/pp i", "/pp i", "inspector: click a block or an entity", "инспектор: клик по блоку или сущности"),
-    Help(ROLLBACK_PERMISSION, "/pp rb time: radius: [user:]", "/pp rb ", "preview a rollback", "предпросмотр отката"),
+    Help(ROLLBACK_PERMISSION, "/pp rb time: [radius:] [user:]", "/pp rb ", "preview a rollback", "предпросмотр отката"),
     Help(ROLLBACK_PERMISSION, "/pp apply · /pp cancel", "/pp apply", "run or drop the preview", "выполнить или сбросить предпросмотр"),
     Help(LOOKUP_PERMISSION, "/pp chat [user: time: f:]", "/pp chat ", "chat, commands, joins and quits", "чат, команды, входы и выходы"),
     Help(STATUS_PERMISSION, "/pp status", "/pp status", "bases, queues, what went unexplained", "базы, очереди, необъяснённое"),
