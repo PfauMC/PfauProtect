@@ -12,6 +12,12 @@ import com.mojang.brigadier.suggestion.Suggestions
 import com.mojang.brigadier.suggestion.SuggestionsBuilder
 import io.papermc.paper.command.brigadier.CommandSourceStack
 import io.papermc.paper.command.brigadier.argument.CustomArgumentType
+import io.papermc.paper.dialog.Dialog
+import io.papermc.paper.registry.data.dialog.ActionButton
+import io.papermc.paper.registry.data.dialog.DialogBase
+import io.papermc.paper.registry.data.dialog.action.DialogAction
+import io.papermc.paper.registry.data.dialog.body.DialogBody
+import io.papermc.paper.registry.data.dialog.type.DialogType
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.capture.entity.TRANSFORMED
@@ -52,6 +58,8 @@ import net.minecraft.world.level.block.entity.SignText
 import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.Material
+import org.bukkit.NamespacedKey
+import org.bukkit.persistence.PersistentDataType
 import org.bukkit.block.Block
 import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
@@ -297,6 +305,8 @@ data class LookupQuery(
     val words: String = "",
     // Whether ⌖ may run /pp tp for the one asking: read where they asked, as the answer is written off it.
     val teleports: Boolean = false,
+    // Whether the page opens in a dialog: the asker's choice, read where they asked like `teleports`.
+    val dialog: Boolean = false,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
@@ -313,9 +323,12 @@ data class LookupQuery(
     internal val fetch: Int get() = minOf(wanted * FETCH_FACTOR, MAX_FETCH)
 
     /** The same question about the same place, at another page. */
-    fun pageCommand(target: LookupTarget, page: Int): String {
+    fun pageCommand(target: LookupTarget, page: Int): String = pageCommand("l", page, "at:${target.x},${target.y},${target.z}")
+
+    /** The same question to `/pp [subcommand]` at another page, with the words that pin what it is about. */
+    fun pageCommand(subcommand: String, page: Int, vararg pinned: String): String {
         val kept = words.split(' ').filter { it.isNotBlank() && it.substringBefore(':').lowercase() !in PAGED_AWAY }
-        return (listOf("/pp", "l") + kept + "at:${target.x},${target.y},${target.z}" + "page:$page").joinToString(" ")
+        return (listOf("/pp", subcommand) + kept + pinned + "page:$page").joinToString(" ")
     }
 }
 
@@ -793,6 +806,63 @@ internal fun Holder.placedIn(box: (Int, Int, Int) -> Boolean, unplaced: Boolean)
 // A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it.
 internal fun canTeleport(sender: CommandSender) = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
 
+internal val DIALOG_KEY = NamespacedKey("pfauprotect", "dialog")
+
+/** Whether [sender] reads pages in a dialog: their own `/pp view`, else the config's. Read on their thread. */
+internal fun readsInDialog(sender: CommandSender): Boolean =
+    sender is Player && (sender.persistentDataContainer.get(DIALOG_KEY, PersistentDataType.BOOLEAN) ?: Settings.dialogPages)
+
+// How wide a dialog draws a line, in GUI pixels: a lookup line seldom wraps at it, and it still fits a
+// 1080p screen at GUI scale 4, which is 480 wide. The knob to turn if lines wrap or get cut.
+private const val DIALOG_WIDTH = 460
+private const val BUTTON_WIDTH = 100
+
+/**
+ * One page of an answer. A player who reads pages in a dialog gets a window that stays up until closed,
+ * where chat would scroll the page away, with the arrows as its buttons. Anyone else gets it line by line
+ * in chat under a footer of arrows. [back] and [forward] run the pages either side, null where there is none.
+ */
+internal fun showPage(
+    sender: CommandSender,
+    query: LookupQuery,
+    title: Component,
+    lines: List<Component>,
+    notes: List<Component>,
+    back: String?,
+    forward: String?,
+) {
+    val paged = back != null || forward != null
+    if (!query.dialog || sender !is Player) {
+        sender.sendMessage(title)
+        lines.forEach(sender::sendMessage)
+        if (paged) sender.sendMessage(footer(query.page, back, forward, query.teleports))
+        notes.forEach(sender::sendMessage)
+        return
+    }
+    fun arrow(mark: String, to: Int, command: String?) = command?.let {
+        ActionButton.create(Ui.text(mark, Ui.WHO), Ui.text(tr("Page $to", "Стр. $to")), BUTTON_WIDTH, DialogAction.staticAction(ClickEvent.runCommand(it)))
+    }
+    val arrows = listOfNotNull(arrow("«", query.page - 1, back), arrow("»", query.page + 1, forward))
+    val close = ActionButton.create(Ui.text(tr("Close", "Закрыть")), null, BUTTON_WIDTH, null)
+    val heading = if (paged) title.append(Ui.text(" · ${tr("page", "стр.")} ${query.page}", Ui.MUTED)) else title
+    val base = DialogBase.builder(heading).body((lines + notes).map { DialogBody.plainMessage(it, DIALOG_WIDTH) }).build()
+    // A multi-action dialog needs a button besides its exit; a single page has nothing else to offer.
+    val type = if (arrows.isEmpty()) DialogType.notice(close) else DialogType.multiAction(arrows).exitAction(close).columns(arrows.size).build()
+    sender.showDialog(Dialog.create { it.empty().base(base).type(type) })
+}
+
+// « page 2 » with the arrows that go somewhere clickable; the console is told the words to type.
+private fun footer(page: Int, back: String?, forward: String?, clickable: Boolean): Component {
+    if (!clickable) {
+        return if (forward != null) Ui.text(tr("  … older rows: page:${page + 1}", "  … старые строки: page:${page + 1}"), Ui.MUTED)
+        else Ui.text(tr("  page $page, the last", "  стр. $page, последняя"), Ui.MUTED)
+    }
+    fun arrow(mark: String, to: Int, command: String?) =
+        if (command != null) Ui.button(mark, command, Ui.WHO, tr("Page $to", "Стр. $to")) else Ui.text(mark, Ui.FAINT)
+    return Component.text().append(Ui.text("  ")).append(arrow("«", page - 1, back)).append(Ui.text(" ${tr("page", "стр.")} $page ", Ui.MUTED))
+        .append(arrow("»", page + 1, forward)).build()
+}
+
 internal fun offlineName(uuid: UUID): String? = Bukkit.getOfflinePlayer(uuid).name
 
 class Lookups(
@@ -806,8 +876,9 @@ class Lookups(
     private val nameOf: (UUID) -> String? = ::offlineName,
 ) {
 
-    fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
-        val asked = query.copy(teleports = canTeleport(sender))
+    /** [dialog] false keeps the answer in chat whatever the reader chose: the inspector's, which a window on every click would get in the way of. */
+    fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, dialog: Boolean = true) {
+        val asked = query.copy(teleports = canTeleport(sender), dialog = dialog && readsInDialog(sender))
         plugin.offThread(sender, "lookup at ${target.label} failed", "The lookup failed; the server log has the details.") { report(sender, target, asked) }
     }
 
@@ -967,8 +1038,7 @@ class Lookups(
             return
         }
         val clickable = query.teleports
-        sender.sendMessage(header(where, target))
-        for (run in lines) {
+        val drawn = lines.map { run ->
             val line = run.first
             var out = line.draw(run.amount, run.rows, clickable)
             val event = line.event?.takeIf { run.rows == 1 }
@@ -984,38 +1054,28 @@ class Lookups(
                     .clickEvent(ClickEvent.suggestCommand("/pp rollback $event"))
                 else -> out.append(Ui.text("  $event", Ui.FAINT))
             }
-            sender.sendMessage(Component.text(" ").append(out))
+            Component.text(" ").append(out)
         }
         // The read stops before the filter runs, so a cut-short page must say so even when few rows matched.
         val more = runs.size > query.limit * query.page || matched.size > query.wanted
-        // An entity's own story has no command to ask for its next page by; it can only say there is more.
-        if (!pages) {
-            if (more || !complete) sender.sendMessage(Ui.text(tr("  … older rows are cut off", "  … старые строки обрезаны"), Ui.MUTED))
-            return
+        val notes = when {
+            // An entity's own story has no command to ask for its next page by; it can only say there is more.
+            !pages -> if (more || !complete) listOf(Ui.text(tr("  … older rows are cut off", "  … старые строки обрезаны"), Ui.MUTED)) else emptyList()
+            // The next page starts past every row matched so far and would be empty: only a narrower or a
+            // bigger read sees what the cut hid.
+            !more && !complete -> listOf(Ui.text("  … $stopped", Ui.MUTED))
+            else -> emptyList()
         }
-        if (query.page > 1 || more) sender.sendMessage(footer(query, target, more, clickable))
-        // The next page starts past every row matched so far and would be empty: only a narrower or a
-        // bigger read sees what the cut hid.
-        if (!more && !complete) sender.sendMessage(Ui.text("  … $stopped", Ui.MUTED))
+        showPage(
+            sender, query, header(where, target), drawn, notes,
+            back = query.pageCommand(target, query.page - 1).takeIf { pages && query.page > 1 },
+            forward = query.pageCommand(target, query.page + 1).takeIf { pages && more },
+        )
     }
 
     private fun header(where: Component, target: LookupTarget): Component =
         Component.text().append(Ui.text("PfauProtect · ", Ui.FAINT)).append(where)
             .append(Ui.text(" · ${Ui.worldName(target.world)}", Ui.MUTED)).build()
-
-    // « page 2 » with the arrows that go somewhere clickable; the console is told the words to type.
-    private fun footer(query: LookupQuery, target: LookupTarget, more: Boolean, clickable: Boolean): Component {
-        val page = Ui.text(" ${tr("page", "стр.")} ${query.page} ", Ui.MUTED)
-        if (!clickable) {
-            return if (more) Ui.text(tr("  … older rows: page:${query.page + 1}", "  … старые строки: page:${query.page + 1}"), Ui.MUTED)
-            else Ui.text(tr("  page ${query.page}, the last", "  стр. ${query.page}, последняя"), Ui.MUTED)
-        }
-        fun arrow(label: String, to: Int, live: Boolean) =
-            if (live) Ui.button(label, query.pageCommand(target, to), Ui.WHO, tr("Page $to", "Стр. $to"))
-            else Ui.text(label, Ui.FAINT)
-        return Component.text().append(Ui.text("  ")).append(arrow("«", query.page - 1, query.page > 1)).append(page)
-            .append(arrow("»", query.page + 1, more)).build()
-    }
 
     // How many rows of each cause and player, the most first: where a griefer was busiest, before the rows.
     private fun summary(sender: CommandSender, found: List<Line>, complete: Boolean, where: Component) {

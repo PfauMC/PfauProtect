@@ -16,6 +16,10 @@ causes:
 lookup:
   # The largest radius a lookup or a rollback takes, at most 248.
   max-radius: 200
+  # Whether the pages of /pp lookup, near and chat open in a window, which stays up until closed, rather
+  # than in chat, where they scroll away. Each player can choose for themselves with /pp view chat|dialog.
+  # The console and the inspector always answer in chat.
+  dialog: true
 
 rollback:
   # The most positions one rollback puts back; a larger one is refused and has to be cut by radius or time.
