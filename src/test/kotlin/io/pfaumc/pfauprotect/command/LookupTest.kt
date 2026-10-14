@@ -94,6 +94,15 @@ class LookupTest {
     }
 
     @Test
+    fun `a user without a radius is looked up everywhere, as CoreProtect does`() {
+        assertTrue(parseLookupQuery("u:Steve t:1d").global)
+        assertEquals(5, parseLookupQuery("u:Steve r:5").radius)
+        assertEquals(null, parseLookupQuery("t:1d").radius)
+        assertEquals(null, parseLookupQuery("player:Steve u:Alex").radius)
+        assertEquals(null, parseLookupQuery("u:Steve event:4711@10,64,-42@1700000000123").radius)
+    }
+
+    @Test
     fun `row counts stay inside the readable range`() {
         assertEquals(50, parseLookupQuery("rows:50").limit)
         for (query in listOf("rows:0", "rows:${MAX_LIMIT + 1}")) {

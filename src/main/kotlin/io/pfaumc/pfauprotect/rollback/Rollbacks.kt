@@ -834,7 +834,7 @@ internal fun refusalOf(query: LookupQuery): String? = when {
     query.event != null -> null
     query.secondsBack == null -> "A rollback needs time: how far back to undo, for example time:1h."
     query.players.isNotEmpty() -> "player: reads what a player carries and has no place to roll back; use user:."
-    query.radius == null -> "A rollback needs radius: the blocks around you it covers, or global with user:."
+    query.radius == null -> "A rollback needs radius: the blocks around you it covers, or user: for all they did."
     query.global && query.users.isEmpty() -> "radius:global undoes what named players did; give user: as well."
     // These narrow only what a lookup shows: a rollback would read past them and undo more, or less, than
     // the lookup it was checked against.
