@@ -1029,7 +1029,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         WriteBatch().use { batch ->
             pendingBatch = batch
             try {
-                for (transaction in transactions) {
+                for (transaction in transactions.flatMap(::fitting)) {
                     batch.setSavePoint()
                     forms.recording()
                     payloads.recording()
@@ -1052,6 +1052,29 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             }
             db.write(writeOptions, batch)
         }
+    }
+
+    // The posting ordinal is one byte, and a chunk of a rollback or a /fill over many containers can hold
+    // more postings than that. Written whole it would fail and lose every row; cut at a movement's
+    // boundary, each posting still finds its other half in its own transaction, and only the walk across
+    // Void from one piece to the next is lost.
+    private fun fitting(transaction: List<Transfer>): List<List<Transfer>> {
+        if (transaction.size * 2 <= EntryCodec.MAX_ORDINAL + 1) return listOf(transaction)
+        val pieces = ArrayList<List<Transfer>>()
+        var piece = ArrayList<Transfer>()
+        var postings = 0
+        for (transfer in transaction) {
+            val count = listOf(transfer.from, transfer.to).count { it.addressable }
+            if (postings + count > EntryCodec.MAX_ORDINAL + 1) {
+                pieces += piece
+                piece = ArrayList()
+                postings = 0
+            }
+            piece += transfer
+            postings += count
+        }
+        pieces += piece
+        return pieces
     }
 
     private fun writeTransaction(batch: WriteBatch, transaction: List<Transfer>) {

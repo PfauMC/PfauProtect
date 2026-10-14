@@ -138,6 +138,17 @@ class StorageTest : OneLedger() {
         assertEquals(listOf(intoVoid), log.transactionEntries(intoVoid))
     }
 
+    // The ordinal is one byte, and a chunk of a rollback moves more than that in one transaction.
+    @Test
+    fun `a transaction with more postings than an ordinal counts still writes every row`() {
+        val into = (0 until 200).map { Container(world, it, 70, 0, 0) }
+        log.submit(into.map { Transfer(Cause.CONTAINER_ADD, aliceInv, it, torch, null, 1, T0 + 50) })
+        log.drain()
+
+        assertEquals(200, into.count { log.holderEntries(it, 0, Long.MAX_VALUE).size == 1 })
+        assertEquals(emptyList<String>(), log.sweep(10_000).gaps)
+    }
+
     // A resumed sweep seeks per prefix, so an unflushed row under a fresh prefix stays invisible unless the
     // walk asks for total order.
     @Test
