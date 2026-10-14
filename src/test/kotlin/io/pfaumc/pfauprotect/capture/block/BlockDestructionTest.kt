@@ -495,7 +495,7 @@ class BlockDestructionTest : BothPlanes() {
     // target was only standing there. A lower rung never speaks over a higher one.
     @Test
     fun `an explosion names who lit it, else its summoner, else who placed the dynamite, else the creeper's target`() {
-        val (attribution, listener) = watched()
+        val (attribution, listener, written) = watched()
         val carol = UUID.randomUUID()
         val dirt = Blocks.DIRT.defaultBlockState().asBlockData()
         val tntAt = WorldBlock(world, 20, 64, 0)
@@ -528,7 +528,12 @@ class BlockDestructionTest : BothPlanes() {
         assertEquals(carol to Confidence.INFERRED, blowUp(tnt(null), 32).let { it.actor to it.confidence })
 
         val creeper = stub(Creeper::class.java, mapOf("getType" to EntityType.CREEPER, "getTarget" to player(alice), "getUniqueId" to UUID.randomUUID()), lenient = true)
+        val earlier = written.size
         assertEquals(alice to Confidence.NEARBY, blowUp(creeper, 33).let { it.actor to it.confidence })
+        // An item row has no confidence to say the player was only near, so it names nobody.
+        val off = written.drop(earlier).flatten().single()
+        assertEquals(Void, off.to)
+        assertNull(off.actor)
     }
 
     // A cactus whose sand was taken away breaks on its own tick, and the item it drops is the world's

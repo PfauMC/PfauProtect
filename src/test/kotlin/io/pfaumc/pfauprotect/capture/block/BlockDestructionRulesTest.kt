@@ -294,16 +294,16 @@ class BlockDestructionRulesTest {
         upstairs[BlockFace.UP] = upper
         downstairs[BlockFace.DOWN] = lower
 
-        assertEquals(listOf(upper, lower), withOtherHalves(listOf(upper)).toList())
-        assertEquals(listOf(upper, lower), withOtherHalves(listOf(upper, lower)).toList())
+        assertEquals(setOf(upper, lower), withOtherHalves(listOf(upper)))
+        assertEquals(setOf(upper, lower), withOtherHalves(listOf(upper, lower)))
 
         // A block standing in one position has no other half to follow, and a half whose neighbour
         // does not name it back is standing next to somebody else's block.
         val stone = blockStub(world, 2, 64, 0, Blocks.STONE.defaultBlockState().asBlockData())
         val orphan = blockStub(world, 4, 64, 0, doorHalf(DoubleBlockHalf.UPPER), mutableMapOf(BlockFace.DOWN to stone))
 
-        assertEquals(listOf(stone), withOtherHalves(listOf(stone)).toList())
-        assertEquals(listOf(orphan), withOtherHalves(listOf(orphan)).toList())
+        assertEquals(setOf(stone), withOtherHalves(listOf(stone)))
+        assertEquals(setOf(orphan), withOtherHalves(listOf(orphan)))
     }
 
     // A piston, like a blast, reaches one half of a bed at a time.

@@ -35,6 +35,7 @@ import io.pfaumc.pfauprotect.senderInto
 import org.bukkit.plugin.Plugin
 import net.kyori.adventure.text.Component as AdventureComponent
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -168,6 +169,36 @@ class LookupReadTest : BothPlanes() {
         val lines = said(players = mapOf("Alice" to alice))
         assertTrue(lines.any { it.contains("entity.minecraft.cow") && it.contains("Alice") }, "$lines")
         assertTrue(said(LookupQuery(excluded = listOf("cow"))).none { it.contains("entity.minecraft.cow") })
+    }
+
+    // A run folds what one player did; two players breaking at the same place are two acts.
+    @Test
+    fun `a run of the same change by two players reads as a line for each`() {
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 2000, actor = bob)))
+        log.drain()
+
+        val broken = said(players = mapOf("Alice" to alice, "Bob" to bob)).filter { it.contains("minecraft:stone → minecraft:air") }
+        assertEquals(2, broken.size, "$broken")
+        assertTrue(broken.any { it.contains("Alice") } && broken.any { it.contains("Bob") }, "$broken")
+    }
+
+    // A block row is about both states it ran between: what was broken is named by its before-state.
+    @Test
+    fun `a rollback's item filter names a block by either state and an item by its type`() {
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        log.drain()
+        val chest = Container(world, 11, 64, -3, 0)
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 0), codec.encode(NmsItemStack(Items.DIAMOND)).form, null, 1, T0))
+        shared.drain()
+        val broken = log.at(10, 64, -3, 0, Long.MAX_VALUE, limit = 10, reverse = false).single()
+        val taken = shared.holderEntries(chest, 0, Long.MAX_VALUE).single()
+        fun filter(words: String) = RowFilter(shared, parseLookupQuery(words), emptySet(), emptySet(), rollback = true)
+
+        assertTrue(filter("include:stone").keeps(broken))
+        assertFalse(filter("exclude:stone").keeps(broken))
+        assertTrue(filter("exclude:stone").keeps(taken))
+        assertFalse(filter("exclude:diamond").keeps(taken))
     }
 
     @Test

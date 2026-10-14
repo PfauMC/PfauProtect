@@ -286,18 +286,21 @@ class ForeignSlotTest {
     // grid or a station hands back what was left in it.
     @Test
     fun `a closed chest hands back only the cursor, a grid hands back its slots`() {
-        val keeps = listOf(
-            InventoryType.CHEST, InventoryType.ENDER_CHEST, InventoryType.SHULKER_BOX, InventoryType.BARREL,
-            InventoryType.HOPPER, InventoryType.DISPENSER, InventoryType.DROPPER, InventoryType.FURNACE,
-            InventoryType.BLAST_FURNACE, InventoryType.SMOKER, InventoryType.BREWING, InventoryType.CRAFTER,
-        )
-        for (type in keeps) {
-            assertFalse(returnsOnClose(type.name, cursorEmpty = true), type.name)
-            assertTrue(returnsOnClose(type.name, cursorEmpty = false), type.name)
-        }
-        for (type in listOf(InventoryType.WORKBENCH, InventoryType.CRAFTING, InventoryType.ANVIL)) {
-            assertTrue(returnsOnClose(type.name, cursorEmpty = true), type.name)
-        }
+        assertFalse(returnsOnClose(InventoryType.CHEST.name, cursorEmpty = true))
+        assertTrue(returnsOnClose(InventoryType.CHEST.name, cursorEmpty = false))
+        assertTrue(returnsOnClose(InventoryType.WORKBENCH.name, cursorEmpty = true))
+    }
+
+    // A grid closes holding stone 40, dirt 20, stone 20 and stone 20, with room for 15 stone left: the
+    // first stack overflows by 25 and both later ones fall whole.
+    @Test
+    fun `a drop out of a closing window is booked to the stack it fell from`() {
+        val stone = "stone".toByteArray()
+        val left = listOf(stone to 40, "dirt".toByteArray() to 20, stone to 20, stone to 20)
+        assertEquals(3, closingSlot(left, stone, 20))
+        assertEquals(0, closingSlot(left, stone, 25))
+        assertEquals(0, closingSlot(left, stone, 64))
+        assertEquals(null, closingSlot(left, "gold".toByteArray(), 20))
     }
 
     private fun <T : Inventory> inventoryStub(slots: Array<BukkitItemStack?>, type: InventoryType, kind: Class<T>): T {

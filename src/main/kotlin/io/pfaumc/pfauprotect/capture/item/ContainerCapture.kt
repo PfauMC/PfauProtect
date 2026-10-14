@@ -993,18 +993,9 @@ class ContainerCaptureListener(
     }
 
     // The drop out of a closing window, written from the slot it left, or null where it was not one.
-    // The game gives the slots back in order and drops what does not fit, so once one stack of a form
-    // overflows every later one falls whole: a drop as big as a remembered stack is the latest such
-    // slot, and a smaller one the part of a stack that overflowed first.
-    // ponytail: with two stacks of one form the slot named can still be the wrong one of them; the
-    // holder's balance has no slot in its key, so only the slot shown in a lookup can be off.
     private fun closingDrop(player: Player, drop: UUID, encoded: EncodedItem): Transfer? {
         val left = closing[player.uniqueId] ?: return null
-        val same = left.indices.filter { left[it].form.contentEquals(encoded.form) }
-        val at = same.lastOrNull { left[it].count == encoded.count }
-            ?: same.firstOrNull { left[it].count > encoded.count }
-            ?: same.firstOrNull()
-            ?: return null
+        val at = closingSlot(left.map { it.form to it.count }, encoded.form, encoded.count) ?: return null
         return Transfer(
             cause = Cause.DROP_MENU_CLOSE,
             from = left.removeAt(at).holder,
@@ -1202,6 +1193,18 @@ class ContainerCaptureListener(
         val menuType = registries.idForKey(RegistryNamespace.MENU_TYPE, inventory.type.name)
         return { slot -> MenuSlot(menuType, slot) }
     }
+}
+
+// The game gives the slots back in order and drops what does not fit, so once one stack of a form
+// overflows every later one falls whole: a drop as big as a remembered stack is the latest such slot,
+// and a smaller one the part of a stack that overflowed first.
+// ponytail: with two stacks of one form the slot named can still be the wrong one of them; the holder's
+// balance has no slot in its key, so only the slot shown in a lookup can be off.
+internal fun closingSlot(left: List<Pair<ByteArray, Int>>, form: ByteArray, count: Int): Int? {
+    val same = left.indices.filter { left[it].first.contentEquals(form) }
+    return same.lastOrNull { left[it].second == count }
+        ?: same.firstOrNull { left[it].second > count }
+        ?: same.firstOrNull()
 }
 
 // Windows whose slots stay where they are when the window closes: only the cursor comes back from them.

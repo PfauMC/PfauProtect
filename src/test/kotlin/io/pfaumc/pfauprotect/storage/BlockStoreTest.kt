@@ -68,7 +68,7 @@ class BlockStoreTest : BothPlanes() {
     // Written out by hand rather than taken from the encoder: a round trip cannot notice a layout
     // change applied to both sides.
     @Test
-    fun `a row carries both states, the actor and both payloads through the bytes`() {
+    fun `a row carries both states, the actor, both payloads and its flags through the bytes`() {
         val row = BlockRow(
             x = 100,
             y = 64,
@@ -105,6 +105,16 @@ class BlockStoreTest : BothPlanes() {
             value,
         )
         assertEquals(row, BlockCodec.decode(key, value, names))
+
+        val headers = mapOf(
+            row.copy(confidence = Confidence.NEARBY) to 0x74,
+            row.copy(alongside = true) to 0xF8,
+        )
+        for ((other, header) in headers) {
+            val bytes = BlockCodec.value(other, ids)
+            assertEquals(header.toByte(), bytes[0]) { "$other" }
+            assertEquals(other, BlockCodec.decode(key, bytes, names))
+        }
     }
 
     // The actor's number, then the row key turned round so one actor's rows run in time order.
@@ -183,29 +193,6 @@ class BlockStoreTest : BothPlanes() {
         for (version in 2..3) {
             val unknown = deathValue.copyOf().also { it[0] = ((it[0].toInt() and 0x03.inv()) or version).toByte() }
             assertNull(EntityCodec.decodeOrNull(deathKey, unknown, names)) { "version $version decoded" }
-        }
-    }
-
-    @Test
-    fun `the half that went along with the struck one says so through the bytes`() {
-        val row = BlockRow(1, 2, 3, T0, 1, 0, Cause.BLK_PLAYER_BREAK, 1, 2, alongside = true)
-        val key = BlockCodec.key(row.x, row.y, row.z, row.timestamp, row.eventId, row.ordinal)
-        val value = BlockCodec.value(row, IdResolver { _, _ -> 0 })
-        val names = IdLookup { _, _ -> null }
-
-        assertEquals(0x80.toByte(), value[0])
-        assertEquals(row, BlockCodec.decode(key, value, names))
-    }
-
-    @Test
-    fun `a nearby row says so through the bytes and the other confidences stay as they were`() {
-        val names = IdLookup { _, _ -> alice }
-        for (confidence in Confidence.entries) {
-            val row = BlockRow(1, 2, 3, T0, 0, 0, Cause.BLK_ENTITY_SWITCH, 1, 2, confidence = confidence, actor = alice)
-            val key = BlockCodec.key(1, 2, 3, T0, 0, 0)
-            val value = BlockCodec.value(row, IdResolver { _, _ -> 0 })
-            assertEquals(confidence == Confidence.NEARBY, value[0].toInt() and 0x04 != 0)
-            assertEquals(row, BlockCodec.decode(key, value, names))
         }
     }
 
@@ -347,7 +334,8 @@ class BlockStoreTest : BothPlanes() {
     private val everyBlockFamily = listOf("by_actor", "default", "entities", "meta", "rows")
 
     // The stamp is the only thing that keeps an older build from reading a base whose families it does
-    // not know, so a family added or dropped without a new version number has to fail here.
+    // not know. This is only a reminder: when a family is added or dropped and this fails, the fix is a
+    // new version number, not just an edit to the list.
     @Test
     fun `a fresh base is stamped with the version that matches its families`() {
         whileClosed { base ->
@@ -362,8 +350,10 @@ class BlockStoreTest : BothPlanes() {
         log.drain()
         whileClosed { base ->
             val current = storedSchemaOf(base)
-            val families = familiesOf(base)
+            // A family missing from the base is what an open would add before looking at the stamp.
+            rawEdit(base) { raw, family -> raw.dropColumnFamily(family("entities")) }
             stampSchema(base, current + 1)
+            val families = familiesOf(base)
 
             assertThrows(IllegalArgumentException::class.java) { logs.open(world) }
             assertEquals(current + 1, storedSchemaOf(base))

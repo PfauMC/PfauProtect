@@ -354,10 +354,12 @@ class RollbackTest : BothPlanes() {
         assertTrue(keeps(LookupQuery(causes = setOf(Cause.BLK_SHAPE)), rollback = false))
     }
 
-    // A neighbour's chest emptied in the same second is somebody else's doing, not part of the event.
+    // A neighbour's chest emptied or block broken in the same second is somebody else's doing, not part of
+    // the event.
     @Test
-    fun `one event's rollback gives back only the slots where the event stood`() {
+    fun `one event's rollback gives back only the blocks and slots where the event stood`() {
         log.submit(listOf(BlockChange(5, 64, 5, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        log.submit(listOf(BlockChange(7, 64, 5, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 1, actor = bob)))
         log.drain()
         val broken = Container(world, 5, 64, 5, 0)
         val neighbour = Container(world, 6, 64, 5, 0)
@@ -367,8 +369,9 @@ class RollbackTest : BothPlanes() {
         val event = log.at(5, 64, 5, 0, Long.MAX_VALUE, limit = 10, reverse = false).single().eventId
         val filter = RowFilter(shared, LookupQuery(event = EventRef(event, 5, 64, 5, T0)), emptySet(), emptySet(), rollback = true)
 
-        val refilled = positions(around(filter)).filter { it.refills.isNotEmpty() }.map { it.at }
-        assertEquals(listOf(WorldBlock(world, 5, 64, 5)), refilled)
+        val planned = positions(around(filter))
+        assertEquals(listOf(WorldBlock(world, 5, 64, 5)), planned.map { it.at })
+        assertEquals(listOf(WorldBlock(world, 5, 64, 5)), planned.filter { it.refills.isNotEmpty() }.map { it.at })
     }
 
     // The second rollback of the same theft would mint the diamonds a second time.

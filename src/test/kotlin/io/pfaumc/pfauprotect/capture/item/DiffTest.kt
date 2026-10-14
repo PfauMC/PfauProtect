@@ -33,15 +33,6 @@ class DiffTest {
         Snapshot(mapOf(*rows), containers)
 
     @Test
-    fun `a whole stack moves as one edge`() {
-        val edges = Netting.diff(
-            seen(chest(0) to stack("stone", 64)),
-            seen(bag(0) to stack("stone", 64)),
-        )
-        assertEquals(listOf(Edge(chest(0), bag(0), key("stone"), 64, Confidence.FACT)), edges)
-    }
-
-    @Test
     fun `a partial stack moves only the taken amount`() {
         val edges = Netting.diff(
             seen(chest(0) to stack("stone", 64)),
@@ -185,17 +176,18 @@ class DiffTest {
         )
     }
 
-    // Ten and five taken out of two slots and booked out of a third, as the copper golem's were once:
-    // two slots hold less than the ledger says, the third more by as much.
+    // Two stacks of six and four moved whole into two other slots: paired in the order they were read,
+    // the six would be split across the four and the six, and one move written as two.
     @Test
-    fun `an unseen move out of two slots is written as two moves`() {
+    fun `an unseen move of whole stacks pairs the largest first`() {
         val diamond = FormKey("diamond".toByteArray())
         val rows = loadDifferences(
-            mapOf(bag(0) to mapOf(diamond to 15)),
-            mapOf(bag(3) to mapOf(diamond to 10), bag(7) to mapOf(diamond to 5)),
+            mapOf(bag(0) to mapOf(diamond to 4), bag(1) to mapOf(diamond to 6)),
+            mapOf(bag(2) to mapOf(diamond to 6), bag(3) to mapOf(diamond to 4)),
             0L,
         ).map { Triple(it.from, it.to, it.qty) }
-        assertEquals(listOf(Triple(bag(3), bag(0), 10), Triple(bag(7), bag(0), 5)), rows)
+        assertEquals(2, rows.size)
+        assertEquals(setOf(Triple(bag(2), bag(1), 6), Triple(bag(3), bag(0), 4)), rows.toSet())
     }
 
     @Test

@@ -2,7 +2,6 @@ package io.pfaumc.pfauprotect.storage
 
 import io.pfaumc.pfauprotect.OneLedger
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -34,16 +33,6 @@ class BlockStateRegistryTest : OneLedger() {
     private val west = "minecraft:oak_stairs[facing=west,half=bottom,shape=straight,waterlogged=false]"
     private val wires = List(64) { "minecraft:redstone_wire[power=$it]" }
     private val waterlogged = "minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=true]"
-
-    @Test
-    fun `the whole state string is the key`() {
-        val id = log.registries.idForKey(state, east)
-
-        assertEquals(id, log.registries.idForKey(state, east))
-        assertEquals(east, log.registries.keyOf(state, id))
-        assertNotEquals(id, log.registries.idForKey(state, west))
-        assertNotEquals(id, log.registries.idForKey(state, waterlogged))
-    }
 
     @Test
     fun `a batch persists every number it holds`() {

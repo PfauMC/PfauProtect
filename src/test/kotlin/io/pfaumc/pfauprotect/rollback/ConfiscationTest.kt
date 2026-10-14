@@ -227,6 +227,19 @@ class ConfiscationTest : OneLedger() {
         assertTrue(owed(returned(fell, 3)).isEmpty())
     }
 
+    // The chest's diamonds were dropped and Bob picked them up: the slot posting leads to the pile and the
+    // pile is also among what fell out of what came back, and he owes them once.
+    @Test
+    fun `a pile a slot posting leads to is not owed a second time as a pile`() {
+        val fell = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.CONTAINER_BREAK_DROP, chest, fell, diamond, null, 5, T0))
+        log.submit(Transfer(Cause.PICKUP, fell, PlayerInv(bob, 0), diamond, null, 5, T0 + 1))
+        log.drain()
+
+        val tally = returned(fell, 5).apply { piles += fell.uuid }
+        assertEquals(mapOf(Carrier(bob) to 5), owed(tally))
+    }
+
     // A break writes the block's item off and the drop's birth in one transaction. Once the block is back,
     // what fell out of it is owed by whoever picked it up — but only if every position the transaction
     // took was put back.
@@ -251,9 +264,10 @@ class ConfiscationTest : OneLedger() {
             breaks += loss
         }
         assertTrue(owed(half).isEmpty(), "half the break came back")
+        // Each position read brings its own loss row of the one transaction.
         val whole = Tally().apply {
             restored += listOf(here, there)
-            breaks += loss
+            breaks += listOf(loss, log.holderEntries(there, 0, Long.MAX_VALUE).single())
         }
         assertEquals(mapOf(Carrier(bob) to 2), owed(whole))
     }

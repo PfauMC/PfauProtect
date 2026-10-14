@@ -306,6 +306,7 @@ class RedstoneListener(
     private val entities: EntityOrigins,
     private val nudges: Nudges,
     private val attribution: Attribution,
+    private val nanos: () -> Long = System::nanoTime,
 ) : Listener {
     // A switch pressed by a player or stepped on by an entity, and who stands behind it, for the redstone
     // change it raises in the same call. `type` is the entity's, null for a player.
@@ -329,7 +330,7 @@ class RedstoneListener(
             // moves nothing, and a press left over from it would name the player for a mob that steps
             // on the plate right after.
             isSwitch(block.type) && (event.action == Action.PHYSICAL) == Tag.PRESSURE_PLATES.isTagged(block.type) ->
-                pressing.set(Press(at, Behind(by), null, System.nanoTime()))
+                pressing.set(Press(at, Behind(by), null, nanos()))
         }
     }
 
@@ -357,7 +358,7 @@ class RedstoneListener(
         val behind = behindSwitch(entity, block)
         behind.by?.let { energy.note(positionOf(block), it) }
         if (block.type == Material.TRIPWIRE) return tripped(block, Cause.BLK_ENTITY_SWITCH, behind, typeOf(entity))
-        stepping.set(Press(positionOf(block), behind, typeOf(entity), System.nanoTime()))
+        stepping.set(Press(positionOf(block), behind, typeOf(entity), nanos()))
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -366,7 +367,7 @@ class RedstoneListener(
         val block = event.block
         val at = positionOf(block)
         fun after() = powered(block.blockData, event.newCurrent)
-        val now = System.nanoTime()
+        val now = nanos()
         pressing.takeAt(at, now)?.let { return switched(block, after(), Cause.BLK_PLAYER_SWITCH, it.behind, it.type) }
         stepping.takeAt(at, now)?.let { return switched(block, after(), Cause.BLK_ENTITY_SWITCH, it.behind, it.type) }
         val blast = blasting.get()
@@ -424,7 +425,7 @@ class RedstoneListener(
                 if (swung) Cause.BLK_PLAYER_SWITCH else Cause.BLK_ENTITY_SWITCH,
                 Behind(by),
                 if (swung) null else typeOf(source),
-                System.nanoTime(),
+                nanos(),
             )
         )
         if (by == null) return

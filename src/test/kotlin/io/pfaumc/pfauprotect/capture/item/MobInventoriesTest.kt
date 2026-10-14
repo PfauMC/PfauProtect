@@ -59,12 +59,11 @@ class MobInventoriesTest {
     // The copy lives in the mob and has to come back exactly, wear included.
     @Test
     fun `a pocket copy survives being written into the mob`() {
-        val pockets = listOf(Pocket(0, wheat, 64), Pocket(7, hoe, 1))
+        val pockets = listOf(Pocket(0, wheat, 64), Pocket(7, hoe, 1), Pocket(8, ItemKey(hoe.form, 0), 1))
         val back = decodePockets(encodePockets(pockets))
         assertEquals(pockets.map { it.slot to it.count }, back.map { it.slot to it.count })
         assertArrayEquals(hoe.form, back[1].key.form)
-        assertEquals(12, back[1].key.damage)
-        assertEquals(null, back[0].key.damage)
+        assertEquals(listOf(null, 12, 0), back.map { it.key.damage })
     }
 
     // A villager whose second slot emptied comes back from its chunk with everything after it one slot

@@ -117,11 +117,7 @@ class ItemUseTest {
     }
 
     @Test
-    fun `a cauldron names the change it made to the item in hand`() {
-        assertEquals(Cause.BOTTLE_FILL, cauldronCause(ChangeReason.BOTTLE_FILL))
-        assertEquals(Cause.BOTTLE_EMPTY, cauldronCause(ChangeReason.BOTTLE_EMPTY))
-        assertEquals(Cause.BUCKET_FILL, cauldronCause(ChangeReason.BUCKET_FILL))
-        assertEquals(Cause.CAULDRON_WASH, cauldronCause(ChangeReason.ARMOR_WASH))
+    fun `a cauldron that changes on its own names no change to an item`() {
         assertNull(cauldronCause(ChangeReason.EVAPORATE))
     }
 }

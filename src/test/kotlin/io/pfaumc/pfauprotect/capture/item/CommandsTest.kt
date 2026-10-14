@@ -31,12 +31,18 @@ class CommandsTest {
     }
 
     @Test
-    fun `only the item command that reaches into an entity names a player`() {
+    fun `item and loot name a player only when they reach into one`() {
         val replace = commandUse(commandWords("item replace entity Steve weapon.mainhand with stone"))!!
         assertEquals("Steve", replace.targets)
         assertEquals(Cause.CMD_ITEM_REPLACE, replace.gain)
         assertEquals(Cause.CMD_ITEM_REPLACE, replace.loss)
+        val modify = commandUse(commandWords("item modify entity Steve weapon.mainhand minecraft:enchant"))!!
+        assertEquals("Steve", modify.targets)
+        assertEquals(Cause.CMD_ITEM_MODIFY, modify.change)
         assertNull(commandUse(commandWords("item replace block 0 64 0 container.0 with stone")))
+        val loot = commandUse(commandWords("loot give Steve loot minecraft:chests/simple_dungeon"))!!
+        assertEquals("Steve", loot.targets)
+        assertEquals(Cause.CMD_LOOT, loot.gain)
         assertNull(commandUse(commandWords("loot spawn 0 64 0 loot minecraft:chests/simple_dungeon")))
         assertNull(commandUse(commandWords("tp Steve 0 64 0")))
     }

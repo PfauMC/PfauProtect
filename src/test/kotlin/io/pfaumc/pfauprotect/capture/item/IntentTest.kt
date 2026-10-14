@@ -5,9 +5,9 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.PlayerCursor
-import io.pfaumc.pfauprotect.model.PlayerHolder
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
@@ -31,10 +31,6 @@ class IntentTest {
 
     private fun gained(name: String, qty: Int, to: Holder = bag(0)) =
         Edge(Void, to, key(name), qty, Confidence.INFERRED)
-
-    private fun carried(moves: List<Move>) = moves.sumOf { move ->
-        (if (move.to is PlayerHolder) move.qty else 0) - (if (move.from is PlayerHolder) move.qty else 0)
-    }
 
     // A command's reason is handed on by a pass that did not spend it, so the pass has to say which it
     // spent: none when the inventory had not changed yet, the clear once the clear shows.
@@ -78,6 +74,17 @@ class IntentTest {
             Intents.explain(edges, listOf(Intent(Cause.COLLECT_ALL)), player),
         )
         assertEquals(Cause.QUICK_MOVE, Intents.explain(edges, emptyList(), player).first().cause)
+
+        val between = Edge(Container(world, 0, 64, 0, 0), Container(world, 0, 64, 0, 1), key("stone"), 5, Confidence.FACT)
+        assertEquals(causeOf(between), Intents.explain(listOf(between), listOf(Intent(Cause.COLLECT_ALL)), player).single().cause)
+
+        val notLabels = listOf(
+            Intent(Cause.CRAFT_RESULT, shift = Shift(Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Kind.TRANSFER)),
+            Intent(Cause.DEATH_DROP, recorded = true),
+        )
+        for (intent in notLabels) {
+            assertEquals(Cause.QUICK_MOVE, Intents.explain(edges.take(1), listOf(intent), player).single().cause, "${intent.cause}")
+        }
     }
 
     // A grid belongs to the player as an entity rather than to their inventory, so only the receiving
@@ -281,7 +288,6 @@ class IntentTest {
             ),
             moves,
         )
-        assertEquals(0, carried(moves))
         assertEquals(emptyList<Cause>(), handed)
     }
 

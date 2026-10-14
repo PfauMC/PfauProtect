@@ -117,8 +117,8 @@ class WorldItemsTest {
     fun `only an item whose health ran out spills its contents`() {
         assertTrue(spills(EntityRemoveEvent.Cause.DEATH, 0))
         assertFalse(spills(EntityRemoveEvent.Cause.DEATH, 4))
-        assertFalse(spills(EntityRemoveEvent.Cause.OUT_OF_WORLD, 5))
-        assertFalse(spills(EntityRemoveEvent.Cause.DESPAWN, 5))
+        assertFalse(spills(EntityRemoveEvent.Cause.OUT_OF_WORLD, 0))
+        assertFalse(spills(EntityRemoveEvent.Cause.DESPAWN, 0))
     }
 
     private val codec by lazy { testCodec() }

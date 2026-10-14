@@ -109,6 +109,16 @@ class AttributionTest : BothPlanes() {
         assertNull(attribution.journalPlacerAt(at(11, 64, 10), TNT))
     }
 
+    // The tracker hands back every note as a guess at the culprit, so a bystander noted there would come
+    // back as more than the journal ever said about them.
+    @Test
+    fun `a journal find that only knew who stood near is not noted`() {
+        val here = at(10, 64, 10)
+        journalled(here, AIR, TNT, bob, confidence = Confidence.NEARBY)
+        assertEquals(Attributed(bob, Confidence.NEARBY), attribution.placerOrJournal(here, TNT, renote = true))
+        assertNull(attribution.placerAt(here, TNT))
+    }
+
     // A frame comes down seconds after its wall: the breaker is still the newest row there, and a row
     // older than a frame ever waits is not asked.
     @Test
@@ -337,62 +347,40 @@ class AttributionTest : BothPlanes() {
         asOf(T0) { assertNull(attribution.fellerOf(at(2, 70, 0))) }
     }
 
+    // Each table is swept by its own window and no other's: a note exactly as old as its window stays, one
+    // a millisecond older goes. Every read enforces the window too, so each is read as of its own note.
     @Test
-    fun `flight state is kept by entity and taken exactly once`() {
-        val entity = UUID.randomUUID()
-        val falling = Falling(at(1, 70, 1), SAND, Attributed(alice))
+    fun `the sweep drops each table's notes once that table's window has passed`() {
+        val sweptAt = T0 + 100_000
+        val kept = at(10, 64, 10)
+        val dropped = at(20, 64, 20)
+        val keptFlight = UUID.randomUUID()
+        val droppedFlight = UUID.randomUUID()
+        val fall = Falling(kept, SAND, null)
+        fun aged(age: Long, note: () -> Unit) {
+            clock = sweptAt - age
+            note()
+        }
+        aged(NOTE_MILLIS) { attribution.placed(kept, TNT, alice) }
+        aged(NOTE_MILLIS + 1) { attribution.placed(dropped, TNT, alice) }
+        aged(SUPPORT_MILLIS) { attribution.removed(kept, alice) }
+        aged(SUPPORT_MILLIS + 1) { attribution.removed(dropped, alice) }
+        aged(KILL_MILLIS) { attribution.killed(kept, alice) }
+        aged(KILL_MILLIS + 1) { attribution.killed(dropped, alice) }
+        aged(FLIGHT_MILLIS) { attribution.tookOff(keptFlight, fall) }
+        aged(FLIGHT_MILLIS + 1) { attribution.tookOff(droppedFlight, fall) }
 
-        attribution.tookOff(entity, falling)
-        assertEquals(falling, attribution.landed(entity))
-        assertNull(attribution.landed(entity))
-        assertNull(attribution.landed(UUID.randomUUID()))
-    }
-
-    // Each table is swept by its own window and no other's: kept at the last moment it stands for, gone
-    // a millisecond after.
-    private fun assertSweptAfter(window: Long, read: () -> Attributed?) {
-        clock = T0 + window
+        clock = sweptAt
         attribution.sweep()
-        asOf(T0) { assertEquals(alice, read()?.actor) }
-        clock += 1
-        attribution.sweep()
-        asOf(T0) { assertNull(read()) }
-    }
 
-    @Test
-    fun `the sweep drops a placement once its window has passed`() {
-        val here = at(10, 64, 10)
-        attribution.placed(here, TNT, alice)
-        assertSweptAfter(NOTE_MILLIS) { attribution.placerAt(here, TNT) }
-    }
-
-    @Test
-    fun `the sweep drops a removal once its window has passed`() {
-        val here = at(10, 64, 10)
-        attribution.removed(here, alice)
-        assertSweptAfter(SUPPORT_MILLIS) { attribution.removerAt(here) }
-    }
-
-    @Test
-    fun `the sweep drops a kill once its window has passed`() {
-        val here = at(10, 64, 10)
-        attribution.killed(here, alice)
-        assertSweptAfter(KILL_MILLIS) { attribution.killerNear(here, 1) }
-    }
-
-    @Test
-    fun `the sweep drops a flight once its window has passed`() {
-        // Taken once, so the read that finds it standing and the one that finds it gone ask after two.
-        val kept = UUID.randomUUID()
-        val dropped = UUID.randomUUID()
-        attribution.tookOff(kept, Falling(at(10, 64, 10), SAND, null))
-        attribution.tookOff(dropped, Falling(at(10, 64, 10), SAND, null))
-        clock = T0 + FLIGHT_MILLIS
-        attribution.sweep()
-        assertEquals(Falling(at(10, 64, 10), SAND, null), asOf(T0) { attribution.landed(kept) })
-        clock += 1
-        attribution.sweep()
-        assertNull(asOf(T0) { attribution.landed(dropped) })
+        asOf(sweptAt - NOTE_MILLIS) { assertEquals(alice, attribution.placerAt(kept, TNT)?.actor) }
+        asOf(sweptAt - NOTE_MILLIS - 1) { assertNull(attribution.placerAt(dropped, TNT)) }
+        asOf(sweptAt - SUPPORT_MILLIS) { assertEquals(alice, attribution.removerAt(kept)?.actor) }
+        asOf(sweptAt - SUPPORT_MILLIS - 1) { assertNull(attribution.removerAt(dropped)) }
+        asOf(sweptAt - KILL_MILLIS) { assertEquals(alice, attribution.killerNear(kept, 1)?.actor) }
+        asOf(sweptAt - KILL_MILLIS - 1) { assertNull(attribution.killerNear(dropped, 1)) }
+        asOf(sweptAt - FLIGHT_MILLIS) { assertEquals(fall, attribution.landed(keptFlight)) }
+        asOf(sweptAt - FLIGHT_MILLIS - 1) { assertNull(attribution.landed(droppedFlight)) }
     }
 
     @Test

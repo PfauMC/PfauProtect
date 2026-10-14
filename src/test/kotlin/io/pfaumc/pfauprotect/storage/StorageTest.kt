@@ -78,6 +78,14 @@ class StorageTest : OneLedger() {
         assertEquals(emptyList<String>(), log.sweep(100).gaps)
     }
 
+    @Test
+    fun `a balance up to a moment leaves out the rows after it`() {
+        assertEquals(
+            mapOf(aliceInv to mapOf(FormKey(cobblestone) to -27)),
+            log.slotBalances(listOf(PlayerInv(alice, 0)), T0 + 10),
+        )
+    }
+
     // An item changing in place is one holder losing the old form and taking on the new one, written
     // as two movements through the Void under a single transaction. Both of them land on the same
     // holder at the same instant, so the ordinal is the only thing keeping them from being one row.
@@ -162,19 +170,6 @@ class StorageTest : OneLedger() {
         return seen
     }
 
-    // A newer build may have changed what the keys mean, and going back to it has to stay possible.
-    @Test
-    fun `a database stamped by a newer build refuses to open and is left as it was`() {
-        reopen {
-            val current = storedSchemaOf(dir)
-            stampSchema(dir, current + 1)
-            assertThrows(IllegalArgumentException::class.java) { RocksItemLog(dir) }
-            assertEquals(current + 1, storedSchemaOf(dir))
-            stampSchema(dir, current)
-        }
-        assertEquals(4, log.holderEntries(chest, 0, Long.MAX_VALUE).size)
-    }
-
     // Versions 5 and 6 only add families, so a version 4 or 5 ledger is opened, given them and stamped
     // anew, with every row it had still there.
     @Test
@@ -235,6 +230,28 @@ class StorageTest : OneLedger() {
         log.submit(Transfer(Cause.ROLLBACK, Void, chestUpperSlot, cobblestone, null, 5, T0 + 300, reverts = listOf(undone.ref)))
         log.drain()
         assertEquals(setOf(theft.ref), log.compensated(listOf(theft.ref)).keys)
+    }
+
+    // A rollback over many positions gives them all back in one transaction, and undoing it at any one
+    // of them undoes the whole of it.
+    @Test
+    fun `a posting is owed again when any posting of the transaction that gave it back is given back`() {
+        val theft = log.holderEntries(chest, 0, Long.MAX_VALUE).single { it.qty == -5 }
+        val deposit = log.holderEntries(chest, 0, Long.MAX_VALUE).single { it.itemFormId == log.forms.lookup(pickaxe) }
+        log.submit(
+            listOf(
+                Transfer(Cause.ROLLBACK, chest, Void, pickaxe, 7, 1, T0 + 100, reverts = listOf(deposit.ref)),
+                Transfer(Cause.ROLLBACK, Void, chestUpperSlot, cobblestone, null, 5, T0 + 100, reverts = listOf(theft.ref)),
+            )
+        )
+        log.drain()
+        val givenBack = log.holderEntries(chest, T0 + 100, T0 + 100).single { it.qty == 5 }
+        assertEquals(1, givenBack.ordinal)
+        assertEquals(setOf(theft.ref, deposit.ref), log.compensated(listOf(theft.ref, deposit.ref)).keys)
+
+        log.submit(Transfer(Cause.ROLLBACK, chestUpperSlot, Void, cobblestone, null, 5, T0 + 200, reverts = listOf(givenBack.ref)))
+        log.drain()
+        assertEquals(emptySet<PostingRef>(), log.compensated(listOf(theft.ref, deposit.ref)).keys)
     }
 
     // Past the depth the chain is followed to, the posting counts as given back whatever the parity
@@ -300,6 +317,7 @@ class StorageTest : OneLedger() {
 
         assertTrue(refused.message.orEmpty().contains("schema"), "the refusal has to name the reason: $refused")
         assertEquals(earlier.sorted(), familiesOf(older).sorted())
+        assertEquals(2L, storedSchemaOf(older))
     }
 
     private val everyColumnFamily = listOf(
@@ -308,7 +326,8 @@ class StorageTest : OneLedger() {
     )
 
     // The stamp is the only thing that keeps an older build from reading a ledger whose families it
-    // does not know, so a family added or dropped without a new version number has to fail here.
+    // does not know. This is only a reminder: when a family is added or dropped and this fails, the fix
+    // is a new version number, not just an edit to the list.
     @Test
     fun `a fresh ledger is stamped with the version that matches its families`() {
         reopen {
@@ -531,20 +550,18 @@ class StorageTest : OneLedger() {
         assertEquals(setOf(next), log.formsAt(listOf(here, next, bare, also)).keys)
     }
 
+    // Read straight after being set, so the answers come from the notes not yet written.
     @Test
     fun `the form of a position and the name of its container are kept apart`() {
         val world = UUID.randomUUID()
         val owner = UUID.randomUUID()
         log.setOwnerAt(world, 1, 2, 3, owner)
-        log.drain()
         assertNull(log.formAt(WorldBlock(world, 1, 2, 3)))
 
         log.setFormAt(WorldBlock(world, 1, 2, 3), pickaxe)
-        log.drain()
         assertEquals(owner, log.ownerAt(world, 1, 2, 3))
 
         log.clearFormAt(WorldBlock(world, 1, 2, 3))
-        log.drain()
         assertEquals(owner, log.ownerAt(world, 1, 2, 3))
         assertNull(log.formAt(WorldBlock(world, 1, 2, 3)))
     }

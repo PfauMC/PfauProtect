@@ -168,8 +168,8 @@ class BlockCaptureRulesTest {
         val stateAt = { at: BlockPos -> world[at] ?: Blocks.AIR.defaultBlockState() }
 
         val run = ranFrom(BlockPos(0, 65, 0), stateAt) { true }.map { (at, _) -> at.x to at.y }
-        assertEquals(listOf(1 to 65, 1 to 64, 2 to 64), run)
-        assertEquals(listOf(1 to 65, 1 to 64), ranFrom(BlockPos(0, 65, 0), stateAt) { it.x < 2 }.map { (at, _) -> at.x to at.y })
+        assertEquals(setOf(1 to 65, 1 to 64, 2 to 64), run.toSet())
+        assertEquals(setOf(1 to 65, 1 to 64), ranFrom(BlockPos(0, 65, 0), stateAt) { it.x < 2 }.map { (at, _) -> at.x to at.y }.toSet())
     }
 
     // A log with a branch of leaves running east from it, one leaf a player placed on top of it, and
@@ -186,11 +186,11 @@ class BlockCaptureRulesTest {
 
         val held = leavesHeldBy(blockIn(blocks, log)) { true }.map { it.x to it.y }
 
-        assertEquals((1..6).map { it to 64 }, held)
+        assertEquals((1..6).map { it to 64 }.toSet(), held.toSet())
 
         // A leaf over the region border is not read at all, and what lies behind it is not reached.
         val owned = leavesHeldBy(blockIn(blocks, log)) { it.x < 4 }.map { it.x }
-        assertEquals(listOf(1, 2, 3), owned)
+        assertEquals(setOf(1, 2, 3), owned.toSet())
     }
 
     @Test

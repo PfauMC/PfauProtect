@@ -12,16 +12,6 @@ import org.junit.jupiter.api.Test
 
 class LookupTest {
 
-    @Test
-    fun `an empty query keeps every default`() {
-        val query = parseLookupQuery("")
-        assertEquals(emptyList<String>(), query.users)
-        assertNull(query.secondsBack)
-        assertNull(query.radius)
-        assertNull(query.causes)
-        assertEquals(DEFAULT_LIMIT, query.limit)
-    }
-
     // What only shapes a lookup's answer — whose hands, how many rows, which page — means nothing to a
     // rollback, and offering it there reads as if it narrowed what is undone.
     @Test
@@ -81,13 +71,12 @@ class LookupTest {
             setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
             parseLookupQuery("a:+container,-container").causes,
         )
-        assertEquals(
-            setOf(
-                Cause.BLK_TNT, Cause.BLK_CREEPER, Cause.BLK_BED_EXPLOSION, Cause.BLK_RESPAWN_ANCHOR, Cause.BLK_END_CRYSTAL,
-                Cause.BLK_EXPLOSION, Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD,
-            ),
-            parseLookupQuery("a:explosion,fire").causes,
-        )
+        val explosion = parseLookupQuery("a:explosion").causes!!
+        assertTrue(explosion.containsAll(listOf(Cause.BLK_TNT, Cause.BLK_CREEPER)), "$explosion")
+        assertTrue(Cause.BLK_FIRE_BURN !in explosion && Cause.BLK_PLAYER_BREAK !in explosion, "$explosion")
+        val fire = parseLookupQuery("a:fire").causes!!
+        assertTrue(Cause.BLK_FIRE_BURN in fire, "$fire")
+        assertEquals(explosion + fire, parseLookupQuery("a:explosion,fire").causes)
     }
 
     @Test

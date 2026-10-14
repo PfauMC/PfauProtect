@@ -247,6 +247,7 @@ class EntityCaptureTest : BothPlanes() {
         assertEquals(EntityKind.REMOVED, row.kind)
         assertEquals(frame.uniqueId, row.uuid)
         assertEquals(bob, row.actor)
+        assertEquals(Confidence.INFERRED, row.confidence)
     }
 
     // What a rollback brings the mob back from; its riders are entities of their own.

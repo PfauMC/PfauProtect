@@ -79,6 +79,7 @@ class RedstoneTest : BothPlanes() {
 
     private var clock = T0
     private val energy = Energy { clock }
+    private var nanos = 0L
 
     private fun at(x: Int, y: Int = 0, z: Int = 0) = WorldBlock(world, x, y, z)
 
@@ -243,7 +244,7 @@ class RedstoneTest : BothPlanes() {
             },
             Switch("a press whose change never came", button, null) {
                 press(alice, Action.RIGHT_CLICK_BLOCK)
-                Thread.sleep(PRESS_NANOS / 1_000_000 + 20)
+                nanos += PRESS_NANOS + 1
                 redstone()
             },
         )
@@ -274,7 +275,7 @@ class RedstoneTest : BothPlanes() {
                 "getBlockData" to case.data,
                 "getLocation" to { _: Array<out Any?> -> Location(ground, x.toDouble(), 64.0, 0.0) },
             ))
-            val listener = RedstoneListener(energy, logs, origins, nudges, Attribution(shared.registries, logs))
+            val listener = RedstoneListener(energy, logs, origins, nudges, Attribution(shared.registries, logs)) { nanos }
             Switching(listener, block, players).(case.act)()
             log.drain()
             val row = log.at(x, 64, 0, 0, Long.MAX_VALUE, 10, reverse = false).lastOrNull()
