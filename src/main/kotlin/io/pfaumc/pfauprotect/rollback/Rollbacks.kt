@@ -739,7 +739,9 @@ class ChunkRollback(
             // The one who rode it off gets off here; a teleport would carry them back along with it.
             entity.eject()
             (entity as? LivingEntity)?.setLeashHolder(null)
-            homeOf(before, home)?.let(entity::teleportAsync)
+            // Home, it gets back into what it sat in: a cow in a boat the griefer rode off. Whichever of the
+            // two gets home second seats them, the other is not there yet.
+            homeOf(before, home)?.let { at -> entity.teleportAsync(at).thenRun { seat(seatsOf(entity.uniqueId, before)) } }
             filed(plan, EntityKind.MOVED, actor, before = now)
             return
         }
@@ -752,14 +754,16 @@ class ChunkRollback(
         filed(plan, EntityKind.CHANGED, actor, before = now, after = snapshotOf(handle))
     }
 
-    // On the entity's own thread: led back where it stood and let go, or every key a hand can change as it
-    // was.
+    // On the entity's own thread: led back where it stood, let go and seated as it sat, or every key a hand
+    // can change as it was.
     private fun asItWas(entity: Entity, plan: EntityPlan, home: World): Boolean {
         if (!entity.isValid) return true
         val before = nbtOf(plan.before!!)
         if (plan.oldest.kind == EntityKind.MOVED) {
             val pos = homeOf(before, home)
-            if (pos == null || entity.world != home || entity.isInsideVehicle || entity.passengers.isNotEmpty() || (entity as? LivingEntity)?.isLeashed == true) return false
+            // A player aboard is never in the snapshot, so one still riding it is not as it was.
+            val seated = listOfNotNull(entity.vehicle?.let { entity.uniqueId to it.uniqueId }) + entity.passengers.map { it.uniqueId to entity.uniqueId }
+            if (pos == null || entity.world != home || seated.toSet() != seatsOf(entity.uniqueId, before).toSet() || (entity as? LivingEntity)?.isLeashed == true) return false
             val at = entity.location
             return abs(at.x - pos.x) < 1 && abs(at.y - pos.y) < 1 && abs(at.z - pos.z) < 1
         }
