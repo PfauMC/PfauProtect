@@ -87,6 +87,7 @@ class Owed(
     val stashes: List<Container> = emptyList(),
     val conversions: List<Conversion> = emptyList(),
     val boxes: List<UUID> = emptyList(),
+    val since: Long = 0,
 )
 
 /** What a carrier made of the item: so many of it went into each one `made`. */
@@ -169,10 +170,22 @@ internal fun owedFor(ledger: RocksItemLog, tally: Tally): List<Owed> {
         val carrier = item.taker as? Carrier ?: return@mapNotNull item
         val qty = item.qty - placedInto(ledger, carrier.player, item.formId, tally.since, undone)
         if (qty <= 0) return@mapNotNull null
-        val stashes = stashesOf(ledger, carrier.player, item.formId, tally.since)
-        val (setDown, boxes) = boxesOf(ledger, stashes, item.formId, tally.since, rowsOf)
-        Owed(carrier, item.formId, qty, stashes + setDown, conversionsOf(ledger, carrier.player, item.formId, tally.since), boxes)
+        followed(ledger, carrier.player, item.formId, qty, tally.since, rowsOf)
     }
+}
+
+/** What a player owes, with where they put it and what they made of it since the window opened. */
+internal fun followed(
+    ledger: RocksItemLog,
+    player: UUID,
+    formId: Long,
+    qty: Int,
+    since: Long,
+    rowsOf: (ItemEntityRef) -> List<LedgerEntry> = pileRows(ledger),
+): Owed {
+    val stashes = stashesOf(ledger, player, formId, since)
+    val (setDown, boxes) = boxesOf(ledger, stashes, formId, since, rowsOf)
+    return Owed(Carrier(player), formId, qty, stashes + setDown, conversionsOf(ledger, player, formId, since), boxes, since)
 }
 
 /** How many of the item a player set as blocks since then, at positions among `undone`. */
@@ -405,7 +418,7 @@ class Confiscations(
                 is Carrier -> {
                     fun oweAll() {
                         for (item in all) {
-                            ledger.owe(taker.player, item.formId, item.qty, actor)
+                            ledger.owe(taker.player, item.formId, item.qty, actor, item.since)
                             taken(item.formId, item.qty)
                         }
                     }
@@ -721,11 +734,17 @@ class Confiscations(
         Bukkit.getAsyncScheduler().runNow(plugin) {
             val owedItems = ledger.owedBy(player.uniqueId)
             if (owedItems.isEmpty()) return@runNow
+            // Read here, off the player's thread: what they no longer hold is followed as a rollback run while
+            // they were online would follow it, and only what is nowhere to be found is forgiven.
+            val rowsOf = pileRows(ledger)
+            val trails = owedItems.filter { it.qty > 0 }.associateWith { followed(ledger, player.uniqueId, it.formId, it.qty, it.since, rowsOf) }
             player.scheduler.runDelayed(plugin, {
                 try {
                     for ((actor, group) in owedItems.groupBy { it.actor }) {
                         val (taking, giving) = group.partition { it.qty > 0 }
-                        fromPlayer(player, taking.map { Owed(Carrier(player.uniqueId), it.formId, it.qty) }, actor, null)
+                        fromPlayer(player, taking.map { trails.getValue(it) }, actor, null) { item, left ->
+                            fromStashes(item, left, actor, null, { _, _ -> }, { _, _ -> })
+                        }
                         for (item in giving) toPlayer(player, item.formId, -item.qty, actor, null)
                     }
                     Bukkit.getAsyncScheduler().runNow(plugin) { ledger.forgive(owedItems) }

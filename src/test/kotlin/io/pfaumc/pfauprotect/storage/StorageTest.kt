@@ -389,6 +389,7 @@ class StorageTest : OneLedger() {
         log.submit(Transfer(Cause.ROLLBACK, Void, chestUpperSlot, cobblestone, null, 5, T0 + 100, reverts = listOf(theft.ref)))
         log.owe(alice, 300, 5, bob)
         log.owe(alice, 7, 1, null)
+        log.owe(alice, 7, 1, null, since = 1000)
         log.setFormAt(WorldBlock(world, 100, 64, -200), pickaxe)
         log.setOwnerAt(world, 100, 64, -200, bob)
         log.drain()
@@ -404,14 +405,16 @@ class StorageTest : OneLedger() {
 
         // The player, then a sequence that keeps a player's debts in the order they were made.
         val debts = stored.getValue("confiscations")
-        assertEquals(2, debts.size)
+        assertEquals(3, debts.size)
         for (key in debts.keys) {
             assertEquals(48, key.length, key)
             assertTrue(key.startsWith(aliceHex), key)
         }
         val (first, second) = debts.keys.map { it.substring(aliceHex.length).toULong(16) }
         assertEquals(first + 1u, second, "the sequence is a big-endian long")
-        assertEquals(listOf("ac0205" + "01" + bobHex, "0701" + "00"), debts.values.toList())
+        // When the window opened trails the value, so a debt kept without it still reads.
+        assertEquals(listOf("ac0205" + "01" + bobHex, "0701" + "00", "0701" + "00" + "e807"), debts.values.toList())
+        assertEquals(listOf(0L, 0L, 1000L), log.owedBy(alice).map { it.since })
 
         val position = worldHex + "9555555555" + "2d488040"
         assertEquals(mapOf(position to "0405"), stored["placed_forms"])

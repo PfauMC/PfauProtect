@@ -68,7 +68,7 @@ data class BlockPostingsPage(val positions: List<BlockPostings>, val reachedEnd:
 
 // What a rollback took back from a player who was not there to give it: the form, how many, and who ran
 // the rollback. `key` is where it is kept, to be forgiven once taken.
-class OwedItem(val key: ByteArray, val formId: Long, val qty: Int, val actor: UUID?)
+class OwedItem(val key: ByteArray, val formId: Long, val qty: Int, val actor: UUID?, val since: Long = 0)
 
 // Raised by a change to the key layout, the set of column families or the meaning of stored numbers:
 // the record version in the value covers none of them, so without the bump an older database opens and
@@ -835,13 +835,16 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     /**
      * Owes a player's items to a rollback that could not reach them: they were offline. Written at once
      * and fsynced, because the rollback has already put the items back where they came from and the
-     * only other record of the debt is in memory.
+     * only other record of the debt is in memory. `since`, when the rollback's window opened, lets the join
+     * follow what the player no longer holds into where they put it; it trails the value, so a debt written
+     * before it was kept reads as one with nothing to follow.
      */
-    fun owe(player: UUID, formId: Long, qty: Int, actor: UUID?) = dbLock.read {
+    fun owe(player: UUID, formId: Long, qty: Int, actor: UUID?, since: Long = 0) = dbLock.read {
         check(!closed) { "the ledger is closed" }
         val key = ByteWriter(24).uuid(player).longBE(nextOwed.getAndIncrement()).toByteArray()
         val value = ByteWriter(34).varLong(formId).varInt(qty).byte(if (actor == null) 0 else 1)
         if (actor != null) value.uuid(actor)
+        if (since > 0) value.varLong(since)
         db.put(confiscationsCf, syncWriteOptions, key, value.toByteArray())
     }
 
@@ -851,7 +854,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         val found = ArrayList<OwedItem>()
         db.forEachUnder(confiscationsCf, prefix, reverse = false) { key, bytes ->
             val value = ByteReader(bytes)
-            found += OwedItem(key, value.varLong(), value.varInt(), if (value.byte() == 1) value.uuid() else null)
+            val formId = value.varLong()
+            val qty = value.varInt()
+            val actor = if (value.byte() == 1) value.uuid() else null
+            found += OwedItem(key, formId, qty, actor, if (value.remaining > 0) value.varLong() else 0)
             true
         }
         found
