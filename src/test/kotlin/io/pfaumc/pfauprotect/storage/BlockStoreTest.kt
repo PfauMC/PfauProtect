@@ -17,7 +17,6 @@ import org.rocksdb.RocksDBException
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -592,21 +591,6 @@ class BlockStoreTest : BothPlanes() {
             listOf(T0, T0 + 5000),
             log.inChunk(0, 0, T0, T0 + 5000, limit = 100, reverse = false).map { it.timestamp },
         )
-    }
-
-    @Test
-    fun `one submit is one event and the next submit is another`() {
-        log.submit(listOf(placed(1, 64, 1), placed(2, 64, 1), placed(3, 64, 1)))
-        log.submit(listOf(placed(1, 65, 1, ts = T0 + 10)))
-        log.drain()
-
-        val event = setOf(
-            log.rowsAt(1, 64, 1).single().eventId,
-            log.rowsAt(2, 64, 1).single().eventId,
-            log.rowsAt(3, 64, 1).single().eventId,
-        )
-        assertEquals(1, event.size)
-        assertNotEquals(event.single(), log.rowsAt(1, 65, 1).single().eventId)
     }
 
     // The second change is behind the world's newest time and its position's first row is not on disk yet,

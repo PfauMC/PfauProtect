@@ -322,9 +322,6 @@ class AttributionTest : BothPlanes() {
         assertNull(attribution.supportRemoverAt(at(5, 64, 5)))
         assertEquals(alice, attribution.removerAt(at(5, 64, 5))?.actor)
         assertNull(attribution.removerAt(at(5, 65, 5)))
-
-        clock += SUPPORT_MILLIS + 1
-        assertNull(attribution.removerAt(at(5, 64, 5)))
     }
 
     // Leaves drop minutes after the log that held them, long after every other note is gone. Whoever

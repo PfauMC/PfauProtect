@@ -180,11 +180,12 @@ class LookupTest {
     // steady pace is one line; a pause of more than a minute starts another, and so does a rollback mark.
     @Test
     fun `runs fold gap by gap and keep undone rows apart`() {
-        fun line(secondsAgo: Long, undone: Boolean = false) = Line(
-            1_000_000L - secondsAgo * 1000, Cause.BLK_PLAYER_BREAK, null, "break stone", 1, undone, null,
+        fun line(secondsAgo: Long, amount: Int, undone: Boolean = false) = Line(
+            1_000_000L - secondsAgo * 1000, Cause.BLK_PLAYER_BREAK, null, "break stone", amount, undone, null,
         ) { _, _, _ -> Component.empty() }
-        val lines = listOf(line(0), line(30), line(70), line(131), line(161, undone = true), line(191), line(221))
+        val lines = listOf(line(0, 64), line(30, 32), line(70, 1), line(131, 5), line(161, 7, undone = true), line(191, 2), line(221, 3))
         assertEquals(listOf(3, 1, 1, 2), folded(lines, all = false).map { it.rows })
+        assertEquals(listOf(97, 5, 7, 5), folded(lines, all = false).map { it.amount })
         assertEquals(List(lines.size) { 1 }, folded(lines, all = true).map { it.rows })
     }
 

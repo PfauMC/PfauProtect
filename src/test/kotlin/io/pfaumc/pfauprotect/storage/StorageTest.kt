@@ -789,6 +789,23 @@ class StorageTest : OneLedger() {
     }
 
     @Test
+    fun `a half with no partner and halves naming different items are both gaps`() {
+        val lonely = ledgerEntry(chest, aliceInv).copy(timestamp = T0 + 40, txId = 98L, itemFormId = 1L)
+        val given = ledgerEntry(chest, aliceInv).copy(timestamp = T0 + 50, txId = 99L, itemFormId = 1L)
+        val taken = ledgerEntry(aliceInv, chest).copy(timestamp = T0 + 50, txId = 99L, itemFormId = 2L, qty = -1)
+        val rows = listOf(lonely to 0, given to 0, taken to 1).map { (entry, ordinal) ->
+            EntryCodec.key(entry.holder, entry.timestamp, entry.txId, ordinal, log.registries) to
+                EntryCodec.value(entry, log.registries)
+        }
+        reopen { for ((key, value) in rows) rawPut(dir, "entries", key, value) }
+
+        val gaps = log.sweep(1000).gaps
+        assertEquals(3, gaps.size, "$gaps")
+        assertEquals(1, gaps.count { "transaction 98" in it && "gives back" in it }, "$gaps")
+        assertEquals(2, gaps.count { "transaction 99" in it && "different items" in it }, "$gaps")
+    }
+
+    @Test
     fun `a purge keeps a posting whose form it cannot read`() {
         val formless = ledgerEntry(chest, Void).copy(timestamp = T0 + 5, txId = 99L, itemFormId = 9999L)
         val key = EntryCodec.key(chest, formless.timestamp, formless.txId, 0, log.registries)

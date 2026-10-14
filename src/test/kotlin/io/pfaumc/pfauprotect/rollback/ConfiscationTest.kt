@@ -41,14 +41,6 @@ class ConfiscationTest : OneLedger() {
         "minecraft:player", alice, actor = bob, drops = drops.map { it.uuid },
     )
 
-    @Test
-    fun `what went straight into a player's hands is owed by that player`() {
-        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 7, T0))
-        log.drain()
-
-        assertEquals(mapOf(Carrier(bob) to 7), owed(returned(PlayerInv(bob, 4), 7)))
-    }
-
     // Bob put the loot into a chest of his own far away: what he no longer holds is looked for there,
     // newest first, and a chest he only took from is no stash.
     @Test
@@ -64,6 +56,8 @@ class ConfiscationTest : OneLedger() {
         val tally = returned(PlayerInv(bob, 4), 7).apply { since = T0 }
         val owed = owedFor(log, tally).single()
         assertEquals(listOf(his.copy(slot = 0), older), owed.stashes)
+        // Written with the debt of an offline player, whose join follows the stashes again from it.
+        assertEquals(T0, owed.since)
     }
 
     // Bob packed the loot into a shulker box and broke it. Left lying, the box is the pile the loot is

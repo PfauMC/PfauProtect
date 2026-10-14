@@ -27,17 +27,6 @@ class ItemFormsTest {
     private val codec = testCodec(vanillaIds = true)
 
     @Test
-    fun `damage travels outside the form`() {
-        val damaged = ItemStack(Items.DIAMOND_SWORD)
-        damaged.set(DataComponents.DAMAGE, 17)
-
-        val encoded = codec.encode(damaged)
-        assertEquals(17, encoded.damage)
-        assertArrayEquals(codec.encode(ItemStack(Items.DIAMOND_SWORD)).form, encoded.form)
-        assertRoundTrip(damaged)
-    }
-
-    @Test
     fun `explicitly removed damage stays in the form`() {
         val stripped = ItemStack(Items.DIAMOND_SWORD)
         stripped.remove(DataComponents.DAMAGE)

@@ -166,7 +166,8 @@ class MechanismTest {
         val to = Container(world, 1, 63, 1, 0)
         repeat(5) { coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1) }
         coalescer.add(from, to, Cause.HOPPER_PUSH, key("dirt"), 2)
-        coalescer.add(to, from, Cause.HOPPER_PULL_CONTAINER, key("stone"), 3)
+        coalescer.add(from, to, Cause.DROPPER_PUSH, key("stone"), 3)
+        coalescer.add(to, from, Cause.HOPPER_PUSH, key("stone"), 4)
         coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1, alice)
         coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1, bob)
         coalescer.add(from, to, Cause.HOPPER_PUSH, key("stone"), 1, bob, Confidence.INFERRED)
@@ -176,14 +177,15 @@ class MechanismTest {
             setOf(
                 listOf(from, to, Cause.HOPPER_PUSH, "stone", 5, null, Confidence.FACT),
                 listOf(from, to, Cause.HOPPER_PUSH, "dirt", 2, null, Confidence.FACT),
-                listOf(to, from, Cause.HOPPER_PULL_CONTAINER, "stone", 3, null, Confidence.FACT),
+                listOf(from, to, Cause.DROPPER_PUSH, "stone", 3, null, Confidence.FACT),
+                listOf(to, from, Cause.HOPPER_PUSH, "stone", 4, null, Confidence.FACT),
                 listOf(from, to, Cause.HOPPER_PUSH, "stone", 1, alice, Confidence.FACT),
                 listOf(from, to, Cause.HOPPER_PUSH, "stone", 1, bob, Confidence.FACT),
                 listOf(from, to, Cause.HOPPER_PUSH, "stone", 1, bob, Confidence.INFERRED),
             ),
             written.map { listOf(it.from, it.to, it.cause, String(it.form), it.qty, it.actor, it.confidence) }.toSet(),
         )
-        assertEquals(6, written.size)
+        assertEquals(7, written.size)
     }
 
     private fun form(item: net.minecraft.world.item.Item, name: String? = null) =

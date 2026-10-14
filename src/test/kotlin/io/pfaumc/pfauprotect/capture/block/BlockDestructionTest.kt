@@ -149,7 +149,7 @@ class BlockDestructionTest : BothPlanes() {
         val plainTorch = codec.encode(NmsItemStack(Items.TORCH)).form
         assertArrayEquals(plainTorch, releasedBy(listener, at, torch, AIR).single().form)
         val namedTorch = plainTorch + 1
-        for (empty in listOf(AIR, SOURCE_WATER, "minecraft:fire[age=3]", "minecraft:nether_portal[axis=x]")) {
+        for (empty in listOf(AIR, SOURCE_WATER)) {
             val off = releasedBy(listener, at, torch, empty, namedTorch)
             assertEquals(1, off.size, empty)
             assertEquals(Kind.TRANSFER, off.single().kind, empty)

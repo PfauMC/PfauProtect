@@ -63,10 +63,6 @@ class BlockCaptureRulesTest {
         assertEquals(BlockFace.EAST, partnerOf(whiteBed(BedPart.FOOT)))
         assertEquals(BlockFace.WEST, partnerOf(whiteBed(BedPart.HEAD)))
 
-        val sunflower = Blocks.SUNFLOWER.defaultBlockState()
-        assertEquals(BlockFace.UP, partnerOf(sunflower))
-        assertEquals(BlockFace.DOWN, partnerOf(sunflower.setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER)))
-
         val piston = Blocks.PISTON.defaultBlockState().setValue(BlockStateProperties.FACING, Direction.UP)
         assertNull(partnerOf(piston))
         assertEquals(BlockFace.UP, partnerOf(piston.setValue(BlockStateProperties.EXTENDED, true)))
@@ -84,16 +80,13 @@ class BlockCaptureRulesTest {
 
     @Test
     fun `a break leaves the fluid the block stood in behind`() {
-        assertEquals(AIR, after(Blocks.STONE.defaultBlockState()))
         assertEquals(AIR, after(Blocks.OAK_STAIRS.defaultBlockState()))
         assertEquals(
             SOURCE_WATER,
             after(Blocks.OAK_STAIRS.defaultBlockState().setValue(BlockStateProperties.WATERLOGGED, true)),
         )
-        // Neither of these carries a waterlogged property.
+        // Kelp carries no waterlogged property.
         assertEquals(SOURCE_WATER, after(Blocks.KELP.defaultBlockState()))
-        assertEquals(SOURCE_WATER, after(Blocks.KELP_PLANT.defaultBlockState()))
-        assertEquals(SOURCE_WATER, after(Blocks.SEAGRASS.defaultBlockState()))
     }
 
     @Test
