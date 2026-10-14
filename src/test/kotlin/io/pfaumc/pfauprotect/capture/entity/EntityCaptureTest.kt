@@ -58,6 +58,8 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 import sun.misc.Unsafe
 import java.util.UUID
+import com.google.common.collect.ImmutableList
+import net.minecraft.world.entity.Entity as NmsEntity
 import net.minecraft.world.entity.EntityType as NmsEntityType
 import net.minecraft.world.entity.LivingEntity as NmsLivingEntity
 
@@ -250,13 +252,24 @@ class EntityCaptureTest : BothPlanes() {
         assertEquals(Confidence.INFERRED, row.confidence)
     }
 
-    // What a rollback brings the mob back from; its riders are entities of their own.
+    // What a rollback brings the mob back from; its riders are entities of their own, named by UUID
+    // alone, and so is what it sat in, for the rollback to seat them again.
     @Test
     fun `a removed mob keeps its whole NBT without its passengers`() {
-        val row = mobDies(::fall, fell = 20f)
+        val cart = UUID.randomUUID()
+        val pig = UUID.randomUUID()
+        var cow: UUID? = null
+        val row = mobDies({ mob ->
+            cow = mob.uniqueId
+            (mob.handle as Saved).seated(on = savedAs(cart), riders = listOf(savedAs(pig)))
+            fall(mob)
+        }, fell = 20f)
         val saved = nbtOf(shared.payload(row.payloadBefore!!)!!)
         assertEquals("minecraft:cow", saved.getStringOr("id", ""))
         assertFalse(saved.contains("Passengers"))
+        assertEquals(listOf(cow to cart, pig to cow), seatsOf(cow!!, saved))
+        // Getting out of the cart is no change of the cow's own.
+        assertFalse(changedBetween(bytesOf(saved), bytesOf(saved.copy().apply { remove(VEHICLE); remove(RIDERS) })))
     }
 
     @Test
@@ -294,7 +307,21 @@ private class Saved(type: NmsEntityType<out ArmorStand>, level: Level) : ArmorSt
         output.child("Passengers").putString("id", "minecraft:pig")
         return true
     }
+
+    // Made without a constructor, so nothing of its own is set until a test sets it.
+    private var on: NmsEntity? = null
+
+    override fun getVehicle(): NmsEntity? = on
+
+    fun seated(on: NmsEntity? = null, riders: List<NmsEntity> = emptyList()) = apply {
+        this.on = on
+        passengers = ImmutableList.copyOf(riders)
+    }
+
+    fun named(id: UUID) = apply { uuid = id }
 }
+
+private fun savedAs(id: UUID) = (unsafe.allocateInstance(Saved::class.java) as Saved).named(id).seated()
 
 private class Dying(server: CraftServer, handle: NmsLivingEntity) : CraftLivingEntity(server, handle) {
     lateinit var id: UUID
@@ -344,7 +371,7 @@ private fun hung(ground: World, face: BlockFace): Hung {
     frame.id = UUID.randomUUID()
     frame.ground = ground
     frame.face = face
-    frame.saved = unsafe.allocateInstance(SavedFrame::class.java) as SavedFrame
+    frame.saved = (unsafe.allocateInstance(SavedFrame::class.java) as SavedFrame).also { it.passengers = ImmutableList.of() }
     return frame
 }
 
@@ -353,7 +380,7 @@ private fun dying(ground: World, fell: Float, damage: (Dying) -> EntityDamageEve
     mob.id = UUID.randomUUID()
     mob.ground = ground
     mob.fell = fell
-    mob.saved = unsafe.allocateInstance(Saved::class.java) as Saved
+    mob.saved = (unsafe.allocateInstance(Saved::class.java) as Saved).seated()
     mob.damage = damage(mob)
     return mob
 }

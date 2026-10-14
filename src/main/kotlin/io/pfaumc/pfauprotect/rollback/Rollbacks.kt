@@ -37,6 +37,7 @@ import net.minecraft.world.Clearable
 import io.pfaumc.pfauprotect.capture.entity.VOLATILE
 import io.pfaumc.pfauprotect.capture.entity.keepingOthersMarks
 import io.pfaumc.pfauprotect.capture.entity.nbtOf
+import io.pfaumc.pfauprotect.capture.entity.seatsOf
 import io.pfaumc.pfauprotect.capture.entity.snapshotOf
 import io.pfaumc.pfauprotect.capture.entity.changedBetween
 import io.pfaumc.pfauprotect.model.EntityKind
@@ -333,6 +334,9 @@ private val DYING = listOf(
     "Passengers",
 )
 
+// How far a mob that lived may stand from what it sat in and still be seated in it again.
+private const val SEAT_REACH = 8.0
+
 // How long a campfire cooks what is put back on it: what every vanilla campfire recipe takes.
 private const val CAMPFIRE_COOK_TICKS = 600
 
@@ -535,7 +539,9 @@ class ChunkRollback(
             }
         }
         // After the blocks, so a frame comes back to a wall that is there again.
-        for (plan in positions) for (entity in plan.entities) entity(level, entity, actor, apply, tally)
+        val seats = ArrayList<Pair<UUID, UUID>>()
+        for (plan in positions) for (entity in plan.entities) entity(level, entity, actor, apply, tally, seats)
+        seat(seats)
         for (plan in positions) if (plan.at in tally.restored) tally.piles += plan.dropped
         if (!apply) return tally
         val difference = rollbackDifference(world, actor, System.currentTimeMillis())
@@ -634,7 +640,7 @@ class ChunkRollback(
      * that is already as it should be is left alone, so a second rollback does nothing twice. A live
      * entity may stand in another region by now, so what is done to it waits for its own thread.
      */
-    private fun entity(level: ServerLevel, plan: EntityPlan, actor: UUID?, apply: Boolean, tally: Tally) {
+    private fun entity(level: ServerLevel, plan: EntityPlan, actor: UUID?, apply: Boolean, tally: Tally, seats: MutableList<Pair<UUID, UUID>>) {
         val alive = Bukkit.getEntity(plan.uuid)?.takeIf { it.isValid }
         val kind = plan.oldest.kind
         // Gone, or changed or led away and then killed or broken in the same window: brought back as it was
@@ -642,7 +648,7 @@ class ChunkRollback(
         if (alive == null && (kind == EntityKind.REMOVED || kind != EntityKind.CREATED && plan.removed)) {
             tally.entitiesBack++
             plan.bucket?.let { tally.buckets += it }
-            if (apply) bringBack(level, plan, actor, tally)
+            if (apply) bringBack(level, plan, actor, tally, seats)
             return
         }
         when (kind) {
@@ -678,9 +684,10 @@ class ChunkRollback(
     }
 
     // On the region that owns the place it went from.
-    private fun bringBack(level: ServerLevel, plan: EntityPlan, actor: UUID?, tally: Tally) {
+    private fun bringBack(level: ServerLevel, plan: EntityPlan, actor: UUID?, tally: Tally, seats: MutableList<Pair<UUID, UUID>>) {
         val tag = nbtOf(plan.before!!)
         for (key in DYING) tag.remove(key)
+        seats += seatsOf(plan.uuid, tag)
         val entity = EntityType.loadEntityRecursive(tag, level, EntitySpawnRequest(EntitySpawnReason.LOAD, true), EntityProcessor.NOP)
         (entity as? NmsLivingEntity)?.let { it.health = it.maxHealth }
         if (entity == null || !level.tryAddFreshEntityWithPassengers(entity, CreatureSpawnEvent.SpawnReason.CUSTOM)) {
@@ -691,6 +698,22 @@ class ChunkRollback(
         slotsBack(plan, actor, tally)
         tally.piles += plan.drops
         filed(plan, EntityKind.CREATED, actor)
+    }
+
+    /**
+     * Once the chunk's entities are back, a mob goes back into what it sat in, whichever of the two came back:
+     * a cart blown up under a golem, or a golem killed in a cart that stood. One that lived is seated again
+     * only from close by, and only where nothing else took its seat. A player is never seated, and nothing is
+     * seated beside one: the player's ride would lead it off under their name.
+     */
+    private fun seat(seats: List<Pair<UUID, UUID>>) {
+        for ((riderId, vehicleId) in seats) {
+            val rider = Bukkit.getEntity(riderId)?.takeIf { it.isValid && it !is Player && Bukkit.isOwnedByCurrentRegion(it) } ?: continue
+            val vehicle = Bukkit.getEntity(vehicleId)?.takeIf { it.isValid && Bukkit.isOwnedByCurrentRegion(it) } ?: continue
+            if (rider.isInsideVehicle || vehicle.passengers.any { it is Player }) continue
+            if (rider.location.distanceSquared(vehicle.location) > SEAT_REACH * SEAT_REACH) continue
+            vehicle.addPassenger(rider)
+        }
     }
 
     // On the entity's own thread. Its slots go with it, and the capture writes them off as it does for

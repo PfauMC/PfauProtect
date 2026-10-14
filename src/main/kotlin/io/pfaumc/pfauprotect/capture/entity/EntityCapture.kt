@@ -80,6 +80,9 @@ import org.bukkit.event.entity.EntityMountEvent
 import io.papermc.paper.event.player.PlayerItemFrameChangeEvent
 import org.bukkit.event.player.PlayerArmorStandManipulateEvent
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.nbt.ListTag
+import net.minecraft.nbt.StringTag
+import net.minecraft.world.entity.player.Player as NmsPlayer
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
@@ -148,12 +151,30 @@ internal fun worthRecording(touched: Boolean, keepsItsPlace: Boolean, sameKindIn
  * The whole NBT of an entity as it is now, the way the server saves it. Forced, so a mob that is dying and
  * an entity already marked removed are saved as they were and not refused. Without its passengers: each
  * is an entity of its own with rows of its own, a rider's whole player would be saved with it (every mount
- * a change), and a boat brought back with a cow that still lives would clash with the cow's UUID.
+ * a change), and a boat brought back with a cow that still lives would clash with the cow's UUID. Who it
+ * sat in and who sat in it stay by UUID alone, for a rollback to seat them again: a golem in a cart blown
+ * up with it comes back in the cart, not beside it.
  */
 internal fun snapshotOf(entity: NmsEntity): ByteArray? {
     val output = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, entity.registryAccess())
     if (!entity.saveAsPassenger(output, true, true, true)) return null
-    return bytesOf(output.buildResult().also { it.remove(NmsEntity.TAG_PASSENGERS) })
+    val tag = output.buildResult()
+    tag.remove(NmsEntity.TAG_PASSENGERS)
+    entity.vehicle?.takeIf { it !is NmsPlayer }?.let { tag.putString(VEHICLE, it.uuid.toString()) }
+    val riders = entity.passengers.filter { it !is NmsPlayer }
+    if (riders.isNotEmpty()) tag.put(RIDERS, ListTag().apply { for (rider in riders) add(StringTag.valueOf(rider.uuid.toString())) })
+    return bytesOf(tag)
+}
+
+internal const val VEHICLE = "pfauprotect.Vehicle"
+internal const val RIDERS = "pfauprotect.Riders"
+
+/** Who rode what, as [snapshotOf] kept it on the entity `uuid`: pairs of rider and vehicle. */
+internal fun seatsOf(uuid: UUID, tag: CompoundTag): List<Pair<UUID, UUID>> {
+    val riders = tag.getListOrEmpty(RIDERS)
+    val below = (0 until riders.size).map { UUID.fromString(riders.getStringOr(it, "")) to uuid }
+    val above = tag.getStringOr(VEHICLE, "").takeIf { it.isNotEmpty() }?.let { uuid to UUID.fromString(it) }
+    return listOfNotNull(above) + below
 }
 
 internal fun snapshotOf(entity: Entity): ByteArray? = snapshotOf((entity as CraftEntity).handle)
@@ -181,6 +202,8 @@ internal val VOLATILE = setOf(
     "Bukkit.Aware", "WorldUUIDLeast", "WorldUUIDMost",
     // A pet sat down or stood up: only its owner can, so it is never anybody else's doing.
     "Sitting",
+    // Getting in or out is where it is, and a player's ride is written as one led away.
+    VEHICLE, RIDERS,
 )
 
 internal fun nbtOf(bytes: ByteArray): CompoundTag = NbtIo.read(DataInputStream(ByteArrayInputStream(bytes)))
