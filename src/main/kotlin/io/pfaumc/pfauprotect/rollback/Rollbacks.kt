@@ -740,8 +740,10 @@ class ChunkRollback(
             entity.eject()
             (entity as? LivingEntity)?.setLeashHolder(null)
             // Home, it gets back into what it sat in: a cow in a boat the griefer rode off. Whichever of the
-            // two gets home second seats them, the other is not there yet.
-            homeOf(before, home)?.let { at -> entity.teleportAsync(at).thenRun { seat(seatsOf(entity.uniqueId, before)) } }
+            // two gets home second seats them, the other is not there yet. One that did not get home stays out.
+            homeOf(before, home)?.let { at ->
+                entity.teleportAsync(at).thenAccept { arrived -> if (arrived) seat(seatsOf(entity.uniqueId, before)) }
+            }
             filed(plan, EntityKind.MOVED, actor, before = now)
             return
         }
