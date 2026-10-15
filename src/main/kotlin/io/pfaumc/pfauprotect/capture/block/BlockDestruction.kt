@@ -83,6 +83,7 @@ import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
 import org.bukkit.entity.Projectile
 import org.bukkit.entity.TNTPrimed
+import org.bukkit.event.Event
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
@@ -369,6 +370,37 @@ internal fun pistonSites(
 }
 
 /**
+ * One move of a piston: what it files and whom it names, where two moves alike in this are one clock
+ * repeating, and what each position it touches held before it and holds after.
+ */
+internal class PistonMove(val signature: String, val net: Map<WorldBlock, Pair<String, String>>)
+
+internal fun pistonMove(cause: Cause, sites: List<Site>, by: Attributed?): PistonMove {
+    val net = LinkedHashMap<WorldBlock, Pair<String, String>>()
+    for (site in sites) net[site.at] = (net[site.at]?.first ?: site.beforeState) to site.after
+    val signature = sites.joinToString(";", prefix = "${cause.name} ${by?.actor} ${by?.confidence} ") {
+        "${it.at.x},${it.at.y},${it.at.z} ${it.beforeState}>${it.after}"
+    }
+    return PistonMove(signature, net)
+}
+
+// The head and the base's own state are derived rather than read, and a sticky piston that spits its block
+// goes back in with no event: whether it stands out is the piston's own business, and a round is judged
+// by the blocks it moves.
+private fun outOfPiston(state: String): String = when (blockNameOf(state)) {
+    "minecraft:piston_head", "minecraft:moving_piston" -> AIR
+    "minecraft:piston", "minecraft:sticky_piston" -> state.replace("extended=true", "extended=false")
+    else -> state
+}
+
+/** Whether the moves, one after another, leave every position they touch as they found it: one round. */
+internal fun returns(moves: List<PistonMove>): Boolean = moves.flatMap { it.net.keys }.toSet().all { at ->
+    val start = moves.first { at in it.net }.net.getValue(at).first
+    val end = moves.last { at in it.net }.net.getValue(at).second
+    outOfPiston(start) == outOfPiston(end)
+}
+
+/**
  * The head a piston puts down and takes back. It stands in a position of its own that no event names,
  * and it is derived rather than read: an extending piston has not put it down while the event runs,
  * and a retracting one that pulls a block has already taken it away.
@@ -621,8 +653,15 @@ internal class ReadBacks(private val now: () -> Long = System::currentTimeMillis
     }
 }
 
-// Properties that carry the signal rather than a hand's change; the switch rows already file those.
-private val SIGNAL_PROPERTIES = setOf("powered", "power")
+// Properties that carry the signal rather than a hand's change; the switch rows already file those, and
+// a clock sets the rest over and over with no hand anywhere near.
+private val SIGNAL_PROPERTIES = setOf("powered", "power", "triggered", "crafting", "enabled", "locked")
+
+// A lamp, a redstone torch or a copper bulb is lit by the signal alone; a candle or a campfire by a hand.
+private fun litBySignal(name: String) = name == "minecraft:redstone_lamp" || name.endsWith("copper_bulb") ||
+    name == "minecraft:redstone_torch" || name == "minecraft:redstone_wall_torch"
+
+private val PISTON_PARTS = setOf(Material.PISTON, Material.STICKY_PISTON, Material.PISTON_HEAD, Material.MOVING_PISTON)
 
 private val SIDES = setOf("north", "south", "east", "west", "up", "attached")
 
@@ -683,7 +722,9 @@ internal fun handMade(before: String, after: String): Boolean {
     if (name != blockNameOf(after)) return true
     val shape = shapeKeysOf(name)
     val reverting = selfRevertingKeyOf(name)
-    return changedKeys(before, after).any { it !in SIGNAL_PROPERTIES && it !in shape && it != reverting }
+    return changedKeys(before, after).any {
+        it !in SIGNAL_PROPERTIES && it !in shape && it != reverting && !(it == "lit" && litBySignal(name))
+    }
 }
 
 // Long enough that a read-back that never ran — its chunk gone before the region got to it — does not
@@ -748,6 +789,114 @@ class HandTouches(private val now: () -> Long = System::currentTimeMillis) {
     fun take(at: WorldBlock): Cause? = pending.remove(at)?.takeIf { !it.filed }?.cause
 }
 
+// How far apart two moves of one piston may be and still be one clock running. A clock slower than
+// this is filed move by move, and a move held back waits this long after the clock stops.
+internal const val PISTON_CYCLE_MILLIS = 3_000L
+
+// The longest round a clock is recognised in, in moves of one piston: out and back, and the idle push
+// between a spat block and the pull that fetches it.
+private const val PISTON_ROUND = 4
+
+/**
+ * A clock drives its piston out and back over the same positions several times a second, all day. The
+ * first round is filed; a move that repeats one of the last few is not, as long as the moves from that
+ * one on put everything back as they found it, and the moves left out since the journal last stood
+ * where the world does are kept, to be filed once the clock stops. A piston that only ever pushes one
+ * way, with another one bringing the blocks back — a flying machine stuck at a wall — repeats itself
+ * without a round of its own, and every move of it is filed.
+ *
+ * A push that moves nothing is not filed while the journal has the piston in, and neither is the head
+ * going back after one. A sticky piston on a short pulse spits its block and goes back in with no event
+ * at all, and the journal has it out after that: its next push, idle or not, is filed, or a rollback puts
+ * it back standing out.
+ *
+ * Every call for one piston comes from the region that owns it, so the writes handed back are run there,
+ * in order, outside the lock.
+ */
+internal class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
+    private class Run(var written: String?, var at: Long) {
+        val seen = ArrayDeque<PistonMove>(PISTON_ROUND)
+        // Moves left out since the journal last stood where the world does.
+        val held = ArrayList<() -> Unit>()
+        var flushing = false
+
+        fun repeats(move: PistonMove): Boolean = (2..seen.size).any { back ->
+            val since = seen.subList(seen.size - back, seen.size)
+            since.first().signature == move.signature && returns(since)
+        }
+
+        fun saw(move: PistonMove, time: Long) {
+            if (seen.size == PISTON_ROUND) seen.removeFirst()
+            seen.addLast(move)
+            at = time
+        }
+    }
+
+    private val runs = HashMap<WorldBlock, Run>()
+
+    // Pistons the journal has standing out, and those whose head went out without a row: the row of it
+    // going back in is left out as well.
+    private val outOnFile = HashSet<WorldBlock>()
+    private val headsOut = HashSet<WorldBlock>()
+
+    /**
+     * The writes to run for this move of the piston at [base], in order. [move] is null for one never left
+     * out (it breaks something); an idle move pushes and pulls nothing.
+     */
+    @Synchronized
+    fun move(base: WorldBlock, extending: Boolean, idle: Boolean, move: PistonMove?, write: () -> Unit): List<() -> Unit> {
+        if (idle && (if (extending) base !in outOnFile else base in headsOut)) {
+            if (extending) headsOut += base else headsOut -= base
+            return emptyList()
+        }
+        headsOut -= base
+        if (extending) outOnFile += base else outOnFile -= base
+        val time = now()
+        val run = runs[base]?.takeIf { time - it.at <= PISTON_CYCLE_MILLIS }
+        if (move != null && run != null && run.repeats(move)) {
+            run.saw(move, time)
+            if (move.signature == run.written) run.held.clear() else run.held += write
+            run.flushing = false
+            return emptyList()
+        }
+        val writes = ArrayList<() -> Unit>()
+        runs.remove(base)?.held?.let(writes::addAll)
+        writes += write
+        if (move != null) runs[base] = (run ?: Run(null, time)).also {
+            it.held.clear()
+            it.written = move.signature
+            it.saw(move, time)
+        }
+        return writes
+    }
+
+    /** Pistons gone quiet with moves held back, each marked so it is handed out once. */
+    @Synchronized
+    fun quiet(): List<WorldBlock> {
+        val cutoff = now() - PISTON_CYCLE_MILLIS
+        val found = ArrayList<WorldBlock>()
+        val each = runs.entries.iterator()
+        while (each.hasNext()) {
+            val (base, run) = each.next()
+            if (run.at >= cutoff || run.flushing) continue
+            if (run.held.isEmpty()) each.remove() else { run.flushing = true; found += base }
+        }
+        return found
+    }
+
+    /** The held moves of a piston still quiet, asked on its own region, where its moves are raised. */
+    @Synchronized
+    fun takeQuiet(base: WorldBlock): List<() -> Unit> {
+        val run = runs[base] ?: return emptyList()
+        if (now() - run.at <= PISTON_CYCLE_MILLIS) {
+            run.flushing = false
+            return emptyList()
+        }
+        runs.remove(base)
+        return run.held
+    }
+}
+
 /**
  * Who built a golem or a wither: whoever put down a block of the pattern, or else whoever set going the
  * dispenser beside it, whose pumpkin or skull the pattern took in the same call it was put down.
@@ -780,6 +929,7 @@ class BlockDestructionListener(
 
     internal val growing = GrowClaims()
     private val readBacks = ReadBacks()
+    private val pistonCycles = PistonCycles()
     // The shaped neighbours waiting for their read, one per position and tick: the first look is the
     // state the tick found, and the next change beside it in that tick would only see it half rewritten.
     // A capture that files the position before the read takes the look over.
@@ -1121,14 +1271,19 @@ class BlockDestructionListener(
      * The net under everything a hand changes that raises no event of its own: a door, a trapdoor, a
      * gate, a repeater, a comparator, a note block, a daylight sensor, a cake, a candle, a composter.
      * Every touch is read back at the start of the next tick, and whatever changed there and no other
-     * capture filed is written on the player. Not behind the cancellation: a refused touch changes
-     * nothing, and the read finds exactly that.
+     * capture filed is written on the player. Not behind the cancellation, which refuses the block and
+     * may leave the item in hand to change it; a touch refused both is not read at all, since whatever
+     * the read finds there a clock or somebody else did — an inspector's click on a running piston.
+     *
+     * A piston's every part is filed by the piston, and between the click and the read a clock may move
+     * it under the hand.
      */
     @EventHandler(priority = EventPriority.MONITOR)
     fun onTouch(event: PlayerInteractEvent) {
         if (event.action == Action.LEFT_CLICK_AIR || event.action == Action.RIGHT_CLICK_AIR) return
+        if (event.useInteractedBlock() == Event.Result.DENY && event.useItemInHand() == Event.Result.DENY) return
         val clicked = event.clickedBlock ?: return
-        readBack(withOtherHalves(clicked), event.player.witnessed())
+        readBack(withOtherHalves(clicked).filter { it.type !in PISTON_PARTS }, event.player.witnessed())
     }
 
     /**
@@ -1257,6 +1412,14 @@ class BlockDestructionListener(
     fun settle() {
         growing.settle()
         readBacks.sweep()
+        // A move still held when the plugin goes down is lost, and the journal ends half a round off for
+        // that piston: filing it needs the region, and onDisable has none.
+        for (base in pistonCycles.quiet()) {
+            val world = plugin.server.getWorld(base.world) ?: continue
+            plugin.server.regionScheduler.execute(plugin, world, base.x shr 4, base.z shr 4) {
+                pistonCycles.takeQuiet(base).forEach { it() }
+            }
+        }
         val now = System.currentTimeMillis()
         // A read whose task never ran, its chunk gone first.
         val unread = now - TOUCH_STALE_MILLIS
@@ -1546,7 +1709,8 @@ class BlockDestructionListener(
      * around it shifts afterwards, so nothing else is asked.
      */
     private fun piston(base: Block, moving: List<Block>, cause: Cause, extending: Boolean) {
-        val log = logs.get(base.world.uid) ?: return
+        val world = base.world.uid
+        if (logs.get(world) == null) return
         val data = base.blockData
         // A retracting sticky piston is already the moving block here, and that block carries the
         // facing and the stickiness of the piston it stands for.
@@ -1555,6 +1719,8 @@ class BlockDestructionListener(
         val sticky = base.type == Material.STICKY_PISTON ||
             (data as? TechnicalPiston)?.type == TechnicalPiston.Type.STICKY
         val step = if (extending) facing else facing.oppositeFace
+        // A move that breaks something is filed every time: the same block is not there to break twice.
+        val breaks = moving.any { pistonDestroys(it.blockData) }
         val (emptied, filled) = pistonSites(moving, step)
         val head = base.getRelative(facing)
         if (extending) {
@@ -1572,8 +1738,15 @@ class BlockDestructionListener(
             payload = null,
         )
         val by = energyAt(base, energy)
-        by?.let { energy.note(positionOf(base), it) }
-        file(log, emptied, cause, by, carried = filled)
+        val at = positionOf(base)
+        by?.let { energy.note(at, it) }
+        val timestamp = System.currentTimeMillis()
+        val idle = moving.isEmpty()
+        val move = if (breaks) null else pistonMove(cause, emptied + filled, by)
+        val writes = pistonCycles.move(at, extending, idle, move) {
+            logs.get(world)?.let { file(it, emptied, cause, by, timestamp, carried = filled) }
+        }
+        for (write in writes) write()
     }
 
     /**

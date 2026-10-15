@@ -595,6 +595,121 @@ class BlockDestructionRulesTest {
             "minecraft:vine[east=true,north=true,south=false,up=false,west=false]"))
         assertTrue(handMade("minecraft:suspicious_sand[dusted=3]", "minecraft:sand"))
         assertFalse(handMade(TORCH, TORCH))
+        // A clock flips these under an inspector's click; a hand lights a candle, never a lamp.
+        assertFalse(handMade("minecraft:redstone_lamp[lit=false]", "minecraft:redstone_lamp[lit=true]"))
+        assertFalse(handMade("minecraft:dropper[facing=up,triggered=false]", "minecraft:dropper[facing=up,triggered=true]"))
+        assertFalse(handMade("minecraft:hopper[enabled=true,facing=down]", "minecraft:hopper[enabled=false,facing=down]"))
+        assertTrue(handMade("minecraft:candle[candles=1,lit=false,waterlogged=false]",
+            "minecraft:candle[candles=1,lit=true,waterlogged=false]"))
+    }
+
+    // A stone in front of a piston, carried from one position to the next: `name` tells two moves that
+    // change the same apart, as the player they name does.
+    private fun carried(name: String, from: Int, to: Int) = PistonMove(
+        name,
+        mapOf(
+            WorldBlock(world, from, 64, 0) to ("minecraft:stone" to "minecraft:air"),
+            WorldBlock(world, to, 64, 0) to ("minecraft:air" to "minecraft:stone"),
+        ),
+    )
+
+    private class Driven(world: UUID) {
+        var now = T0
+        val cycles = PistonCycles { now }
+        val base = WorldBlock(world, 0, 64, 0)
+        val filed = ArrayList<String>()
+
+        fun move(move: PistonMove?, extending: Boolean, idle: Boolean = false, name: String = move!!.signature) {
+            now += 150
+            cycles.move(base, extending, idle, move) { filed += name }.forEach { it() }
+        }
+
+        fun stop() {
+            now += PISTON_CYCLE_MILLIS + 1
+            for (quiet in cycles.quiet()) cycles.takeQuiet(quiet).forEach { it() }
+        }
+    }
+
+    // An idle clock moved its piston six times a second, every move a row, all day long.
+    @Test
+    fun `a piston repeating its round is filed once and ends where it stopped`() {
+        val out = carried("out", 1, 2)
+        val back = carried("in", 2, 1)
+        val piston = Driven(world)
+
+        repeat(5) { piston.move(out, true); piston.move(back, false) }
+        piston.move(out, true)
+        assertEquals(listOf("out", "in"), piston.filed)
+        // Stopped out, while the journal ends in: the last move is filed after all, and only once.
+        piston.stop()
+        piston.stop()
+        assertEquals(listOf("out", "in", "out"), piston.filed)
+
+        piston.filed.clear()
+        repeat(3) { piston.move(back, false); piston.move(out, true) }
+        // Stopped where the journal already ends.
+        piston.stop()
+        assertEquals(listOf("in", "out"), piston.filed)
+
+        piston.filed.clear()
+        piston.move(back, false); piston.move(out, true); piston.move(back, false)
+        // Somebody else drives it now: the held move goes first, then the new one is filed.
+        piston.move(carried("out by bob", 1, 2), true)
+        assertEquals(listOf("in", "out", "in", "out by bob"), piston.filed)
+    }
+
+    // A flying machine stuck at a wall: one piston pushes the blocks on, the other drags them back, so each
+    // piston repeats its own move without ever making a round of it. Every move has to be filed.
+    @Test
+    fun `a piston pushing the same way over and over is filed every time`() {
+        val piston = Driven(world)
+        repeat(4) { piston.move(carried("push", 1, 2), true) }
+        assertEquals(4, piston.filed.size)
+    }
+
+    @Test
+    fun `a piston pushing nothing is filed neither going out nor coming back`() {
+        val piston = Driven(world)
+        piston.move(null, true, idle = true, name = "out")
+        piston.move(null, false, idle = true, name = "in")
+        // A head that went out pushing a block is filed coming back, though it pulls nothing.
+        piston.move(carried("push", 1, 2), true)
+        piston.move(null, false, idle = true, name = "back")
+        assertEquals(listOf("push", "back"), piston.filed)
+    }
+
+    // A sticky piston on a short pulse spits its stone and goes back in with no event; the next push finds
+    // nothing in front, and the pull after it brings the stone back. Seen from here the round is three
+    // moves. The idle push is filed the first time round all the same: the journal still has the piston
+    // out from the push before, and a rollback reading it would put the piston back standing out.
+    @Test
+    fun `a sticky piston spitting its block is one round of three moves`() {
+        val head = "minecraft:piston_head[facing=east,short=false,type=sticky]"
+        val inside = "minecraft:sticky_piston[extended=false,facing=east]"
+        val outside = "minecraft:sticky_piston[extended=true,facing=east]"
+        val base = WorldBlock(world, 0, 64, 0)
+        val front = WorldBlock(world, 1, 64, 0)
+        val beyond = WorldBlock(world, 2, 64, 0)
+        val push = PistonMove("push", mapOf(
+            front to ("minecraft:stone" to head),
+            beyond to ("minecraft:air" to "minecraft:stone"),
+            base to (inside to outside),
+        ))
+        val idle = PistonMove("idle", mapOf(front to ("minecraft:air" to head), base to (inside to outside)))
+        val pull = PistonMove("pull", mapOf(
+            beyond to ("minecraft:stone" to "minecraft:air"),
+            front to ("minecraft:air" to "minecraft:stone"),
+            base to (outside to inside),
+        ))
+        val piston = Driven(world)
+        repeat(10) {
+            piston.move(push, true)
+            piston.move(idle, true, idle = true)
+            piston.move(pull, false)
+        }
+        assertEquals(listOf("push", "idle", "pull"), piston.filed)
+        piston.stop()
+        assertEquals(listOf("push", "idle", "pull"), piston.filed)
     }
 
     // Bars beside a plank that burnt let go of it with no event, and were put back still facing air:
