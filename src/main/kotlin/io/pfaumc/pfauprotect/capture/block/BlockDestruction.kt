@@ -128,6 +128,7 @@ import org.bukkit.plugin.Plugin
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import net.minecraft.world.item.ItemStack as NmsItemStack
 import net.minecraft.world.level.block.Block as NmsBlock
@@ -813,7 +814,8 @@ private const val PISTON_ROUND = 4
  * Every call for one piston comes from the region that owns it, so the writes handed back are run there,
  * in order, outside the lock. A move held back is filed ahead of any other row of a position it touched,
  * through [heldOver]: filed after one, it would sort behind it and stand as the newest state of a block
- * somebody has broken since.
+ * somebody has broken since. A rollback reading the journal [pause]s this first and has everything held
+ * filed: it compares the world with the journal, and a clock it is about to stop would stand a move ahead.
  */
 class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
     private class Run(var written: String?, var at: Long) {
@@ -840,6 +842,9 @@ class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
     // Which piston holds a move back over each position; read without the lock by every row filed anywhere.
     private val heldBy = ConcurrentHashMap<WorldBlock, WorldBlock>()
 
+    // Readers that need every move filed as it is made, while they read.
+    private val pauses = AtomicInteger()
+
     // Pistons the journal has standing out, and those whose head went out without a row: the row of it
     // going back in is left out as well.
     private val outOnFile = HashSet<WorldBlock>()
@@ -859,7 +864,7 @@ class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
         if (extending) outOnFile += base else outOnFile -= base
         val time = now()
         val run = runs[base]?.takeIf { time - it.at <= PISTON_CYCLE_MILLIS }
-        if (move != null && run != null && run.repeats(move)) {
+        if (move != null && run != null && pauses.get() == 0 && run.repeats(move)) {
             run.saw(move, time)
             if (move.signature == run.written) {
                 release(run)
@@ -894,6 +899,25 @@ class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
             run.written = run.seen.last().signature
             return release(run)
         }
+    }
+
+    /** Every move is filed as it is made until [resume]; the pistons holding moves back, to have them filed. */
+    @Synchronized
+    fun pause(): List<WorldBlock> {
+        pauses.incrementAndGet()
+        return runs.filterValues { it.held.isNotEmpty() }.keys.toList()
+    }
+
+    fun resume() {
+        pauses.decrementAndGet()
+    }
+
+    /** The moves a piston holds back, whatever its clock does now, asked on its own region. */
+    @Synchronized
+    fun takeHeld(base: WorldBlock): List<() -> Unit> {
+        val run = runs[base] ?: return emptyList()
+        run.written = run.seen.last().signature
+        return release(run)
     }
 
     private fun release(run: Run): List<() -> Unit> {

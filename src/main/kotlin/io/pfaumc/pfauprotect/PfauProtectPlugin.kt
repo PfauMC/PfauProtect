@@ -106,6 +106,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.LongAdder
 import java.util.logging.Level
@@ -119,6 +120,8 @@ private const val SWEEP_ENTRIES = 2000
 private const val SWEEP_MINUTES = 5L
 private const val SWEEP_GAPS_LOGGED = 5
 private const val NOTE_MINUTES = 5L
+// How long a rollback waits for the clocks to file what they held back: a tick or two, unless a region lags.
+private const val HELD_WAIT_SECONDS = 2L
 private const val PLANE_POSTINGS = 2000
 private const val PLANE_MINUTES = 10L
 private const val RECONCILE_MINUTES = 30L
@@ -288,7 +291,10 @@ class PfauProtectPlugin : JavaPlugin() {
         val chunkRollback = ChunkRollback(
             this, codec, blocks, ledger, uncovered::submit, formOf = ledger::form, forget = entityCapture::forget,
         )
-        val rollbacks = Rollbacks(this, ledger, blocks, lookups, chunkRollback, confiscations)
+        val rollbacks = Rollbacks(
+            this, ledger, blocks, lookups, chunkRollback, confiscations,
+            holdStill = { fileHeld(pistons) }, letGo = pistons::resume,
+        )
         val chat = ChatLog(dataFolder.toPath().resolve("chat"))
         val running = Running(
             ledger, blocks, uncovered, codec, capture, mechanisms, origins,
@@ -699,6 +705,28 @@ class PfauProtectPlugin : JavaPlugin() {
             if (confirm) sender.say("Purged $counts written.")
             else sender.say("A purge would delete $counts to write. /pp purge $age confirm runs it.")
         }
+    }
+
+    // A clock's moves held back are filed on the region that owns the piston, and a reader waits for them a
+    // moment: a chunk unloaded meanwhile never runs its task, and its piston's journal is a move behind.
+    private fun fileHeld(pistons: PistonCycles) {
+        val bases = pistons.pause()
+        val done = CountDownLatch(bases.size)
+        for (base in bases) {
+            val world = server.getWorld(base.world)
+            if (world == null) {
+                done.countDown()
+                continue
+            }
+            server.regionScheduler.execute(this, world, base.x shr 4, base.z shr 4) {
+                try {
+                    for (write in pistons.takeHeld(base)) write()
+                } finally {
+                    done.countDown()
+                }
+            }
+        }
+        done.await(HELD_WAIT_SECONDS, TimeUnit.SECONDS)
     }
 
     // Another plugin may veto a row before it is written; nobody listening, nothing is asked.

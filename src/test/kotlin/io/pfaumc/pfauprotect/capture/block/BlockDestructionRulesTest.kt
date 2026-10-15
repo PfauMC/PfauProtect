@@ -677,6 +677,26 @@ class BlockDestructionRulesTest {
         assertEquals(listOf("out", "in", "out"), piston.filed)
     }
 
+    // A rollback of a running clock read the journal a move behind the world and took the stone it was
+    // to put back for somebody's later change.
+    @Test
+    fun `a paused clock has its held moves filed and holds nothing more back`() {
+        val out = carried("out", 1, 2)
+        val back = carried("in", 2, 1)
+        val piston = Driven(world)
+        piston.move(out, true); piston.move(back, false); piston.move(out, true)
+
+        val holding = piston.cycles.pause()
+        assertEquals(listOf(piston.base), holding)
+        piston.cycles.takeHeld(piston.base).forEach { it() }
+        piston.move(back, false); piston.move(out, true)
+        assertEquals(listOf("out", "in", "out", "in", "out"), piston.filed)
+
+        piston.cycles.resume()
+        piston.move(back, false); piston.move(out, true)
+        assertEquals(listOf("out", "in", "out", "in", "out"), piston.filed)
+    }
+
     // A flying machine stuck at a wall: one piston pushes the blocks on, the other drags them back, so each
     // piston repeats its own move without ever making a round of it. Every move has to be filed.
     @Test

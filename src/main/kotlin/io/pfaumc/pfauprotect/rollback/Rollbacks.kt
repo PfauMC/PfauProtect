@@ -884,6 +884,10 @@ class Rollbacks(
     private val lookups: Lookups,
     private val chunks: ChunkRollback,
     private val confiscations: Confiscations,
+    // Around every reading: what the captures hold back from the journal is filed first, and nothing more
+    // is held back until the reading is done.
+    private val holdStill: () -> Unit = {},
+    private val letGo: () -> Unit = {},
 ) {
     private val slot = RollbackSlot()
     private val reader = RollbackReader(ledger, blocks)
@@ -934,10 +938,6 @@ class Rollbacks(
                     return@offThread
                 }
                 val keeps = lookups.rowFilter(query, users, rollback = true)
-                // The writers run on threads of their own, and what they still hold is history the
-                // rollback would not see.
-                ledger.drain()
-                blocks.drain()
                 val now = System.currentTimeMillis()
                 val event = query.event
                 // One event: a second either side of it, around where it happened. A window that ends in the
@@ -948,10 +948,19 @@ class Rollbacks(
                 val at = if (event != null) LookupTarget(target.world, event.x, event.y, event.z, "event ${event.id} at ${event.x} ${event.y} ${event.z}") else target
                 val since = TIME_FORMAT.format(Instant.ofEpochMilli(from)) +
                     if (query.secondsUntil != null) " until ${TIME_FORMAT.format(Instant.ofEpochMilli(to))}" else ""
-                val readings = if (query.global) {
-                    everywhere(users, from, to, keeps)
-                } else {
-                    listOf(reader.around(at.world, at.x, at.y, at.z, radius!!, from, to, keeps, column = users.isNotEmpty()))
+                val readings = try {
+                    // The writers run on threads of their own, and what they still hold is history the
+                    // rollback would not see; so is a clock's move held back.
+                    holdStill()
+                    ledger.drain()
+                    blocks.drain()
+                    if (query.global) {
+                        everywhere(users, from, to, keeps)
+                    } else {
+                        listOf(reader.around(at.world, at.x, at.y, at.z, radius!!, from, to, keeps, column = users.isNotEmpty()))
+                    }
+                } finally {
+                    letGo()
                 }
                 val where = when {
                     event != null -> at.label
