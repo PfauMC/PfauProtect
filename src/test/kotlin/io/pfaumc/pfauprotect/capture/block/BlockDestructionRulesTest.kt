@@ -677,6 +677,32 @@ class BlockDestructionRulesTest {
         assertEquals(listOf("out", "in", "out"), piston.filed)
     }
 
+    // Two clocks over one stone: the second piston's claim on the position must not hide the first one's,
+    // and their moves go in in the order they were made.
+    @Test
+    fun `moves two pistons hold over one position are all filed, oldest first`() {
+        var now = T0
+        val cycles = PistonCycles { now }
+        val first = WorldBlock(world, 0, 64, 0)
+        val second = WorldBlock(world, 0, 64, 5)
+        val filed = ArrayList<String>()
+        fun move(base: WorldBlock, move: PistonMove, extending: Boolean, name: String) {
+            now += 50
+            cycles.move(base, extending, false, move) { filed += name }.forEach { it() }
+        }
+        val out = carried("out", 1, 2)
+        val back = carried("in", 2, 1)
+        move(first, out, true, "first out"); move(first, back, false, "first in")
+        move(second, out, true, "second out"); move(second, back, false, "second in")
+        move(first, out, true, "first out again")
+        move(second, out, true, "second out again")
+        assertEquals(listOf("first out", "first in", "second out", "second in"), filed)
+
+        cycles.heldOver(WorldBlock(world, 2, 64, 0)).forEach { it() }
+        assertEquals(listOf("first out again", "second out again"), filed.drop(4))
+        assertTrue(cycles.heldOver(WorldBlock(world, 2, 64, 0)).isEmpty())
+    }
+
     // A rollback of a running clock read the journal a move behind the world and took the stone it was
     // to put back for somebody's later change.
     @Test

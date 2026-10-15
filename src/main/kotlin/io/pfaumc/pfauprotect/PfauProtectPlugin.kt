@@ -716,8 +716,9 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     // A clock's moves held back are filed on the region that owns the piston, and a reader waits for them a
-    // moment: a chunk unloaded meanwhile never runs its task, and its piston's journal is a move behind.
-    private fun fileHeld(pistons: PistonCycles) {
+    // moment: a chunk unloaded meanwhile never runs its task, and its piston's journal stays a move behind.
+    // False when some did not come in time.
+    private fun fileHeld(pistons: PistonCycles): Boolean {
         val bases = pistons.pause()
         val done = CountDownLatch(bases.size)
         for (base in bases) {
@@ -734,7 +735,9 @@ class PfauProtectPlugin : JavaPlugin() {
                 }
             }
         }
-        done.await(HELD_WAIT_SECONDS, TimeUnit.SECONDS)
+        if (done.await(HELD_WAIT_SECONDS, TimeUnit.SECONDS)) return true
+        logger.warning("${done.count} of ${bases.size} pistons did not file the moves they held back in time")
+        return false
     }
 
     // Another plugin may veto a row before it is written; nobody listening, nothing is asked.

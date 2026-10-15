@@ -885,8 +885,8 @@ class Rollbacks(
     private val chunks: ChunkRollback,
     private val confiscations: Confiscations,
     // Around every reading: what the captures hold back from the journal is filed first, and nothing more
-    // is held back until the reading is done.
-    private val holdStill: () -> Unit = {},
+    // is held back until the reading is done. False when some of it could not be filed in time.
+    private val holdStill: () -> Boolean = { true },
     private val letGo: () -> Unit = {},
 ) {
     private val slot = RollbackSlot()
@@ -951,7 +951,13 @@ class Rollbacks(
                 val readings = try {
                     // The writers run on threads of their own, and what they still hold is history the
                     // rollback would not see; so is a clock's move held back.
-                    holdStill()
+                    if (!holdStill()) {
+                        // A plan read a move behind a running clock takes the clock's own move for somebody's
+                        // later change, and leaves its blocks where they stand.
+                        sender.say("Rollback refused: a running clock could not file the moves it held back in time, and the journal would be read a move behind; try again.")
+                        release()
+                        return@offThread
+                    }
                     ledger.drain()
                     blocks.drain()
                     if (query.global) {

@@ -818,10 +818,13 @@ private const val PISTON_ROUND = 4
  * filed: it compares the world with the journal, and a clock it is about to stop would stand a move ahead.
  */
 class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
-    private class Run(var written: String?, var at: Long) {
+    // A move left out, with when it was made: two pistons' moves over one position go in in that order.
+    private class Held(val at: Long, val write: () -> Unit)
+
+    private class Run(val base: WorldBlock, var written: String?, var at: Long) {
         val seen = ArrayDeque<PistonMove>(PISTON_ROUND)
         // Moves left out since the journal last stood where the world does, and the positions they touch.
-        val held = ArrayList<() -> Unit>()
+        val held = ArrayList<Held>()
         val heldAt = HashSet<WorldBlock>()
         var flushing = false
 
@@ -839,8 +842,9 @@ class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
 
     private val runs = HashMap<WorldBlock, Run>()
 
-    // Which piston holds a move back over each position; read without the lock by every row filed anywhere.
-    private val heldBy = ConcurrentHashMap<WorldBlock, WorldBlock>()
+    // Which pistons hold a move back over each position — two pushing one stone back and forth both do.
+    // Its emptiness is read without the lock by every row filed anywhere; the sets change only under it.
+    private val heldBy = ConcurrentHashMap<WorldBlock, MutableSet<WorldBlock>>()
 
     // Readers that need every move filed as it is made, while they read.
     private val pauses = AtomicInteger()
@@ -869,19 +873,19 @@ class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
             if (move.signature == run.written) {
                 release(run)
             } else {
-                run.held += write
+                run.held += Held(time, write)
                 for (at in move.net.keys) {
                     run.heldAt += at
-                    heldBy[at] = base
+                    heldBy.getOrPut(at) { HashSet() } += base
                 }
             }
             run.flushing = false
             return emptyList()
         }
         val writes = ArrayList<() -> Unit>()
-        runs.remove(base)?.let { writes += release(it) }
+        runs.remove(base)?.let { writes += inOrder(release(it)) }
         writes += write
-        if (move != null) runs[base] = (run ?: Run(null, time)).also {
+        if (move != null) runs[base] = (run ?: Run(base, null, time)).also {
             it.written = move.signature
             it.saw(move, time)
         }
@@ -895,9 +899,11 @@ class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
     fun heldOver(at: WorldBlock): List<() -> Unit> {
         if (heldBy.isEmpty()) return emptyList()
         synchronized(this) {
-            val run = heldBy[at]?.let { runs[it] } ?: return emptyList()
-            run.written = run.seen.last().signature
-            return release(run)
+            val bases = heldBy[at]?.toList() ?: return emptyList()
+            return inOrder(bases.mapNotNull { runs[it] }.flatMap { run ->
+                run.written = run.seen.last().signature
+                release(run)
+            })
         }
     }
 
@@ -917,14 +923,20 @@ class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
     fun takeHeld(base: WorldBlock): List<() -> Unit> {
         val run = runs[base] ?: return emptyList()
         run.written = run.seen.last().signature
-        return release(run)
+        return inOrder(release(run))
     }
 
-    private fun release(run: Run): List<() -> Unit> {
-        for (at in run.heldAt) heldBy.remove(at)
+    private fun release(run: Run): List<Held> {
+        for (at in run.heldAt) {
+            val holders = heldBy[at] ?: continue
+            holders -= run.base
+            if (holders.isEmpty()) heldBy.remove(at)
+        }
         run.heldAt.clear()
         return ArrayList(run.held).also { run.held.clear() }
     }
+
+    private fun inOrder(held: List<Held>): List<() -> Unit> = held.sortedBy { it.at }.map { it.write }
 
     /** Pistons gone quiet with moves held back, each marked so it is handed out once. */
     @Synchronized
@@ -949,7 +961,7 @@ class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
             return emptyList()
         }
         runs.remove(base)
-        return release(run)
+        return inOrder(release(run))
     }
 }
 
