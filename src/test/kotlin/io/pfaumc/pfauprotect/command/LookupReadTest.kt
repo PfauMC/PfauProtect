@@ -89,12 +89,26 @@ class LookupReadTest : BothPlanes() {
         repeat(10) { log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + 1000 + it))) }
         log.drain()
 
-        val first = said(LookupQuery(limit = 1))
+        val first = said(LookupQuery(rows = 1))
         assertTrue(first.any { it.contains("block.minecraft.tnt") }, "$first")
         assertTrue(first.none { it.contains("{blk_player_place}") }, "$first")
-        val second = said(LookupQuery(limit = 1, page = 2))
+        val second = said(LookupQuery(rows = 1, page = 2))
         assertTrue(second.any { it.contains("{blk_player_place}") }, "$second")
         assertTrue(second.none { it.contains("block.minecraft.tnt") }, "$second")
+    }
+
+    // A clock or a griefer at work writes rows while the pages are read; « has to bring back the page that was left.
+    @Test
+    fun `a page asked as of a moment holds still while rows keep coming`() {
+        repeat(6) { log.submit(listOf(BlockChange(10, 64, -3 - it, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + it * 1000L))) }
+        log.drain()
+        val query = LookupQuery(radius = 5, rows = 2, page = 2, all = true, asOf = T0 + 10_000)
+        val before = said(query)
+
+        repeat(3) { log.submit(listOf(BlockChange(11, 64, -3 - it, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 20_000 + it))) }
+        log.drain()
+        assertEquals(before, said(query))
+        assertTrue(said(query.copy(asOf = null)) != before, "without the moment the page moves on")
     }
 
     @Test
@@ -287,7 +301,7 @@ class LookupReadTest : BothPlanes() {
         log.drain()
 
         // Two rows asked for, eight times that read: far fewer than the corner holds.
-        val lines = said(LookupQuery(radius = 1, limit = 2)).filter { it.contains("10 64 -3") }
+        val lines = said(LookupQuery(radius = 1, rows = 2)).filter { it.contains("10 64 -3") }
 
         assertTrue(lines.any { it.contains("∅") }, "the item plane lost it: $lines")
         assertTrue(lines.any { it.contains("event:") }, "the block plane lost it: $lines")
@@ -301,7 +315,7 @@ class LookupReadTest : BothPlanes() {
         repeat(40) { i -> shared.submit(Transfer(Cause.BLK_TNT, nextDoor, Void, stone, null, 1, T0 + i)) }
         shared.drain()
         // Forty rows inside the box, more than one row's worth of read, and none of them the kind asked for.
-        val query = LookupQuery(radius = 1, limit = 1, causes = setOf(Cause.BLOCK_PLACE))
+        val query = LookupQuery(radius = 1, rows = 1, causes = setOf(Cause.BLOCK_PLACE))
 
         val empty = said(query)
         assertTrue(empty.single().contains("limit:4"), "$empty")

@@ -67,7 +67,10 @@ import io.pfaumc.pfauprotect.storage.cleaningUpOnFailure
 import io.pfaumc.pfauprotect.storage.fillTypeRegistries
 import io.pfaumc.pfauprotect.check.heldForms
 import io.pfaumc.pfauprotect.command.DIALOG_KEY
-import io.pfaumc.pfauprotect.command.canTeleport
+import io.pfaumc.pfauprotect.command.MAX_LIMIT
+import io.pfaumc.pfauprotect.command.ROWS_KEY
+import io.pfaumc.pfauprotect.command.askedBy
+import io.pfaumc.pfauprotect.command.pageRows
 import io.pfaumc.pfauprotect.command.readsInDialog
 import io.pfaumc.pfauprotect.command.showPage
 import io.pfaumc.pfauprotect.command.durationOrNull
@@ -140,6 +143,7 @@ private val HELP = listOf(
     Help(ROLLBACK_PERMISSION, "/pp apply · /pp cancel", "/pp apply", "run or drop the preview", "выполнить или сбросить предпросмотр"),
     Help(LOOKUP_PERMISSION, "/pp chat [user: time: f:]", "/pp chat ", "chat, commands, joins and quits", "чат, команды, входы и выходы"),
     Help(LOOKUP_PERMISSION, "/pp view [chat|dialog]", "/pp view ", "where the pages open: chat or a window", "где открываются страницы: чат или окно"),
+    Help(LOOKUP_PERMISSION, "/pp view rows [N]", "/pp view rows ", "lines on a page, to fit your screen", "строк на странице, под свой экран"),
     Help(STATUS_PERMISSION, "/pp status", "/pp status", "bases, queues, what went unexplained", "базы, очереди, необъяснённое"),
     Help(VERIFY_PERMISSION, "/pp verify [recent]", "/pp verify", "run the self-checks now", "самопроверки сейчас"),
     Help(RECONCILE_PERMISSION, "/pp reconcile <player>", "/pp reconcile ", "a player's inventory against the ledger", "сверка инвентаря игрока с журналом"),
@@ -518,6 +522,10 @@ class PfauProtectPlugin : JavaPlugin() {
                     .executes { view(it.source, null) }
                     .then(Commands.literal("chat").executes { view(it.source, false) })
                     .then(Commands.literal("dialog").executes { view(it.source, true) })
+                    .then(
+                        Commands.literal("rows").executes { rows(it.source, null) }
+                            .then(Commands.argument("rows", IntegerArgumentType.integer(1, MAX_LIMIT)).executes { rows(it.source, IntegerArgumentType.getInteger(it, "rows")) })
+                    )
             )
             root.then(teleportNode())
             root.then(
@@ -712,15 +720,15 @@ class PfauProtectPlugin : JavaPlugin() {
             return 0
         }
         // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
-        val asked = query.copy(teleports = canTeleport(sender), dialog = readsInDialog(sender))
+        val asked = query.askedBy(sender)
         offThread(sender, "the chat lookup failed", "The chat lookup failed; the server log has the details.") {
-            val users = running.lookups.resolveAll(sender, query.users) ?: return@offThread
-            val text = query.filter?.lowercase()
+            val users = running.lookups.resolveAll(sender, asked.users) ?: return@offThread
+            val text = asked.filter?.lowercase()
             // `wanted` reads past this page, which is how it knows there is a next one.
-            val read = running.chat.read(query.fromTs(), query.toTs(), query.wanted) { line ->
+            val read = running.chat.read(asked.fromTs(), asked.toTs(), asked.wanted) { line ->
                 (users.isEmpty() || line.player in users) && (text == null || text in line.text.lowercase())
             }
-            val lines = read.drop(query.limit * (query.page - 1)).take(query.limit)
+            val lines = read.drop(asked.limit * (asked.page - 1)).take(asked.limit)
             if (lines.isEmpty()) return@offThread sender.say("Nothing said or run matches.")
             val drawn = lines.map { line ->
                 val who = Ui.text(nameOrId(line.player), Ui.WHO)
@@ -737,9 +745,18 @@ class PfauProtectPlugin : JavaPlugin() {
             showPage(
                 sender, asked, Ui.text(tr("PfauProtect · chat and commands", "PfauProtect · чат и команды"), Ui.FAINT), drawn, emptyList(),
                 back = asked.pageCommand("chat", asked.page - 1).takeIf { asked.page > 1 },
-                forward = asked.pageCommand("chat", asked.page + 1).takeIf { read.size > query.limit * query.page },
+                forward = asked.pageCommand("chat", asked.page + 1).takeIf { read.size > asked.limit * asked.page },
             )
         }
+    }
+
+    // How many lines this player's pages hold when no limit: is said, kept with them; bare, the config's again.
+    private fun rows(source: CommandSourceStack, rows: Int?): Int {
+        val player = source.executor as? Player ?: return 0
+        if (rows == null) player.persistentDataContainer.remove(ROWS_KEY) else player.persistentDataContainer.set(ROWS_KEY, PersistentDataType.INTEGER, rows)
+        val now = pageRows(player)
+        player.sendActionBar(Ui.text(tr("Lines on a page: $now", "Строк на странице: $now"), Ui.MUTED))
+        return Command.SINGLE_SUCCESS
     }
 
     // Where this player's pages open, kept with them across restarts; bare, it switches to the other.

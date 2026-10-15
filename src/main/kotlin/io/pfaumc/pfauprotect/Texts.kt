@@ -130,6 +130,7 @@ object Texts {
         r("'(.*)' is not an event, click a lookup line to fill one in") to "'$1' — не событие; нажми на строку поиска, чтобы подставить его",
         r("unknown flag '(.*)', expected #count, #sum or #all") to "неизвестный флаг '$1'; ожидается #count, #sum или #all",
         r("'(.*)' is not a position, expected x,y,z") to "'$1' — не позиция; ожидается x,y,z",
+        r("'(.*)' is not a moment; the page buttons fill it in") to "'$1' — не момент времени; его подставляют кнопки страниц",
         r("'(.*)' is not a row count between 1 and (\\d+)") to "'$1' — не число строк от 1 до $2",
         r("  \\.\\.\\. and (\\d+) more") to "  ... и ещё $1",
         r("Two planes: (\\d+) positions compared, (\\d+) gaps, (\\d+) overdrawn, (\\d+) the block plane never recorded, (\\d+) too recent to judge, (\\d+) unreadable\\.") to "Две плоскости: сравнено позиций $1, разрывов $2, перерасходов $3, не записано плоскостью блоков $4, слишком свежих $5, нечитаемых $6.",
