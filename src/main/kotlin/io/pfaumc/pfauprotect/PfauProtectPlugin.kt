@@ -18,6 +18,7 @@ import io.pfaumc.pfauprotect.capture.ChatCapture
 import io.pfaumc.pfauprotect.capture.block.BlockCaptureListener
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.HandTouches
+import io.pfaumc.pfauprotect.capture.block.PistonCycles
 import io.papermc.paper.command.brigadier.ApiMirrorRootNode
 import io.pfaumc.pfauprotect.capture.block.CommandBrackets
 import io.pfaumc.pfauprotect.capture.entity.EntityCapture
@@ -108,6 +109,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.LongAdder
 import java.util.logging.Level
@@ -121,6 +123,8 @@ private const val SWEEP_ENTRIES = 2000
 private const val SWEEP_MINUTES = 5L
 private const val SWEEP_GAPS_LOGGED = 5
 private const val NOTE_MINUTES = 5L
+// How long a rollback waits for the clocks to file what they held back: a tick or two, unless a region lags.
+private const val HELD_WAIT_SECONDS = 2L
 private const val PLANE_POSTINGS = 2000
 private const val PLANE_MINUTES = 10L
 private const val RECONCILE_MINUTES = 30L
@@ -248,6 +252,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val energy = Energy()
         val nudges = Nudges()
         val touches = HandTouches()
+        val pistons = PistonCycles()
         // A row that names somebody is what an observer or a comparator next to it answers to, and any
         // row at all is what a touch waiting to be read back leaves to the capture that filed it.
         val blocks = BlockLogs(dataFolder.toPath().resolve("blocks"), ledger, { world, changes ->
@@ -256,7 +261,11 @@ class PfauProtectPlugin : JavaPlugin() {
                 val actor = change.actor ?: continue
                 energy.note(WorldBlock(world, change.x, change.y, change.z), Attributed(actor, change.confidence))
             }
-        }) { world, change -> preLog(world, change) }
+        }) { world, change ->
+            // A clock's move held back over this position goes in first, or it would be filed behind this row.
+            for (write in pistons.heldOver(WorldBlock(world, change.x, change.y, change.z))) write()
+            preLog(world, change)
+        }
         val attribution = Attribution(ledger.registries, blocks)
         val uncovered = Uncovered(ledger)
         val codec = ItemFormCodec(ledger.registries, MinecraftServer.getServer().registryAccess())
@@ -270,7 +279,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val entities = EntityOrigins()
         val destruction = BlockDestructionListener(
             this, ledger.registries, blocks, attribution, codec, origins, entities, ledger, ledger, uncovered::submit,
-            energy, touches, ::onRegion,
+            energy, touches, pistons, ::onRegion,
         )
         val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)
@@ -286,7 +295,10 @@ class PfauProtectPlugin : JavaPlugin() {
         val chunkRollback = ChunkRollback(
             this, codec, blocks, ledger, uncovered::submit, formOf = ledger::form, forget = entityCapture::forget,
         )
-        val rollbacks = Rollbacks(this, ledger, blocks, lookups, chunkRollback, confiscations)
+        val rollbacks = Rollbacks(
+            this, ledger, blocks, lookups, chunkRollback, confiscations,
+            holdStill = { fileHeld(pistons) }, letGo = pistons::resume,
+        )
         val chat = ChatLog(dataFolder.toPath().resolve("chat"))
         val running = Running(
             ledger, blocks, uncovered, codec, capture, mechanisms, origins,
@@ -701,6 +713,31 @@ class PfauProtectPlugin : JavaPlugin() {
             if (confirm) sender.say("Purged $counts written.")
             else sender.say("A purge would delete $counts to write. /pp purge $age confirm runs it.")
         }
+    }
+
+    // A clock's moves held back are filed on the region that owns the piston, and a reader waits for them a
+    // moment: a chunk unloaded meanwhile never runs its task, and its piston's journal stays a move behind.
+    // False when some did not come in time.
+    private fun fileHeld(pistons: PistonCycles): Boolean {
+        val bases = pistons.pause()
+        val done = CountDownLatch(bases.size)
+        for (base in bases) {
+            val world = server.getWorld(base.world)
+            if (world == null) {
+                done.countDown()
+                continue
+            }
+            server.regionScheduler.execute(this, world, base.x shr 4, base.z shr 4) {
+                try {
+                    for (write in pistons.takeHeld(base)) write()
+                } finally {
+                    done.countDown()
+                }
+            }
+        }
+        if (done.await(HELD_WAIT_SECONDS, TimeUnit.SECONDS)) return true
+        logger.warning("${done.count} of ${bases.size} pistons did not file the moves they held back in time")
+        return false
     }
 
     // Another plugin may veto a row before it is written; nobody listening, nothing is asked.

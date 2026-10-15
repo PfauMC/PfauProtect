@@ -51,6 +51,8 @@ object Texts {
             "Откат отклонён: в этом окне больше истории, чем читает один откат; сузь радиус или время.",
         r("Rollback refused: (\\d+) rows in that window could not be read by this build, and a rollback over part of the history would put back part of the place; nothing was done\\.") to
             "Откат отклонён: строк в этом окне, которые эта сборка не смогла прочитать: $1; откат по части истории вернул бы место лишь отчасти, ничего не сделано.",
+        r("Rollback refused: a running clock could not file the moves it held back in time, and the journal would be read a move behind; try again\\.") to
+            "Откат отклонён: работающие часы не успели дописать отложенные ходы, и журнал прочитался бы с отставанием на ход; попробуй ещё раз.",
         r("Rollback refused: (.*)\\.") to "Откат отклонён: $1.",
         r("The rollback failed; the server log has the details\\.") to "Откат не удался; подробности в логе сервера.",
         r("Taking back what the rollback gave back failed; the server log has the details\\.") to "Изъятие возвращённого откатом не удалось; подробности в логе сервера.",
