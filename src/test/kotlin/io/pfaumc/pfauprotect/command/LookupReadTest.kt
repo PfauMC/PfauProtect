@@ -105,7 +105,8 @@ class LookupReadTest : BothPlanes() {
         val query = LookupQuery(radius = 5, rows = 2, page = 2, all = true, asOf = T0 + 10_000)
         val before = said(query)
 
-        repeat(3) { log.submit(listOf(BlockChange(11, 64, -3 - it, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 20_000 + it))) }
+        // The first at the very moment asked: a row of that millisecond can land after the page was read.
+        repeat(3) { log.submit(listOf(BlockChange(11, 64, -3 - it, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 10_000 + it))) }
         log.drain()
         assertEquals(before, said(query))
         assertTrue(said(query.copy(asOf = null)) != before, "without the moment the page moves on")
