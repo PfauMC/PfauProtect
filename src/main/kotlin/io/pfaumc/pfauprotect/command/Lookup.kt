@@ -323,7 +323,8 @@ data class LookupQuery(
 
     fun fromTs(now: Long = asOf ?: System.currentTimeMillis()): Long = secondsBack?.let { now - it * 1000 } ?: 0
 
-    fun toTs(now: Long = asOf ?: System.currentTimeMillis()): Long = secondsUntil?.let { now - it * 1000 } ?: asOf ?: Long.MAX_VALUE
+    // Pinned, the moment itself is left out: a row of that millisecond may land after the first page was read.
+    fun toTs(now: Long = asOf ?: System.currentTimeMillis()): Long = secondsUntil?.let { now - it * 1000 } ?: asOf?.minus(1) ?: Long.MAX_VALUE
 
     // Rows a page needs read: every page before it as well, since a read is newest first. Runs folded
     // into one line each eat rows, so a folded page reads further.
