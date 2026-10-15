@@ -207,7 +207,8 @@ class LookupTest {
 
     @Test
     fun `a page button asks the same question about the same place`() {
-        val query = parseLookupQuery("u:Bob t:1h page:2 at:1,2,3")
+        // Asked at a moment, which the next page keeps: rows written since would shift every page.
+        val query = parseLookupQuery("u:Bob t:1h page:2 at:1,2,3").copy(asOf = 1_700_000_000_000L)
         assertEquals(Triple(1, 2, 3), query.at)
         val command = query.pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 3)
         val asked = parseLookupQuery(command.removePrefix("/pp l "))

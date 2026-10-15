@@ -66,6 +66,7 @@ import org.bukkit.plugin.Plugin
 import io.pfaumc.pfauprotect.SECONDS_PER_UNIT
 import io.pfaumc.pfauprotect.Settings
 import kotlin.math.abs
+import io.pfaumc.pfauprotect.ROLLBACK_PERMISSION
 import io.pfaumc.pfauprotect.TELEPORT_PERMISSION
 import io.pfaumc.pfauprotect.Texts
 import io.pfaumc.pfauprotect.Ui
@@ -123,13 +124,16 @@ internal enum class Param(vararg val keys: String) {
     // A position of its own instead of where the command runs from: what the page buttons pin, so the
     // next page is about the same place after the reader has walked off.
     AT("at"),
+    // The moment the first page was read, which the page buttons pin: rows written since would shift every
+    // page under the reader, and « would show what was never on the page they left. Not offered to type.
+    ASOF("asof"),
     ;
 
     val canonical: String get() = keys.first()
 
     companion object {
         private val byKey = entries.flatMap { param -> param.keys.map { it to param } }.toMap()
-        val prefixes = entries.map { "${it.canonical}:" }
+        val prefixes = entries.filter { it != ASOF }.map { "${it.canonical}:" }
         val help = prefixes.joinToString(" ")
         fun of(key: String): Param? = byKey[key]
     }
@@ -288,7 +292,8 @@ data class LookupQuery(
     // The near end of a span, `time:2h-1h`: how long ago it stops. Null is now.
     val secondsUntil: Long? = null,
     val radius: Int? = null,
-    val limit: Int = DEFAULT_LIMIT,
+    // The `limit:` said, else the reader's own page size, filled in where they asked; null is the default.
+    val rows: Int? = null,
     val page: Int = 1,
     // Only rows a rollback has since undone, or only rows it has not; null for both.
     val rolledBack: Boolean? = null,
@@ -305,14 +310,21 @@ data class LookupQuery(
     val words: String = "",
     // Whether ⌖ may run /pp tp for the one asking: read where they asked, as the answer is written off it.
     val teleports: Boolean = false,
+    // Whether ↶ may run or type /pp rollback for them, read the same way.
+    val rollbacks: Boolean = false,
     // Whether the page opens in a dialog: the asker's choice, read where they asked like `teleports`.
     val dialog: Boolean = false,
+    // What "now" is for this answer: set when the first page is asked for and pinned by the page buttons.
+    val asOf: Long? = null,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
-    fun fromTs(now: Long = System.currentTimeMillis()): Long = secondsBack?.let { now - it * 1000 } ?: 0
+    val limit: Int get() = rows ?: DEFAULT_LIMIT
 
-    fun toTs(now: Long = System.currentTimeMillis()): Long = secondsUntil?.let { now - it * 1000 } ?: Long.MAX_VALUE
+    fun fromTs(now: Long = asOf ?: System.currentTimeMillis()): Long = secondsBack?.let { now - it * 1000 } ?: 0
+
+    // Pinned, the moment itself is left out: a row of that millisecond may land after the first page was read.
+    fun toTs(now: Long = asOf ?: System.currentTimeMillis()): Long = secondsUntil?.let { now - it * 1000 } ?: asOf?.minus(1) ?: Long.MAX_VALUE
 
     // Rows a page needs read: every page before it as well, since a read is newest first. Runs folded
     // into one line each eat rows, so a folded page reads further.
@@ -328,12 +340,12 @@ data class LookupQuery(
     /** The same question to `/pp [subcommand]` at another page, with the words that pin what it is about. */
     fun pageCommand(subcommand: String, page: Int, vararg pinned: String): String {
         val kept = words.split(' ').filter { it.isNotBlank() && it.substringBefore(':').lowercase() !in PAGED_AWAY }
-        return (listOf("/pp", subcommand) + kept + pinned + "page:$page").joinToString(" ")
+        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }) + "page:$page").joinToString(" ")
     }
 }
 
 private const val GROUPED_READ = 4
-private val PAGED_AWAY = setOf("page", "pg", "at")
+private val PAGED_AWAY = setOf("page", "pg", "at", "asof")
 
 /** Where a lookup asked with `at:` reads, in the world it was asked from. */
 fun LookupQuery.targetOr(fallback: LookupTarget): LookupTarget {
@@ -398,6 +410,7 @@ private val BAD_AMOUNT = DynamicCommandExceptionType { said("'$it' is not an amo
 private val BAD_EVENT = DynamicCommandExceptionType { said("'$it' is not an event, click a lookup line to fill one in") }
 private val UNKNOWN_FLAG = DynamicCommandExceptionType { said("unknown flag '$it', expected #count, #sum or #all") }
 private val BAD_POSITION = DynamicCommandExceptionType { said("'$it' is not a position, expected x,y,z") }
+private val BAD_MOMENT = DynamicCommandExceptionType { said("'$it' is not a moment; the page buttons fill it in") }
 private val BAD_LIMIT = DynamicCommandExceptionType {
     said("'$it' is not a row count between 1 and $MAX_LIMIT")
 }
@@ -454,13 +467,14 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
             )
             Param.INCLUDE -> query.copy(included = query.included + values(value))
             Param.EXCLUDE -> query.copy(excluded = query.excluded + values(value))
-            Param.LIMIT -> query.copy(limit = limitOrNull(value) ?: fail(reader, BAD_LIMIT, value))
+            Param.LIMIT -> query.copy(rows = limitOrNull(value) ?: fail(reader, BAD_LIMIT, value))
             Param.PAGE -> query.copy(page = value.toIntOrNull()?.takeIf { it >= 1 } ?: fail(reader, BAD_PAGE, value))
             Param.ROLLEDBACK -> query.copy(rolledBack = yesNoOrNull(value) ?: fail(reader, BAD_YES_NO, value))
             Param.AMOUNT -> query.copy(amount = amountOrNull(value) ?: fail(reader, BAD_AMOUNT, value))
             Param.EVENT -> query.copy(event = EventRef.parse(value) ?: fail(reader, BAD_EVENT, value))
             Param.FILTER -> query.copy(filter = value)
             Param.AT -> query.copy(at = positionOrNull(value) ?: fail(reader, BAD_POSITION, value))
+            Param.ASOF -> query.copy(asOf = value.toLongOrNull()?.takeIf { it > 0 } ?: fail(reader, BAD_MOMENT, value))
         }
         reader.cursor = tokenStart + token.length
     }
@@ -686,11 +700,11 @@ class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType
         Param.PAGE -> listOf("2", "3")
         Param.ROLLEDBACK -> listOf("no", "yes")
         Param.AMOUNT -> listOf(">=8", ">=64", "<4")
-        Param.EVENT, Param.FILTER, Param.AT, null -> emptyList()
+        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, null -> emptyList()
     }
 }
 
-private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK)
+private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF)
 
 // One line of an answer, from either plane, so the two read in the order things happened. `same` is what
 // a run of lines folds on: who did what to which thing, which way. `amount` is what a folded line adds
@@ -812,6 +826,25 @@ internal val DIALOG_KEY = NamespacedKey("pfauprotect", "dialog")
 internal fun readsInDialog(sender: CommandSender): Boolean =
     sender is Player && (sender.persistentDataContainer.get(DIALOG_KEY, PersistentDataType.BOOLEAN) ?: Settings.dialogPages)
 
+internal val ROWS_KEY = NamespacedKey("pfauprotect", "rows")
+
+/** How many lines a page of [sender]'s holds when no `limit:` is said: their own `/pp view rows`, else the config's. */
+internal fun pageRows(sender: CommandSender): Int =
+    (sender as? Player)?.persistentDataContainer?.get(ROWS_KEY, PersistentDataType.INTEGER) ?: Settings.pageRows
+
+/**
+ * The query as [sender] asked it, with what is read on their thread rather than off it, where the answer is
+ * drawn, and with the moment it was asked. [dialog] false is the inspector's: chat, and the short default
+ * page, as it answers every click.
+ */
+internal fun LookupQuery.askedBy(sender: CommandSender, dialog: Boolean = true): LookupQuery = copy(
+    teleports = canTeleport(sender),
+    rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION),
+    dialog = dialog && readsInDialog(sender),
+    rows = rows ?: pageRows(sender).takeIf { dialog },
+    asOf = asOf ?: System.currentTimeMillis(),
+)
+
 // How wide a dialog draws a line, in GUI pixels: a lookup line seldom wraps at it, and it still fits a
 // 1080p screen at GUI scale 4, which is 480 wide. The knob to turn if lines wrap or get cut.
 private const val DIALOG_WIDTH = 460
@@ -855,6 +888,16 @@ internal fun showPage(
     sender.showDialog(Dialog.create { it.empty().base(base).type(type) })
 }
 
+// A mark of its own after the line: a hover and a click put on the whole line show only between its parts, which
+// have their own. A window has no chat line to type the rollback into, so there it runs, which is only a preview
+// until /pp apply; in chat it is typed out to be looked at first.
+private fun undo(event: EventRef, dialog: Boolean): Component {
+    val command = "/pp rollback $event"
+    return Ui.hover(Ui.text("↶", Ui.MUTED), tr("Roll back this one event: a preview first", "Откатить это событие: сначала предпросмотр"))
+        .decoration(TextDecoration.STRIKETHROUGH, false)
+        .clickEvent(if (dialog) ClickEvent.runCommand(command) else ClickEvent.suggestCommand(command))
+}
+
 // « page 2 » with the arrows that go somewhere clickable; the console is told the words to type.
 private fun footer(page: Int, back: String?, forward: String?, clickable: Boolean): Component {
     if (!clickable) {
@@ -882,7 +925,7 @@ class Lookups(
 
     /** [dialog] false keeps the answer in chat whatever the reader chose: the inspector's, which a window on every click would get in the way of. */
     fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, dialog: Boolean = true) {
-        val asked = query.copy(teleports = canTeleport(sender), dialog = dialog && readsInDialog(sender))
+        val asked = query.askedBy(sender, dialog)
         plugin.offThread(sender, "lookup at ${target.label} failed", "The lookup failed; the server log has the details.") { report(sender, target, asked) }
     }
 
@@ -893,7 +936,7 @@ class Lookups(
     fun entity(sender: CommandSender, entity: UUID, type: String, at: LookupTarget) {
         val short = entity.toString().take(8)
         val label = "$type $short"
-        val query = LookupQuery(teleports = canTeleport(sender))
+        val query = LookupQuery(teleports = canTeleport(sender), rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION))
         plugin.offThread(sender, "lookup of $label failed", "The lookup failed; the server log has the details.") {
             val slots = ledger.holderPage(EntitySlot(entity, 0), 0, Long.MAX_VALUE, reverse = true, limit = MAX_FETCH)
             val items = entryLines(wholeTransactions(ledger, slots.entries))
@@ -1049,15 +1092,20 @@ class Lookups(
             // Struck through for the eye, said in words for whoever cannot see the line drawn.
             val back = if (line.undone) arrayOf(tr("rolled back", "откачено")) else emptyArray()
             if (line.undone) out = if (clickable) out.decorate(TextDecoration.STRIKETHROUGH) else out.append(Ui.text("  (${back[0]})", Ui.FAINT))
-            // A player clicks a single event to have its rollback typed out for them; the console cannot
-            // click and is given the event to type. A folded line is many events and has no one to give.
             out = when {
                 run.rows > 1 -> Ui.hover(out, *back, tr("${run.rows} in a row; #all shows each", "${run.rows} подряд; #all покажет каждое"))
-                event == null -> if (line.undone && clickable) Ui.hover(out, *back) else out
-                clickable -> Ui.hover(out, *back, tr("Click to roll back this one event", "Клик — откатить это событие"))
-                    .clickEvent(ClickEvent.suggestCommand("/pp rollback $event"))
-                else -> out.append(Ui.text("  $event", Ui.FAINT))
+                line.undone && clickable -> Ui.hover(out, *back)
+                else -> out
             }
+            // A player who may roll back clicks a single event's ↶ for it; the console cannot click and is given
+            // the event to type. A folded line is many events and has no one to give.
+            val mark = when {
+                event == null -> null
+                query.rollbacks -> undo(event, query.dialog)
+                !clickable -> Ui.text("$event", Ui.FAINT)
+                else -> null
+            }
+            if (mark != null) out = out.append(Ui.text("  ")).append(mark)
             Component.text(" ").append(out)
         }
         // The read stops before the filter runs, so a cut-short page must say so even when few rows matched.

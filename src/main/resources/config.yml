@@ -20,6 +20,9 @@ lookup:
   # than in chat, where they scroll away. Each player can choose for themselves with /pp view chat|dialog.
   # The console and the inspector always answer in chat.
   dialog: true
+  # Lines on a page when a lookup says no limit:, 1 to 200. The server cannot see a player's screen, so
+  # each player fits the window to theirs with /pp view rows N. The inspector always shows 10.
+  rows: 20
 
 rollback:
   # The most positions one rollback puts back; a larger one is refused and has to be cut by radius or time.

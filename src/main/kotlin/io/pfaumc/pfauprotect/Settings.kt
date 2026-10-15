@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect
 
+import io.pfaumc.pfauprotect.command.MAX_LIMIT
 import io.pfaumc.pfauprotect.model.BLOCK_CAUSES
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.ENTITY_PLANE_CAUSES
@@ -16,6 +17,7 @@ object Settings {
 
     @Volatile var maxRadius = 200
     @Volatile var dialogPages = true
+    @Volatile var pageRows = 20
     @Volatile var maxRollbackPositions = 131_072
     @Volatile var freshMillis = 10 * 60 * 1000L
     @Volatile var crowd = 8
@@ -35,6 +37,7 @@ object Settings {
         }.toSet()
         maxRadius = config.getInt("lookup.max-radius", maxRadius).coerceIn(1, MAX_REGION_RADIUS)
         dialogPages = config.getBoolean("lookup.dialog", dialogPages)
+        pageRows = config.getInt("lookup.rows", pageRows).coerceIn(1, MAX_LIMIT)
         maxRollbackPositions = config.getInt("rollback.max-positions", maxRollbackPositions).coerceIn(1, 1_000_000)
         freshMillis = config.getLong("mobs.fresh-minutes", freshMillis / 60_000).coerceIn(0, 24 * 60) * 60_000
         crowd = config.getInt("mobs.crowd", crowd).coerceIn(2, 1_000)
