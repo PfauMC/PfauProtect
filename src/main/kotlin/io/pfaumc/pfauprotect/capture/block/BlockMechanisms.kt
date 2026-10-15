@@ -20,6 +20,7 @@ import io.pfaumc.pfauprotect.storage.PlacedForms
 import io.pfaumc.pfauprotect.capture.item.Stack
 import org.bukkit.block.data.Brushable
 import org.bukkit.block.data.Directional
+import org.bukkit.Bukkit
 import org.bukkit.Tag
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.capture.item.unpackShulker
@@ -367,8 +368,9 @@ internal fun spilled(state: BlockState?): Array<BukkitItemStack?> = when (state)
 }
 
 // A dispense spawns what it spawns inside its own call, a tick at most after the pre-dispense event,
-// and in front of the dispenser.
-private const val DISPENSE_NANOS = 50_000_000L
+// and in front of the dispenser. Counted in ticks: the call itself can outlast a tick's 50 ms, the first
+// egg after a start or under a GC pause, and a mob spawned then was nobody's.
+private const val DISPENSE_TICKS = 1
 private const val DISPENSE_REACH = 2.5
 
 internal class SlotChange(val slot: Int, val key: ItemKey, val qty: Int, val gain: Boolean)
@@ -464,7 +466,7 @@ class BlockMechanismListener(
 
     // Whoever set the dispenser going, for the entities its behaviour spawns inside the same call: an
     // item thrown out, primed TNT, an arrow, a boat. None of them names anybody on its own.
-    private class Dispensing(val at: WorldBlock, val by: Attributed, val nanos: Long)
+    private class Dispensing(val at: WorldBlock, val by: Attributed, val tick: Int)
 
     private val dispensing = ThreadLocal<Dispensing?>()
 
@@ -476,13 +478,13 @@ class BlockMechanismListener(
         val by = energyAt(block, energy)
         by?.let { energy.note(at, it) }
         loaded.set(Loaded(at, event.slot, before, by.culprit()))
-        dispensing.set(by?.let { Dispensing(at, it, System.nanoTime()) })
+        dispensing.set(by?.let { Dispensing(at, it, Bukkit.getCurrentTick()) })
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onSpawn(event: EntitySpawnEvent) {
         val source = dispensing.get() ?: return
-        if (System.nanoTime() - source.nanos > DISPENSE_NANOS) return dispensing.remove()
+        if (Bukkit.getCurrentTick() - source.tick > DISPENSE_TICKS) return dispensing.remove()
         val at = source.at
         if (!near(Spot(at.world, at.x + 0.5, at.y + 0.5, at.z + 0.5), spotOf(event.location), DISPENSE_REACH)) return
         entities.appeared(event.entity.uniqueId, source.by.actor, source.by.confidence)
