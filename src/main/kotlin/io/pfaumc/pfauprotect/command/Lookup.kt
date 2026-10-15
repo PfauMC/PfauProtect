@@ -66,6 +66,7 @@ import org.bukkit.plugin.Plugin
 import io.pfaumc.pfauprotect.SECONDS_PER_UNIT
 import io.pfaumc.pfauprotect.Settings
 import kotlin.math.abs
+import io.pfaumc.pfauprotect.ROLLBACK_PERMISSION
 import io.pfaumc.pfauprotect.TELEPORT_PERMISSION
 import io.pfaumc.pfauprotect.Texts
 import io.pfaumc.pfauprotect.Ui
@@ -309,6 +310,8 @@ data class LookupQuery(
     val words: String = "",
     // Whether ⌖ may run /pp tp for the one asking: read where they asked, as the answer is written off it.
     val teleports: Boolean = false,
+    // Whether ↶ may run or type /pp rollback for them, read the same way.
+    val rollbacks: Boolean = false,
     // Whether the page opens in a dialog: the asker's choice, read where they asked like `teleports`.
     val dialog: Boolean = false,
     // What "now" is for this answer: set when the first page is asked for and pinned by the page buttons.
@@ -835,6 +838,7 @@ internal fun pageRows(sender: CommandSender): Int =
  */
 internal fun LookupQuery.askedBy(sender: CommandSender, dialog: Boolean = true): LookupQuery = copy(
     teleports = canTeleport(sender),
+    rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION),
     dialog = dialog && readsInDialog(sender),
     rows = rows ?: pageRows(sender).takeIf { dialog },
     asOf = asOf ?: System.currentTimeMillis(),
@@ -931,7 +935,7 @@ class Lookups(
     fun entity(sender: CommandSender, entity: UUID, type: String, at: LookupTarget) {
         val short = entity.toString().take(8)
         val label = "$type $short"
-        val query = LookupQuery(teleports = canTeleport(sender))
+        val query = LookupQuery(teleports = canTeleport(sender), rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION))
         plugin.offThread(sender, "lookup of $label failed", "The lookup failed; the server log has the details.") {
             val slots = ledger.holderPage(EntitySlot(entity, 0), 0, Long.MAX_VALUE, reverse = true, limit = MAX_FETCH)
             val items = entryLines(wholeTransactions(ledger, slots.entries))
@@ -1092,9 +1096,15 @@ class Lookups(
                 line.undone && clickable -> Ui.hover(out, *back)
                 else -> out
             }
-            // A player clicks a single event's ↶ for its rollback; the console cannot click and is given the
-            // event to type. A folded line is many events and has no one to give.
-            if (event != null) out = out.append(Ui.text("  ")).append(if (clickable) undo(event, query.dialog) else Ui.text("$event", Ui.FAINT))
+            // A player who may roll back clicks a single event's ↶ for it; the console cannot click and is given
+            // the event to type. A folded line is many events and has no one to give.
+            val mark = when {
+                event == null -> null
+                query.rollbacks -> undo(event, query.dialog)
+                !clickable -> Ui.text("$event", Ui.FAINT)
+                else -> null
+            }
+            if (mark != null) out = out.append(Ui.text("  ")).append(mark)
             Component.text(" ").append(out)
         }
         // The read stops before the filter runs, so a cut-short page must say so even when few rows matched.
