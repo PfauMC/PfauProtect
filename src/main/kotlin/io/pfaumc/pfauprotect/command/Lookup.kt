@@ -845,7 +845,11 @@ internal fun showPage(
     val arrows = listOfNotNull(arrow("«", query.page - 1, back), arrow("»", query.page + 1, forward))
     val close = ActionButton.create(Ui.text(tr("Close", "Закрыть")), null, BUTTON_WIDTH, null)
     val heading = if (paged) title.append(Ui.text(" · ${tr("page", "стр.")} ${query.page}", Ui.MUTED)) else title
-    val base = DialogBase.builder(heading).body((lines + notes).map { DialogBody.plainMessage(it, DIALOG_WIDTH) }).build()
+    // One block rather than one per line: each block of a body is set apart by a gap that halves what a screen
+    // holds, and the arrows, which come right under the body, would be scrolled out of sight.
+    val body = DialogBody.plainMessage(Component.join(JoinConfiguration.newlines(), lines + notes), DIALOG_WIDTH)
+    val base = DialogBase.builder(heading).body(listOf(body)).build()
+    // Escape runs the exit button, so Close is the exit: a confirmation's pinned pair would turn the page on Escape.
     // A multi-action dialog needs a button besides its exit; a single page has nothing else to offer.
     val type = if (arrows.isEmpty()) DialogType.notice(close) else DialogType.multiAction(arrows).exitAction(close).columns(arrows.size).build()
     sender.showDialog(Dialog.create { it.empty().base(base).type(type) })
