@@ -373,7 +373,7 @@ internal fun pistonSites(
  * One move of a piston: what it files and whom it names, where two moves alike in this are one clock
  * repeating, and what each position it touches held before it and holds after.
  */
-internal class PistonMove(val signature: String, val net: Map<WorldBlock, Pair<String, String>>)
+class PistonMove(val signature: String, val net: Map<WorldBlock, Pair<String, String>>)
 
 internal fun pistonMove(cause: Cause, sites: List<Site>, by: Attributed?): PistonMove {
     val net = LinkedHashMap<WorldBlock, Pair<String, String>>()
@@ -811,13 +811,16 @@ private const val PISTON_ROUND = 4
  * it back standing out.
  *
  * Every call for one piston comes from the region that owns it, so the writes handed back are run there,
- * in order, outside the lock.
+ * in order, outside the lock. A move held back is filed ahead of any other row of a position it touched,
+ * through [heldOver]: filed after one, it would sort behind it and stand as the newest state of a block
+ * somebody has broken since.
  */
-internal class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
+class PistonCycles(private val now: () -> Long = System::currentTimeMillis) {
     private class Run(var written: String?, var at: Long) {
         val seen = ArrayDeque<PistonMove>(PISTON_ROUND)
-        // Moves left out since the journal last stood where the world does.
+        // Moves left out since the journal last stood where the world does, and the positions they touch.
         val held = ArrayList<() -> Unit>()
+        val heldAt = HashSet<WorldBlock>()
         var flushing = false
 
         fun repeats(move: PistonMove): Boolean = (2..seen.size).any { back ->
@@ -833,6 +836,9 @@ internal class PistonCycles(private val now: () -> Long = System::currentTimeMil
     }
 
     private val runs = HashMap<WorldBlock, Run>()
+
+    // Which piston holds a move back over each position; read without the lock by every row filed anywhere.
+    private val heldBy = ConcurrentHashMap<WorldBlock, WorldBlock>()
 
     // Pistons the journal has standing out, and those whose head went out without a row: the row of it
     // going back in is left out as well.
@@ -855,19 +861,45 @@ internal class PistonCycles(private val now: () -> Long = System::currentTimeMil
         val run = runs[base]?.takeIf { time - it.at <= PISTON_CYCLE_MILLIS }
         if (move != null && run != null && run.repeats(move)) {
             run.saw(move, time)
-            if (move.signature == run.written) run.held.clear() else run.held += write
+            if (move.signature == run.written) {
+                release(run)
+            } else {
+                run.held += write
+                for (at in move.net.keys) {
+                    run.heldAt += at
+                    heldBy[at] = base
+                }
+            }
             run.flushing = false
             return emptyList()
         }
         val writes = ArrayList<() -> Unit>()
-        runs.remove(base)?.held?.let(writes::addAll)
+        runs.remove(base)?.let { writes += release(it) }
         writes += write
         if (move != null) runs[base] = (run ?: Run(null, time)).also {
-            it.held.clear()
             it.written = move.signature
             it.saw(move, time)
         }
         return writes
+    }
+
+    /**
+     * The moves held back over this position, handed out to be filed before whatever is filed there now.
+     * The journal then stands where the piston's latest move left the world.
+     */
+    fun heldOver(at: WorldBlock): List<() -> Unit> {
+        if (heldBy.isEmpty()) return emptyList()
+        synchronized(this) {
+            val run = heldBy[at]?.let { runs[it] } ?: return emptyList()
+            run.written = run.seen.last().signature
+            return release(run)
+        }
+    }
+
+    private fun release(run: Run): List<() -> Unit> {
+        for (at in run.heldAt) heldBy.remove(at)
+        run.heldAt.clear()
+        return ArrayList(run.held).also { run.held.clear() }
     }
 
     /** Pistons gone quiet with moves held back, each marked so it is handed out once. */
@@ -893,7 +925,7 @@ internal class PistonCycles(private val now: () -> Long = System::currentTimeMil
             return emptyList()
         }
         runs.remove(base)
-        return run.held
+        return release(run)
     }
 }
 
@@ -924,12 +956,12 @@ class BlockDestructionListener(
     private val sink: (List<Transfer>) -> Unit,
     private val energy: Energy = Energy(),
     private val touches: HandTouches = HandTouches(),
+    private val pistonCycles: PistonCycles = PistonCycles(),
     private val later: (Location, () -> Unit) -> Unit,
 ) : Listener {
 
     internal val growing = GrowClaims()
     private val readBacks = ReadBacks()
-    private val pistonCycles = PistonCycles()
     // The shaped neighbours waiting for their read, one per position and tick: the first look is the
     // state the tick found, and the next change beside it in that tick would only see it half rewritten.
     // A capture that files the position before the read takes the look over.

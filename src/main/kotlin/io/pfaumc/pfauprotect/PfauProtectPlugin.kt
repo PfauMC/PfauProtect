@@ -18,6 +18,7 @@ import io.pfaumc.pfauprotect.capture.ChatCapture
 import io.pfaumc.pfauprotect.capture.block.BlockCaptureListener
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.HandTouches
+import io.pfaumc.pfauprotect.capture.block.PistonCycles
 import io.papermc.paper.command.brigadier.ApiMirrorRootNode
 import io.pfaumc.pfauprotect.capture.block.CommandBrackets
 import io.pfaumc.pfauprotect.capture.entity.EntityCapture
@@ -244,6 +245,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val energy = Energy()
         val nudges = Nudges()
         val touches = HandTouches()
+        val pistons = PistonCycles()
         // A row that names somebody is what an observer or a comparator next to it answers to, and any
         // row at all is what a touch waiting to be read back leaves to the capture that filed it.
         val blocks = BlockLogs(dataFolder.toPath().resolve("blocks"), ledger, { world, changes ->
@@ -252,7 +254,11 @@ class PfauProtectPlugin : JavaPlugin() {
                 val actor = change.actor ?: continue
                 energy.note(WorldBlock(world, change.x, change.y, change.z), Attributed(actor, change.confidence))
             }
-        }) { world, change -> preLog(world, change) }
+        }) { world, change ->
+            // A clock's move held back over this position goes in first, or it would be filed behind this row.
+            for (write in pistons.heldOver(WorldBlock(world, change.x, change.y, change.z))) write()
+            preLog(world, change)
+        }
         val attribution = Attribution(ledger.registries, blocks)
         val uncovered = Uncovered(ledger)
         val codec = ItemFormCodec(ledger.registries, MinecraftServer.getServer().registryAccess())
@@ -266,7 +272,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val entities = EntityOrigins()
         val destruction = BlockDestructionListener(
             this, ledger.registries, blocks, attribution, codec, origins, entities, ledger, ledger, uncovered::submit,
-            energy, touches, ::onRegion,
+            energy, touches, pistons, ::onRegion,
         )
         val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)

@@ -658,6 +658,25 @@ class BlockDestructionRulesTest {
         assertEquals(listOf("in", "out", "in", "out by bob"), piston.filed)
     }
 
+    // A player breaks the stone where a held move left it: the break's row would sort ahead of the move
+    // filed after it, and the journal would end with a stone in an empty place.
+    @Test
+    fun `a held move is filed ahead of any other row of its positions`() {
+        val out = carried("out", 1, 2)
+        val back = carried("in", 2, 1)
+        val piston = Driven(world)
+        piston.move(out, true); piston.move(back, false); piston.move(out, true)
+        assertEquals(listOf("out", "in"), piston.filed)
+
+        assertTrue(piston.cycles.heldOver(WorldBlock(world, 5, 64, 0)).isEmpty())
+        piston.cycles.heldOver(WorldBlock(world, 2, 64, 0)).forEach { it() }
+        assertEquals(listOf("out", "in", "out"), piston.filed)
+        // Handed out once: neither the clock stopping nor another row there files it again.
+        assertTrue(piston.cycles.heldOver(WorldBlock(world, 2, 64, 0)).isEmpty())
+        piston.stop()
+        assertEquals(listOf("out", "in", "out"), piston.filed)
+    }
+
     // A flying machine stuck at a wall: one piston pushes the blocks on, the other drags them back, so each
     // piston repeats its own move without ever making a round of it. Every move has to be filed.
     @Test
