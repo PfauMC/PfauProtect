@@ -81,8 +81,11 @@ never rewritten after the fact.
 
 **Commands.** `/pfauprotect` (alias `/pp`) is registered through Brigadier (`LifecycleEvents.COMMANDS`), with
 subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]`, `rollback|rb`, `apply`,
-`cancel`, `chat`, `status`, `purge <age> [confirm]`, `tp <x y z> [world]` (what a line's ⌖ runs) and `help` (also
-the bare `/pp`). Permissions are declared in `build.gradle.kts` `bukkit {}`.
+`cancel`, `chat`, `status`, `purge <age> [confirm]`, `tp <x y z> [world]` (what a line's ⌖ runs), `view
+[chat|dialog]` and `help` (also the bare `/pp`). Permissions are declared in `build.gradle.kts` `bukkit {}`.
+A page of `lookup`, `near` or `chat` goes through `showPage` (`Lookup.kt`): a Paper dialog with the arrows as
+buttons for a player who reads in one (`lookup.dialog` in `config.yml`, overridden per player by `/pp view` and
+kept in their PDC), chat lines otherwise. The console, the inspector and the short answers stay in chat.
 
 **Settings, texts, chat, API.** `Settings.kt` reads `config.yml` (language, disabled worlds and causes, limits,
 the mob death thresholds). Messages are written in English and go out through `CommandSender.say()`

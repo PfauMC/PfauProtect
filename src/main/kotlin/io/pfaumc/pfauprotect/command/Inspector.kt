@@ -47,7 +47,7 @@ class Inspector(private val lookups: Lookups) : Listener {
             block
         }
         if (again(event.player, target.location)) return
-        lookups.run(event.player, lookupTargetAt(target), LookupQuery())
+        lookups.run(event.player, lookupTargetAt(target), LookupQuery(), dialog = false)
     }
 
     private fun again(player: Player, what: Any): Boolean {

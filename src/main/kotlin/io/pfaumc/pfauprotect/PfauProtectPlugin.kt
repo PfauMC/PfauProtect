@@ -66,7 +66,10 @@ import io.pfaumc.pfauprotect.capture.item.WorldItemListener
 import io.pfaumc.pfauprotect.storage.cleaningUpOnFailure
 import io.pfaumc.pfauprotect.storage.fillTypeRegistries
 import io.pfaumc.pfauprotect.check.heldForms
+import io.pfaumc.pfauprotect.command.DIALOG_KEY
 import io.pfaumc.pfauprotect.command.canTeleport
+import io.pfaumc.pfauprotect.command.readsInDialog
+import io.pfaumc.pfauprotect.command.showPage
 import io.pfaumc.pfauprotect.command.durationOrNull
 import io.pfaumc.pfauprotect.command.lookupTargetAt
 import io.pfaumc.pfauprotect.command.offThread
@@ -92,6 +95,7 @@ import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.event.world.WorldLoadEvent
 import org.bukkit.event.world.WorldUnloadEvent
+import org.bukkit.persistence.PersistentDataType
 import org.bukkit.plugin.ServicePriority
 import org.bukkit.plugin.java.JavaPlugin
 import java.nio.file.Files
@@ -135,6 +139,7 @@ private val HELP = listOf(
     Help(ROLLBACK_PERMISSION, "/pp rb time: [radius:] [user:]", "/pp rb ", "preview a rollback", "предпросмотр отката"),
     Help(ROLLBACK_PERMISSION, "/pp apply · /pp cancel", "/pp apply", "run or drop the preview", "выполнить или сбросить предпросмотр"),
     Help(LOOKUP_PERMISSION, "/pp chat [user: time: f:]", "/pp chat ", "chat, commands, joins and quits", "чат, команды, входы и выходы"),
+    Help(LOOKUP_PERMISSION, "/pp view [chat|dialog]", "/pp view ", "where the pages open: chat or a window", "где открываются страницы: чат или окно"),
     Help(STATUS_PERMISSION, "/pp status", "/pp status", "bases, queues, what went unexplained", "базы, очереди, необъяснённое"),
     Help(VERIFY_PERMISSION, "/pp verify [recent]", "/pp verify", "run the self-checks now", "самопроверки сейчас"),
     Help(RECONCILE_PERMISSION, "/pp reconcile <player>", "/pp reconcile ", "a player's inventory against the ledger", "сверка инвентаря игрока с журналом"),
@@ -507,6 +512,13 @@ class PfauProtectPlugin : JavaPlugin() {
                     .then(Commands.argument("words", StringArgumentType.greedyString()).executes { chat(it.source, StringArgumentType.getString(it, "words")) })
             )
             root.then(gated("status", STATUS_PERMISSION).executes { status(it.source) })
+            root.then(
+                Commands.literal("view")
+                    .requires { it.sender.hasPermission(LOOKUP_PERMISSION) && it.executor is Player }
+                    .executes { view(it.source, null) }
+                    .then(Commands.literal("chat").executes { view(it.source, false) })
+                    .then(Commands.literal("dialog").executes { view(it.source, true) })
+            )
             root.then(teleportNode())
             root.then(
                 gated("apply", ROLLBACK_PERMISSION)
@@ -700,16 +712,17 @@ class PfauProtectPlugin : JavaPlugin() {
             return 0
         }
         // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
-        val teleports = canTeleport(sender)
+        val asked = query.copy(teleports = canTeleport(sender), dialog = readsInDialog(sender))
         offThread(sender, "the chat lookup failed", "The chat lookup failed; the server log has the details.") {
             val users = running.lookups.resolveAll(sender, query.users) ?: return@offThread
             val text = query.filter?.lowercase()
-            val lines = running.chat.read(query.fromTs(), query.toTs(), query.wanted) { line ->
+            // `wanted` reads past this page, which is how it knows there is a next one.
+            val read = running.chat.read(query.fromTs(), query.toTs(), query.wanted) { line ->
                 (users.isEmpty() || line.player in users) && (text == null || text in line.text.lowercase())
-            }.drop(query.limit * (query.page - 1)).take(query.limit)
+            }
+            val lines = read.drop(query.limit * (query.page - 1)).take(query.limit)
             if (lines.isEmpty()) return@offThread sender.say("Nothing said or run matches.")
-            sender.sendMessage(Ui.text(tr("PfauProtect · chat and commands", "PfauProtect · чат и команды"), Ui.FAINT))
-            for (line in lines) {
+            val drawn = lines.map { line ->
                 val who = Ui.text(nameOrId(line.player), Ui.WHO)
                 val what = when (line.kind) {
                     ChatKind.CHAT -> Ui.text(": " + line.text)
@@ -718,10 +731,25 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.QUIT -> Ui.text(tr(" left", " · выход"), Ui.MUTED)
                 }
                 val out = Component.text().append(Ui.text(" ")).append(Ui.ago(line.timestamp)).append(Ui.text("  ")).append(who).append(what)
-                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, teleports))
-                sender.sendMessage(out.build())
+                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, asked.teleports))
+                out.build()
             }
+            showPage(
+                sender, asked, Ui.text(tr("PfauProtect · chat and commands", "PfauProtect · чат и команды"), Ui.FAINT), drawn, emptyList(),
+                back = asked.pageCommand("chat", asked.page - 1).takeIf { asked.page > 1 },
+                forward = asked.pageCommand("chat", asked.page + 1).takeIf { read.size > query.limit * query.page },
+            )
         }
+    }
+
+    // Where this player's pages open, kept with them across restarts; bare, it switches to the other.
+    private fun view(source: CommandSourceStack, dialog: Boolean?): Int {
+        val player = source.executor as? Player ?: return 0
+        val now = dialog ?: !readsInDialog(player)
+        player.persistentDataContainer.set(DIALOG_KEY, PersistentDataType.BOOLEAN, now)
+        // Above the hotbar like the inspector's: a state, not an answer.
+        player.sendActionBar(Ui.text(if (now) tr("Pages open in a window", "Страницы открываются в окне") else tr("Pages go to chat", "Страницы идут в чат"), Ui.MUTED))
+        return Command.SINGLE_SUCCESS
     }
 
     private fun status(source: CommandSourceStack): Int = withRunning(source) { running, sender ->

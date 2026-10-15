@@ -214,4 +214,12 @@ class LookupTest {
         assertEquals(query.copy(page = 3, at = Triple(7, 64, -3), words = asked.words), asked)
     }
 
+    @Test
+    fun `a chat page button asks the same question with no place`() {
+        val query = parseLookupQuery("u:Bob f:tnt t:1h page:2")
+        val command = query.pageCommand("chat", 3)
+        val asked = parseLookupQuery(command.removePrefix("/pp chat "))
+        assertEquals(query.copy(page = 3, words = asked.words), asked)
+    }
+
 }
