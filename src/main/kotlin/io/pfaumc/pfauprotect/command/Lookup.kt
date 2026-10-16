@@ -20,6 +20,7 @@ import io.papermc.paper.registry.data.dialog.body.DialogBody
 import io.papermc.paper.registry.data.dialog.type.DialogType
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.Box
+import io.pfaumc.pfauprotect.storage.Steps
 import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.capture.entity.TRANSFORMED
 import io.pfaumc.pfauprotect.model.EntityKind
@@ -283,9 +284,9 @@ private val DURATION = Regex("(\\d+)(mo|[ymwdhs])")
 // answers with what it found and says the read stopped.
 private const val GLOBAL_WALK = 4096
 
-// How many positions and rows a radius lookup steps over in one chunk and plane before it answers with
-// what it has; a box full of history costs a seek per position.
-private const val BOX_BUDGET = 100_000
+// How many positions and rows a radius lookup steps over in all, every chunk and plane together, before it
+// answers with what it has and says the read stopped; a box full of history costs a seek per position.
+private const val BOX_STEPS = 250_000
 
 // How many later rows of a place a world-wide lookup reads for a rollback that gave a row back, or for what
 // fell out of a container broken there. A rollback further back than that behind a busy place goes unmarked.
@@ -984,11 +985,12 @@ class Lookups(
             }
             return reportEverywhere(sender, target, query, users)
         }
-        val page = read(target, query)
+        val steps = Steps(BOX_STEPS)
+        val page = read(target, query, steps)
         val items = itemLines(page.entries, query, users)
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
-        val changes = blockLines(target, query, users)
+        val changes = blockLines(target, query, users, steps)
         val xyz = "${target.x} ${target.y} ${target.z}"
         val where = when {
             query.radius != null -> Ui.text(tr("radius ${query.radius} around $xyz", "радиус ${query.radius} вокруг $xyz"))
@@ -996,7 +998,7 @@ class Lookups(
             else -> Ui.text(xyz)
         }
         if (blocks.get(target.world) == null) sender.say("This world's block log is not open.")
-        answer(sender, items + changes, page.complete, where, query, target)
+        answer(sender, items + changes, page.complete && !steps.ranOut, where, query, target)
     }
 
     /**
@@ -1195,7 +1197,7 @@ class Lookups(
     }
 
     /** Block and entity plane lines; empty when the world's log is not open, which report() tells the reader. */
-    private fun blockLines(target: LookupTarget, query: LookupQuery, users: Set<UUID>): List<Line> {
+    private fun blockLines(target: LookupTarget, query: LookupQuery, users: Set<UUID>, steps: Steps): List<Line> {
         val log = blocks.get(target.world) ?: return emptyList()
         val fromTs = query.fromTs()
         val toTs = query.toTs()
@@ -1208,8 +1210,8 @@ class Lookups(
         } else {
             val box = target.box(radius)
             val chunks = chunksAround(target.x, target.z, radius)
-            rows = chunks.flatMap { (cx, cz) -> log.newestInChunk(cx, cz, box, fromTs, toTs, query.fetch, BOX_BUDGET).rows }
-            entities = chunks.flatMap { (cx, cz) -> log.newestEntitiesInChunk(cx, cz, box, fromTs, toTs, query.fetch, BOX_BUDGET).rows }
+            rows = chunks.flatMap { (cx, cz) -> log.newestInChunk(cx, cz, box, fromTs, toTs, query.fetch, steps).rows }
+            entities = chunks.flatMap { (cx, cz) -> log.newestEntitiesInChunk(cx, cz, box, fromTs, toTs, query.fetch, steps).rows }
         }
         val keeps = rowFilter(query, users)
         // Not cut to the page: runs fold only afterwards, and a cut before them shifts every later page.
@@ -1243,11 +1245,11 @@ class Lookups(
         }
     }
 
-    private fun read(target: LookupTarget, query: LookupQuery): EntryPage {
+    private fun read(target: LookupTarget, query: LookupQuery, steps: Steps): EntryPage {
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z), fromTs, toTs, query)
-        return ledger.boxPage(target.world, target.box(radius), fromTs, toTs, query.fetch, BOX_BUDGET)
+        return ledger.boxPage(target.world, target.box(radius), fromTs, toTs, query.fetch, steps)
     }
 
     private fun holdersAt(world: UUID, x: Int, y: Int, z: Int): List<Holder> =

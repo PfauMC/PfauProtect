@@ -586,11 +586,16 @@ class BlockStoreTest : BothPlanes() {
         val box = Box(2, 10, 60, 66, 0, 10)
         val all = inside.flatMap { (x, y, z) -> log.rowsAt(x, y, z) }.sortedByDescending { it.timestamp }
 
-        assertEquals(all.take(7), log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 7, 1000).rows)
-        assertEquals(all, log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, 1000).rows)
+        assertEquals(all.take(7), log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 7, Steps(1000)).rows)
+        assertEquals(all, log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, Steps(1000)).rows)
         val window = all.filter { it.timestamp in T0 + 1000..T0 + 2999 }
-        assertEquals(window, log.newestInChunk(0, 0, box, T0 + 1000, T0 + 2999, 100, 1000).rows)
-        assertFalse(log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, 5).complete)
+        assertEquals(window, log.newestInChunk(0, 0, box, T0 + 1000, T0 + 2999, 100, Steps(1000)).rows)
+        assertFalse(log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, Steps(5)).complete)
+        // Steps are shared: a walk after one that spent them is cut short too, and says so.
+        val shared = Steps(30)
+        log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, shared)
+        assertFalse(log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, shared).complete)
+        assertTrue(shared.ranOut)
     }
 
     // The second change is behind the world's newest time and its position's first row is not on disk yet,

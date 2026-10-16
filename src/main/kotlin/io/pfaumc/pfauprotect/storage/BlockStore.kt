@@ -447,19 +447,19 @@ class BlockLog(
     ): Window<BlockRow> = window(rowsCf, Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within, ::blockRow)
 
     /** The newest block rows of a chunk inside the box, see [newestInBox]. */
-    fun newestInChunk(chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, budget: Int): BoxPage<BlockRow> =
-        newestIn(rowsCf, chunkX, chunkZ, box, fromTs, toTs, wanted, budget, ::blockRow)
+    fun newestInChunk(chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps): BoxPage<BlockRow> =
+        newestIn(rowsCf, chunkX, chunkZ, box, fromTs, toTs, wanted, steps, ::blockRow)
 
     /** The newest entity rows of a chunk inside the box, see [newestInBox]. */
-    fun newestEntitiesInChunk(chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, budget: Int): BoxPage<EntityRow> =
-        newestIn(entitiesCf, chunkX, chunkZ, box, fromTs, toTs, wanted, budget, ::entityRow)
+    fun newestEntitiesInChunk(chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps): BoxPage<EntityRow> =
+        newestIn(entitiesCf, chunkX, chunkZ, box, fromTs, toTs, wanted, steps, ::entityRow)
 
     private fun <T> newestIn(
-        cf: ColumnFamilyHandle, chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, budget: Int,
+        cf: ColumnFamilyHandle, chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps,
         decode: (ByteArray, ByteArray) -> T?,
     ): BoxPage<T> = dbLock.read {
         if (closed) return BoxPage(emptyList(), false)
-        db.newestInBox(cf, ByteArray(0), chunkX, chunkZ, box, fromTs, toTs, wanted, budget, decode)
+        db.newestInBox(cf, ByteArray(0), chunkX, chunkZ, box, fromTs, toTs, wanted, steps, decode)
     }
 
     fun windowAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): Window<BlockRow> =
