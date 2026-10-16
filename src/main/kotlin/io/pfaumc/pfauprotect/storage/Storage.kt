@@ -313,7 +313,9 @@ class Steps(private var left: Int) {
  * is one run, oldest first, and a chunk's positions run column by column. The positions are walked backward
  * and each is read back only while its rows are newer than the [wanted]th newest found so far, which after
  * the first few positions is one row. A busy place costs a seek per position of the box that has a history,
- * where reading the chunk would cost all of it. Each seek and each row is one of the [steps].
+ * where reading the chunk would cost all of it. Each seek and each row is one of the [steps]. Rows rank by
+ * the rest of their key, the time and then the event or transaction and the ordinal, which is the order both
+ * planes read in: by the time alone, two changes of one millisecond would keep whichever was walked first.
  */
 internal fun <T> RocksDB.newestInBox(
     cf: ColumnFamilyHandle,
@@ -330,7 +332,9 @@ internal fun <T> RocksDB.newestInBox(
     val xs = maxOf(box.minX, chunkX shl 4)..minOf(box.maxX, (chunkX shl 4) + 15)
     val zs = maxOf(box.minZ, chunkZ shl 4)..minOf(box.maxZ, (chunkZ shl 4) + 15)
     if (xs.isEmpty() || zs.isEmpty() || box.minY > box.maxY || wanted <= 0) return BoxPage(emptyList(), true)
-    val found = java.util.PriorityQueue<Pair<Long, T>>(compareBy { it.first })
+    val byRank = Comparator<Pair<ByteArray, T>> { a, b -> java.util.Arrays.compareUnsigned(a.first, b.first) }
+    val found = java.util.PriorityQueue(byRank)
+    fun newestFirst() = found.sortedWith(byRank.reversed()).map { it.second }
     val stamp = head.size + Zcode.SIZE
     ReadOptions().setTotalOrderSeek(true).use { options ->
         newIterator(cf, options).use { iter ->
@@ -345,16 +349,16 @@ internal fun <T> RocksDB.newestInBox(
                     while (iter.isValid) {
                         val row = iter.key()
                         if (!row.startsWith(position)) break
-                        if (!steps.take()) return BoxPage(found.sortedByDescending { it.first }.map { it.second }, false)
-                        val ts = timeAt(row, stamp)
-                        if (ts < fromTs || found.size >= wanted && ts <= found.peek().first) break
+                        if (!steps.take()) return BoxPage(newestFirst(), false)
+                        val rank = row.copyOfRange(stamp, row.size)
+                        if (timeAt(row, stamp) < fromTs || found.size >= wanted && java.util.Arrays.compareUnsigned(rank, found.peek().first) <= 0) break
                         decode(row, iter.value())?.let {
-                            found += ts to it
+                            found += rank to it
                             if (found.size > wanted) found.poll()
                         }
                         iter.prev()
                     }
-                    if (!steps.take()) return BoxPage(found.sortedByDescending { it.first }.map { it.second }, false)
+                    if (!steps.take()) return BoxPage(newestFirst(), false)
                     // The last key before this position: the newest row of the one below it, or another column's.
                     iter.seekForPrev(position)
                 }
@@ -362,7 +366,7 @@ internal fun <T> RocksDB.newestInBox(
             iter.status()
         }
     }
-    return BoxPage(found.sortedByDescending { it.first }.map { it.second }, true)
+    return BoxPage(newestFirst(), true)
 }
 
 // Every row of a family in key order: every key starts with the empty prefix.

@@ -598,6 +598,18 @@ class BlockStoreTest : BothPlanes() {
         assertTrue(shared.ranOut)
     }
 
+    // Two changes in one millisecond, the later one at a position the walk reaches last: by the time alone the
+    // first one walked would keep the page, while the log orders the two by their events.
+    @Test
+    fun `a box ranks changes of one millisecond by their events`() {
+        log.submit(listOf(placed(9, 64, 5, ts = T0)))
+        log.submit(listOf(placed(2, 64, 5, after = DIRT, ts = T0)))
+        log.drain()
+
+        val newest = log.newestInChunk(0, 0, Box(0, 15, 60, 70, 0, 15), 0, Long.MAX_VALUE, 1, Steps(1000)).rows
+        assertEquals(listOf(2 to 5), newest.map { it.x to it.z })
+    }
+
     // The second change is behind the world's newest time and its position's first row is not on disk yet,
     // only in the batch being built.
     @Test
