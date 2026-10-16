@@ -571,6 +571,28 @@ class BlockStoreTest : BothPlanes() {
         )
     }
 
+    // A radius walks the positions of its box backward and reads each only while it is newer than the page,
+    // so what has to hold is the answer: the newest of the box, whatever position they stand at, and nothing
+    // from outside it in any of the three directions or outside the window.
+    @Test
+    fun `a box answers with its newest rows, only from inside it`() {
+        val inside = listOf(Triple(2, 64, 2), Triple(2, 65, 2), Triple(5, 63, 9), Triple(9, 66, 5))
+        val outside = listOf(Triple(1, 64, 2), Triple(2, 70, 2), Triple(2, 64, 12), Triple(18, 64, 2))
+        var ts = T0
+        repeat(5) { round ->
+            for ((x, y, z) in inside + outside) log.submit(listOf(placed(x, y, z, ts = ts++ + round * 1000)))
+        }
+        log.drain()
+        val box = Box(2, 10, 60, 66, 0, 10)
+        val all = inside.flatMap { (x, y, z) -> log.rowsAt(x, y, z) }.sortedByDescending { it.timestamp }
+
+        assertEquals(all.take(7), log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 7, 1000).rows)
+        assertEquals(all, log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, 1000).rows)
+        val window = all.filter { it.timestamp in T0 + 1000..T0 + 2999 }
+        assertEquals(window, log.newestInChunk(0, 0, box, T0 + 1000, T0 + 2999, 100, 1000).rows)
+        assertFalse(log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, 5).complete)
+    }
+
     // The second change is behind the world's newest time and its position's first row is not on disk yet,
     // only in the batch being built.
     @Test

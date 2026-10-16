@@ -19,6 +19,7 @@ import io.papermc.paper.registry.data.dialog.action.DialogAction
 import io.papermc.paper.registry.data.dialog.body.DialogBody
 import io.papermc.paper.registry.data.dialog.type.DialogType
 import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.Box
 import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.capture.entity.TRANSFORMED
 import io.pfaumc.pfauprotect.model.EntityKind
@@ -277,8 +278,17 @@ private val BLOCK_NAMES: List<String> by lazy {
 
 private val DURATION = Regex("(\\d+)(mo|[ymwdhs])")
 
-// How far a world-wide lookup of a player walks their index: the positions they touched.
-private const val GLOBAL_POSITIONS = 4096
+// How far a world-wide lookup of a player walks their index, past the rows a filter dropped, before it
+// answers with what it found and says the read stopped.
+private const val GLOBAL_WALK = 4096
+
+// How many positions and rows a radius lookup steps over in one chunk and plane before it answers with
+// what it has; a box full of history costs a seek per position.
+private const val BOX_BUDGET = 100_000
+
+// How many later rows of a place a world-wide lookup reads for a rollback that gave a row back, or for what
+// fell out of a container broken there. A rollback further back than that behind a busy place goes unmarked.
+private const val LATER_READ = 32
 
 data class LookupQuery(
     val users: List<String> = emptyList(),
@@ -807,6 +817,9 @@ internal fun chunksAround(x: Int, z: Int, radius: Int): List<Pair<Int, Int>> =
         (((z - radius) shr 4)..((z + radius) shr 4)).map { cz -> cx to cz }
     }
 
+/** The cube of `radius` around where a lookup stands, as both planes read it. */
+internal fun LookupTarget.box(radius: Int) = Box(x - radius, x + radius, y - radius, y + radius, z - radius, z + radius)
+
 /** The cube of `radius` around a point, or with `column` the whole height of its square. */
 internal fun boxAround(x: Int, y: Int, z: Int, radius: Int, column: Boolean = false): (Int, Int, Int) -> Boolean =
     { bx, by, bz ->
@@ -977,23 +990,46 @@ class Lookups(
     }
 
     /**
-     * Everything the named players did in this world, by the index of rows that name them: the positions
-     * they touched, and at each the block, entity and container rows, the way a rollback of them finds it.
+     * Everything the named players did in this world, newest first: their own block and entity rows by the
+     * index of rows that name them, the containers they traded with by their own slots, and only as many
+     * of either as the page needs. The rest of each place's history is read only to see what a rollback
+     * has since given back.
      */
     private fun reportEverywhere(sender: CommandSender, target: LookupTarget, query: LookupQuery, users: Set<UUID>) {
         val log = blocks.get(target.world) ?: return sender.say("This world's block log is not open.")
         val fromTs = query.fromTs()
         val toTs = query.toTs()
-        val touches = users.map { log.touchedBy(it, fromTs, toTs, GLOBAL_POSITIONS) }
-        val positions = touches.flatMap { it.positions }.toSet()
         val keeps = rowFilter(query, users)
-        val rows = positions.flatMap { (x, y, z) -> log.at(x, y, z, fromTs, toTs, limit = query.fetch, reverse = true) }
-        val entities = positions.flatMap { (x, y, z) -> log.entitiesAt(x, y, z, fromTs, toTs, MAX_ENTITY_WALK).rows }
-        val holders = positions.flatMap { (x, y, z) -> holdersAt(target.world, x, y, z) }
-        val entries = holderRows(holders, fromTs, toTs, query).entries
-        val lines = itemLines(entries, query, users) + planeLines(target.world, rows, entities, keeps)
+        // One row past the page, which is how the answer knows there is a next one.
+        val wanted = query.wanted + 1
+        val own = users.map { log.byActor(it, fromTs, toTs, wanted, GLOBAL_WALK, keeps::keeps, keeps::keeps) }
+        val rows = own.flatMap { it.blocks }
+        val entities = own.flatMap { it.entities }
+        // Each place once, from the oldest of their rows there, and only the places of the rows this page can
+        // show: the earlier pages' rows are read for the page to start where they stopped, and following each
+        // up is a seek per plane. Pages that folded long runs end deeper than this guess, and the rows that
+        // pushed past it go without their mark.
+        fun <T> onPage(found: List<T>, ts: (T) -> Long) =
+            found.sortedByDescending(ts).drop(query.limit * (query.page - 1)).take(query.limit * GROUPED_READ)
+        val places = onPage(rows) { it.timestamp }.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, here) -> here.minOf { it.timestamp } }
+        val entityPlaces = onPage(entities) { it.timestamp }.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, here) -> here.minOf { it.timestamp } }
+        // A rollback row names whoever ran it, so the index of the one rolled back never leads to it.
+        val undoes = places.flatMap { (at, ts) ->
+            log.at(at.first, at.second, at.third, ts, toTs, limit = LATER_READ, reverse = true).filter { it.cause == Cause.ROLLBACK }
+        }
+        val entityUndoes = entityPlaces.flatMap { (at, ts) ->
+            log.entitiesAt(at.first, at.second, at.third, ts, toTs, MAX_ENTITY_WALK).rows.filter { it.cause == Cause.ROLLBACK }
+        }
+        // What they put in or took out names them on their own slots; what fell out of a container they broke
+        // names them only as its actor, on the container, so the places of their rows are read too.
+        val traded = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query).entries.filter { it.counterparty.block?.world == target.world }
+        val dropped = places.flatMap { (at, ts) ->
+            holdersAt(target.world, at.first, at.second, at.third).flatMap { ledger.holderPage(it, ts, toTs, reverse = true, limit = LATER_READ).entries }
+        }
+        val lines = itemLines((traded + dropped).distinctBy { it.ref }, query, users) +
+            planeLines(target.world, (rows + undoes).distinct(), (entities + entityUndoes).distinct(), keeps)
         val who = query.users.joinToString(", ")
-        answer(sender, lines, touches.all { it.complete }, Ui.text(tr("everything by $who", "всё от $who")), query, target)
+        answer(sender, lines, own.all { it.complete }, Ui.text(tr("everything by $who", "всё от $who")), query, target)
     }
 
     /**
@@ -1028,8 +1064,14 @@ class Lookups(
         return named.values.filterNotNull().toSet()
     }
 
-    private fun itemLines(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<Line> =
-        entryLines(wholeTransactions(ledger, filter(entries, query, users)))
+    // A read for a page is several times the page, and pulling in each row's other half is a read of its
+    // own, so only the rows the page can reach get theirs: one past it, which is how it knows there is a
+    // next one. A count is of everything read.
+    private fun itemLines(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<Line> {
+        val kept = filter(entries, query, users)
+        val reachable = if (query.count) kept else kept.sortedByDescending { it.timestamp }.take(query.wanted + 1)
+        return entryLines(wholeTransactions(ledger, reachable))
+    }
 
     // Item rows marked when a rollback has since given them back.
     private fun entryLines(entries: List<LedgerEntry>): List<Line> {
@@ -1154,12 +1196,10 @@ class Lookups(
             rows = log.at(target.x, target.y, target.z, fromTs, toTs, limit = query.fetch, reverse = true)
             entities = log.entitiesAt(target.x, target.y, target.z, fromTs, toTs, MAX_ENTITY_WALK).rows
         } else {
-            val inBox = boxAround(target.x, target.y, target.z, radius)
+            val box = target.box(radius)
             val chunks = chunksAround(target.x, target.z, radius)
-            rows = chunks.flatMap { (cx, cz) ->
-                log.inChunk(cx, cz, fromTs, toTs, limit = query.fetch, reverse = true) { inBox(it.x, it.y, it.z) }
-            }
-            entities = chunks.flatMap { (cx, cz) -> log.entitiesInChunk(cx, cz, fromTs, toTs, MAX_ENTITY_WALK, inBox).rows }
+            rows = chunks.flatMap { (cx, cz) -> log.newestInChunk(cx, cz, box, fromTs, toTs, query.fetch, BOX_BUDGET).rows }
+            entities = chunks.flatMap { (cx, cz) -> log.newestEntitiesInChunk(cx, cz, box, fromTs, toTs, query.fetch, BOX_BUDGET).rows }
         }
         val keeps = rowFilter(query, users)
         // Not cut to the page: runs fold only afterwards, and a cut before them shifts every later page.
@@ -1197,22 +1237,7 @@ class Lookups(
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z), fromTs, toTs, query)
-        val inBox = boxAround(target.x, target.y, target.z, radius)
-        return ledger.regionPage(
-            world = target.world,
-            minX = target.x - radius,
-            minZ = target.z - radius,
-            maxX = target.x + radius,
-            maxZ = target.z + radius,
-            fromTs = fromTs,
-            toTs = toTs,
-            reverse = true,
-            limit = query.fetch,
-            // The scan reads whole chunks, so it comes back with rows the radius does not cover. The
-            // block plane keeps to the box, and two planes disagreeing about what one radius means
-            // inside one answer reads as rows appearing and vanishing for no reason.
-            within = { it.placedIn(inBox, unplaced = true) },
-        )
+        return ledger.boxPage(target.world, target.box(radius), fromTs, toTs, query.fetch, BOX_BUDGET)
     }
 
     private fun holdersAt(world: UUID, x: Int, y: Int, z: Int): List<Holder> =

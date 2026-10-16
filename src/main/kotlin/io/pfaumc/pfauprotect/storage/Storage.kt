@@ -255,7 +255,7 @@ internal inline fun RocksDB.forEachUnder(
 ) {
     ReadOptions().setTotalOrderSeek(true).use { options ->
         newIterator(cf, options).use { iter ->
-            if (reverse) iter.seekForPrev(lastUnder(prefix)) else iter.seek(from ?: prefix)
+            if (reverse) iter.seekForPrev(from ?: lastUnder(prefix)) else iter.seek(from ?: prefix)
             while (iter.isValid) {
                 val key = iter.key()
                 if (!key.startsWith(prefix)) break
@@ -267,6 +267,73 @@ internal inline fun RocksDB.forEachUnder(
             iter.status()
         }
     }
+}
+
+internal fun timeAt(key: ByteArray, offset: Int): Long = ByteReader(key).also { it.bytes(offset) }.longBE()
+
+/** A box of block positions, both ends included. */
+data class Box(val minX: Int, val maxX: Int, val minY: Int, val maxY: Int, val minZ: Int, val maxZ: Int)
+
+/** The newest rows a walk of a box found, newest first; not `complete` when it ran out of budget first. */
+data class BoxPage<T>(val rows: List<T>, val complete: Boolean)
+
+/**
+ * The [wanted] newest rows of the window whose position is in [box] and in one chunk, newest first, of a
+ * family whose keys run [head], the position as `Zcode` writes it, then the time: each position's history
+ * is one run, oldest first, and a chunk's positions run column by column. The positions are walked backward
+ * and each is read back only while its rows are newer than the [wanted]th newest found so far, which after
+ * the first few positions is one row. A busy place costs a seek per position of the box that has a history,
+ * where reading the chunk would cost all of it. [budget] bounds the seeks and the rows together.
+ */
+internal fun <T> RocksDB.newestInBox(
+    cf: ColumnFamilyHandle,
+    head: ByteArray,
+    chunkX: Int,
+    chunkZ: Int,
+    box: Box,
+    fromTs: Long,
+    toTs: Long,
+    wanted: Int,
+    budget: Int,
+    decode: (ByteArray, ByteArray) -> T?,
+): BoxPage<T> {
+    val xs = maxOf(box.minX, chunkX shl 4)..minOf(box.maxX, (chunkX shl 4) + 15)
+    val zs = maxOf(box.minZ, chunkZ shl 4)..minOf(box.maxZ, (chunkZ shl 4) + 15)
+    if (xs.isEmpty() || zs.isEmpty() || box.minY > box.maxY || wanted <= 0) return BoxPage(emptyList(), true)
+    val found = java.util.PriorityQueue<Pair<Long, T>>(compareBy { it.first })
+    val stamp = head.size + Zcode.SIZE
+    var spent = 0
+    ReadOptions().setTotalOrderSeek(true).use { options ->
+        newIterator(cf, options).use { iter ->
+            for (x in xs.reversed()) for (z in zs.reversed()) {
+                val column = head + Zcode.encode(x, box.maxY, z).copyOf(Zcode.SIZE - 2)
+                iter.seekForPrev(lastUnder(head + Zcode.encode(x, box.maxY, z)))
+                while (iter.isValid) {
+                    val key = iter.key()
+                    if (!key.startsWith(column) || key.size < stamp + 8 || Zcode.decode(key, head.size)[1] < box.minY) break
+                    val position = key.copyOf(stamp)
+                    if (toTs != Long.MAX_VALUE) iter.seekForPrev(lastUnder(position + longBytes(toTs)))
+                    while (iter.isValid) {
+                        val row = iter.key()
+                        if (!row.startsWith(position)) break
+                        if (++spent > budget) return BoxPage(found.sortedByDescending { it.first }.map { it.second }, false)
+                        val ts = timeAt(row, stamp)
+                        if (ts < fromTs || found.size >= wanted && ts <= found.peek().first) break
+                        decode(row, iter.value())?.let {
+                            found += ts to it
+                            if (found.size > wanted) found.poll()
+                        }
+                        iter.prev()
+                    }
+                    if (++spent > budget) return BoxPage(found.sortedByDescending { it.first }.map { it.second }, false)
+                    // The last key before this position: the newest row of the one below it, or another column's.
+                    iter.seekForPrev(position)
+                }
+            }
+            iter.status()
+        }
+    }
+    return BoxPage(found.sortedByDescending { it.first }.map { it.second }, true)
 }
 
 // Every row of a family in key order: every key starts with the empty prefix.
@@ -587,6 +654,27 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     ): EntryPage = dbLock.read {
         if (closed) return EntryPage(emptyList(), false)
         scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit)
+    }
+
+    /** The newest postings of the holders standing in the box, newest first, see [newestInBox]. */
+    fun boxPage(world: UUID, box: Box, fromTs: Long, toTs: Long, limit: Int, budget: Int): EntryPage {
+        if (registries.lookupUuid(RegistryNamespace.WORLD, world) == null) return EntryPage(emptyList(), true)
+        return dbLock.read {
+            if (closed) return EntryPage(emptyList(), false)
+            val heads = EntryCodec.positionalHeads(world, knownIds)
+            val pages = ((box.minX shr 4)..(box.maxX shr 4)).flatMap { cx ->
+                ((box.minZ shr 4)..(box.maxZ shr 4)).flatMap { cz ->
+                    // One row past the limit, which is what tells a box with more in it from one read to the end.
+                    heads.map { head ->
+                        db.newestInBox(entriesCf, head, cx, cz, box, fromTs, toTs, limit + 1, budget) { key, value ->
+                            EntryCodec.decodeOrNull(key, value, registries)
+                        }
+                    }
+                }
+            }
+            val newest = pages.flatMap { it.rows }.sortedWith(compareBy<LedgerEntry>({ it.timestamp }, { it.txId }).reversed())
+            EntryPage(newest.take(limit), pages.all { it.complete } && newest.size <= limit)
+        }
     }
 
     fun regionPage(

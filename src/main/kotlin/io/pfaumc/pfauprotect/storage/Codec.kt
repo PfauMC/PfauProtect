@@ -234,6 +234,12 @@ object EntryCodec {
         return w.toByteArray()
     }
 
+    /** What a positional holder's key holds before its position: its type and its world, a type at a time. */
+    fun positionalHeads(world: UUID, ids: IdResolver): List<ByteArray> {
+        val worldNo = ids.id(RegistryNamespace.WORLD, world)
+        return HolderType.POSITIONAL.map { typeId -> ByteWriter(3).byte(typeId).shortBE(worldNo).toByteArray() }
+    }
+
     fun blockChunkPrefixes(world: UUID, chunkX: Int, chunkZ: Int, ids: IdResolver): List<ByteArray> {
         val worldNo = ids.id(RegistryNamespace.WORLD, world)
         val chunk = Zcode.chunkPrefix(chunkX, chunkZ)
