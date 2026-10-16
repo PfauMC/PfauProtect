@@ -7,6 +7,7 @@ import io.pfaumc.pfauprotect.ledgerEntry
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.block
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.LedgerEntry
 import io.pfaumc.pfauprotect.model.PlayerInv
@@ -176,15 +177,16 @@ class StorageTest : OneLedger() {
         return seen
     }
 
-    // Versions 5 and 6 only add families, so a version 4 or 5 ledger is opened, given them and stamped
-    // anew, with every row it had still there.
+    // Versions 5, 6 and 7 only add families, so an older ledger is opened, given them and stamped anew, with
+    // every row it had still there; 7 also indexes the rows it had by chunk and time.
     @Test
-    fun `a version 4 or 5 ledger is widened in place`(@TempDir older: Path) {
+    fun `a version 4, 5 or 6 ledger is widened in place`(@TempDir older: Path) {
         var current = 0L
         reopen { current = storedSchemaOf(dir) }
         val widensFrom = mapOf(
-            4L to everyColumnFamily - "compensated" - "confiscations",
-            5L to everyColumnFamily - "confiscations",
+            4L to everyColumnFamily - "compensated" - "confiscations" - "by_chunk",
+            5L to everyColumnFamily - "confiscations" - "by_chunk",
+            6L to everyColumnFamily - "by_chunk",
         )
         for ((version, earlier) in widensFrom) {
             val base = older.resolve("v$version")
@@ -203,6 +205,9 @@ class StorageTest : OneLedger() {
                 assertEquals(7, old.qty, "from version $version")
                 assertArrayEquals(cobblestone, widened.forms.valueOf(old.itemFormId), "from version $version")
                 assertEquals(0, widened.registries.lookupUuid(RegistryNamespace.PLAYER, alice), "from version $version")
+                val around = Box(chest.x, chest.x, chest.y, chest.y, chest.z, chest.z)
+                val inBox = widened.boxPage(world, around, 0, Long.MAX_VALUE, 10, Steps(1000)) { true }.entries
+                assertEquals(listOf(7), inBox.map { it.qty }, "the chunk-time index from version $version")
 
                 widened.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 1))
                 widened.drain()
@@ -328,14 +333,14 @@ class StorageTest : OneLedger() {
 
     private val everyColumnFamily = listOf(
         "default", "entries", "item_forms", "registry", "meta", "nested_owners", "tx", "placed_forms",
-        "block_payloads", "compensated", "confiscations",
+        "block_payloads", "compensated", "confiscations", "by_chunk",
     )
 
     // Fails when the families change: bump the schema version, don't just edit the list.
     @Test
     fun `a fresh ledger is stamped with the version that matches its families`() {
         reopen {
-            assertEquals(6L, storedSchemaOf(dir))
+            assertEquals(7L, storedSchemaOf(dir))
             assertEquals(everyColumnFamily.sorted(), familiesOf(dir).sorted())
         }
     }
@@ -767,6 +772,12 @@ class StorageTest : OneLedger() {
         assertEquals(8 to 7, log.purgeBefore(cutoff, dryRun = false))
 
         assertEquals(before, balance())
+        // The chunk-time index follows: an entry for every posting of a position left, none for one purged.
+        val inBox = log.boxPage(world, Box(chest.x, chest.x, chest.y, chest.y, chest.z, chest.z), 0, Long.MAX_VALUE, 1000, Steps(10_000)) { true }
+        assertEquals(log.holderEntries(chest, 0, Long.MAX_VALUE, limit = 1000).map { it.ref }.toSet(), inBox.entries.map { it.ref }.toSet())
+        var positional = 0
+        log.forEachEntry { if (it.holder.block != null) positional++ }
+        reopen { assertEquals(positional, rawRowsOf(dir, "by_chunk").size) }
         val left = rows()
         assertTrue(left.none { it.timestamp < cutoff }, "$left")
         val openings = left.filter { it.cause == Cause.PURGE_OPENING }

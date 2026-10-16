@@ -87,18 +87,23 @@ data class ActorRows(val blocks: List<BlockRow>, val entities: List<EntityRow>, 
 // Raised by a change to the key layout or to the set of column families. The record version in the
 // value covers neither: without the bump an older database opens and every key is parsed as something it
 // never was. A version 1 base gets its by-actor index built from its rows on first open; a version 2 base
-// simply has no entity rows yet.
-private const val BLOCK_SCHEMA_VERSION = 3L
+// simply has no entity rows yet. Anything before 4 gets its chunk-time index built the same way.
+private const val BLOCK_SCHEMA_VERSION = 4L
 private const val INDEXED_FROM = 1L
 private const val WITHOUT_ENTITIES = 2L
+private const val WITHOUT_CHUNK_TIME = 3L
+
+// The tag of a chunk-time entry: which family its row is in.
+private const val BLOCK_PLANE = 0
+private const val ENTITY_PLANE = 1
 
 private const val ACTOR_KEY_SIZE = 4 + BlockCodec.KEY_SIZE
-private val NOTHING = ByteArray(0)
 
 private val ROWS_CF = "rows".toByteArray()
 private val BLOCK_META_CF = "meta".toByteArray()
 private val BY_ACTOR_CF = "by_actor".toByteArray()
 private val ENTITIES_CF = "entities".toByteArray()
+private val BY_CHUNK_CF = "by_chunk".toByteArray()
 
 private val META_SCHEMA_KEY = "schema".toByteArray()
 private val META_EVENT_ID = "event_id".toByteArray()
@@ -157,6 +162,9 @@ class BlockLog(
     // ends to file it under, so without this "everything this player did" is a walk of the whole world.
     private val byActorCf: ColumnFamilyHandle
 
+    // Every row of either plane again, by chunk and time: see [ChunkTime].
+    private val byChunkCf: ColumnFamilyHandle
+
     // What became of the entities of this world, keyed as the block rows are.
     private val entitiesCf: ColumnFamilyHandle
 
@@ -192,7 +200,7 @@ class BlockLog(
         // Read before the open, as the ledger's is, so a base refused for its schema is left as it was found.
         val stored = cleaningUpOnFailure({ closeOptions() }) {
             storedSchema(path, BLOCK_META_CF, META_SCHEMA_KEY)?.also {
-                require(it == BLOCK_SCHEMA_VERSION || it == INDEXED_FROM || it == WITHOUT_ENTITIES) {
+                require(it == BLOCK_SCHEMA_VERSION || it == INDEXED_FROM || it == WITHOUT_ENTITIES || it == WITHOUT_CHUNK_TIME) {
                     "block database schema $it cannot be read by this build (schema $BLOCK_SCHEMA_VERSION)"
                 }
             }
@@ -203,6 +211,7 @@ class BlockLog(
             BLOCK_META_CF to metaOptions,
             BY_ACTOR_CF to byActorOptions,
             ENTITIES_CF to rowsOptions,
+            BY_CHUNK_CF to byActorOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
         // Each world load that retries a failed open would otherwise strand another set of natives.
         db = cleaningUpOnFailure({ closeOptions() }) { RocksDB.open(dbOptions, path, descriptors, cfHandles) }
@@ -210,9 +219,11 @@ class BlockLog(
         metaCf = cfHandles[2]
         byActorCf = cfHandles[3]
         entitiesCf = cfHandles[4]
+        byChunkCf = cfHandles[5]
 
         cleaningUpOnFailure({ closeNatives() }) {
             if (stored == INDEXED_FROM) indexActors()
+            if (stored != null && stored != BLOCK_SCHEMA_VERSION) indexChunks(dir)
             if (stored != BLOCK_SCHEMA_VERSION) db.put(metaCf, META_SCHEMA_KEY, longBytes(BLOCK_SCHEMA_VERSION))
             nextEventId = db.readCounter(metaCf, META_EVENT_ID)
             lastTs = db.readCounter(metaCf, META_LAST_TS)
@@ -231,6 +242,18 @@ class BlockLog(
             batch.flush()
         }
     }
+
+    // As indexActors, for the chunk-time index; a base with no entity rows yet walks an empty family.
+    private fun indexChunks(dir: Path) {
+        LOGGER.info("building the chunk-time index of ${dir.fileName}; this runs once")
+        ChunkedBatch(db, writeOptions).use { batch ->
+            db.forEachRow(rowsCf) { key, _ -> if (key.size == BlockCodec.KEY_SIZE) batch.put(byChunkCf, chunkKey(key, BLOCK_PLANE), NOTHING) }
+            db.forEachRow(entitiesCf) { key, _ -> if (key.size == BlockCodec.KEY_SIZE) batch.put(byChunkCf, chunkKey(key, ENTITY_PLANE), NOTHING) }
+            batch.flush()
+        }
+    }
+
+    private fun chunkKey(key: ByteArray, plane: Int) = ChunkTime.key(NOTHING, plane, key, 0)
 
     /**
      * Rows older than the cutoff, deleted unless `dryRun`: every one but the newest of a position no later
@@ -254,12 +277,17 @@ class BlockLog(
                     held = null
                 }
                 // Any later row of the position, old or not, means the one held is no longer its newest old row.
-                held?.let { delete(rowsCf, it); rows++ }
+                held?.let {
+                    delete(rowsCf, it)
+                    delete(byChunkCf, chunkKey(it, BLOCK_PLANE))
+                    rows++
+                }
                 held = key.takeIf { timeAt(it, Zcode.SIZE) < cutoff }
             }
             db.forEachRow(entitiesCf) { key, _ ->
                 if (timeAt(key, Zcode.SIZE) < cutoff) {
                     delete(entitiesCf, key)
+                    delete(byChunkCf, chunkKey(key, ENTITY_PLANE))
                     entities++
                 }
             }
@@ -446,21 +474,33 @@ class BlockLog(
         within: (Int, Int, Int) -> Boolean,
     ): Window<BlockRow> = window(rowsCf, Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within, ::blockRow)
 
-    /** The newest block rows of a chunk inside the box, see [newestInBox]. */
-    fun newestInChunk(chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps): BoxPage<BlockRow> =
-        newestIn(rowsCf, chunkX, chunkZ, box, fromTs, toTs, wanted, steps, ::blockRow)
-
-    /** The newest entity rows of a chunk inside the box, see [newestInBox]. */
-    fun newestEntitiesInChunk(chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps): BoxPage<EntityRow> =
-        newestIn(entitiesCf, chunkX, chunkZ, box, fromTs, toTs, wanted, steps, ::entityRow)
-
-    private fun <T> newestIn(
-        cf: ColumnFamilyHandle, chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps,
-        decode: (ByteArray, ByteArray) -> T?,
-    ): BoxPage<T> = dbLock.read {
-        if (closed) return BoxPage(emptyList(), false)
-        db.newestInBox(cf, ByteArray(0), chunkX, chunkZ, box, fromTs, toTs, wanted, steps, decode)
+    /**
+     * The newest rows of either plane standing in the box that the filters keep, see [newestInBox], and the
+     * rollback rows among them whatever the filters say: those mark a row given back, and take no place on
+     * the page.
+     */
+    fun newestInBox(
+        box: Box,
+        fromTs: Long,
+        toTs: Long,
+        wanted: Int,
+        steps: Steps,
+        keepBlock: (BlockRow) -> Boolean,
+        keepEntity: (EntityRow) -> Boolean,
+    ): ActorRows = dbLock.read {
+        if (closed) return ActorRows(emptyList(), emptyList(), false)
+        val page = db.newestInBox<Any>(byChunkCf, NOTHING, box, fromTs, toTs, wanted, steps, { index ->
+            val key = ChunkTime.rowKey(index, 0, NOTHING)
+            if (ChunkTime.tag(index) == ENTITY_PLANE) db.get(entitiesCf, key)?.let { entityRow(key, it) }
+            else db.get(rowsCf, key)?.let { blockRow(key, it) }
+        }, { row -> rollback(row) || kept(row, keepBlock, keepEntity) }) { row -> kept(row, keepBlock, keepEntity) }
+        ActorRows(page.rows.filterIsInstance<BlockRow>(), page.rows.filterIsInstance<EntityRow>(), page.complete)
     }
+
+    private fun rollback(row: Any) = (row as? BlockRow)?.cause == Cause.ROLLBACK || (row as? EntityRow)?.cause == Cause.ROLLBACK
+
+    private fun kept(row: Any, keepBlock: (BlockRow) -> Boolean, keepEntity: (EntityRow) -> Boolean) =
+        if (row is BlockRow) keepBlock(row) else keepEntity(row as EntityRow)
 
     fun windowAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): Window<BlockRow> =
         window(rowsCf, BlockCodec.positionPrefix(x, y, z), fromTs, toTs, budget, { _, _, _ -> true }, ::blockRow)
@@ -651,6 +691,7 @@ class BlockLog(
         val key = BlockCodec.key(change.x, change.y, change.z, change.timestamp, eventId, ordinal)
         batch.put(entitiesCf, key, EntityCodec.value(row, shared.registries))
         indexActor(batch, change.actor, key)
+        batch.put(byChunkCf, chunkKey(key, ENTITY_PLANE), NOTHING)
     }
 
     private fun writeChange(
@@ -696,6 +737,7 @@ class BlockLog(
         batch.put(rowsCf, key, BlockCodec.value(row, shared.registries))
         // In the same batch as the row, so the index never names a row that is not there or misses one.
         indexActor(batch, change.actor, key)
+        batch.put(byChunkCf, chunkKey(key, BLOCK_PLANE), NOTHING)
         batchTs[here] = ts
     }
 

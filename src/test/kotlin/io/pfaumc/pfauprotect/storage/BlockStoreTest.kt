@@ -310,13 +310,13 @@ class BlockStoreTest : BothPlanes() {
         }
     }
 
-    private val everyBlockFamily = listOf("by_actor", "default", "entities", "meta", "rows")
+    private val everyBlockFamily = listOf("by_actor", "by_chunk", "default", "entities", "meta", "rows")
 
     // Fails when the families change: bump the schema version, don't just edit the list.
     @Test
     fun `a fresh base is stamped with the version that matches its families`() {
         whileClosed { base ->
-            assertEquals(3L, storedSchemaOf(base))
+            assertEquals(4L, storedSchemaOf(base))
             assertEquals(everyBlockFamily, familiesOf(base).sorted())
         }
     }
@@ -355,6 +355,26 @@ class BlockStoreTest : BothPlanes() {
         }
 
         assertEquals(setOf(listOf(7, 64, 7)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
+        whileClosed { base -> assertEquals(current, storedSchemaOf(base)) }
+    }
+
+    // A base from before the chunk-time index has its rows and entities and no index of them: the first open
+    // builds it, so a radius does not see only what happened after the upgrade.
+    @Test
+    fun `a base from before the chunk-time index is indexed on its first open`() {
+        log.submit(listOf(placed(7, 64, 7, ts = T0)))
+        log.submit(listOf(EntityChange(7, 65, 7, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:cow", UUID.randomUUID(), T0 + 1, actor = alice)))
+        log.drain()
+        val current = whileClosed { base ->
+            storedSchemaOf(base).also {
+                rawEdit(base) { raw, family -> raw.dropColumnFamily(family("by_chunk")) }
+                stampSchema(base, 3L)
+            }
+        }
+
+        val found = log.newestInBox(Box(0, 15, 60, 70, 0, 15), 0, Long.MAX_VALUE, 10, Steps(1000), { true }) { true }
+        assertEquals(listOf(T0), found.blocks.map { it.timestamp })
+        assertEquals(listOf(T0 + 1), found.entities.map { it.timestamp })
         whileClosed { base -> assertEquals(current, storedSchemaOf(base)) }
     }
 
@@ -404,6 +424,8 @@ class BlockStoreTest : BothPlanes() {
         val newEntities = spots.filterIndexed { i, _ -> i % 3 == 2 }.map { (x, y, z) -> listOf(x, y + 1, z) }
         assertEquals(spots.toSet() + newEntities, log.touchedBy(alice, 0, Long.MAX_VALUE, 1_000).positions)
         assertEquals(0 to 0, log.purgeBefore(cutoff, dryRun = true))
+        // And the chunk-time index: an entry for every row left and none for a row purged.
+        whileClosed { base -> assertEquals(rawRowsOf(base, "rows").size + rawRowsOf(base, "entities").size, rawRowsOf(base, "by_chunk").size) }
     }
 
     // The ledger's writer meets a player in a transaction it then has to drop. A block writer has already
@@ -586,16 +608,61 @@ class BlockStoreTest : BothPlanes() {
         val box = Box(2, 10, 60, 66, 0, 10)
         val all = inside.flatMap { (x, y, z) -> log.rowsAt(x, y, z) }.sortedByDescending { it.timestamp }
 
-        assertEquals(all.take(7), log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 7, Steps(1000)).rows)
-        assertEquals(all, log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, Steps(1000)).rows)
+        fun newest(wanted: Int, steps: Steps = Steps(1000), from: Long = 0, to: Long = Long.MAX_VALUE, keep: (BlockRow) -> Boolean = { true }) =
+            log.newestInBox(box, from, to, wanted, steps, keep) { true }
+
+        assertEquals(all.take(7), newest(7).blocks)
+        assertEquals(all, newest(100).blocks)
         val window = all.filter { it.timestamp in T0 + 1000..T0 + 2999 }
-        assertEquals(window, log.newestInChunk(0, 0, box, T0 + 1000, T0 + 2999, 100, Steps(1000)).rows)
-        assertFalse(log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, Steps(5)).complete)
+        assertEquals(window, newest(100, from = T0 + 1000, to = T0 + 2999).blocks)
+        // The filter is asked before the page counts a row, so a page of what it keeps reaches past the rest.
+        assertEquals(all.filter { it.y == 64 }.take(3), newest(3) { it.y == 64 }.blocks)
+        assertFalse(newest(100, Steps(5)).complete)
         // Steps are shared: a walk after one that spent them is cut short too, and says so.
         val shared = Steps(30)
-        log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, shared)
-        assertFalse(log.newestInChunk(0, 0, box, 0, Long.MAX_VALUE, 100, shared).complete)
+        newest(100, shared)
+        assertFalse(newest(100, shared).complete)
         assertTrue(shared.ranOut)
+    }
+
+    // A box that only grazes a busy chunk once read that chunk back until it had a page of its own, which a
+    // chunk with nothing in the box never has: its whole history, every time. Walked together, the chunks are
+    // read back no further than the page needs.
+    @Test
+    fun `a chunk the box only grazes is not read to the end of its history`() {
+        repeat(500) { log.submit(listOf(placed(20 + it % 10, 64, 2 + it / 10 % 10, ts = T0 + it))) }
+        log.submit(listOf(placed(2, 64, 2, ts = T0 + 1000)))
+        log.submit(listOf(placed(3, 64, 2, ts = T0 + 1001)))
+        log.drain()
+
+        val page = log.newestInBox(Box(0, 16, 60, 70, 0, 10), 0, Long.MAX_VALUE, 2, Steps(20), { true }) { true }
+        assertEquals(listOf(3, 2), page.blocks.map { it.x })
+    }
+
+    // A page that fills on the last row of the window has read all of it, and says so: a read said to have
+    // stopped early sends the reader after rows that are not there.
+    @Test
+    fun `a box whose last row fills the page says it read everything`() {
+        log.submit(listOf(placed(2, 64, 2, ts = T0)))
+        log.submit(listOf(placed(3, 64, 2, ts = T0 + 1)))
+        log.drain()
+        val box = Box(0, 15, 60, 70, 0, 15)
+
+        assertTrue(log.newestInBox(box, 0, Long.MAX_VALUE, 2, Steps(1000), { true }) { true }.complete)
+        assertFalse(log.newestInBox(box, 0, Long.MAX_VALUE, 1, Steps(1000), { true }) { true }.complete)
+    }
+
+    // The rollback rows of a box come back whatever the filter, to mark what they gave back, and take no place on
+    // the page: a box rolled back again and again would otherwise fill the page with rows the filter then drops.
+    @Test
+    fun `a box hands back its rollback rows without counting them to the page`() {
+        log.submit(listOf(placed(2, 64, 2, ts = T0)))
+        repeat(5) { log.submit(listOf(BlockChange(3, 64, 2, AIR, STONE, Cause.ROLLBACK, T0 + 10 + it))) }
+        log.drain()
+
+        val page = log.newestInBox(Box(0, 15, 60, 70, 0, 15), 0, Long.MAX_VALUE, 1, Steps(1000), { it.cause != Cause.ROLLBACK }) { true }
+        assertEquals(listOf(2), page.blocks.filter { it.cause != Cause.ROLLBACK }.map { it.x })
+        assertEquals(5, page.blocks.count { it.cause == Cause.ROLLBACK })
     }
 
     // Two changes in one millisecond, the later one at a position the walk reaches last: by the time alone the
@@ -606,7 +673,7 @@ class BlockStoreTest : BothPlanes() {
         log.submit(listOf(placed(2, 64, 5, after = DIRT, ts = T0)))
         log.drain()
 
-        val newest = log.newestInChunk(0, 0, Box(0, 15, 60, 70, 0, 15), 0, Long.MAX_VALUE, 1, Steps(1000)).rows
+        val newest = log.newestInBox(Box(0, 15, 60, 70, 0, 15), 0, Long.MAX_VALUE, 1, Steps(1000), { true }) { true }.blocks
         assertEquals(listOf(2 to 5), newest.map { it.x to it.z })
     }
 

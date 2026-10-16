@@ -326,22 +326,35 @@ class LookupReadTest : BothPlanes() {
     // rows behind the cut, and it offers no page 2: that page starts past every matched row and is empty.
     @Test
     fun `a read that stopped early says so and offers no next page`() {
-        val nextDoor = WorldBlock(world, 11, 64, -3)
-        repeat(40) { i -> shared.submit(Transfer(Cause.BLK_TNT, nextDoor, Void, stone, null, 1, T0 + i)) }
+        val here = WorldBlock(world, 10, 64, -3)
+        repeat(40) { i -> shared.submit(Transfer(Cause.BLK_TNT, here, Void, stone, null, 1, T0 + i)) }
         shared.drain()
-        // Forty rows inside the box, more than one row's worth of read, and none of them the kind asked for.
-        val query = LookupQuery(radius = 1, rows = 1, causes = setOf(Cause.BLOCK_PLACE))
+        // Forty rows of the position, more than one row's worth of read, and none of them the kind asked for.
+        val query = LookupQuery(rows = 1, causes = setOf(Cause.BLOCK_PLACE))
 
         val empty = said(query)
         assertTrue(empty.single().contains("limit:4"), "$empty")
 
-        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, WorldBlock(world, 10, 64, -3), stone, null, 1, T0 + 100))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, here, stone, null, 1, T0 + 100))
         shared.drain()
 
         val lines = said(query)
         assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
         assertTrue(lines.none { it.contains("page:2") }, "$lines")
         assertTrue(lines.last().contains("limit:4"), "$lines")
+    }
+
+    // A radius asks its filter of each row as it walks the index, so the rows it drops do not use up the read
+    // and a match behind them is found, where a read cut at a row count would have stopped short of it.
+    @Test
+    fun `a radius reads past the rows its filter drops`() {
+        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, WorldBlock(world, 10, 64, -3), stone, null, 1, T0))
+        repeat(40) { i -> shared.submit(Transfer(Cause.BLK_TNT, WorldBlock(world, 11, 64, -3), Void, stone, null, 1, T0 + 1 + i)) }
+        shared.drain()
+
+        val lines = said(LookupQuery(radius = 1, rows = 1, causes = setOf(Cause.BLOCK_PLACE)))
+        assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
+        assertTrue(lines.none { it.contains("limit:4") }, "nothing was cut short: $lines")
     }
 
     // A filter by action drops the rollback rows themselves, and a mark read among what the filter kept
