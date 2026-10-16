@@ -14,6 +14,7 @@ import org.rocksdb.ColumnFamilyOptions
 import org.rocksdb.CompressionType
 import org.rocksdb.DBOptions
 import org.rocksdb.Filter
+import org.rocksdb.IndexType
 import org.rocksdb.LRUCache
 import org.rocksdb.Options
 import org.rocksdb.ReadOptions
@@ -174,12 +175,22 @@ internal fun afterPrefix(prefix: ByteArray): ByteArray {
 // Index and filter blocks live in the cache too: outside it a table reader keeps them for as long as
 // its file is open, and they grow with the data with nothing to bound them. They go into the cache's
 // high-priority pool, ahead of data blocks, since evicting an index costs a read on every lookup.
+// A file's index and filter, whole, grow with its rows to megabytes, and a base of billions of rows has
+// more of them than the cache holds: a point read loaded a whole file's worth to answer one key. Cut into
+// partitions, a read loads the few kilobytes it needs, and the small top level of each stays pinned.
 internal fun tableIn(cache: Cache, filter: Filter? = null): BlockBasedTableConfig =
     BlockBasedTableConfig()
         .setBlockCache(cache)
         .setCacheIndexAndFilterBlocks(true)
         .setCacheIndexAndFilterBlocksWithHighPriority(true)
+        .setIndexType(IndexType.kTwoLevelIndexSearch)
+        .setPartitionFilters(filter != null)
+        .setMetadataBlockSize(METADATA_BLOCK_BYTES)
+        .setPinTopLevelIndexAndFilter(true)
         .also { table -> filter?.let { table.setFilterPolicy(it) } }
+
+private const val METADATA_BLOCK_BYTES = 4096L
+internal const val CACHE_SHARD_BITS = 2
 
 // Refusing a database that is already open, or failing to open it, has to hand the natives back with
 // the refusal. Nothing outside reaches a constructor that threw, so the file lock and the native memory
@@ -359,8 +370,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     }
 
     // Lent to every world's base for as long as it is open. The pool is the native default's half for
-    // index and filter blocks, which RocksJava's one-argument constructor leaves at nothing.
-    internal val blockCache = LRUCache(BLOCK_CACHE_BYTES, -1, false, 0.5)
+    // index and filter blocks, which RocksJava's one-argument constructor leaves at nothing. Four shards
+    // rather than the native default's 64: a file written before its index and filter were partitioned
+    // has them as one block of megabytes, which a 4 MB shard cannot keep, and every read loaded it again.
+    internal val blockCache = LRUCache(BLOCK_CACHE_BYTES, CACHE_SHARD_BITS, false, 0.5)
     internal val writeBuffers = WriteBufferManager(MEMTABLE_BYTES, blockCache)
 
     // Every base built on the cache and the memtable budget holds them until its own options are freed,
