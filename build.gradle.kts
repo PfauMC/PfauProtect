@@ -114,6 +114,17 @@ tasks.register<JavaExec>("ledgerRows") {
     workingDir = rootDir
 }
 
+// Fills a base with history and times the lookups on it, see tools/Bench.kt:
+// ./gradlew bench --args="gen D:/pp-bench 1000000000", then --args="run D:/pp-bench".
+tasks.register<JavaExec>("bench") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.pfaumc.pfauprotect.tools.BenchKt")
+    val work = layout.buildDirectory.dir("bench-work")
+    workingDir(work)
+    doFirst { work.get().asFile.mkdirs() }
+    maxHeapSize = "4g"
+}
+
 tasks.runServer {
     // Only picks the -add-plugin/--nogui code paths; the jar itself comes from serverJar below.
     version(canvasMinecraftVersion)

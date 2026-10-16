@@ -113,8 +113,13 @@ internal const val KEY_TAIL_PAD = 32
 // a family, which across the ledger and every world adds up to hundreds of MiB nobody sized.
 internal const val BLOCK_CACHE_BYTES = 256L * 1024 * 1024
 
+// Set only by tools/Bench.kt, which writes a server's years of history in hours. Sized for a server's
+// trickle, the bases flush small files and compact them on two threads, and at that rate writes spent
+// half their time stalled behind compaction: here memtables are bigger and compaction has every core.
+private val BULK = java.lang.Boolean.getBoolean("pfauprotect.bulk")
+
 // Of that, what memtables of all the bases together may hold before the fullest is flushed.
-internal const val MEMTABLE_BYTES = 64L * 1024 * 1024
+internal val MEMTABLE_BYTES = if (BULK) 2048L * 1024 * 1024 else 64L * 1024 * 1024
 internal const val BLOOM_BITS_PER_KEY = 10.0
 
 // The ledger takes every write; the rest hold a handful of small rows each and have no use for the
@@ -152,6 +157,7 @@ internal fun openingOptions(writeBuffers: WriteBufferManager): DBOptions = DBOpt
     .setCreateIfMissing(true)
     .setCreateMissingColumnFamilies(true)
     .setWriteBufferManager(writeBuffers)
+    .also { if (BULK) it.setMaxBackgroundJobs(Runtime.getRuntime().availableProcessors()) }
 
 // The handles before the database that issued them; the options are the caller's to free after both.
 internal fun RocksDB.closeWithHandles(handles: List<ColumnFamilyHandle>) {
@@ -164,6 +170,9 @@ internal fun RocksDB.closeWithHandles(handles: List<ColumnFamilyHandle>) {
 internal fun compressed() = ColumnFamilyOptions()
     .setCompressionType(CompressionType.LZ4_COMPRESSION)
     .setBottommostCompressionType(CompressionType.ZSTD_COMPRESSION)
+    .also { if (BULK) it.setWriteBufferSize(BULK_WRITE_BUFFER_BYTES) }
+
+private const val BULK_WRITE_BUFFER_BYTES = 256L * 1024 * 1024
 
 // The smallest key that sorts after everything under `prefix`. A prefix of nothing but 0xFF bytes has
 // none, and an item key cannot produce one: it opens with a holder type, which is never 0xFF.
