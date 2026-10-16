@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.Metrics
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.HolderType
 import io.pfaumc.pfauprotect.model.LedgerEntry
@@ -14,6 +15,7 @@ import org.rocksdb.ColumnFamilyOptions
 import org.rocksdb.CompressionType
 import org.rocksdb.DBOptions
 import org.rocksdb.Filter
+import org.rocksdb.IndexType
 import org.rocksdb.LRUCache
 import org.rocksdb.Options
 import org.rocksdb.ReadOptions
@@ -111,8 +113,13 @@ internal const val KEY_TAIL_PAD = 32
 // a family, which across the ledger and every world adds up to hundreds of MiB nobody sized.
 internal const val BLOCK_CACHE_BYTES = 256L * 1024 * 1024
 
+// Set only by tools/Bench.kt, which writes a server's years of history in hours. Sized for a server's
+// trickle, the bases flush small files and compact them on two threads, and at that rate writes spent
+// half their time stalled behind compaction: here memtables are bigger and compaction has every core.
+private val BULK = java.lang.Boolean.getBoolean("pfauprotect.bulk")
+
 // Of that, what memtables of all the bases together may hold before the fullest is flushed.
-internal const val MEMTABLE_BYTES = 64L * 1024 * 1024
+internal val MEMTABLE_BYTES = if (BULK) 2048L * 1024 * 1024 else 64L * 1024 * 1024
 internal const val BLOOM_BITS_PER_KEY = 10.0
 
 // The ledger takes every write; the rest hold a handful of small rows each and have no use for the
@@ -150,6 +157,7 @@ internal fun openingOptions(writeBuffers: WriteBufferManager): DBOptions = DBOpt
     .setCreateIfMissing(true)
     .setCreateMissingColumnFamilies(true)
     .setWriteBufferManager(writeBuffers)
+    .also { if (BULK) it.setMaxBackgroundJobs(Runtime.getRuntime().availableProcessors()) }
 
 // The handles before the database that issued them; the options are the caller's to free after both.
 internal fun RocksDB.closeWithHandles(handles: List<ColumnFamilyHandle>) {
@@ -162,6 +170,9 @@ internal fun RocksDB.closeWithHandles(handles: List<ColumnFamilyHandle>) {
 internal fun compressed() = ColumnFamilyOptions()
     .setCompressionType(CompressionType.LZ4_COMPRESSION)
     .setBottommostCompressionType(CompressionType.ZSTD_COMPRESSION)
+    .also { if (BULK) it.setWriteBufferSize(BULK_WRITE_BUFFER_BYTES) }
+
+private const val BULK_WRITE_BUFFER_BYTES = 256L * 1024 * 1024
 
 // The smallest key that sorts after everything under `prefix`. A prefix of nothing but 0xFF bytes has
 // none, and an item key cannot produce one: it opens with a holder type, which is never 0xFF.
@@ -174,12 +185,22 @@ internal fun afterPrefix(prefix: ByteArray): ByteArray {
 // Index and filter blocks live in the cache too: outside it a table reader keeps them for as long as
 // its file is open, and they grow with the data with nothing to bound them. They go into the cache's
 // high-priority pool, ahead of data blocks, since evicting an index costs a read on every lookup.
+// A file's index and filter, whole, grow with its rows to megabytes, and a base of billions of rows has
+// more of them than the cache holds: a point read loaded a whole file's worth to answer one key. Cut into
+// partitions, a read loads the few kilobytes it needs, and the small top level of each stays pinned.
 internal fun tableIn(cache: Cache, filter: Filter? = null): BlockBasedTableConfig =
     BlockBasedTableConfig()
         .setBlockCache(cache)
         .setCacheIndexAndFilterBlocks(true)
         .setCacheIndexAndFilterBlocksWithHighPriority(true)
+        .setIndexType(IndexType.kTwoLevelIndexSearch)
+        .setPartitionFilters(filter != null)
+        .setMetadataBlockSize(METADATA_BLOCK_BYTES)
+        .setPinTopLevelIndexAndFilter(true)
         .also { table -> filter?.let { table.setFilterPolicy(it) } }
+
+private const val METADATA_BLOCK_BYTES = 4096L
+internal const val CACHE_SHARD_BITS = 2
 
 // Refusing a database that is already open, or failing to open it, has to hand the natives back with
 // the refusal. Nothing outside reaches a constructor that threw, so the file lock and the native memory
@@ -222,6 +243,12 @@ internal fun storedSchema(path: String, metaCf: ByteArray, key: ByteArray): Long
 
 // Padded rather than the key after the prefix: a backward seek lands on the last key at or before its
 // target, and the key after the prefix may itself be a key, one that already belongs to the next prefix.
+internal const val ESTIMATED_KEYS = "rocksdb.estimate-num-keys"
+
+/** Bytes compaction still has to rewrite across the families, with each compaction running counted as one. */
+internal fun RocksDB.compactionDebt(handles: List<ColumnFamilyHandle>): Long =
+    handles.sumOf { getLongProperty(it, "rocksdb.estimate-pending-compaction-bytes") } + getLongProperty("rocksdb.num-running-compactions")
+
 internal fun lastUnder(prefix: ByteArray): ByteArray =
     ByteWriter(prefix.size + KEY_TAIL_PAD)
         .bytes(prefix)
@@ -244,7 +271,7 @@ internal inline fun RocksDB.forEachUnder(
 ) {
     ReadOptions().setTotalOrderSeek(true).use { options ->
         newIterator(cf, options).use { iter ->
-            if (reverse) iter.seekForPrev(lastUnder(prefix)) else iter.seek(from ?: prefix)
+            if (reverse) iter.seekForPrev(from ?: lastUnder(prefix)) else iter.seek(from ?: prefix)
             while (iter.isValid) {
                 val key = iter.key()
                 if (!key.startsWith(prefix)) break
@@ -256,6 +283,90 @@ internal inline fun RocksDB.forEachUnder(
             iter.status()
         }
     }
+}
+
+internal fun timeAt(key: ByteArray, offset: Int): Long = ByteReader(key).also { it.bytes(offset) }.longBE()
+
+/** A box of block positions, both ends included. */
+data class Box(val minX: Int, val maxX: Int, val minY: Int, val maxY: Int, val minZ: Int, val maxZ: Int)
+
+/** The newest rows a walk of a box found, newest first; not `complete` when it ran out of budget first. */
+data class BoxPage<T>(val rows: List<T>, val complete: Boolean)
+
+/**
+ * The seeks and rows one lookup may spend, shared by every walk it makes: a radius spans many chunks and each
+ * is walked once a plane, and a budget each would let one lookup run up thousands of them.
+ */
+class Steps(private var left: Int) {
+    var ranOut = false
+        private set
+
+    fun take(): Boolean {
+        if (left <= 0) ranOut = true else left--
+        return !ranOut
+    }
+}
+
+/**
+ * The [wanted] newest rows of the window whose position is in [box] and in one chunk, newest first, of a
+ * family whose keys run [head], the position as `Zcode` writes it, then the time: each position's history
+ * is one run, oldest first, and a chunk's positions run column by column. The positions are walked backward
+ * and each is read back only while its rows are newer than the [wanted]th newest found so far, which after
+ * the first few positions is one row. A busy place costs a seek per position of the box that has a history,
+ * where reading the chunk would cost all of it. Each seek and each row is one of the [steps]. Rows rank by
+ * the rest of their key, the time and then the event or transaction and the ordinal, which is the order both
+ * planes read in: by the time alone, two changes of one millisecond would keep whichever was walked first.
+ */
+internal fun <T> RocksDB.newestInBox(
+    cf: ColumnFamilyHandle,
+    head: ByteArray,
+    chunkX: Int,
+    chunkZ: Int,
+    box: Box,
+    fromTs: Long,
+    toTs: Long,
+    wanted: Int,
+    steps: Steps,
+    decode: (ByteArray, ByteArray) -> T?,
+): BoxPage<T> {
+    val xs = maxOf(box.minX, chunkX shl 4)..minOf(box.maxX, (chunkX shl 4) + 15)
+    val zs = maxOf(box.minZ, chunkZ shl 4)..minOf(box.maxZ, (chunkZ shl 4) + 15)
+    if (xs.isEmpty() || zs.isEmpty() || box.minY > box.maxY || wanted <= 0) return BoxPage(emptyList(), true)
+    val byRank = Comparator<Pair<ByteArray, T>> { a, b -> java.util.Arrays.compareUnsigned(a.first, b.first) }
+    val found = java.util.PriorityQueue(byRank)
+    fun newestFirst() = found.sortedWith(byRank.reversed()).map { it.second }
+    val stamp = head.size + Zcode.SIZE
+    ReadOptions().setTotalOrderSeek(true).use { options ->
+        newIterator(cf, options).use { iter ->
+            for (x in xs.reversed()) for (z in zs.reversed()) {
+                val column = head + Zcode.encode(x, box.maxY, z).copyOf(Zcode.SIZE - 2)
+                iter.seekForPrev(lastUnder(head + Zcode.encode(x, box.maxY, z)))
+                while (iter.isValid) {
+                    val key = iter.key()
+                    if (!key.startsWith(column) || key.size < stamp + 8 || Zcode.decode(key, head.size)[1] < box.minY) break
+                    val position = key.copyOf(stamp)
+                    if (toTs != Long.MAX_VALUE) iter.seekForPrev(lastUnder(position + longBytes(toTs)))
+                    while (iter.isValid) {
+                        val row = iter.key()
+                        if (!row.startsWith(position)) break
+                        if (!steps.take()) return BoxPage(newestFirst(), false)
+                        val rank = row.copyOfRange(stamp, row.size)
+                        if (timeAt(row, stamp) < fromTs || found.size >= wanted && java.util.Arrays.compareUnsigned(rank, found.peek().first) <= 0) break
+                        decode(row, iter.value())?.let {
+                            found += rank to it
+                            if (found.size > wanted) found.poll()
+                        }
+                        iter.prev()
+                    }
+                    if (!steps.take()) return BoxPage(newestFirst(), false)
+                    // The last key before this position: the newest row of the one below it, or another column's.
+                    iter.seekForPrev(position)
+                }
+            }
+            iter.status()
+        }
+    }
+    return BoxPage(newestFirst(), true)
 }
 
 // Every row of a family in key order: every key starts with the empty prefix.
@@ -337,8 +448,9 @@ internal class WriterProgress<T>(private val writer: String, private val unit: S
                     val batched = ArrayList<T>(MAX_BATCH)
                     batched += first
                     queue.drainTo(batched, MAX_BATCH - 1)
-                    write(batched)
+                    Metrics.writes.labelValues(writer).startTimer().use { write(batched) }
                     written.addAndGet(batched.size.toLong())
+                    Metrics.written.labelValues(writer).inc(batched.size.toDouble())
                 }
                 if (System.nanoTime() - lastFlush >= WAL_FLUSH_INTERVAL_NANOS) {
                     db.flushWal(true)
@@ -359,8 +471,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     }
 
     // Lent to every world's base for as long as it is open. The pool is the native default's half for
-    // index and filter blocks, which RocksJava's one-argument constructor leaves at nothing.
-    internal val blockCache = LRUCache(BLOCK_CACHE_BYTES, -1, false, 0.5)
+    // index and filter blocks, which RocksJava's one-argument constructor leaves at nothing. Four shards
+    // rather than the native default's 64: a file written before its index and filter were partitioned
+    // has them as one block of megabytes, which a 4 MB shard cannot keep, and every read loaded it again.
+    internal val blockCache = LRUCache(BLOCK_CACHE_BYTES, CACHE_SHARD_BITS, false, 0.5)
     internal val writeBuffers = WriteBufferManager(MEMTABLE_BYTES, blockCache)
 
     // Every base built on the cache and the memtable budget holds them until its own options are freed,
@@ -457,6 +571,14 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     private val progress = WriterProgress("ledger", "transfers", queue)
 
     val backlog: Long get() = progress.backlog
+
+    /** How many postings the ledger holds, as RocksDB estimates it without reading them. */
+    fun estimatedRows(): Map<String, Long> = dbLock.read {
+        if (closed) return emptyMap()
+        mapOf("entries" to db.getLongProperty(entriesCf, ESTIMATED_KEYS))
+    }
+
+    fun compactionDebt(): Long = dbLock.read { if (closed) 0 else db.compactionDebt(cfHandles) }
 
     @Volatile
     private var running = true
@@ -574,6 +696,27 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     ): EntryPage = dbLock.read {
         if (closed) return EntryPage(emptyList(), false)
         scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit)
+    }
+
+    /** The newest postings of the holders standing in the box, newest first, see [newestInBox]. */
+    fun boxPage(world: UUID, box: Box, fromTs: Long, toTs: Long, limit: Int, steps: Steps): EntryPage {
+        if (registries.lookupUuid(RegistryNamespace.WORLD, world) == null) return EntryPage(emptyList(), true)
+        return dbLock.read {
+            if (closed) return EntryPage(emptyList(), false)
+            val heads = EntryCodec.positionalHeads(world, knownIds)
+            val pages = ((box.minX shr 4)..(box.maxX shr 4)).flatMap { cx ->
+                ((box.minZ shr 4)..(box.maxZ shr 4)).flatMap { cz ->
+                    // One row past the limit, which is what tells a box with more in it from one read to the end.
+                    heads.map { head ->
+                        db.newestInBox(entriesCf, head, cx, cz, box, fromTs, toTs, limit + 1, steps) { key, value ->
+                            EntryCodec.decodeOrNull(key, value, registries)
+                        }
+                    }
+                }
+            }
+            val newest = pages.flatMap { it.rows }.sortedWith(compareBy<LedgerEntry>({ it.timestamp }, { it.txId }).reversed())
+            EntryPage(newest.take(limit), pages.all { it.complete } && newest.size <= limit)
+        }
     }
 
     fun regionPage(

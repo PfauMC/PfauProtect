@@ -148,6 +148,20 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.none { it.contains("Bob") || it.contains("minecraft:stone → minecraft:air") }, "$lines")
     }
 
+    // The index was once walked oldest first and cut at a few thousand places, so a busy player's first page
+    // showed what they did months ago. The read is newest first and stops at the page.
+    @Test
+    fun `a world-wide lookup of a busy player starts at their newest row, rolled back or not`() {
+        repeat(5000) { log.submit(listOf(BlockChange(it, 64, 0, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + it, actor = alice))) }
+        log.submit(listOf(BlockChange(-7, 64, 0, AIR, "minecraft:dirt", Cause.BLK_PLAYER_PLACE, T0 + 9000, actor = alice)))
+        log.submit(listOf(BlockChange(-7, 64, 0, "minecraft:dirt", AIR, Cause.ROLLBACK, T0 + 9500)))
+        log.drain()
+
+        val lines = said(LookupQuery(users = listOf("Alice"), radius = -1, all = true), players = mapOf("Alice" to alice))
+
+        assertTrue(lines.first { " → " in it }.let { "minecraft:air → minecraft:dirt" in it && "rolled back" in it }, "$lines")
+    }
+
     @Test
     fun `a mutation says the item changed in place`() {
         val anvil = Container(world, 10, 64, -3, 0)

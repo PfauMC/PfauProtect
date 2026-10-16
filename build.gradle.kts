@@ -17,6 +17,7 @@ val canvasMinecraftVersion = "26.3"
 // 26.3 has no stable builds yet; the dev bundle's version carries the channel.
 val canvasChannel = "alpha"
 val rocksdbVersion = "10.4.2"
+val prometheusVersion = "1.9.0"
 
 kotlin {
     jvmToolchain(25)
@@ -41,10 +42,14 @@ dependencies {
         group = "io.canvasmc.canvas",
     )
     library("org.jetbrains.kotlin:kotlin-stdlib:2.4.0")
+    library("io.prometheus:prometheus-metrics-core:$prometheusVersion")
+    library("io.prometheus:prometheus-metrics-exporter-httpserver:$prometheusVersion")
 
     compileOnly("org.rocksdb:rocksdbjni:$rocksdbVersion")
 
     testImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.0")
+    testImplementation("io.prometheus:prometheus-metrics-core:$prometheusVersion")
+    testImplementation("io.prometheus:prometheus-metrics-exporter-httpserver:$prometheusVersion")
     testImplementation("org.rocksdb:rocksdbjni:$rocksdbVersion:osx")
     testImplementation("org.rocksdb:rocksdbjni:$rocksdbVersion:linux64")
     // Tests also run on Windows dev machines; the server itself never does, so plugin.yml stays
@@ -107,6 +112,17 @@ tasks.register<JavaExec>("ledgerRows") {
     classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("io.pfaumc.pfauprotect.tools.LedgerRowsKt")
     workingDir = rootDir
+}
+
+// Fills a base with history and times the lookups on it, see tools/Bench.kt:
+// ./gradlew bench --args="gen D:/pp-bench 1000000000", then --args="run D:/pp-bench".
+tasks.register<JavaExec>("bench") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.pfaumc.pfauprotect.tools.BenchKt")
+    val work = layout.buildDirectory.dir("bench-work")
+    workingDir(work)
+    doFirst { work.get().asFile.mkdirs() }
+    maxHeapSize = "4g"
 }
 
 tasks.runServer {

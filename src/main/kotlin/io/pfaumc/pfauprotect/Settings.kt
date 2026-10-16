@@ -24,6 +24,10 @@ object Settings {
 
     @Volatile var hiddenCommands = setOf("login", "l", "log", "register", "reg", "changepassword", "changepass", "unregister")
 
+    // 0 keeps /metrics closed.
+    @Volatile var metricsPort = 0
+    @Volatile var metricsAddress = "127.0.0.1"
+
     fun load(config: FileConfiguration, log: Logger) {
         language = config.getString("language", language)!!.lowercase().takeIf { it in LANGUAGES } ?: run {
             log.warning("config.yml: language must be one of $LANGUAGES; using en")
@@ -42,6 +46,8 @@ object Settings {
         freshMillis = config.getLong("mobs.fresh-minutes", freshMillis / 60_000).coerceIn(0, 24 * 60) * 60_000
         crowd = config.getInt("mobs.crowd", crowd).coerceIn(2, 1_000)
         if (config.contains("chat.hidden-commands")) hiddenCommands = config.getStringList("chat.hidden-commands").map { it.lowercase() }.toSet()
+        metricsPort = config.getInt("metrics.port", metricsPort).coerceIn(0, 65_535)
+        metricsAddress = config.getString("metrics.address", metricsAddress)!!
     }
 
     private val LANGUAGES = setOf("ru", "en")

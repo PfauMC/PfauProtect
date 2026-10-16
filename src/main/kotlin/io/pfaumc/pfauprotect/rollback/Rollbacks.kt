@@ -93,6 +93,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.sqrt
+import io.pfaumc.pfauprotect.Metrics
 import io.pfaumc.pfauprotect.Settings
 import net.minecraft.server.level.ServerPlayer
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -931,6 +932,8 @@ class Rollbacks(
     private fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, apply: Boolean, startedAt: Long = 0) {
         val release = { if (apply) slot.release(startedAt) }
         plugin.offThread(sender, "the rollback at ${target.label} failed", "The rollback failed; the server log has the details.") {
+            // From before the read, which on a long window is most of the time a rollback takes.
+            val began = System.nanoTime()
             try {
                 val users = lookups.resolveAll(sender, query.users)
                 if (users == null) {
@@ -990,7 +993,7 @@ class Rollbacks(
                     }
                     else -> {
                         val leftBefore = if (apply || users.isEmpty()) 0 else reader.leftByThemBefore(plans, users, from)
-                        dispatch(sender, plans, where, apply, release, rows = rowsOf(query, target), leftBefore = leftBefore, since = from)
+                        dispatch(sender, plans, where, apply, release, rows = rowsOf(query, target), leftBefore = leftBefore, since = from, began = began)
                     }
                 }
             } catch (failure: Throwable) {
@@ -1016,6 +1019,7 @@ class Rollbacks(
         rows: String?,
         leftBefore: Int,
         since: Long,
+        began: Long,
     ) {
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
@@ -1031,7 +1035,7 @@ class Rollbacks(
         val total = Tally()
         total.since = since
         total.deaths += plans.flatMap { it.deaths }
-        val run = Run(sender, total, read, where, apply, rows, leftBefore)
+        val run = Run(sender, total, read, where, apply, rows, leftBefore, began)
         // Only deaths to give back for, and no place to touch: straight on to them.
         if (work.isEmpty()) return run.finishing(release)
         val hold = ChunkHold(work)
@@ -1099,6 +1103,8 @@ class Rollbacks(
         val rows: String?,
         // Positions that stood as the rolled-back players left them when the window opened.
         val leftBefore: Int,
+        // When its read began, for the time the whole of it took.
+        val began: Long,
     ) {
         val actor = (sender as? Player)?.uniqueId
 
@@ -1159,6 +1165,7 @@ class Rollbacks(
                 try {
                     finish()
                 } finally {
+                    Metrics.rollbacks.labelValues(if (apply) "apply" else "preview").observe((System.nanoTime() - began) / 1e9)
                     release()
                 }
             }

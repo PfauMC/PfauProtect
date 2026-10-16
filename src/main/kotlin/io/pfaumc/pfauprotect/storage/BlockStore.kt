@@ -82,6 +82,8 @@ data class Window<T>(val rows: List<T>, val unreadable: Int, val complete: Boole
 
 data class ActorTouches(val positions: Set<List<Int>>, val complete: Boolean)
 
+data class ActorRows(val blocks: List<BlockRow>, val entities: List<EntityRow>, val complete: Boolean)
+
 // Raised by a change to the key layout or to the set of column families. The record version in the
 // value covers neither: without the bump an older database opens and every key is parsed as something it
 // never was. A version 1 base gets its by-actor index built from its rows on first open; a version 2 base
@@ -102,7 +104,6 @@ private val META_SCHEMA_KEY = "schema".toByteArray()
 private val META_EVENT_ID = "event_id".toByteArray()
 private val META_LAST_TS = "last_ts".toByteArray()
 
-private fun timeAt(key: ByteArray, offset: Int): Long = ByteReader(key).also { it.bytes(offset) }.longBE()
 
 // One world's block history. The world number is not in the key because the database is the world,
 // which is what makes deleting a world a matter of deleting a directory: registry numbers are never
@@ -163,6 +164,15 @@ class BlockLog(
     private val progress = WriterProgress("block", "submissions", queue)
 
     val backlog: Long get() = progress.backlog
+
+    /** How many rows each family holds, as RocksDB estimates it without reading them. */
+    fun estimatedRows(): Map<String, Long> = dbLock.read {
+        if (closed) return emptyMap()
+        mapOf("rows" to rowsCf, "entities" to entitiesCf, "by_actor" to byActorCf)
+            .mapValues { (_, cf) -> db.getLongProperty(cf, ESTIMATED_KEYS) }
+    }
+
+    fun compactionDebt(): Long = dbLock.read { if (closed) 0 else db.compactionDebt(cfHandles) }
 
     @Volatile
     private var running = true
@@ -289,6 +299,45 @@ class BlockLog(
         ActorTouches(positions, true)
     }
 
+    /**
+     * An actor's own rows in the window, newest first, each read by the key its index entry holds rather
+     * than with the rest of its position's history. Stops once `wanted` rows were kept, or `budget` index
+     * entries were walked, which leaves the answer incomplete.
+     */
+    fun byActor(
+        actor: UUID,
+        fromTs: Long,
+        toTs: Long,
+        wanted: Int,
+        budget: Int,
+        keepBlock: (BlockRow) -> Boolean,
+        keepEntity: (EntityRow) -> Boolean,
+    ): ActorRows = dbLock.read {
+        val number = shared.registries.lookupUuid(RegistryNamespace.PLAYER, actor)
+        if (closed) return ActorRows(emptyList(), emptyList(), false)
+        if (number == null) return ActorRows(emptyList(), emptyList(), true)
+        val prefix = actorPrefix(number)
+        val blocks = ArrayList<BlockRow>()
+        val entities = ArrayList<EntityRow>()
+        var walked = 0
+        var complete = true
+        db.forEachUnder(byActorCf, prefix, reverse = true, from = lastUnder(ByteWriter(12).bytes(prefix).longBE(toTs).toByteArray())) { key, _ ->
+            if (key.size != ACTOR_KEY_SIZE || timeAt(key, prefix.size) < fromTs) return@forEachUnder false
+            if (blocks.size + entities.size >= wanted) return@forEachUnder false
+            if (walked++ >= budget) {
+                complete = false
+                return@forEachUnder false
+            }
+            // Which plane the row is in the entry does not say; a block row is far the likelier.
+            val row = rowKeyOf(key)
+            val block = db.get(rowsCf, row)
+            if (block != null) blockRow(row, block)?.takeIf(keepBlock)?.let { blocks += it }
+            else db.get(entitiesCf, row)?.let { entityRow(row, it) }?.takeIf(keepEntity)?.let { entities += it }
+            true
+        }
+        ActorRows(blocks, entities, complete)
+    }
+
     private fun actorPrefix(actor: Int): ByteArray =
         ByteWriter(4).intBE(actor).toByteArray()
 
@@ -396,6 +445,22 @@ class BlockLog(
         budget: Int,
         within: (Int, Int, Int) -> Boolean,
     ): Window<BlockRow> = window(rowsCf, Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within, ::blockRow)
+
+    /** The newest block rows of a chunk inside the box, see [newestInBox]. */
+    fun newestInChunk(chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps): BoxPage<BlockRow> =
+        newestIn(rowsCf, chunkX, chunkZ, box, fromTs, toTs, wanted, steps, ::blockRow)
+
+    /** The newest entity rows of a chunk inside the box, see [newestInBox]. */
+    fun newestEntitiesInChunk(chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps): BoxPage<EntityRow> =
+        newestIn(entitiesCf, chunkX, chunkZ, box, fromTs, toTs, wanted, steps, ::entityRow)
+
+    private fun <T> newestIn(
+        cf: ColumnFamilyHandle, chunkX: Int, chunkZ: Int, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps,
+        decode: (ByteArray, ByteArray) -> T?,
+    ): BoxPage<T> = dbLock.read {
+        if (closed) return BoxPage(emptyList(), false)
+        db.newestInBox(cf, ByteArray(0), chunkX, chunkZ, box, fromTs, toTs, wanted, steps, decode)
+    }
 
     fun windowAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): Window<BlockRow> =
         window(rowsCf, BlockCodec.positionPrefix(x, y, z), fromTs, toTs, budget, { _, _, _ -> true }, ::blockRow)
