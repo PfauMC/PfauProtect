@@ -64,6 +64,7 @@ import org.bukkit.persistence.PersistentDataType
 import org.bukkit.block.Block
 import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
+import io.pfaumc.pfauprotect.Metrics
 import io.pfaumc.pfauprotect.SECONDS_PER_UNIT
 import io.pfaumc.pfauprotect.Settings
 import kotlin.math.abs
@@ -939,7 +940,16 @@ class Lookups(
     /** [dialog] false keeps the answer in chat whatever the reader chose: the inspector's, which a window on every click would get in the way of. */
     fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, dialog: Boolean = true) {
         val asked = query.askedBy(sender, dialog)
-        plugin.offThread(sender, "lookup at ${target.label} failed", "The lookup failed; the server log has the details.") { report(sender, target, asked) }
+        val kind = when {
+            query.players.isNotEmpty() -> "player"
+            query.global -> "user"
+            query.event != null -> "event"
+            query.radius != null -> "radius"
+            else -> "position"
+        }
+        plugin.offThread(sender, "lookup at ${target.label} failed", "The lookup failed; the server log has the details.") {
+            Metrics.lookups.labelValues(kind).startTimer().use { report(sender, target, asked) }
+        }
     }
 
     /**

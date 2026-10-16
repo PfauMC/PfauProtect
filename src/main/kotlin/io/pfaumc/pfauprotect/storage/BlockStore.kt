@@ -165,6 +165,15 @@ class BlockLog(
 
     val backlog: Long get() = progress.backlog
 
+    /** How many rows each family holds, as RocksDB estimates it without reading them. */
+    fun estimatedRows(): Map<String, Long> = dbLock.read {
+        if (closed) return emptyMap()
+        mapOf("rows" to rowsCf, "entities" to entitiesCf, "by_actor" to byActorCf)
+            .mapValues { (_, cf) -> db.getLongProperty(cf, ESTIMATED_KEYS) }
+    }
+
+    fun compactionDebt(): Long = dbLock.read { if (closed) 0 else db.compactionDebt(cfHandles) }
+
     @Volatile
     private var running = true
 

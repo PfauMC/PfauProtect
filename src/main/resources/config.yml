@@ -37,3 +37,11 @@ mobs:
 chat:
   # Commands the chat log keeps by name only, without their arguments: they carry passwords.
   hidden-commands: [login, l, log, register, reg, changepassword, changepass, unregister]
+
+metrics:
+  # The port Prometheus scrapes /metrics on: how long lookups, writes, rollbacks and self-checks take, how big
+  # each base is and how far its writer is behind. 0 keeps it closed.
+  port: 0
+  # Where it listens. The default is this machine only; 0.0.0.0 opens it to every network the server is on,
+  # and nothing asks a scraper who it is.
+  address: 127.0.0.1

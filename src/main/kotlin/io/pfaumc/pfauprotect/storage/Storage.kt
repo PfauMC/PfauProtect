@@ -1,4 +1,5 @@
 package io.pfaumc.pfauprotect.storage
+import io.pfaumc.pfauprotect.Metrics
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.HolderType
 import io.pfaumc.pfauprotect.model.LedgerEntry
@@ -233,6 +234,12 @@ internal fun storedSchema(path: String, metaCf: ByteArray, key: ByteArray): Long
 
 // Padded rather than the key after the prefix: a backward seek lands on the last key at or before its
 // target, and the key after the prefix may itself be a key, one that already belongs to the next prefix.
+internal const val ESTIMATED_KEYS = "rocksdb.estimate-num-keys"
+
+/** Bytes compaction still has to rewrite across the families, with each compaction running counted as one. */
+internal fun RocksDB.compactionDebt(handles: List<ColumnFamilyHandle>): Long =
+    handles.sumOf { getLongProperty(it, "rocksdb.estimate-pending-compaction-bytes") } + getLongProperty("rocksdb.num-running-compactions")
+
 internal fun lastUnder(prefix: ByteArray): ByteArray =
     ByteWriter(prefix.size + KEY_TAIL_PAD)
         .bytes(prefix)
@@ -415,8 +422,9 @@ internal class WriterProgress<T>(private val writer: String, private val unit: S
                     val batched = ArrayList<T>(MAX_BATCH)
                     batched += first
                     queue.drainTo(batched, MAX_BATCH - 1)
-                    write(batched)
+                    Metrics.writes.labelValues(writer).startTimer().use { write(batched) }
                     written.addAndGet(batched.size.toLong())
+                    Metrics.written.labelValues(writer).inc(batched.size.toDouble())
                 }
                 if (System.nanoTime() - lastFlush >= WAL_FLUSH_INTERVAL_NANOS) {
                     db.flushWal(true)
@@ -537,6 +545,14 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     private val progress = WriterProgress("ledger", "transfers", queue)
 
     val backlog: Long get() = progress.backlog
+
+    /** How many postings the ledger holds, as RocksDB estimates it without reading them. */
+    fun estimatedRows(): Map<String, Long> = dbLock.read {
+        if (closed) return emptyMap()
+        mapOf("entries" to db.getLongProperty(entriesCf, ESTIMATED_KEYS))
+    }
+
+    fun compactionDebt(): Long = dbLock.read { if (closed) 0 else db.compactionDebt(cfHandles) }
 
     @Volatile
     private var running = true

@@ -93,6 +93,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.sqrt
+import io.pfaumc.pfauprotect.Metrics
 import io.pfaumc.pfauprotect.Settings
 import net.minecraft.server.level.ServerPlayer
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -1101,6 +1102,7 @@ class Rollbacks(
         val leftBefore: Int,
     ) {
         val actor = (sender as? Player)?.uniqueId
+        private val began = System.nanoTime()
 
         fun start(work: List<Pair<ServerLevel, ChunkPlan>>, release: () -> Unit, hold: ChunkHold) {
             // Held through the taking back too: the piles it takes back lie in these chunks, and taking them is
@@ -1167,6 +1169,7 @@ class Rollbacks(
         private fun finish() {
             val owed = owedFor(ledger, total)
             report()
+            Metrics.rollbacks.labelValues(if (apply) "apply" else "preview").observe((System.nanoTime() - began) / 1e9)
             if (!apply) (sender as? Player)?.let { ghosts.show(it, total.ghosts) }
             // A killed player gets back what fell out of them, wherever it went.
             for (death in total.deaths.distinctBy { it.eventId to it.uuid }) {

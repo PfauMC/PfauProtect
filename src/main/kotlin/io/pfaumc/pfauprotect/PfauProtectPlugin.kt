@@ -190,6 +190,7 @@ private class Uncovered(private val ledger: RocksItemLog) {
     private fun tally(transfer: Transfer) {
         if (transfer.confidence != Confidence.INFERRED) return
         counts.computeIfAbsent(transfer.cause) { LongAdder() }.increment()
+        Metrics.inferred.labelValues(transfer.cause.name.lowercase()).inc()
     }
 }
 
@@ -229,6 +230,8 @@ private class Running(
     val planes: PlaneSync,
     val rollbacks: Rollbacks,
     val chat: ChatLog,
+    // Set once the rest stands, closed before the bases.
+    var metrics: MetricsEndpoint? = null,
 ) {
     fun drainAll() {
         ledger.drain()
@@ -367,12 +370,18 @@ class PfauProtectPlugin : JavaPlugin() {
             energy.sweep()
             nudges.sweep()
         }
-        every(SWEEP_MINUTES) { logPass { checkLedger(ledger, 1, it) } }
-        every(PLANE_MINUTES) { if (isEnabled) logPass { checkPlanes(running.planes, 1, false, it) } }
+        every(SWEEP_MINUTES) { Metrics.checks.labelValues("sweep").startTimer().use { logPass { checkLedger(ledger, 1, it) } } }
+        every(PLANE_MINUTES) { if (isEnabled) Metrics.checks.labelValues("planes").startTimer().use { logPass { checkPlanes(running.planes, 1, false, it) } } }
         every(RECONCILE_MINUTES) { reconcileEveryone() }
         every(1, TimeUnit.DAYS) { reportUncovered(uncovered) }
         warnAboutSilencedHoppers()
         registerCommand(CommandBrackets(this, blocks, codec, ledger, uncovered::submit))
+        if (Settings.metricsPort > 0) {
+            // A port already taken costs the scrape, not the history: everything else is up by now.
+            running.metrics = runCatching { metricsEndpoint(running) }
+                .onFailure { logger.log(Level.SEVERE, "metrics could not listen on ${Settings.metricsAddress}:${Settings.metricsPort}", it) }
+                .getOrNull()
+        }
         logger.info(
             "ledger open, ${blocks.worlds.size} world bases, registry sizes: " +
                 RegistryNamespace.entries.joinToString { "${it.name.lowercase()}=${ledger.registries.size(it)}" }
@@ -399,11 +408,28 @@ class PfauProtectPlugin : JavaPlugin() {
             // The bases go first: their writers intern state numbers and payloads through the ledger. A
             // base that fails to close must not take the ledger down with it, or a held lock file keeps
             // the plugin from being enabled again without a server restart.
+            closeReporting("the metrics endpoint") { running.metrics?.close() }
             closeReporting("the world block bases") { running.blocks.close() }
             closeReporting("the ledger") { running.ledger.close() }
             closeReporting("the chat log") { running.chat.close() }
             this.running = null
         }
+    }
+
+    // Each base by name: the ledger, the chat log and every world whose history is open.
+    private fun metricsEndpoint(running: Running): MetricsEndpoint {
+        val folder = dataFolder.toPath()
+        return MetricsEndpoint(Settings.metricsAddress, Settings.metricsPort, {
+            val worlds = running.blocks.worlds.mapNotNull { uid ->
+                val log = running.blocks.get(uid) ?: return@mapNotNull null
+                "world:${server.getWorld(uid)?.name ?: uid}" to
+                    MetricsEndpoint.Base(folder.resolve("blocks").resolve(uid.toString()), log.backlog, log.estimatedRows(), log.compactionDebt())
+            }
+            mapOf(
+                "ledger" to MetricsEndpoint.Base(folder.resolve("ledger"), running.ledger.backlog, running.ledger.estimatedRows(), running.ledger.compactionDebt()),
+                "chat" to MetricsEndpoint.Base(folder.resolve("chat"), 0, emptyMap()),
+            ) + worlds
+        }) { running.rollbacks.runningSince() != null }
     }
 
     private fun closeReporting(what: String, close: () -> Unit) {
@@ -826,11 +852,7 @@ class PfauProtectPlugin : JavaPlugin() {
         }
     }
 
-    private fun megabytes(dir: Path): String {
-        if (!Files.exists(dir)) return "0 MB"
-        val bytes = Files.walk(dir).use { paths -> paths.filter { Files.isRegularFile(it) }.mapToLong { runCatching { Files.size(it) }.getOrDefault(0) }.sum() }
-        return "%.1f MB".format(Locale.ROOT, bytes / 1_048_576.0)
-    }
+    private fun megabytes(dir: Path): String = "%.1f MB".format(Locale.ROOT, bytesUnder(dir) / 1_048_576.0)
 
     // Waits for every writer first, so a hand-run check does not report the last thing done as a finding.
     private fun verify(source: CommandSourceStack, judgeRecent: Boolean): Int = withRunning(source) { running, sender ->

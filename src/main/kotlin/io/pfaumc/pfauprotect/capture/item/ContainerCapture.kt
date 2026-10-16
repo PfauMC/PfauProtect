@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.capture.item
 import io.canvasmc.canvas.event.PlayerPostRespawnAsyncEvent
+import io.pfaumc.pfauprotect.Metrics
 import io.pfaumc.pfauprotect.model.Cause
 import com.destroystokyo.paper.event.player.PlayerRecipeBookClickEvent
 import java.util.concurrent.TimeUnit
@@ -1061,7 +1062,10 @@ class ContainerCaptureListener(
 
     // `cursor` stands in for what the player holds on the cursor, for the one event that changes it
     // before it is raised.
-    internal fun recompute(player: Player, cursor: BukkitItemStack? = null) {
+    internal fun recompute(player: Player, cursor: BukkitItemStack? = null) =
+        Metrics.recomputes.startTimer().use { pass(player, cursor) }
+
+    private fun pass(player: Player, cursor: BukkitItemStack?) {
         // Drained before anything can cut the pass short: a player who was already online when the
         // plugin came up has no baseline yet, and intents left behind would pile up until the first
         // one appeared and then explain a delta they had nothing to do with.
