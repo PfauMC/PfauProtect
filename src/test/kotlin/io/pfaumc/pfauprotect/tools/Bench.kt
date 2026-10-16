@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.senderInto
 import io.pfaumc.pfauprotect.storage.BlockChange
+import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.EntityChange
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
@@ -157,14 +158,7 @@ private fun generate(dir: Path, events: Long) {
             }
             logs.drain()
             shared.drain()
-            // A server's base has long since been compacted; measured while compaction still runs, the
-            // lookups would be timed against files nobody reads in practice and threads busy rewriting them.
-            while (true) {
-                val debt = shared.compactionDebt() + log.compactionDebt()
-                if (debt == 0L) break
-                out.println("compacting, %,d bytes to go".format(debt))
-                Thread.sleep(60_000)
-            }
+            settle(shared, log)
         } finally {
             logs.close()
         }
@@ -178,16 +172,22 @@ private fun measure(dir: Path, samples: Int, only: String? = null) {
     val places = Files.readAllLines(dir.resolve("sample.txt")).map { line -> line.split(' ').map(String::toInt) }
     val random = Random(System.nanoTime())
     val zipf = Zipf(PLAYERS)
+    // An older base is brought up to date on its first open, which is then most of this.
+    val opening = System.nanoTime()
     RocksItemLog(dir.resolve("items")).use { shared ->
         val logs = BlockLogs(dir.resolve("blocks"), shared)
         try {
             logs.open(WORLD)
+            out.println("opened in %.0f s".format((System.nanoTime() - opening) / 1e9))
+            settle(shared, logs.get(WORLD)!!)
             val codec = ItemFormCodec(shared.registries, ServerRegistries.access)
             val lookups = Lookups(stub(Plugin::class.java), shared, logs, codec, { it.removePrefix("p").toIntOrNull()?.let(::player) }, { "p${it.leastSignificantBits}" })
             // Each kind of question as a moderator types it, and where they stand when they do.
             val kinds = listOf<Pair<String, () -> Pair<LookupTarget, String>>>(
                 "position" to { places[random.nextInt(places.size)].let { (_, x, y, z) -> LookupTarget(WORLD, x, y, z, "") to "" } },
                 "radius:10" to { places[random.nextInt(places.size)].let { (_, x, y, z) -> LookupTarget(WORLD, x, y, z, "") to "radius:10" } },
+                "radius:50" to { places[random.nextInt(places.size)].let { (_, x, y, z) -> LookupTarget(WORLD, x, y, z, "") to "radius:50" } },
+                "radius:100" to { places[random.nextInt(places.size)].let { (_, x, y, z) -> LookupTarget(WORLD, x, y, z, "") to "radius:100" } },
                 "user: active" to { origin() to "user:${name(zipf.next(random))}" },
                 "user: any" to { origin() to "user:${name(random.nextInt(PLAYERS))}" },
                 "user: page 2-5" to { origin() to "user:${name(zipf.next(random))} page:${2 + random.nextInt(4)}" },
@@ -233,4 +233,16 @@ private fun probe(dir: Path) {
     }
 }
 
-private fun origin() =LookupTarget(WORLD, 0, 64, 0, "")
+// A server's base has long since been compacted; measured while compaction still runs, after a generation
+// or an upgrade that indexed every row, the lookups would be timed against files nobody reads in practice and
+// a disk busy rewriting them.
+private fun settle(shared: RocksItemLog, log: BlockLog) {
+    while (true) {
+        val debt = shared.compactionDebt() + log.compactionDebt()
+        if (debt == 0L) return
+        out.println("compacting, %,d bytes to go".format(debt))
+        Thread.sleep(60_000)
+    }
+}
+
+private fun origin() = LookupTarget(WORLD, 0, 64, 0, "")
