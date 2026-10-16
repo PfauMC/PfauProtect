@@ -386,8 +386,8 @@ private class ChunkWalk(val iter: org.rocksdb.RocksIterator, val prefix: ByteArr
  * only grazes is read back no further in time than the rest, where on its own it would be read back until it
  * had a page of its own. Rows rank by the tail of their key, the time and then the event or transaction and
  * the ordinal, the order both planes read in. A row [keep] keeps but [counts] does not is handed back
- * without taking a place on the page. Each entry and each row read is one of the [steps]; `complete` when the
- * window ran out before the page filled.
+ * without taking a place on the page. Each entry and each row read is one of the [steps]; `complete` when
+ * nothing of the window is left unwalked.
  */
 internal fun <T> RocksDB.newestInBox(
     index: ColumnFamilyHandle,
@@ -437,7 +437,9 @@ internal fun <T> RocksDB.newestInBox(
             }
             // An I/O error ends a walk as its last entry does, and only the status tells them apart.
             walks.forEach { it.iter.status() }
-            return BoxPage(kept, counted < wanted)
+            // A page that filled on the window's last entry left nothing out either.
+            val left = heads.peek()?.let { timeAt(it.key, tail) >= fromTs } ?: false
+            return BoxPage(kept, counted < wanted || !left)
         } finally {
             walks.forEach { it.iter.close() }
         }

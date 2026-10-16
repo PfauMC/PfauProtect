@@ -639,6 +639,19 @@ class BlockStoreTest : BothPlanes() {
         assertEquals(listOf(3, 2), page.blocks.map { it.x })
     }
 
+    // A page that fills on the last row of the window has read all of it, and says so: a read said to have
+    // stopped early sends the reader after rows that are not there.
+    @Test
+    fun `a box whose last row fills the page says it read everything`() {
+        log.submit(listOf(placed(2, 64, 2, ts = T0)))
+        log.submit(listOf(placed(3, 64, 2, ts = T0 + 1)))
+        log.drain()
+        val box = Box(0, 15, 60, 70, 0, 15)
+
+        assertTrue(log.newestInBox(box, 0, Long.MAX_VALUE, 2, Steps(1000), { true }) { true }.complete)
+        assertFalse(log.newestInBox(box, 0, Long.MAX_VALUE, 1, Steps(1000), { true }) { true }.complete)
+    }
+
     // The rollback rows of a box come back whatever the filter, to mark what they gave back, and take no place on
     // the page: a box rolled back again and again would otherwise fill the page with rows the filter then drops.
     @Test
