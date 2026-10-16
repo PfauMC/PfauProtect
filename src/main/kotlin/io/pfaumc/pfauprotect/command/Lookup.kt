@@ -986,7 +986,7 @@ class Lookups(
             return reportEverywhere(sender, target, query, users)
         }
         val steps = Steps(BOX_STEPS)
-        val page = read(target, query, steps)
+        val page = read(target, query, users, steps)
         val items = itemLines(page.entries, query, users)
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
@@ -1021,10 +1021,11 @@ class Lookups(
         // show: the earlier pages' rows are read for the page to start where they stopped, and following each
         // up is a seek per plane. Pages that folded long runs end deeper than this guess, and the rows that
         // pushed past it go without their mark.
-        fun <T> onPage(found: List<T>, ts: (T) -> Long) =
+        fun <T> placesOf(found: List<T>, at: (T) -> Triple<Int, Int, Int>, ts: (T) -> Long, of: (T) -> Boolean = { true }) =
             found.sortedByDescending(ts).drop(query.limit * (query.page - 1)).take(query.limit * GROUPED_READ)
-        val places = onPage(rows) { it.timestamp }.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, here) -> here.minOf { it.timestamp } }
-        val entityPlaces = onPage(entities) { it.timestamp }.groupBy { Triple(it.x, it.y, it.z) }.mapValues { (_, here) -> here.minOf { it.timestamp } }
+                .filter(of).groupBy(at).mapValues { (_, here) -> here.minOf(ts) }
+        val places = placesOf(rows, { Triple(it.x, it.y, it.z) }, { it.timestamp })
+        val entityPlaces = placesOf(entities, { Triple(it.x, it.y, it.z) }, { it.timestamp })
         // A rollback row names whoever ran it, so the index of the one rolled back never leads to it.
         val undoes = places.flatMap { (at, ts) ->
             log.at(at.first, at.second, at.third, ts, toTs, limit = LATER_READ, reverse = true).filter { it.cause == Cause.ROLLBACK }
@@ -1035,7 +1036,9 @@ class Lookups(
         // What they put in or took out names them on their own slots; what fell out of a container they broke
         // names them only as its actor, on the container, so the places of their rows are read too.
         val traded = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query).entries.filter { it.counterparty.block?.world == target.world }
-        val dropped = places.flatMap { (at, ts) ->
+        // A block put down drops nothing, so only the places they changed otherwise are read for what fell out.
+        val broken = placesOf(rows, { Triple(it.x, it.y, it.z) }, { it.timestamp }) { it.cause != Cause.BLK_PLAYER_PLACE }
+        val dropped = broken.flatMap { (at, ts) ->
             holdersAt(target.world, at.first, at.second, at.third).flatMap { ledger.holderPage(it, ts, toTs, reverse = true, limit = LATER_READ).entries }
         }
         val lines = itemLines((traded + dropped).distinctBy { it.ref }, query, users) +
@@ -1202,18 +1205,21 @@ class Lookups(
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius
+        val keeps = rowFilter(query, users)
         val rows: List<BlockRow>
         val entities: List<EntityRow>
         if (radius == null) {
             rows = log.at(target.x, target.y, target.z, fromTs, toTs, limit = query.fetch, reverse = true)
             entities = log.entitiesAt(target.x, target.y, target.z, fromTs, toTs, MAX_ENTITY_WALK).rows
         } else {
-            val box = target.box(radius)
-            val chunks = chunksAround(target.x, target.z, radius)
-            rows = chunks.flatMap { (cx, cz) -> log.newestInChunk(cx, cz, box, fromTs, toTs, query.fetch, steps).rows }
-            entities = chunks.flatMap { (cx, cz) -> log.newestEntitiesInChunk(cx, cz, box, fromTs, toTs, query.fetch, steps).rows }
+            // Rollback rows whatever the filter: they are what marks a row as given back.
+            val found = log.newestInBox(
+                target.box(radius), fromTs, toTs, boxWanted(query), steps,
+                { it.cause == Cause.ROLLBACK || keeps.keeps(it) }, { it.cause == Cause.ROLLBACK || keeps.keeps(it) },
+            )
+            rows = found.blocks
+            entities = found.entities
         }
-        val keeps = rowFilter(query, users)
         // Not cut to the page: runs fold only afterwards, and a cut before them shifts every later page.
         return planeLines(target.world, rows, entities, keeps)
     }
@@ -1245,12 +1251,17 @@ class Lookups(
         }
     }
 
-    private fun read(target: LookupTarget, query: LookupQuery, steps: Steps): EntryPage {
+    private fun read(target: LookupTarget, query: LookupQuery, users: Set<UUID>, steps: Steps): EntryPage {
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z), fromTs, toTs, query)
-        return ledger.boxPage(target.world, target.box(radius), fromTs, toTs, query.fetch, steps)
+        val keeps = rowFilter(query, users)
+        return ledger.boxPage(target.world, target.box(radius), fromTs, toTs, boxWanted(query), steps, keeps::keeps)
     }
+
+    // The rows a radius reads, kept by the filter: one past the page, which is how it knows there is a next
+    // one; a count is of everything the read reaches.
+    private fun boxWanted(query: LookupQuery) = if (query.count) query.fetch else query.wanted + 1
 
     private fun holdersAt(world: UUID, x: Int, y: Int, z: Int): List<Holder> =
         listOf(Container(world, x, y, z, 0), WorldBlock(world, x, y, z))

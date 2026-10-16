@@ -77,9 +77,10 @@ class OwedItem(val key: ByteArray, val formId: Long, val qty: Int, val actor: UU
 // every key is parsed as something it never was. Version 4 moved menu numbers to a registry without
 // touching the layout; an ordinary entry's header byte is pinned to 0x00, so only this number can refuse
 // such a database. WIDENS_FROM differ only by families this build adds on open, and an older build then
-// refuses the result by the stamp.
-private const val SCHEMA_VERSION = 6L
-private val WIDENS_FROM = setOf(4L, 5L)
+// refuses the result by the stamp. Version 7 added the chunk-time index, built from the rows on the first
+// open of an older base.
+private const val SCHEMA_VERSION = 7L
+private val WIDENS_FROM = setOf(4L, 5L, 6L)
 
 // How many times a giving back is followed to the giving back of itself: a rollback, its undo, the
 // undo of that. Past this a posting is taken as given back, which is the side that cannot mint items.
@@ -136,6 +137,11 @@ private val PLACED_FORMS_CF = "placed_forms".toByteArray()
 private val BLOCK_PAYLOADS_CF = "block_payloads".toByteArray()
 private val COMPENSATED_CF = "compensated".toByteArray()
 private val CONFISCATIONS_CF = "confiscations".toByteArray()
+private val BY_CHUNK_CF = "by_chunk".toByteArray()
+
+// What a positional holder's key holds before its position: its type, then its world.
+private const val POSITIONAL_HEAD_SIZE = 3
+private val POSITIONAL_TYPES = HolderType.POSITIONAL.map { it.toByte() }.toSet()
 
 private val META_SCHEMA = "schema".toByteArray()
 private val META_TX_ID = "tx_id".toByteArray()
@@ -290,12 +296,12 @@ internal fun timeAt(key: ByteArray, offset: Int): Long = ByteReader(key).also { 
 /** A box of block positions, both ends included. */
 data class Box(val minX: Int, val maxX: Int, val minY: Int, val maxY: Int, val minZ: Int, val maxZ: Int)
 
-/** The newest rows a walk of a box found, newest first; not `complete` when it ran out of budget first. */
+/** The newest rows a walk of a box found, newest first; not `complete` when it may have left some out. */
 data class BoxPage<T>(val rows: List<T>, val complete: Boolean)
 
 /**
- * The seeks and rows one lookup may spend, shared by every walk it makes: a radius spans many chunks and each
- * is walked once a plane, and a budget each would let one lookup run up thousands of them.
+ * The index entries and rows one lookup may step over, shared by every walk it makes: a radius spans many
+ * chunks, and a budget each would let one lookup run up thousands of steps.
  */
 class Steps(private var left: Int) {
     var ranOut = false
@@ -307,66 +313,129 @@ class Steps(private var left: Int) {
     }
 }
 
+// The value of an index entry, whose key says everything.
+internal val NOTHING = ByteArray(0)
+
+// What every row key ends in after its position: the time, the event or transaction, the ordinal.
+internal const val ROW_TAIL_SIZE = 8 + 8 + 1
+
 /**
- * The [wanted] newest rows of the window whose position is in [box] and in one chunk, newest first, of a
- * family whose keys run [head], the position as `Zcode` writes it, then the time: each position's history
- * is one run, oldest first, and a chunk's positions run column by column. The positions are walked backward
- * and each is read back only while its rows are newer than the [wanted]th newest found so far, which after
- * the first few positions is one row. A busy place costs a seek per position of the box that has a history,
- * where reading the chunk would cost all of it. Each seek and each row is one of the [steps]. Rows rank by
- * the rest of their key, the time and then the event or transaction and the ordinal, which is the order both
- * planes read in: by the time alone, two changes of one millisecond would keep whichever was walked first.
+ * The chunk-time index both kinds of base keep beside their rows. A row key runs a head, the position as
+ * `Zcode` writes it and the tail; turned round, it runs a scope, the chunk, the tail, a tag for which family
+ * or holder type the row is in, and the rest of the position. Inside a chunk the rows then sort by time,
+ * where the rows themselves sort by position first, and a radius reads the newest of a chunk without stepping
+ * through the history of every position in it. The value is empty.
+ */
+internal object ChunkTime {
+    private const val POSITION_REST = Zcode.SIZE - Zcode.CHUNK_PREFIX_SIZE
+
+    fun key(scope: ByteArray, tag: Int, rowKey: ByteArray, headSize: Int): ByteArray {
+        val chunkEnd = headSize + Zcode.CHUNK_PREFIX_SIZE
+        val positionEnd = headSize + Zcode.SIZE
+        return ByteWriter(scope.size + Zcode.SIZE + ROW_TAIL_SIZE + 1)
+            .bytes(scope)
+            .bytes(rowKey.copyOfRange(headSize, chunkEnd))
+            .bytes(rowKey.copyOfRange(positionEnd, rowKey.size))
+            .byte(tag)
+            .bytes(rowKey.copyOfRange(chunkEnd, positionEnd))
+            .toByteArray()
+    }
+
+    fun size(scopeSize: Int) = scopeSize + Zcode.SIZE + ROW_TAIL_SIZE + 1
+
+    fun tag(index: ByteArray): Int = index[index.size - POSITION_REST - 1].toInt() and 0xFF
+
+    /** The row key an index entry stands for, [head] in front of it. */
+    fun rowKey(index: ByteArray, scopeSize: Int, head: ByteArray): ByteArray {
+        val chunkEnd = scopeSize + Zcode.CHUNK_PREFIX_SIZE
+        return ByteWriter(head.size + Zcode.SIZE + ROW_TAIL_SIZE)
+            .bytes(head)
+            .bytes(index.copyOfRange(scopeSize, chunkEnd))
+            .bytes(index.copyOfRange(index.size - POSITION_REST, index.size))
+            .bytes(index.copyOfRange(chunkEnd, chunkEnd + ROW_TAIL_SIZE))
+            .toByteArray()
+    }
+
+    fun position(index: ByteArray, scopeSize: Int): IntArray =
+        Zcode.decode(index.copyOfRange(scopeSize, scopeSize + Zcode.CHUNK_PREFIX_SIZE) + index.copyOfRange(index.size - POSITION_REST, index.size))
+}
+
+// One chunk's walk back through the chunk-time index, standing on its newest entry not yet taken.
+private class ChunkWalk(val iter: org.rocksdb.RocksIterator, val prefix: ByteArray, val size: Int) {
+    var key = ByteArray(0)
+
+    // Onto the next entry of the chunk, skipping any of a size no index entry has; false when none is left.
+    fun settle(): Boolean {
+        while (iter.isValid) {
+            val at = iter.key()
+            if (!at.startsWith(prefix)) return false
+            if (at.size == size) {
+                key = at
+                return true
+            }
+            iter.prev()
+        }
+        return false
+    }
+}
+
+/**
+ * The newest rows of the window standing in [box] that [keep] keeps, newest first, at most [wanted], by the
+ * chunk-time index in [index] under [scope]. Every chunk the box touches is walked back at once, the newest
+ * entry of them all taken each time, and a row is read only when its entry is in the box: a chunk the box
+ * only grazes is read back no further in time than the rest, where on its own it would be read back until it
+ * had a page of its own. Rows rank by the tail of their key, the time and then the event or transaction and
+ * the ordinal, the order both planes read in. Each entry and each row read is one of the [steps]; `complete`
+ * when the window ran out before the page filled.
  */
 internal fun <T> RocksDB.newestInBox(
-    cf: ColumnFamilyHandle,
-    head: ByteArray,
-    chunkX: Int,
-    chunkZ: Int,
+    index: ColumnFamilyHandle,
+    scope: ByteArray,
     box: Box,
     fromTs: Long,
     toTs: Long,
     wanted: Int,
     steps: Steps,
-    decode: (ByteArray, ByteArray) -> T?,
+    read: (ByteArray) -> T?,
+    keep: (T) -> Boolean,
 ): BoxPage<T> {
-    val xs = maxOf(box.minX, chunkX shl 4)..minOf(box.maxX, (chunkX shl 4) + 15)
-    val zs = maxOf(box.minZ, chunkZ shl 4)..minOf(box.maxZ, (chunkZ shl 4) + 15)
-    if (xs.isEmpty() || zs.isEmpty() || box.minY > box.maxY || wanted <= 0) return BoxPage(emptyList(), true)
-    val byRank = Comparator<Pair<ByteArray, T>> { a, b -> java.util.Arrays.compareUnsigned(a.first, b.first) }
-    val found = java.util.PriorityQueue(byRank)
-    fun newestFirst() = found.sortedWith(byRank.reversed()).map { it.second }
-    val stamp = head.size + Zcode.SIZE
+    val tail = scope.size + Zcode.CHUNK_PREFIX_SIZE
+    val newest = Comparator<ChunkWalk> { a, b ->
+        java.util.Arrays.compareUnsigned(b.key, tail, tail + ROW_TAIL_SIZE, a.key, tail, tail + ROW_TAIL_SIZE)
+    }
+    val kept = ArrayList<T>()
     ReadOptions().setTotalOrderSeek(true).use { options ->
-        newIterator(cf, options).use { iter ->
-            for (x in xs.reversed()) for (z in zs.reversed()) {
-                val column = head + Zcode.encode(x, box.maxY, z).copyOf(Zcode.SIZE - 2)
-                iter.seekForPrev(lastUnder(head + Zcode.encode(x, box.maxY, z)))
-                while (iter.isValid) {
-                    val key = iter.key()
-                    if (!key.startsWith(column) || key.size < stamp + 8 || Zcode.decode(key, head.size)[1] < box.minY) break
-                    val position = key.copyOf(stamp)
-                    if (toTs != Long.MAX_VALUE) iter.seekForPrev(lastUnder(position + longBytes(toTs)))
-                    while (iter.isValid) {
-                        val row = iter.key()
-                        if (!row.startsWith(position)) break
-                        if (!steps.take()) return BoxPage(newestFirst(), false)
-                        val rank = row.copyOfRange(stamp, row.size)
-                        if (timeAt(row, stamp) < fromTs || found.size >= wanted && java.util.Arrays.compareUnsigned(rank, found.peek().first) <= 0) break
-                        decode(row, iter.value())?.let {
-                            found += rank to it
-                            if (found.size > wanted) found.poll()
-                        }
-                        iter.prev()
-                    }
-                    if (!steps.take()) return BoxPage(newestFirst(), false)
-                    // The last key before this position: the newest row of the one below it, or another column's.
-                    iter.seekForPrev(position)
-                }
+        val walks = ((box.minX shr 4)..(box.maxX shr 4)).flatMap { cx ->
+            ((box.minZ shr 4)..(box.maxZ shr 4)).map { cz ->
+                ChunkWalk(newIterator(index, options), scope + Zcode.chunkPrefix(cx, cz), ChunkTime.size(scope.size))
             }
-            iter.status()
+        }
+        try {
+            val heads = java.util.PriorityQueue(newest)
+            for (walk in walks) {
+                walk.iter.seekForPrev(lastUnder(walk.prefix + longBytes(toTs)))
+                if (walk.settle()) heads += walk
+            }
+            while (kept.size < wanted) {
+                val head = heads.poll() ?: break
+                // The newest entry left anywhere is older than the window, and so is everything behind it.
+                if (timeAt(head.key, tail) < fromTs) break
+                if (!steps.take()) return BoxPage(kept, false)
+                val (x, y, z) = ChunkTime.position(head.key, scope.size)
+                if (x in box.minX..box.maxX && y in box.minY..box.maxY && z in box.minZ..box.maxZ) {
+                    if (!steps.take()) return BoxPage(kept, false)
+                    read(head.key)?.takeIf(keep)?.let { kept += it }
+                }
+                head.iter.prev()
+                if (head.settle()) heads += head
+            }
+            // An I/O error ends a walk as its last entry does, and only the status tells them apart.
+            walks.forEach { it.iter.status() }
+            return BoxPage(kept, kept.size < wanted)
+        } finally {
+            walks.forEach { it.iter.close() }
         }
     }
-    return BoxPage(newestFirst(), true)
 }
 
 // Every row of a family in key order: every key starts with the empty prefix.
@@ -554,6 +623,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     // What a rollback took back from a player who was offline, kept until they join: the player and an
     // ever-growing number as the key, the form, the quantity and who ran the rollback as the value.
     private val confiscationsCf: ColumnFamilyHandle
+
+    // Every posting of a container or a block position again, by world, chunk and time: see [ChunkTime].
+    private val byChunkCf: ColumnFamilyHandle
     private val nextOwed = AtomicLong(System.currentTimeMillis() * 1000)
 
     private val queue = LinkedBlockingQueue<List<Transfer>>()
@@ -625,6 +697,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             BLOCK_PAYLOADS_CF to pointReadOptions,
             COMPENSATED_CF to pointReadOptions,
             CONFISCATIONS_CF to unfilteredOptions,
+            BY_CHUNK_CF to unfilteredOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
         db = cleaningUpOnFailure({ closeOptions() }) { RocksDB.open(dbOptions, path, descriptors, cfHandles) }
         entriesCf = cfHandles[1]
@@ -637,8 +710,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         blockPayloadsCf = cfHandles[8]
         compensatedCf = cfHandles[9]
         confiscationsCf = cfHandles[10]
+        byChunkCf = cfHandles[11]
 
         failClosed {
+            if (stored != null && stored != SCHEMA_VERSION) indexChunks()
             if (stored != SCHEMA_VERSION) db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
             nextTxId = db.readCounter(metaCf, META_TX_ID)
             for (ns in RegistryNamespace.entries) registryCounters[ns] = db.readCounter(metaCf, registryCounterKey(ns))
@@ -699,23 +774,33 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     }
 
     /** The newest postings of the holders standing in the box, newest first, see [newestInBox]. */
-    fun boxPage(world: UUID, box: Box, fromTs: Long, toTs: Long, limit: Int, steps: Steps): EntryPage {
-        if (registries.lookupUuid(RegistryNamespace.WORLD, world) == null) return EntryPage(emptyList(), true)
+    /** The newest postings of the holders standing in the box that [keep] keeps, see [newestInBox]. */
+    fun boxPage(world: UUID, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps, keep: (LedgerEntry) -> Boolean): EntryPage {
+        val worldNo = registries.lookupUuid(RegistryNamespace.WORLD, world) ?: return EntryPage(emptyList(), true)
         return dbLock.read {
             if (closed) return EntryPage(emptyList(), false)
-            val heads = EntryCodec.positionalHeads(world, knownIds)
-            val pages = ((box.minX shr 4)..(box.maxX shr 4)).flatMap { cx ->
-                ((box.minZ shr 4)..(box.maxZ shr 4)).flatMap { cz ->
-                    // One row past the limit, which is what tells a box with more in it from one read to the end.
-                    heads.map { head ->
-                        db.newestInBox(entriesCf, head, cx, cz, box, fromTs, toTs, limit + 1, steps) { key, value ->
-                            EntryCodec.decodeOrNull(key, value, registries)
-                        }
-                    }
-                }
-            }
-            val newest = pages.flatMap { it.rows }.sortedWith(compareBy<LedgerEntry>({ it.timestamp }, { it.txId }).reversed())
-            EntryPage(newest.take(limit), pages.all { it.complete } && newest.size <= limit)
+            val scope = ByteWriter(2).shortBE(worldNo).toByteArray()
+            val page = db.newestInBox(byChunkCf, scope, box, fromTs, toTs, wanted, steps, { index ->
+                val key = ChunkTime.rowKey(index, scope.size, byteArrayOf(ChunkTime.tag(index).toByte()) + scope)
+                db.get(entriesCf, key)?.let { EntryCodec.decodeOrNull(key, it, registries) }
+            }, keep)
+            EntryPage(page.rows, page.complete)
+        }
+    }
+
+    // The chunk-time entry of a posting, or null for a holder with no position.
+    private fun chunkKey(key: ByteArray): ByteArray? {
+        if (key.size != POSITIONAL_HEAD_SIZE + Zcode.SIZE + ROW_TAIL_SIZE || key[0] !in POSITIONAL_TYPES) return null
+        return ChunkTime.key(key.copyOfRange(1, POSITIONAL_HEAD_SIZE), key[0].toInt() and 0xFF, key, POSITIONAL_HEAD_SIZE)
+    }
+
+    // Once, on the first open of a base written before the index existed, and before the schema says it has
+    // one: a crash halfway through leaves the old stamp, and the next open starts again over the same keys.
+    private fun indexChunks() {
+        LOGGER.info("building the ledger's chunk-time index; this runs once")
+        ChunkedBatch(db, writeOptions).use { batch ->
+            db.forEachRow(entriesCf) { key, _ -> chunkKey(key)?.let { batch.put(byChunkCf, it, NOTHING) } }
+            batch.flush()
         }
     }
 
@@ -801,6 +886,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                         deleted++
                         if (!dryRun) {
                             batch.delete(entriesCf, key)
+                            chunkKey(key)?.let { batch.delete(byChunkCf, it) }
                             batch.delete(txCf, longBytes(entry.txId))
                         }
                     }
@@ -1235,6 +1321,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                 val entry = posting.copy(ordinal = keys.size)
                 val key = EntryCodec.key(entry.holder, entry.timestamp, txId, entry.ordinal, registries)
                 batch.put(entriesCf, key, EntryCodec.value(entry, registries))
+                chunkKey(key)?.let { batch.put(byChunkCf, it, NOTHING) }
                 keys += key
             }
         }
