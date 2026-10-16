@@ -474,7 +474,11 @@ class BlockLog(
         within: (Int, Int, Int) -> Boolean,
     ): Window<BlockRow> = window(rowsCf, Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within, ::blockRow)
 
-    /** The newest rows of either plane standing in the box that the filters keep, see [newestInBox]. */
+    /**
+     * The newest rows of either plane standing in the box that the filters keep, see [newestInBox], and the
+     * rollback rows among them whatever the filters say: those mark a row given back, and take no place on
+     * the page.
+     */
     fun newestInBox(
         box: Box,
         fromTs: Long,
@@ -489,9 +493,14 @@ class BlockLog(
             val key = ChunkTime.rowKey(index, 0, NOTHING)
             if (ChunkTime.tag(index) == ENTITY_PLANE) db.get(entitiesCf, key)?.let { entityRow(key, it) }
             else db.get(rowsCf, key)?.let { blockRow(key, it) }
-        }) { row -> if (row is BlockRow) keepBlock(row) else keepEntity(row as EntityRow) }
+        }, { row -> rollback(row) || kept(row, keepBlock, keepEntity) }) { row -> kept(row, keepBlock, keepEntity) }
         ActorRows(page.rows.filterIsInstance<BlockRow>(), page.rows.filterIsInstance<EntityRow>(), page.complete)
     }
+
+    private fun rollback(row: Any) = (row as? BlockRow)?.cause == Cause.ROLLBACK || (row as? EntityRow)?.cause == Cause.ROLLBACK
+
+    private fun kept(row: Any, keepBlock: (BlockRow) -> Boolean, keepEntity: (EntityRow) -> Boolean) =
+        if (row is BlockRow) keepBlock(row) else keepEntity(row as EntityRow)
 
     fun windowAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): Window<BlockRow> =
         window(rowsCf, BlockCodec.positionPrefix(x, y, z), fromTs, toTs, budget, { _, _, _ -> true }, ::blockRow)

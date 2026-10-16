@@ -385,8 +385,9 @@ private class ChunkWalk(val iter: org.rocksdb.RocksIterator, val prefix: ByteArr
  * entry of them all taken each time, and a row is read only when its entry is in the box: a chunk the box
  * only grazes is read back no further in time than the rest, where on its own it would be read back until it
  * had a page of its own. Rows rank by the tail of their key, the time and then the event or transaction and
- * the ordinal, the order both planes read in. Each entry and each row read is one of the [steps]; `complete`
- * when the window ran out before the page filled.
+ * the ordinal, the order both planes read in. A row [keep] keeps but [counts] does not is handed back
+ * without taking a place on the page. Each entry and each row read is one of the [steps]; `complete` when the
+ * window ran out before the page filled.
  */
 internal fun <T> RocksDB.newestInBox(
     index: ColumnFamilyHandle,
@@ -398,12 +399,14 @@ internal fun <T> RocksDB.newestInBox(
     steps: Steps,
     read: (ByteArray) -> T?,
     keep: (T) -> Boolean,
+    counts: (T) -> Boolean = { true },
 ): BoxPage<T> {
     val tail = scope.size + Zcode.CHUNK_PREFIX_SIZE
     val newest = Comparator<ChunkWalk> { a, b ->
         java.util.Arrays.compareUnsigned(b.key, tail, tail + ROW_TAIL_SIZE, a.key, tail, tail + ROW_TAIL_SIZE)
     }
     val kept = ArrayList<T>()
+    var counted = 0
     ReadOptions().setTotalOrderSeek(true).use { options ->
         val walks = ((box.minX shr 4)..(box.maxX shr 4)).flatMap { cx ->
             ((box.minZ shr 4)..(box.maxZ shr 4)).map { cz ->
@@ -416,7 +419,7 @@ internal fun <T> RocksDB.newestInBox(
                 walk.iter.seekForPrev(lastUnder(walk.prefix + longBytes(toTs)))
                 if (walk.settle()) heads += walk
             }
-            while (kept.size < wanted) {
+            while (counted < wanted) {
                 val head = heads.poll() ?: break
                 // The newest entry left anywhere is older than the window, and so is everything behind it.
                 if (timeAt(head.key, tail) < fromTs) break
@@ -424,14 +427,17 @@ internal fun <T> RocksDB.newestInBox(
                 val (x, y, z) = ChunkTime.position(head.key, scope.size)
                 if (x in box.minX..box.maxX && y in box.minY..box.maxY && z in box.minZ..box.maxZ) {
                     if (!steps.take()) return BoxPage(kept, false)
-                    read(head.key)?.takeIf(keep)?.let { kept += it }
+                    read(head.key)?.takeIf(keep)?.let {
+                        kept += it
+                        if (counts(it)) counted++
+                    }
                 }
                 head.iter.prev()
                 if (head.settle()) heads += head
             }
             // An I/O error ends a walk as its last entry does, and only the status tells them apart.
             walks.forEach { it.iter.status() }
-            return BoxPage(kept, kept.size < wanted)
+            return BoxPage(kept, counted < wanted)
         } finally {
             walks.forEach { it.iter.close() }
         }

@@ -639,6 +639,19 @@ class BlockStoreTest : BothPlanes() {
         assertEquals(listOf(3, 2), page.blocks.map { it.x })
     }
 
+    // The rollback rows of a box come back whatever the filter, to mark what they gave back, and take no place on
+    // the page: a box rolled back again and again would otherwise fill the page with rows the filter then drops.
+    @Test
+    fun `a box hands back its rollback rows without counting them to the page`() {
+        log.submit(listOf(placed(2, 64, 2, ts = T0)))
+        repeat(5) { log.submit(listOf(BlockChange(3, 64, 2, AIR, STONE, Cause.ROLLBACK, T0 + 10 + it))) }
+        log.drain()
+
+        val page = log.newestInBox(Box(0, 15, 60, 70, 0, 15), 0, Long.MAX_VALUE, 1, Steps(1000), { it.cause != Cause.ROLLBACK }) { true }
+        assertEquals(listOf(2), page.blocks.filter { it.cause != Cause.ROLLBACK }.map { it.x })
+        assertEquals(5, page.blocks.count { it.cause == Cause.ROLLBACK })
+    }
+
     // Two changes in one millisecond, the later one at a position the walk reaches last: by the time alone the
     // first one walked would keep the page, while the log orders the two by their events.
     @Test

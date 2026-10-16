@@ -1212,11 +1212,7 @@ class Lookups(
             rows = log.at(target.x, target.y, target.z, fromTs, toTs, limit = query.fetch, reverse = true)
             entities = log.entitiesAt(target.x, target.y, target.z, fromTs, toTs, MAX_ENTITY_WALK).rows
         } else {
-            // Rollback rows whatever the filter: they are what marks a row as given back.
-            val found = log.newestInBox(
-                target.box(radius), fromTs, toTs, boxWanted(query), steps,
-                { it.cause == Cause.ROLLBACK || keeps.keeps(it) }, { it.cause == Cause.ROLLBACK || keeps.keeps(it) },
-            )
+            val found = log.newestInBox(target.box(radius), fromTs, toTs, boxWanted(query), steps, keeps::keeps, keeps::keeps)
             rows = found.blocks
             entities = found.entities
         }
