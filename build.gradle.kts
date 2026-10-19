@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.pfaumc.pfauprotect"
-version = "1.1.0"
+version = "1.2.0"
 
 // Canvas publishes the dev bundle to maven and the matching server jar to Jenkins under the same
 // CI number.
