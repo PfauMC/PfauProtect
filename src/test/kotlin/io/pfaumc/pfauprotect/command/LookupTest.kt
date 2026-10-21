@@ -46,6 +46,18 @@ class LookupTest {
         assertEquals(listOf("diamond", "emerald"), parseLookupQuery("b:diamond,emerald").included)
     }
 
+    // What CoreProtect users type: the name with no u: in front of it.
+    @Test
+    fun `a bare word is a user`() {
+        val query = parseLookupQuery("Ayanorie t:1d r:10")
+        assertEquals(listOf("Ayanorie"), query.users)
+        assertEquals(10, query.radius)
+        assertEquals(listOf("Steve", "Alex"), parseLookupQuery("u:Steve Alex").users)
+        assertTrue(parseLookupQuery("Steve t:1d").global)
+        // The next page keeps a player whose name is a paged-away key.
+        assertEquals("/pp chat page t:1h page:2", parseLookupQuery("page t:1h page:1").pageCommand("chat", 2))
+    }
+
     @Test
     fun `time spans add up across units`() {
         assertEquals(1800L, durationOrNull("30m"))
@@ -127,9 +139,7 @@ class LookupTest {
     @Test
     fun `a rejected query points at the token that caused it`() {
         val cases = mapOf(
-            "Steve" to 0,
             "u:Steve z:1" to 8,
-            "u:Steve Steve" to 8,
             ":10" to 0,
             "u:" to 2,
             "u:Steve t:2hours" to 10,
