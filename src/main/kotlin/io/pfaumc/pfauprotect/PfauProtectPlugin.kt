@@ -25,6 +25,7 @@ import io.pfaumc.pfauprotect.capture.entity.EntityCapture
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.ChatKind
+import io.pfaumc.pfauprotect.storage.ChatLine
 import io.pfaumc.pfauprotect.storage.ChatLog
 import io.pfaumc.pfauprotect.storage.WorldChange
 import net.kyori.adventure.text.Component
@@ -39,7 +40,9 @@ import io.pfaumc.pfauprotect.attribution.Energy
 import io.pfaumc.pfauprotect.attribution.EntityOriginListener
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.capture.item.HolderListener
+import io.pfaumc.pfauprotect.command.ChatRun
 import io.pfaumc.pfauprotect.command.Inspector
+import io.pfaumc.pfauprotect.command.chatRuns
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.capture.item.ItemUseListener
 import io.pfaumc.pfauprotect.command.LookupArgument
@@ -128,6 +131,10 @@ private const val HELD_WAIT_SECONDS = 2L
 private const val PLANE_POSTINGS = 2000
 private const val PLANE_MINUTES = 10L
 private const val RECONCILE_MINUTES = 30L
+
+// How far /pp chat reads for one page at most: a run of hits longer than that ends the pages.
+private const val MAX_CHAT_READ = 4096
+
 private const val LOOKUP_PERMISSION = "pfauprotect.lookup"
 private const val INSPECT_PERMISSION = "pfauprotect.inspect"
 private const val RECONCILE_PERMISSION = "pfauprotect.reconcile"
@@ -145,7 +152,7 @@ private val HELP = listOf(
     Help(INSPECT_PERMISSION, "/pp i", "/pp i", "inspector: click a block or an entity", "инспектор: клик по блоку или сущности"),
     Help(ROLLBACK_PERMISSION, "/pp rb time: [radius:] [user:]", "/pp rb ", "preview a rollback", "предпросмотр отката"),
     Help(ROLLBACK_PERMISSION, "/pp apply · /pp cancel", "/pp apply", "run or drop the preview", "выполнить или сбросить предпросмотр"),
-    Help(LOOKUP_PERMISSION, "/pp chat [user: time: f:]", "/pp chat ", "chat, commands, joins and quits", "чат, команды, входы и выходы"),
+    Help(LOOKUP_PERMISSION, "/pp chat [user: time: f: a:pvp]", "/pp chat ", "chat, commands, joins, quits and hits between players", "чат, команды, входы, выходы и удары между игроками"),
     Help(LOOKUP_PERMISSION, "/pp view [chat|dialog]", "/pp view ", "where the pages open: chat or a window", "где открываются страницы: чат или окно"),
     Help(LOOKUP_PERMISSION, "/pp view rows [N]", "/pp view rows ", "lines on a page, to fit your screen", "строк на странице, под свой экран"),
     Help(STATUS_PERMISSION, "/pp status", "/pp status", "bases, queues, what went unexplained", "базы, очереди, необъяснённое"),
@@ -287,12 +294,14 @@ class PfauProtectPlugin : JavaPlugin() {
         val lookups = Lookups(this, ledger, blocks, codec)
         val inspector = Inspector(lookups)
         val worldItems = WorldItemListener(codec, mechanisms, origins, capture, attribution, entities)
+        val chat = ChatLog(dataFolder.toPath().resolve("chat"))
         val entityCapture = EntityCapture(
             blocks, origins, attribution, entities,
             later = ::onRegion,
             // A null task means the entity was gone before it could be scheduled, and neither ever runs.
             laterOn = { entity, task, retired -> entity.scheduler.run(this, { task() }, retired) ?: retired() },
             offThread = { task -> server.asyncScheduler.runNow(this) { task() } },
+            hits = chat::submit,
         )
         val confiscations = Confiscations(this, ledger, codec, capture, worldItems, uncovered::submit)
         val chunkRollback = ChunkRollback(
@@ -302,7 +311,6 @@ class PfauProtectPlugin : JavaPlugin() {
             this, ledger, blocks, lookups, chunkRollback, confiscations,
             holdStill = { fileHeld(pistons) }, letGo = pistons::resume,
         )
-        val chat = ChatLog(dataFolder.toPath().resolve("chat"))
         val running = Running(
             ledger, blocks, uncovered, codec, capture, mechanisms, origins,
             lookups, inspector, Reconciliation(ledger), PlaneSync(ledger, blocks), rollbacks, chat,
@@ -787,30 +795,59 @@ class PfauProtectPlugin : JavaPlugin() {
         offThread(sender, "the chat lookup failed", "The chat lookup failed; the server log has the details.") {
             val users = running.lookups.resolveAll(sender, asked.users) ?: return@offThread
             val text = asked.filter?.lowercase()
-            // `wanted` reads past this page, which is how it knows there is a next one.
-            val read = running.chat.read(asked.fromTs(), asked.toTs(), asked.wanted) { line ->
-                (users.isEmpty() || line.player in users) && (text == null || text in line.text.lowercase())
+            // `wanted` reads past this page, which is how it knows there is a next one. A hit is the victim's
+            // line as much as the attacker's: who hit Bob is asked as `user:Bob`.
+            val keeps = { line: ChatLine ->
+                (users.isEmpty() || line.player in users || line.hit?.victim in users) &&
+                    (!asked.pvp || line.kind == ChatKind.HIT) && (text == null || text in line.text.lowercase())
             }
-            val lines = read.drop(asked.limit * (asked.page - 1)).take(asked.limit)
+            // A one-sided fight folds a whole read into a line or two, so the read goes on until the runs fill
+            // this page and start the next, or the log runs out. Past the cap a run that long is the last page.
+            var reading = asked.wanted
+            var read = running.chat.read(asked.fromTs(), asked.toTs(), reading, keeps)
+            var runs = chatRuns(read, asked.all)
+            while (runs.size <= asked.limit * asked.page && read.size == reading && reading < MAX_CHAT_READ) {
+                reading = minOf(reading * 4, MAX_CHAT_READ)
+                read = running.chat.read(asked.fromTs(), asked.toTs(), reading, keeps)
+                runs = chatRuns(read, asked.all)
+            }
+            val lines = runs.drop(asked.limit * (asked.page - 1)).take(asked.limit)
             if (lines.isEmpty()) return@offThread sender.say("Nothing said or run matches.")
-            val drawn = lines.map { line ->
-                val who = Ui.text(nameOrId(line.player), Ui.WHO)
+            val drawn = lines.map { run ->
+                val line = run.first
+                val inferred = line.hit?.confidence == Confidence.INFERRED
+                val who = if (inferred) Ui.hover(Ui.text("${nameOrId(line.player)}?", Ui.WHO), tr("worked out, not seen", "вычислено, не видели напрямую"))
+                else Ui.text(nameOrId(line.player), Ui.WHO)
                 val what = when (line.kind) {
                     ChatKind.CHAT -> Ui.text(": " + line.text)
                     ChatKind.COMMAND -> Ui.text(" " + line.text, Ui.CHANGED)
                     ChatKind.JOIN -> Ui.text(tr(" joined", " · вход"), Ui.GAINED)
                     ChatKind.QUIT -> Ui.text(tr(" left", " · выход"), Ui.MUTED)
+                    ChatKind.HIT -> hitOf(run)
                 }
-                val out = Component.text().append(Ui.text(" ")).append(Ui.ago(line.timestamp)).append(Ui.text("  ")).append(who).append(what)
+                // A run reads at its first hit: who started is what it is looked up for.
+                val out = Component.text().append(Ui.text(" ")).append(Ui.ago(run.oldest)).append(Ui.text("  ")).append(who).append(what)
                 if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, asked.teleports))
                 out.build()
             }
             showPage(
                 sender, asked, Ui.text(tr("PfauProtect · chat and commands", "PfauProtect · чат и команды"), Ui.FAINT), drawn, emptyList(),
                 back = asked.pageCommand("chat", asked.page - 1).takeIf { asked.page > 1 },
-                forward = asked.pageCommand("chat", asked.page + 1).takeIf { read.size > asked.limit * asked.page },
+                forward = asked.pageCommand("chat", asked.page + 1).takeIf { runs.size > asked.limit * asked.page },
             )
         }
+    }
+
+    // " ⚔ Bob  netherite sword  7.0 ×3": whom, with what, how much after armour all told.
+    private fun hitOf(run: ChatRun): Component {
+        val hit = run.first.hit ?: return Component.empty()
+        val out = Component.text()
+            .append(Ui.hover(Ui.text(" ⚔ ", Ui.LOST), tr("hit", "удар")))
+            .append(Ui.text(nameOrId(hit.victim), Ui.WHO))
+        if (run.first.text.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.any(run.first.text))
+        out.append(Ui.text("  ")).append(Ui.hover(Ui.text(String.format(Locale.ROOT, "%.1f", run.damage), Ui.LOST), tr("damage after armour", "урон после брони")))
+        if (run.rows > 1) out.append(Ui.hover(Ui.text(" ×${run.rows}", Ui.MUTED), tr("${run.rows} in a row; #all shows each", "${run.rows} подряд; #all покажет каждое")))
+        return out.build()
     }
 
     // How many lines this player's pages hold when no limit: is said, kept with them; bare, the config's again.

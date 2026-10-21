@@ -4,7 +4,13 @@ import com.mojang.brigadier.context.StringRange
 import com.mojang.brigadier.exceptions.CommandSyntaxException
 import com.mojang.brigadier.suggestion.SuggestionsBuilder
 import io.pfaumc.pfauprotect.Settings
+import io.pfaumc.pfauprotect.alice
+import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.Confidence
+import io.pfaumc.pfauprotect.storage.ChatKind
+import io.pfaumc.pfauprotect.storage.ChatLine
+import io.pfaumc.pfauprotect.storage.Hit
 import net.kyori.adventure.text.Component
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -159,6 +165,25 @@ class LookupTest {
                 "${action.keys.first()} names causes from both planes",
             )
         }
+    }
+
+    // Newest first, as the chat log reads: Alice's three sword hits fold into one run that reads at her first,
+    // Bob's hit back stays its own line, and a chat line between folds nothing.
+    @Test
+    fun `hits fold by attacker, victim and weapon, and a hit back breaks the run`() {
+        fun hit(at: Long, by: UUID, on: UUID) = ChatLine(at, ChatKind.HIT, by, "minecraft:iron_sword", hit = Hit(on, 2f, Confidence.FACT))
+        val lines = listOf(
+            hit(40_000, alice, bob), hit(30_000, alice, bob), hit(20_000, alice, bob),
+            hit(15_000, bob, alice), ChatLine(12_000, ChatKind.CHAT, alice, "stop"), hit(10_000, alice, bob),
+        )
+        val runs = chatRuns(lines, all = false)
+        assertEquals(listOf(3, 1, 1, 1), runs.map { it.rows })
+        assertEquals(20_000L, runs[0].oldest)
+        assertEquals(6f, runs[0].damage)
+        assertEquals(6, chatRuns(lines, all = true).size)
+        // A hit worked out (his dog) beside one seen is drawn apart: the run reads as its first.
+        val dog = ChatLine(35_000, ChatKind.HIT, alice, "minecraft:iron_sword", hit = Hit(bob, 2f, Confidence.INFERRED))
+        assertEquals(listOf(1, 1, 2), chatRuns(listOf(lines[0], dog) + lines.subList(1, 3), all = false).map { it.rows })
     }
 
     // A span runs from the far end to the near one whichever is written first; a span of nothing is no span.

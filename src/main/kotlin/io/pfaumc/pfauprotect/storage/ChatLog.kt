@@ -1,5 +1,6 @@
 package io.pfaumc.pfauprotect.storage
 
+import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.idIndex
 import org.rocksdb.Options
 import org.rocksdb.RocksDB
@@ -14,15 +15,22 @@ import java.util.logging.Level
 import kotlin.concurrent.read
 import kotlin.concurrent.write
 
-/** What a player said, ran or did on the way in and out: what an investigation reads beside the planes. */
+/**
+ * What a player said, ran or did on the way in and out, and whom they hit: what an investigation reads beside
+ * the planes. A build that has no name for a kind skips the line.
+ */
 enum class ChatKind(val id: Int) {
-    CHAT(0), COMMAND(1), JOIN(2), QUIT(3);
+    CHAT(0), COMMAND(1), JOIN(2), QUIT(3), HIT(4);
 
     companion object {
         val byId = idIndex(entries) { it.id }
     }
 }
 
+/** Who was hit, how hard after armour, and whether the one striking was seen or worked out. */
+data class Hit(val victim: UUID, val damage: Float, val confidence: Confidence)
+
+// A hit's `text` is what struck: the item in the hand, empty for a bare one, or the arrow, the dog, the TNT.
 data class ChatLine(
     val timestamp: Long,
     val kind: ChatKind,
@@ -32,6 +40,7 @@ data class ChatLine(
     val x: Int = 0,
     val y: Int = 0,
     val z: Int = 0,
+    val hit: Hit? = null,
 )
 
 /**
@@ -99,14 +108,20 @@ class ChatLog(dir: Path) : AutoCloseable {
 
     private fun keyOf(ts: Long, seq: Int): ByteArray = ByteWriter(12).longBE(ts).intBE(seq).toByteArray()
 
+    // A hit's own fields sit between the place and the text. The other kinds keep the layout they had, and a
+    // build from before hits stops at the kind, so the version stays.
     private fun encode(line: ChatLine): ByteArray {
         val text = line.text.toByteArray(Charsets.UTF_8)
         val world = line.world.toByteArray(Charsets.UTF_8)
-        return ByteWriter(1 + 1 + 16 + 4 + world.size + 12 + text.size)
+        val out = ByteWriter(1 + 1 + 16 + 4 + world.size + 12 + HIT_SIZE + text.size)
             .byte(VERSION).byte(line.kind.id)
             .uuid(line.player)
             .intBE(world.size).bytes(world).intBE(line.x).intBE(line.y).intBE(line.z)
-            .bytes(text).toByteArray()
+        if (line.kind == ChatKind.HIT) {
+            val hit = requireNotNull(line.hit) { "a hit line without its hit" }
+            out.uuid(hit.victim).intBE(hit.damage.toRawBits()).byte(hit.confidence.id)
+        }
+        return out.bytes(text).toByteArray()
     }
 
     private fun decode(ts: Long, value: ByteArray): ChatLine? = runCatching {
@@ -118,11 +133,15 @@ class ChatLog(dir: Path) : AutoCloseable {
         val x = b.intBE()
         val y = b.intBE()
         val z = b.intBE()
+        val hit = if (kind == ChatKind.HIT) {
+            Hit(b.uuid(), Float.fromBits(b.intBE()), Confidence.byId(b.byte()) ?: return null)
+        } else null
         val text = b.bytes(b.remaining).toString(Charsets.UTF_8)
-        ChatLine(ts, kind, player, text, world, x, y, z)
+        ChatLine(ts, kind, player, text, world, x, y, z, hit)
     }.getOrNull()
 
     private companion object {
         const val VERSION = 0
+        const val HIT_SIZE = 16 + 4 + 1
     }
 }

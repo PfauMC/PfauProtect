@@ -2,6 +2,7 @@ package io.pfaumc.pfauprotect.storage
 
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
+import io.pfaumc.pfauprotect.model.Confidence
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -44,6 +45,19 @@ class ChatLogTest {
             "00000005" + "world".toByteArray().hex() + "00000001" + "00000040" + "00000002" +
             "/give".toByteArray().hex()
         assertEquals(expected, value)
+    }
+
+    // A hit's victim, damage and confidence sit between the place and the text; the other kinds are as they were.
+    @Test
+    fun `a hit comes back with whom it struck`(@TempDir dir: Path) {
+        val hit = ChatLine(2_000, ChatKind.HIT, bob, "minecraft:wolf", "world", 1, 64, 2, Hit(alice, 7f, Confidence.INFERRED))
+        ChatLog(dir).use { it.submit(hit) }
+        val value = rawRowsOf(dir, "default").values.single()
+        val expected = "00" + "04" + "000000000000400080000000000000b0" +
+            "00000005" + "world".toByteArray().hex() + "00000001" + "00000040" + "00000002" +
+            alice.toString().replace("-", "") + "40e00000" + "01" + "minecraft:wolf".toByteArray().hex()
+        assertEquals(expected, value)
+        ChatLog(dir).use { assertEquals(listOf(hit), it.read(0, Long.MAX_VALUE, 10) { true }) }
     }
 
     // A lookup or a line can arrive while the plugin is being disabled; after the close it meets a base
