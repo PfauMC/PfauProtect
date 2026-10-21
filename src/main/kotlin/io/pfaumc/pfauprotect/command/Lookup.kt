@@ -768,8 +768,10 @@ internal fun chatRuns(lines: List<ChatLine>, all: Boolean): List<ChatRun> {
     for (line in lines) {
         val run = out.lastOrNull()
         val hit = line.hit
-        if (!all && hit != null && run != null && run.first.hit?.victim == hit.victim && run.first.player == line.player &&
-            run.first.text == line.text && run.oldest - line.timestamp <= FOLD_MILLIS
+        // The run is drawn as its first hit, so one worked out and one seen do not share a line.
+        val first = run?.first?.hit
+        if (!all && hit != null && first != null && first.victim == hit.victim && first.confidence == hit.confidence &&
+            run.first.player == line.player && run.first.text == line.text && run.oldest - line.timestamp <= FOLD_MILLIS
         ) {
             run.rows++
             run.damage += hit.damage

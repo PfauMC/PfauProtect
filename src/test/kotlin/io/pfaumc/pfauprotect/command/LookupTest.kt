@@ -181,6 +181,9 @@ class LookupTest {
         assertEquals(20_000L, runs[0].oldest)
         assertEquals(6f, runs[0].damage)
         assertEquals(6, chatRuns(lines, all = true).size)
+        // A hit worked out (his dog) beside one seen is drawn apart: the run reads as its first.
+        val dog = ChatLine(35_000, ChatKind.HIT, alice, "minecraft:iron_sword", hit = Hit(bob, 2f, Confidence.INFERRED))
+        assertEquals(listOf(1, 1, 2), chatRuns(listOf(lines[0], dog) + lines.subList(1, 3), all = false).map { it.rows })
     }
 
     // A span runs from the far end to the near one whichever is written first; a span of nothing is no span.

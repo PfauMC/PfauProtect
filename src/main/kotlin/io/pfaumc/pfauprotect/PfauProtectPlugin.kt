@@ -25,6 +25,7 @@ import io.pfaumc.pfauprotect.capture.entity.EntityCapture
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.ChatKind
+import io.pfaumc.pfauprotect.storage.ChatLine
 import io.pfaumc.pfauprotect.storage.ChatLog
 import io.pfaumc.pfauprotect.storage.WorldChange
 import net.kyori.adventure.text.Component
@@ -130,6 +131,10 @@ private const val HELD_WAIT_SECONDS = 2L
 private const val PLANE_POSTINGS = 2000
 private const val PLANE_MINUTES = 10L
 private const val RECONCILE_MINUTES = 30L
+
+// How far /pp chat reads for one page at most: a run of hits longer than that ends the pages.
+private const val MAX_CHAT_READ = 4096
+
 private const val LOOKUP_PERMISSION = "pfauprotect.lookup"
 private const val INSPECT_PERMISSION = "pfauprotect.inspect"
 private const val RECONCILE_PERMISSION = "pfauprotect.reconcile"
@@ -792,11 +797,20 @@ class PfauProtectPlugin : JavaPlugin() {
             val text = asked.filter?.lowercase()
             // `wanted` reads past this page, which is how it knows there is a next one. A hit is the victim's
             // line as much as the attacker's: who hit Bob is asked as `user:Bob`.
-            val read = running.chat.read(asked.fromTs(), asked.toTs(), asked.wanted) { line ->
+            val keeps = { line: ChatLine ->
                 (users.isEmpty() || line.player in users || line.hit?.victim in users) &&
                     (!asked.pvp || line.kind == ChatKind.HIT) && (text == null || text in line.text.lowercase())
             }
-            val runs = chatRuns(read, asked.all)
+            // A one-sided fight folds a whole read into a line or two, so the read goes on until the runs fill
+            // this page and start the next, or the log runs out. Past the cap a run that long is the last page.
+            var reading = asked.wanted
+            var read = running.chat.read(asked.fromTs(), asked.toTs(), reading, keeps)
+            var runs = chatRuns(read, asked.all)
+            while (runs.size <= asked.limit * asked.page && read.size == reading && reading < MAX_CHAT_READ) {
+                reading = minOf(reading * 4, MAX_CHAT_READ)
+                read = running.chat.read(asked.fromTs(), asked.toTs(), reading, keeps)
+                runs = chatRuns(read, asked.all)
+            }
             val lines = runs.drop(asked.limit * (asked.page - 1)).take(asked.limit)
             if (lines.isEmpty()) return@offThread sender.say("Nothing said or run matches.")
             val drawn = lines.map { run ->
@@ -819,8 +833,7 @@ class PfauProtectPlugin : JavaPlugin() {
             showPage(
                 sender, asked, Ui.text(tr("PfauProtect · chat and commands", "PfauProtect · чат и команды"), Ui.FAINT), drawn, emptyList(),
                 back = asked.pageCommand("chat", asked.page - 1).takeIf { asked.page > 1 },
-                // A read cut off at `wanted` may have more behind it however few runs it folded into.
-                forward = asked.pageCommand("chat", asked.page + 1).takeIf { runs.size > asked.limit * asked.page || read.size == asked.wanted },
+                forward = asked.pageCommand("chat", asked.page + 1).takeIf { runs.size > asked.limit * asked.page },
             )
         }
     }
