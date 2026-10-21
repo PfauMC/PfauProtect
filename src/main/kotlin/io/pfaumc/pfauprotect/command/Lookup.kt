@@ -405,9 +405,6 @@ fun lookupTargetAt(at: Location) =
 // Brigadier tells the player these itself, past say(): translated as they are made.
 private fun said(text: String) = LiteralMessage(Texts.translate(text))
 
-private val NOT_A_PARAMETER = DynamicCommandExceptionType {
-    said("'$it' is not a parameter, expected one of ${Param.help}")
-}
 private val UNKNOWN_PARAMETER = DynamicCommandExceptionType {
     said("unknown parameter '$it:', expected one of ${Param.help}")
 }
@@ -456,9 +453,11 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
             continue
         }
         val colon = token.indexOf(':')
-        if (colon <= 0) {
-            reader.cursor = tokenStart
-            throw NOT_A_PARAMETER.createWithContext(reader, token)
+        // A bare word is a player, as CoreProtect reads `/co rollback Notch t:1d`; a misspelt
+        // parameter then fails as an unknown player rather than passing as a filter.
+        if (colon < 0) {
+            query = query.copy(users = query.users + values(token))
+            continue
         }
         val key = token.substring(0, colon).lowercase()
         val value = token.substring(colon + 1)

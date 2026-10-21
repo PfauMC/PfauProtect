@@ -120,7 +120,6 @@ object Texts {
         r("Name the player to reconcile\\.") to "Назови игрока для сверки.",
         r("(\\S+) matches the ledger; nothing differs\\.") to "$1 совпадает с журналом; расхождений нет.",
         r("(\\S+) differs from the ledger on (\\d+) forms:") to "$1 расходится с журналом по предметам: $2",
-        r("'(.*)' is not a parameter, expected one of (.*)") to "'$1' — не параметр; ожидается один из: $2",
         r("unknown parameter '(.*)', expected one of (.*)") to "неизвестный параметр '$1'; ожидается один из: $2",
         r("'(.*)' has no value") to "у '$1' нет значения",
         r("'(.*)' is not a time span, expected something like 30m, 2h or 1d6h") to "'$1' — не промежуток времени; ожидается вроде 30m, 2h или 1d6h",
