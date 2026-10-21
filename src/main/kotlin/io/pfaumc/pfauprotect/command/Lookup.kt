@@ -356,7 +356,8 @@ data class LookupQuery(
 
     /** The same question to `/pp [subcommand]` at another page, with the words that pin what it is about. */
     fun pageCommand(subcommand: String, page: Int, vararg pinned: String): String {
-        val kept = words.split(' ').filter { it.isNotBlank() && it.substringBefore(':').lowercase() !in PAGED_AWAY }
+        // A bare word is a player, even one named `page`.
+        val kept = words.split(' ').filter { it.isNotBlank() && it.substringBefore(':', "").lowercase() !in PAGED_AWAY }
         return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }) + "page:$page").joinToString(" ")
     }
 }

@@ -54,6 +54,8 @@ class LookupTest {
         assertEquals(10, query.radius)
         assertEquals(listOf("Steve", "Alex"), parseLookupQuery("u:Steve Alex").users)
         assertTrue(parseLookupQuery("Steve t:1d").global)
+        // The next page keeps a player whose name is a paged-away key.
+        assertEquals("/pp chat page t:1h page:2", parseLookupQuery("page t:1h page:1").pageCommand("chat", 2))
     }
 
     @Test
