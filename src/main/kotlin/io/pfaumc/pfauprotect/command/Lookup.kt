@@ -19,6 +19,7 @@ import io.papermc.paper.registry.data.dialog.action.DialogAction
 import io.papermc.paper.registry.data.dialog.body.DialogBody
 import io.papermc.paper.registry.data.dialog.type.DialogType
 import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.ChatLine
 import io.pfaumc.pfauprotect.storage.Box
 import io.pfaumc.pfauprotect.storage.Steps
 import io.pfaumc.pfauprotect.storage.EntityRow
@@ -204,6 +205,8 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
         setOf(Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.PLAYER_KILLED, Cause.MOB_TRANSFORM, Cause.BUCKET_CAPTURE_MOB),
         "kill", "kills", "killed", "death", "deaths",
     ),
+    // A fight between players: the kill in a lookup, and in /pp chat every hit that led to it.
+    PVP(setOf(Cause.PLAYER_KILLED), "pvp", "hit", "hits", "fight"),
     SPAWN(
         setOf(Cause.SPAWN_EGG_USE, Cause.MOB_BRED, Cause.BUCKET_RELEASE_MOB, Cause.PLACE_ENTITY_ITEM, Cause.MOB_TRANSFORM),
         "spawn", "spawned", "bred",
@@ -311,6 +314,8 @@ data class LookupQuery(
     val rolledBack: Boolean? = null,
     val amount: IntRange? = null,
     val steal: Boolean = false,
+    // Only the hits, for /pp chat.
+    val pvp: Boolean = false,
     val count: Boolean = false,
     // One event and nothing else: a click on a lookup line fills it in.
     val event: EventRef? = null,
@@ -476,6 +481,7 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
             Param.ACTION -> query.copy(
                 causes = (query.causes ?: emptySet()) + causes(reader, valueStart, value),
                 steal = query.steal || values(value).any { Action.of(it.lowercase()) == Action.STEAL },
+                pvp = query.pvp || values(value).any { Action.of(it.lowercase()) == Action.PVP },
             )
             Param.INCLUDE -> query.copy(included = query.included + values(value))
             Param.EXCLUDE -> query.copy(excluded = query.excluded + values(value))
@@ -748,6 +754,28 @@ internal fun folded(lines: List<Line>, all: Boolean): List<Folded> {
             run.oldest = line.timestamp
         } else {
             out += Folded(line, 1, line.amount, line.timestamp)
+        }
+    }
+    return out
+}
+
+internal class ChatRun(val first: ChatLine, var rows: Int, var damage: Float, var oldest: Long)
+
+// Hit after hit by one player on another with one thing folds like a lookup's run; a hit back breaks it,
+// which keeps who answered whom in the order it went.
+internal fun chatRuns(lines: List<ChatLine>, all: Boolean): List<ChatRun> {
+    val out = ArrayList<ChatRun>()
+    for (line in lines) {
+        val run = out.lastOrNull()
+        val hit = line.hit
+        if (!all && hit != null && run != null && run.first.hit?.victim == hit.victim && run.first.player == line.player &&
+            run.first.text == line.text && run.oldest - line.timestamp <= FOLD_MILLIS
+        ) {
+            run.rows++
+            run.damage += hit.damage
+            run.oldest = line.timestamp
+        } else {
+            out += ChatRun(line, 1, hit?.damage ?: 0f, line.timestamp)
         }
     }
     return out

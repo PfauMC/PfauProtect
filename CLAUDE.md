@@ -94,7 +94,7 @@ there, and `TextsCoverageTest` fails until it has one. A line made of parts (a l
 help, chat) is drawn as Adventure components through `Ui.kt` and put together in the language already with `tr(en,
 ru)`; the game's own names go out as translatable components, in the client's language. `Verbs.kt` holds the
 words of every `Cause`, and the cause's code waits on the hover. `PPT_LANG=ru scripts/test-server.sh start` starts the
-test server in Russian for a live check. `ChatLog` is a base of its own (`chat/`): chat, commands, joins and quits, no IP addresses.
+test server in Russian for a live check. `ChatLog` is a base of its own (`chat/`): chat, commands, joins and quits, and every hit of a player on another (`action:pvp` shows only those; no rollback reads them), no IP addresses.
 `api/PfauProtectApi` is registered in the ServicesManager; `PfauProtectPreLogEvent` can veto a row before it
 is written and is raised only while someone listens.
 

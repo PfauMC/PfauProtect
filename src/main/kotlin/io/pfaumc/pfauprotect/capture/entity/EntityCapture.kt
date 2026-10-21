@@ -26,6 +26,9 @@ import io.pfaumc.pfauprotect.model.LIGHTNING
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.ChatKind
+import io.pfaumc.pfauprotect.storage.ChatLine
+import io.pfaumc.pfauprotect.storage.Hit
 import io.pfaumc.pfauprotect.storage.EntityChange
 import io.pfaumc.pfauprotect.attribution.BUILT
 import org.bukkit.block.Block
@@ -255,6 +258,8 @@ class EntityCapture(
     private val laterOn: (Entity, () -> Unit, () -> Unit) -> Unit,
     // Runs a task off the region threads, where the journal may be read.
     private val offThread: (() -> Unit) -> Unit,
+    // Where a player's hit on another goes: the chat log, beside what the two said.
+    private val hits: (ChatLine) -> Unit = {},
 ) : Listener {
     private val seen = ConcurrentHashMap<UUID, Long>()
     private val seenSwept = AtomicLong()
@@ -586,6 +591,30 @@ class EntityCapture(
                 )
             )
         }
+    }
+
+    /**
+     * A player hit by another, directly or by what the other set going: who struck first is what a fight
+     * comes down to, and the planes only hear of it at the death. Read by `/pp chat` beside what the two
+     * said; no rollback reads it.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onPlayerHit(event: EntityDamageByEntityEvent) {
+        val victim = event.entity as? Player ?: return
+        val damager = event.damager
+        val by = byEntity(damager, Cause.PLAYER_KILLED).by ?: return
+        val attacker = by.culprit() ?: return
+        if (attacker == victim.uniqueId || attacker == LIGHTNING) return
+        // A blow by hand is dealt within reach, so the hand that dealt it is on this region as well.
+        val weapon = if (damager is Player) damager.inventory.itemInMainHand.type.takeUnless { it.isAir }?.key?.toString().orEmpty()
+        else typeOf(damager)
+        val at = victim.location
+        hits(
+            ChatLine(
+                System.currentTimeMillis(), ChatKind.HIT, attacker, weapon, at.world.name, at.blockX, at.blockY, at.blockZ,
+                Hit(victim.uniqueId, event.finalDamage.toFloat(), by.confidence),
+            )
+        )
     }
 
     internal fun firstSighting(entity: UUID, now: Long): Boolean {

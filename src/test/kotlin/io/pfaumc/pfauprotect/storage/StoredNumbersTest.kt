@@ -269,7 +269,7 @@ class StoredNumbersTest {
             EntityKind.entries.associate { it.name to it.id },
         )
         assertEquals(
-            mapOf("CHAT" to 0, "COMMAND" to 1, "JOIN" to 2, "QUIT" to 3),
+            mapOf("CHAT" to 0, "COMMAND" to 1, "JOIN" to 2, "QUIT" to 3, "HIT" to 4),
             ChatKind.entries.associate { it.name to it.id },
         )
         assertEquals(
