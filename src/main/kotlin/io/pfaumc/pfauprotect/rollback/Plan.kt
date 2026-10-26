@@ -296,6 +296,8 @@ private class Collected(private val keeps: RowFilter) {
     val entityRows = ArrayList<EntityRow>()
     var unreadable = 0
     var budget = BLOCK_WALK_BUDGET
+    // Who changed which block and when, by the rows kept.
+    private val movers = HashMap<Pair<Triple<Int, Int, Int>, UUID?>, MutableList<Long>>()
 
     /** False when a walk ran out of budget, which refuses the rollback; the entity walk gets what is left. */
     fun collect(window: Window<BlockRow>, entities: (Int) -> Window<EntityRow>): Boolean {
@@ -303,7 +305,10 @@ private class Collected(private val keeps: RowFilter) {
         budget -= window.walked
         unreadable += window.unreadable
         for (row in window.rows) when {
-            keeps.keeps(row) -> if (row.cause != Cause.BLK_LIQUID_FLOW) rows += row
+            keeps.keeps(row) -> if (row.cause != Cause.BLK_LIQUID_FLOW) {
+                rows += row
+                movers.getOrPut(row.spot to row.actor) { ArrayList() } += row.timestamp
+            }
             passable(row) -> nature += row
             else -> foreign += row
         }
@@ -314,7 +319,22 @@ private class Collected(private val keeps: RowFilter) {
         read.rows.filterTo(entityRows) { keeps.keeps(it) }
         return true
     }
+
+    // What a block's own break or placing moved, the block itself and its slots, goes back with the block
+    // whatever words narrowed the rollback to blocks: `action:block` put a griefed shulker box back empty, and
+    // left the box the griefer carried off full. Only a kept row's own: same place, same player, same moment.
+    fun keeps(entry: LedgerEntry): Boolean {
+        if (keeps.keeps(entry)) return true
+        if (entry.holder !is WorldBlock && entry.cause !in CARRIED) return false
+        val at = entry.holder.block ?: return false
+        return movers[Triple(at.x, at.y, at.z) to entry.actor].orEmpty().any { abs(entry.timestamp - it) <= CARRIED_LAG_MILLIS }
+    }
 }
+
+private val CARRIED = setOf(Cause.CONTAINER_BREAK_DROP, Cause.CONTAINER_BREAK_PACK, Cause.CONTAINER_PLACE_UNPACK)
+
+// A break's own block row is written at once, what it moved out of the slots at the end of the tick.
+private const val CARRIED_LAG_MILLIS = 1_000L
 
 /**
  * Reads what a rollback would undo: the block rows and the container postings in the window that the
@@ -355,7 +375,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         )
         if (!page.complete) return tooMuch()
         read.unreadable += page.unreadable
-        val (slots, positions) = page.entries.filter { keeps.keeps(it) }.partition { it.holder is Container }
+        val (slots, positions) = page.entries.filter(read::keeps).partition { it.holder is Container }
         return planOf(log, world, read, slots, positions.filter { it.qty < 0 }, fromTs, toTs, keeps)
     }
 
@@ -415,7 +435,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                 val page = ledger.holderPage(holder, fromTs, toTs, limit = MAX_ROLLBACK_ROWS)
                 if (!page.complete) return tooMuch()
                 read.unreadable += page.unreadable
-                for (entry in page.entries.filter { keeps.keeps(it) }) {
+                for (entry in page.entries.filter(read::keeps)) {
                     if (entry.holder is Container) slots += entry else if (entry.qty < 0) losses += entry
                 }
             }
