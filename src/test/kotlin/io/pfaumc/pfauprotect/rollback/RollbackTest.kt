@@ -383,16 +383,16 @@ class RollbackTest : BothPlanes() {
         assertEquals(listOf(Cause.BLOCK_DROP), planned.single().breaks.map { it.cause })
     }
 
-    // Bob set the box down and broke it a minute later. `action:-block` keeps the break, and with it only what
-    // the break moved: the unpacking at the placing is another row's.
+    // Bob set the box down and broke it within the same second. `action:-block` keeps the break, and with it only
+    // what the break moved: the unpacking at the placing is the placing's.
     @Test
     fun `what a block's other row moved stays out of a narrowed rollback`() {
         val owner = UUID.randomUUID()
         val slot = Container(world, 5, 64, 5, 0)
-        log.submit(listOf(BlockChange(5, 64, 5, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 - 60_000, actor = bob)))
+        log.submit(listOf(BlockChange(5, 64, 5, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 - 500, actor = bob)))
         log.submit(listOf(BlockChange(5, 64, 5, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = bob)))
         log.drain()
-        shared.submit(Transfer(Cause.CONTAINER_PLACE_UNPACK, Nested(owner, 0), slot, diamond, null, 16, T0 - 60_000, actor = bob))
+        shared.submit(Transfer(Cause.CONTAINER_PLACE_UNPACK, Nested(owner, 0), slot, diamond, null, 16, T0 - 500, actor = bob))
         shared.submit(Transfer(Cause.CONTAINER_BREAK_PACK, slot, Nested(owner, 0), diamond, null, 16, T0, actor = bob))
         shared.drain()
 

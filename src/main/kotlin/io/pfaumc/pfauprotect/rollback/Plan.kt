@@ -296,8 +296,8 @@ private class Collected(private val keeps: RowFilter) {
     val entityRows = ArrayList<EntityRow>()
     var unreadable = 0
     var budget = BLOCK_WALK_BUDGET
-    // Who changed which block and when, by the rows kept.
-    private val movers = HashMap<Pair<Triple<Int, Int, Int>, UUID?>, MutableList<Long>>()
+    // Who changed which block, when, and whether by placing it, by the rows kept.
+    private val movers = HashMap<Pair<Triple<Int, Int, Int>, UUID?>, MutableList<Pair<Long, Boolean>>>()
 
     /** False when a walk ran out of budget, which refuses the rollback; the entity walk gets what is left. */
     fun collect(window: Window<BlockRow>, entities: (Int) -> Window<EntityRow>): Boolean {
@@ -307,7 +307,7 @@ private class Collected(private val keeps: RowFilter) {
         for (row in window.rows) when {
             keeps.keeps(row) -> if (row.cause != Cause.BLK_LIQUID_FLOW) {
                 rows += row
-                movers.getOrPut(row.spot to row.actor) { ArrayList() } += row.timestamp
+                movers.getOrPut(row.spot to row.actor) { ArrayList() } += row.timestamp to (row.cause == Cause.BLK_PLAYER_PLACE)
             }
             passable(row) -> nature += row
             else -> foreign += row
@@ -322,16 +322,23 @@ private class Collected(private val keeps: RowFilter) {
 
     // What a block's own break or placing moved, the block itself and its slots, goes back with the block
     // whatever words narrowed the rollback to blocks: `action:block` put a griefed shulker box back empty, and
-    // left the box the griefer carried off full. Only a kept row's own: same place, same player, same moment.
+    // left the box the griefer carried off full. Only a kept row's own: same place, same player, same moment, a
+    // placing's unpacking with the placing and a break's drops with the break.
     fun keeps(entry: LedgerEntry): Boolean {
         if (keeps.keeps(entry)) return true
-        if (entry.holder !is WorldBlock && entry.cause !in CARRIED) return false
+        val placing = when (entry.cause) {
+            in ON_PLACE -> true
+            in ON_BREAK -> false
+            else -> return false
+        }
         val at = entry.holder.block ?: return false
-        return movers[Triple(at.x, at.y, at.z) to entry.actor].orEmpty().any { abs(entry.timestamp - it) <= CARRIED_LAG_MILLIS }
+        return movers[Triple(at.x, at.y, at.z) to entry.actor].orEmpty()
+            .any { (ts, placed) -> placed == placing && abs(entry.timestamp - ts) <= CARRIED_LAG_MILLIS }
     }
 }
 
-private val CARRIED = setOf(Cause.CONTAINER_BREAK_DROP, Cause.CONTAINER_BREAK_PACK, Cause.CONTAINER_PLACE_UNPACK)
+private val ON_PLACE = setOf(Cause.CONTAINER_PLACE_UNPACK)
+private val ON_BREAK = setOf(Cause.BLOCK_DROP, Cause.CONTAINER_BREAK_DROP, Cause.CONTAINER_BREAK_PACK)
 
 // A break's own block row is written at once, what it moved out of the slots at the end of the tick.
 private const val CARRIED_LAG_MILLIS = 1_000L
