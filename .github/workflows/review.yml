@@ -1,0 +1,14 @@
+name: review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    uses: PfauMC/.github/.github/workflows/pr-review.yml@main
+    permissions:
+      checks: read
+      contents: read
+      pull-requests: write
+      id-token: write
