@@ -31,6 +31,7 @@ import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.EntityChange
 import io.pfaumc.pfauprotect.model.LIGHTNING
+import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
@@ -362,6 +363,41 @@ class RollbackTest : BothPlanes() {
         val planned = positions(around(filter))
         assertEquals(listOf(WorldBlock(world, 5, 64, 5)), planned.map { it.at })
         assertEquals(listOf(WorldBlock(world, 5, 64, 5)), planned.filter { it.refills.isNotEmpty() }.map { it.at })
+    }
+
+    // Bob broke Alice's shulker box and emptied her chest. `action:block` puts the box back with what its break
+    // packed, not empty, and follows the box that fell out to take it back; the chest is a container action and
+    // stays out of it.
+    @Test
+    fun `a block's rollback narrowed to blocks gives back what its break carried out`() {
+        val box = WorldBlock(world, 5, 64, 5)
+        log.submit(listOf(BlockChange(5, 64, 5, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = bob)))
+        log.drain()
+        shared.submit(Transfer(Cause.BLOCK_DROP, box, Void, diamond, null, 1, T0, actor = bob))
+        shared.submit(Transfer(Cause.CONTAINER_BREAK_PACK, Container(world, 5, 64, 5, 0), Nested(UUID.randomUUID(), 0), diamond, null, 16, T0, actor = bob))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, Container(world, 6, 64, 5, 0), PlayerInv(bob, 0), diamond, null, 3, T0))
+        shared.drain()
+
+        val planned = positions(around(rollbackFilter(bob, causes = Action.BLOCK.causes)))
+        assertEquals(listOf(box to listOf(16)), planned.map { p -> p.at to p.refills.map { it.qty } })
+        assertEquals(listOf(Cause.BLOCK_DROP), planned.single().breaks.map { it.cause })
+    }
+
+    // Bob set the box down and broke it within the same second. `action:-block` keeps the break, and with it only
+    // what the break moved: the unpacking at the placing is the placing's.
+    @Test
+    fun `what a block's other row moved stays out of a narrowed rollback`() {
+        val owner = UUID.randomUUID()
+        val slot = Container(world, 5, 64, 5, 0)
+        log.submit(listOf(BlockChange(5, 64, 5, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 - 500, actor = bob)))
+        log.submit(listOf(BlockChange(5, 64, 5, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = bob)))
+        log.drain()
+        shared.submit(Transfer(Cause.CONTAINER_PLACE_UNPACK, Nested(owner, 0), slot, diamond, null, 16, T0 - 500, actor = bob))
+        shared.submit(Transfer(Cause.CONTAINER_BREAK_PACK, slot, Nested(owner, 0), diamond, null, 16, T0, actor = bob))
+        shared.drain()
+
+        val planned = positions(around(rollbackFilter(bob, causes = Action.BLOCK_BREAK.causes)))
+        assertEquals(listOf(16), planned.single().refills.map { it.qty })
     }
 
     // The second rollback of the same theft would mint the diamonds a second time.
