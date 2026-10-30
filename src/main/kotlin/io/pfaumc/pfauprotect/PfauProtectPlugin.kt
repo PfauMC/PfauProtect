@@ -651,9 +651,11 @@ class PfauProtectPlugin : JavaPlugin() {
                 }
         )
 
-    // What the mark on a lookup line runs: to where the row happened, in the world it happened in.
+    // What the mark on a lookup line runs: to where the row happened, in the world it happened in. Who is to be taken
+    // is checked in the executor, not here: the server marks a node restricted when a probe with every permission but
+    // no executor fails its check, and the client then asks to confirm each click on ⌖ as a command for operators.
     private fun teleportNode() = Commands.literal("tp")
-        .requires { mayTeleport(it.sender) && it.executor is Player }
+        .requires { mayTeleport(it.sender) }
         .then(
             Commands.argument("position", ArgumentTypes.blockPosition())
                 .executes { teleport(it, null) }
@@ -842,7 +844,7 @@ class PfauProtectPlugin : JavaPlugin() {
                 out.build()
             }
             showPage(
-                sender, asked, Ui.text(tr("PfauProtect · chat and commands", "PfauProtect · чат и команды"), Ui.FAINT), drawn, emptyList(),
+                sender, asked, Ui.text(tr("chat and commands", "чат и команды")), drawn, emptyList(),
                 back = asked.pageCommand("chat", asked.page - 1).takeIf { asked.page > 1 },
                 forward = asked.pageCommand("chat", asked.page + 1).takeIf { runs.size > asked.limit * asked.page },
             )

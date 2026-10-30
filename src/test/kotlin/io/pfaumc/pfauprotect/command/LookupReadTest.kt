@@ -341,7 +341,8 @@ class LookupReadTest : BothPlanes() {
         val lines = said(query)
         assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
         assertTrue(lines.none { it.contains("page:2") }, "$lines")
-        assertTrue(lines.last().contains("limit:4"), "$lines")
+        // Said inside the page, above its closing rule.
+        assertTrue(lines.dropLast(1).last().contains("limit:4"), "$lines")
     }
 
     // A radius asks its filter of each row as it walks the index, so the rows it drops do not use up the read
@@ -401,8 +402,12 @@ class LookupReadTest : BothPlanes() {
 
         val lines = said()
         assertTrue(lines.single { it.contains("{container_remove}") }.contains("rolled back"), "$lines")
+        // Out of the chest into her hands reads as taken out, and the chest the lookup is about is not repeated on
+        // the line, by its ends or its place: the heading has it.
+        assertTrue(lines.single { it.contains("{container_remove}") }.let { "took out" in it && "→" !in it && "10 64 -3" !in it }, "$lines")
+        assertTrue(lines.first().contains("(10 64 -3 "), "$lines")
         assertTrue(lines.single { it.contains("{rollback}") }.let { !it.contains("rolled back") }, "$lines")
-        val back = said(LookupQuery(rolledBack = true)).drop(1)
+        val back = said(LookupQuery(rolledBack = true)).drop(1).dropLast(1)
         assertTrue(back.single().contains("{container_remove}"), "$back")
     }
 
@@ -421,10 +426,10 @@ class LookupReadTest : BothPlanes() {
 
         val lines = said(LookupQuery(players = listOf("Alice")), players = mapOf("Alice" to alice, "Bob" to bob))
 
-        assertTrue(lines.any { it.contains("Alice{inventory, slot 3}") }, "$lines")
+        // Her inventory, equipment and cursor read as taken out of the chest, with no ends drawn; her ender chest
+        // is not her hands and keeps both.
+        assertEquals(4, lines.count { it.contains("{container_remove}") }, "$lines")
         assertTrue(lines.any { it.contains("block.minecraft.crafting_table") && it.contains("Alice{crafting grid, slot 1}") }, "$lines")
-        assertTrue(lines.any { it.contains("Alice{equipment, slot 5}") }, "$lines")
-        assertTrue(lines.any { it.contains("Alice{cursor}") }, "$lines")
         assertTrue(lines.any { it.contains("ender_chest") && it.contains("{slot 7}") }, "$lines")
         assertTrue(lines.none { it.contains("Bob") }, "$lines")
         // Refused, not answered: no header, so nothing reads as an empty area.
@@ -492,7 +497,7 @@ class LookupReadTest : BothPlanes() {
         val lines = said(target = LookupTarget(other, 1, 64, 1, "stone at 1 64 1"))
 
         assertTrue(lines.any { it.contains("placed") }, "$lines")
-        assertEquals(1, lines.indexOfFirst { it.startsWith("PfauProtect") }, "one notice before the answer: $lines")
+        assertEquals(1, lines.indexOfFirst { it.startsWith("-----") }, "one notice before the answer: $lines")
     }
 
     @Test

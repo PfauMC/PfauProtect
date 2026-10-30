@@ -684,7 +684,12 @@ class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType
         val tokenStart = whole.lastIndexOf(' ') + 1
         val token = whole.substring(tokenStart)
         val colon = token.indexOf(':')
-        if (colon < 0) return offer(builder, tokenStart, starts)
+        if (colon < 0) {
+            // What is already said, under any of its spellings, is not offered again: the list shrinks to what is left.
+            val said = whole.substring(0, tokenStart).split(' ').map { it.lowercase() }
+            val keys = said.mapNotNullTo(HashSet()) { word -> Param.of(word.substringBefore(':')).takeIf { ':' in word } }
+            return offer(builder, tokenStart, starts.filter { it !in said && Param.of(it.removeSuffix(":")) !in keys })
+        }
         val comma = token.lastIndexOf(',')
         val param = Param.of(token.substring(0, colon).lowercase())
         // A position is one value with commas in it, not a list.
@@ -725,9 +730,17 @@ class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType
 
 private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF)
 
+// The clicks of a window, which `verb` words "moved", and the container causes themselves: what a line between a
+// player's hands and a container may be drawn as put in or taken out.
+private val BOXED = setOf(
+    Cause.CURSOR_PLACE, Cause.CURSOR_TAKE, Cause.CURSOR_SWAP, Cause.QUICK_MOVE, Cause.HOTBAR_SWAP, Cause.OFFHAND_SWAP,
+    Cause.COLLECT_ALL, Cause.QUICK_CRAFT_DISTRIBUTE, Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE,
+)
+
 // One line of an answer, from either plane, so the two read in the order things happened. `same` is what
 // a run of lines folds on: who did what to which thing, which way. `amount` is what a folded line adds
-// up — items, or one per block.
+// up — items, or one per block. `place` is where it happened, drawn by the answer rather than the line, as
+// a lookup of one place says it once in its heading.
 internal class Line(
     val timestamp: Long,
     val cause: Cause,
@@ -736,7 +749,8 @@ internal class Line(
     val amount: Int,
     val undone: Boolean,
     val event: EventRef?,
-    val draw: (amount: Int, rows: Int, clickable: Boolean) -> Component,
+    val place: WorldBlock? = null,
+    val draw: (amount: Int, rows: Int) -> Component,
 )
 
 // A run of the same thing within this long of each other reads as one line: forty blocks of one wall
@@ -903,7 +917,8 @@ private const val BUTTON_WIDTH = 100
 /**
  * One page of an answer. A player who reads pages in a dialog gets a window that stays up until closed,
  * where chat would scroll the page away, with the arrows as its buttons. Anyone else gets it line by line
- * in chat under a footer of arrows. [back] and [forward] run the pages either side, null where there is none.
+ * in chat between two rules, the arrows in the lower. [back] and [forward] run the pages either side, null where there is none;
+ * [place] is the one place the page is about.
  */
 internal fun showPage(
     sender: CommandSender,
@@ -913,13 +928,18 @@ internal fun showPage(
     notes: List<Component>,
     back: String?,
     forward: String?,
+    place: Component? = null,
 ) {
     val paged = back != null || forward != null
     if (!query.dialog || sender !is Player) {
-        sender.sendMessage(title)
+        // A rule above and below, so a page stands apart from the chat around it; the place after the rule, where
+        // the eye finds it first.
+        val top = Component.text().append(Ui.hover(RULE, "PfauProtect")).append(Ui.text(" ")).append(title).append(Ui.text(" ")).append(RULE)
+        if (place != null) top.append(Ui.text(" ")).append(place)
+        sender.sendMessage(top.build())
         lines.forEach(sender::sendMessage)
-        if (paged) sender.sendMessage(footer(query.page, back, forward, query.teleports))
         notes.forEach(sender::sendMessage)
+        sender.sendMessage(footer(query.page, back, forward, query.teleports))
         return
     }
     fun arrow(mark: String, to: Int, command: String?) = command?.let {
@@ -927,11 +947,13 @@ internal fun showPage(
     }
     val arrows = listOfNotNull(arrow("«", query.page - 1, back), arrow("»", query.page + 1, forward))
     val close = ActionButton.create(Ui.text(tr("Close", "Закрыть")), null, BUTTON_WIDTH, null)
-    val heading = if (paged) title.append(Ui.text(" · ${tr("page", "стр.")} ${query.page}", Ui.MUTED)) else title
+    val heading = Component.text().append(Ui.text("PfauProtect · ", Ui.FAINT)).append(title)
+    if (paged) heading.append(Ui.text(" · ${tr("page", "стр.")} ${query.page}", Ui.MUTED))
+    // A window's title takes no click, so the place opens the body, where it does.
     // One block rather than one per line: each block of a body is set apart by a gap that halves what a screen
     // holds, and the arrows, which come right under the body, would be scrolled out of sight.
-    val body = DialogBody.plainMessage(Component.join(JoinConfiguration.newlines(), lines + notes), DIALOG_WIDTH)
-    val base = DialogBase.builder(heading).body(listOf(body)).build()
+    val body = DialogBody.plainMessage(Component.join(JoinConfiguration.newlines(), listOfNotNull(place) + lines + notes), DIALOG_WIDTH)
+    val base = DialogBase.builder(heading.build()).body(listOf(body)).build()
     // Escape runs the exit button, so Close is the exit: a confirmation's pinned pair would turn the page on Escape.
     // A multi-action dialog needs a button besides its exit; a single page has nothing else to offer.
     val type = if (arrows.isEmpty()) DialogType.notice(close) else DialogType.multiAction(arrows).exitAction(close).columns(arrows.size).build()
@@ -948,16 +970,25 @@ private fun undo(event: EventRef, dialog: Boolean): Component {
         .clickEvent(if (dialog) ClickEvent.runCommand(command) else ClickEvent.suggestCommand(command))
 }
 
-// « page 2 » with the arrows that go somewhere clickable; the console is told the words to type.
+private val RULE = Ui.text("-----", Ui.FAINT)
+
+// The rule under a page, with « page 2 » in it when there are more, the arrows that go somewhere clickable, and the
+// last page said to be the last: no count of them is kept, as that would read every row. The console is told the
+// words to type.
 private fun footer(page: Int, back: String?, forward: String?, clickable: Boolean): Component {
-    if (!clickable) {
-        return if (forward != null) Ui.text(tr("  … older rows: page:${page + 1}", "  … старые строки: page:${page + 1}"), Ui.MUTED)
-        else Ui.text(tr("  page $page, the last", "  стр. $page, последняя"), Ui.MUTED)
+    if (back == null && forward == null) return RULE
+    val last = if (forward == null) tr(", the last", ", последняя") else ""
+    val said = when {
+        clickable -> {
+            fun arrow(mark: String, to: Int, command: String?) =
+                if (command != null) Ui.button(mark, command, Ui.WHO, tr("Page $to", "Стр. $to")) else Ui.text(mark, Ui.FAINT)
+            Component.text().append(arrow("«", page - 1, back)).append(Ui.text(" ${tr("page", "стр.")} $page$last ", Ui.MUTED))
+                .append(arrow("»", page + 1, forward)).build()
+        }
+        forward != null -> Ui.text(tr("older rows: page:${page + 1}", "старые строки: page:${page + 1}"), Ui.MUTED)
+        else -> Ui.text("${tr("page", "стр.")} $page$last", Ui.MUTED)
     }
-    fun arrow(mark: String, to: Int, command: String?) =
-        if (command != null) Ui.button(mark, command, Ui.WHO, tr("Page $to", "Стр. $to")) else Ui.text(mark, Ui.FAINT)
-    return Component.text().append(Ui.text("  ")).append(arrow("«", page - 1, back)).append(Ui.text(" ${tr("page", "стр.")} $page ", Ui.MUTED))
-        .append(arrow("»", page + 1, forward)).build()
+    return Component.text().append(RULE).append(Ui.text(" ")).append(said).append(Ui.text(" ")).append(RULE).build()
 }
 
 internal fun offlineName(uuid: UUID): String? = Bukkit.getOfflinePlayer(uuid).name
@@ -1026,11 +1057,11 @@ class Lookups(
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
         val changes = blockLines(target, query, users, steps)
-        val xyz = "${target.x} ${target.y} ${target.z}"
+        // The coordinates come after, set apart by the heading.
         val where = when {
-            query.radius != null -> Ui.text(tr("radius ${query.radius} around $xyz", "радиус ${query.radius} вокруг $xyz"))
-            target.block != null -> Component.text().append(Ui.block(target.block)).append(Ui.text(" $xyz")).build()
-            else -> Ui.text(xyz)
+            query.radius != null -> Ui.text(tr("radius ${query.radius} around", "радиус ${query.radius} вокруг"))
+            target.block != null -> Ui.block(target.block)
+            else -> Ui.text(tr("place", "место"))
         }
         if (blocks.get(target.world) == null) sender.say("This world's block log is not open.")
         answer(sender, items + changes, page.complete && !steps.ranOut, where, query, target)
@@ -1130,8 +1161,9 @@ class Lookups(
             // A slot posting names its player as a holder rather than as its actor.
             val who = entry.actor ?: playerOf(entry.holder) ?: playerOf(entry.counterparty)
             val same = "i ${entry.cause} $who ${entry.itemFormId} ${entry.qty > 0} ${slotless(entry.holder)} ${slotless(entry.counterparty)}"
-            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null) { amount, _, clickable ->
-                draw(entry, who, amount, clickable)
+            val place = entry.holder.block ?: entry.counterparty.block
+            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, place) { amount, _ ->
+                draw(entry, who, amount)
             }
         }
     }
@@ -1139,15 +1171,15 @@ class Lookups(
     private fun lineOf(world: UUID, row: BlockRow, back: Boolean): Line {
         val change = blockChange(row)
         val same = "b ${row.cause} ${row.actor} ${row.confidence} ${change.sign} ${change.from} ${change.to}"
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp)) { _, rows, clickable ->
-            draw(world, row, change, rows, clickable)
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), WorldBlock(world, row.x, row.y, row.z)) { _, rows ->
+            draw(row, change, rows)
         }
     }
 
     private fun lineOf(world: UUID, row: EntityRow, back: Boolean): Line {
         val same = "e ${row.cause} ${row.actor} ${row.confidence} ${row.kind} ${row.type}"
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp)) { _, rows, clickable ->
-            draw(world, row, rows, clickable)
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), WorldBlock(world, row.x, row.y, row.z)) { _, rows ->
+            draw(row, rows)
         }
     }
 
@@ -1161,7 +1193,13 @@ class Lookups(
         pages: Boolean = true,
     ) {
         val shown = query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found
-        if (query.count) return summary(sender, shown, complete, where)
+        // A page about a place gives its coordinates in the heading, apart, in their own colour and the way there;
+        // one read world-wide or from a player's hands only names its world.
+        val place = if (query.global || query.players.isNotEmpty()) null
+        else Ui.coordinates(target.world, target.x, target.y, target.z, query.teleports)
+        val title = if (place != null) where else where.append(Ui.text(" · ${Ui.worldName(target.world)}", Ui.MUTED))
+        val placed = place?.let { title.append(Ui.text(" ")).append(it) } ?: title
+        if (query.count) return summary(sender, shown, complete, placed)
         val matched = shown.sortedByDescending { it.timestamp }
         val runs = folded(matched, query.all)
         val lines = runs.drop(query.limit * (query.page - 1)).take(query.limit)
@@ -1173,13 +1211,16 @@ class Lookups(
         ) + if (wider == query.limit) "" else tr(" or ask for more with limit:$wider", " или запроси больше через limit:$wider")
         if (lines.isEmpty()) {
             val why = if (complete) tr("nothing recorded", "ничего не записано") else tr("nothing matched, but ", "ничего не найдено, но ") + stopped
-            sender.sendMessage(header(where, target).append(Ui.text(" — $why", Ui.MUTED)))
+            sender.sendMessage(Component.text().append(Ui.text("PfauProtect · ", Ui.FAINT)).append(placed).append(Ui.text(" — $why", Ui.MUTED)).build())
             return
         }
         val clickable = query.teleports
+        // Every line of a lookup of one place happened there, which the heading already says; a line's own mark is
+        // left only where it happened somewhere else, as the other end of a movement can.
+        val here = WorldBlock(target.world, target.x, target.y, target.z).takeIf { place != null && query.radius == null }
         val drawn = lines.map { run ->
             val line = run.first
-            var out = line.draw(run.amount, run.rows, clickable)
+            var out = line.draw(run.amount, run.rows)
             val event = line.event?.takeIf { run.rows == 1 }
             // Struck through for the eye, said in words for whoever cannot see the line drawn.
             val back = if (line.undone) arrayOf(tr("rolled back", "откачено")) else emptyArray()
@@ -1198,7 +1239,12 @@ class Lookups(
                 else -> null
             }
             if (mark != null) out = out.append(Ui.text("  ")).append(mark)
-            Component.text(" ").append(out)
+            // First on the line, where it is found in the same place on every line and a wrap cannot leave it alone
+            // on a line of its own; and outside the strike and the hover, which are the row's.
+            val spot = line.place?.takeIf { it != here }?.let { Ui.place(it.world, it.x, it.y, it.z, clickable) }
+            val start = Component.text().append(Ui.text(" "))
+            if (spot != null) start.append(spot).append(Ui.text(" "))
+            start.append(out).build()
         }
         // The read stops before the filter runs, so a cut-short page must say so even when few rows matched.
         val more = runs.size > query.limit * query.page || matched.size > query.wanted
@@ -1211,15 +1257,12 @@ class Lookups(
             else -> emptyList()
         }
         showPage(
-            sender, query, header(where, target), drawn, notes,
+            sender, query, title, drawn, notes,
             back = query.pageCommand(target, query.page - 1).takeIf { pages && query.page > 1 },
             forward = query.pageCommand(target, query.page + 1).takeIf { pages && more },
+            place = place,
         )
     }
-
-    private fun header(where: Component, target: LookupTarget): Component =
-        Component.text().append(Ui.text("PfauProtect · ", Ui.FAINT)).append(where)
-            .append(Ui.text(" · ${Ui.worldName(target.world)}", Ui.MUTED)).build()
 
     // How many rows of each cause and player, the most first: where a griefer was busiest, before the rows.
     private fun summary(sender: CommandSender, found: List<Line>, complete: Boolean, where: Component) {
@@ -1346,25 +1389,34 @@ class Lookups(
         else -> Ui.text(playerName(actor), Ui.WHO)
     }
 
-    // The cause's own name waits on the hover: what config.yml and action: filters are written in.
-    private fun act(sign: String, cause: Cause, vararg more: String): Component = Ui.hover(
-        Component.text().append(sign(sign)).append(Component.text(" ")).append(verb(cause)).build(),
+    // The cause's own name waits on the hover: what config.yml and action: filters are written in. [worded] is
+    // the cause whose words the line shows, when they say it better than the cause's own.
+    private fun act(sign: String, cause: Cause, vararg more: String, worded: Cause = cause): Component = Ui.hover(
+        Component.text().append(sign(sign)).append(Component.text(" ")).append(verb(worded)).build(),
         cause.name.lowercase(), *more,
     )
 
-    private fun draw(entry: LedgerEntry, who: UUID?, amount: Int, clickable: Boolean): Component {
+    private fun draw(entry: LedgerEntry, who: UUID?, amount: Int): Component {
         val gained = entry.qty > 0
         // Both halves of a mutation face the Void, so without this they read as an item destroyed and
         // an unrelated item created at the same instant, which is the very thing they exist to deny.
         val inPlace = if (entry.kind == Kind.MUTATE) arrayOf(tr("changed in place", "изменён на месте")) else emptyArray()
-        val act = act(if (gained) "+" else "-", entry.cause, *inPlace)
         val (from, to) = if (gained) entry.counterparty to entry.holder else entry.holder to entry.counterparty
-        val flow = Component.text().append(holder(from)).append(Ui.text(" → ", Ui.FAINT)).append(holder(to)).build()
-        val at = listOf(entry.holder, entry.counterparty).firstNotNullOfOrNull {
-            it.block?.let { b -> Ui.place(b.world, b.x, b.y, b.z, clickable) }
+        // Between a player's hands and a container, whichever click did it, the line says only which way, as
+        // CoreProtect's added and removed do: the player is already named before it and the container by its
+        // place, and the click waits on the hover. Anything else keeps both of its ends.
+        val boxed = entry.cause in BOXED && (to is Container && hands(from) || from is Container && hands(to))
+        val worded = when {
+            !boxed -> entry.cause
+            to is Container -> Cause.CONTAINER_ADD
+            else -> Cause.CONTAINER_REMOVE
         }
-        return row(Ui.ago(entry.timestamp), who(who, entry.confidence), act, item(entry.itemFormId, amount), flow, at)
+        val act = act(if (gained) "+" else "-", entry.cause, *inPlace, worded = worded)
+        val flow = if (boxed) null else Component.text().append(holder(from)).append(Ui.text(" → ", Ui.FAINT)).append(holder(to)).build()
+        return row(Ui.ago(entry.timestamp), who(who, entry.confidence), act, item(entry.itemFormId, amount), flow)
     }
+
+    private fun hands(holder: Holder) = holder is PlayerInv || holder is PlayerEquip || holder is PlayerCursor
 
     /** [to] is set only when a block turned into another one, rather than appearing, going or changing state. */
     private class BlockChange(val sign: String, val from: String, val to: String? = null)
@@ -1379,7 +1431,7 @@ class Lookups(
         }
     }
 
-    private fun draw(world: UUID, row: BlockRow, change: BlockChange, rows: Int, clickable: Boolean): Component {
+    private fun draw(row: BlockRow, change: BlockChange, rows: Int): Component {
         val thing = Component.text().color(Ui.THING).append(Ui.block(change.from))
         if (change.to != null) thing.append(Ui.text(" → ", Ui.FAINT)).append(Ui.block(change.to))
         thing.append(times(rows))
@@ -1397,11 +1449,11 @@ class Lookups(
         }
         return row(
             Ui.ago(row.timestamp), who(row.actor, row.confidence, pressed?.second), act(change.sign, row.cause),
-            Ui.hover(thing.build(), *details.toTypedArray()), extra, Ui.place(world, row.x, row.y, row.z, clickable),
+            Ui.hover(thing.build(), *details.toTypedArray()), extra,
         )
     }
 
-    private fun draw(world: UUID, row: EntityRow, rows: Int, clickable: Boolean): Component {
+    private fun draw(row: EntityRow, rows: Int): Component {
         val sign = when (row.kind) {
             EntityKind.CREATED -> "+"
             EntityKind.CHANGED, EntityKind.MOVED -> "~"
@@ -1432,7 +1484,7 @@ class Lookups(
         val via = row.via?.let { Component.text().color(Ui.MUTED).append(Ui.text("← ")).append(Ui.any(it)).build() }
         return row(
             Ui.ago(row.timestamp), who(row.actor, row.confidence), act(sign, row.cause),
-            Ui.hover(subject, *details.toTypedArray()), via, Ui.place(world, row.x, row.y, row.z, clickable),
+            Ui.hover(subject, *details.toTypedArray()), via,
         )
     }
 

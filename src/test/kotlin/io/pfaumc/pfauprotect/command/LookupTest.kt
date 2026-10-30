@@ -37,6 +37,18 @@ class LookupTest {
         assertTrue(rollback.none { it in answerOnly || it.startsWith("#") }, "$rollback")
     }
 
+    // As CoreProtect's list does: a key once said, under any spelling, leaves the list.
+    @Test
+    fun `a word already said is not offered again`() {
+        val typed = "a:break U:Bob #count "
+        val offered = LookupArgument().listSuggestions(
+            CommandContext<Any>(Any(), "", emptyMap(), null, null, emptyList(), StringRange.at(0), null, null, false),
+            SuggestionsBuilder(typed, 0),
+        ).get().list.map { it.text }
+        assertTrue(offered.none { it in listOf("action:", "user:", "#count") }, "$offered")
+        assertTrue(offered.containsAll(listOf("time:", "radius:", "#all")), "$offered")
+    }
+
     @Test
     fun `comma separated values accumulate and repeated parameters append`() {
         assertEquals(listOf("Steve", "Alex"), parseLookupQuery("u:Steve,Alex").users)
@@ -225,7 +237,7 @@ class LookupTest {
     fun `runs fold gap by gap and keep undone rows apart`() {
         fun line(secondsAgo: Long, amount: Int, undone: Boolean = false) = Line(
             1_000_000L - secondsAgo * 1000, Cause.BLK_PLAYER_BREAK, null, "break stone", amount, undone, null,
-        ) { _, _, _ -> Component.empty() }
+        ) { _, _ -> Component.empty() }
         val lines = listOf(line(0, 64), line(30, 32), line(70, 1), line(131, 5), line(161, 7, undone = true), line(191, 2), line(221, 3))
         assertEquals(listOf(3, 1, 1, 2), folded(lines, all = false).map { it.rows })
         assertEquals(listOf(97, 5, 7, 5), folded(lines, all = false).map { it.amount })
