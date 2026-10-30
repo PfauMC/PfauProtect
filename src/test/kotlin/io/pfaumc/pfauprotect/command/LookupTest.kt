@@ -37,16 +37,17 @@ class LookupTest {
         assertTrue(rollback.none { it in answerOnly || it.startsWith("#") }, "$rollback")
     }
 
-    // As CoreProtect's list does: a key once said, under any spelling, leaves the list.
+    // As CoreProtect's list does: a key once said, under any spelling, leaves the list; a list of names stays,
+    // as a second one adds to the first.
     @Test
     fun `a word already said is not offered again`() {
-        val typed = "a:break U:Bob #count "
+        val typed = "a:break T:1h U:Bob i:stone #count "
         val offered = LookupArgument().listSuggestions(
             CommandContext<Any>(Any(), "", emptyMap(), null, null, emptyList(), StringRange.at(0), null, null, false),
             SuggestionsBuilder(typed, 0),
         ).get().list.map { it.text }
-        assertTrue(offered.none { it in listOf("action:", "user:", "#count") }, "$offered")
-        assertTrue(offered.containsAll(listOf("time:", "radius:", "#all")), "$offered")
+        assertTrue(offered.none { it in listOf("action:", "time:", "#count") }, "$offered")
+        assertTrue(offered.containsAll(listOf("user:", "include:", "radius:", "#all")), "$offered")
     }
 
     @Test

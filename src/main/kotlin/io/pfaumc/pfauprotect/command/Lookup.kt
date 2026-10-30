@@ -686,8 +686,9 @@ class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType
         val colon = token.indexOf(':')
         if (colon < 0) {
             // What is already said, under any of its spellings, is not offered again: the list shrinks to what is left.
+            // A list of names stays offered, as another of it adds to the first.
             val said = whole.substring(0, tokenStart).split(' ').map { it.lowercase() }
-            val keys = said.mapNotNullTo(HashSet()) { word -> Param.of(word.substringBefore(':')).takeIf { ':' in word } }
+            val keys = said.mapNotNullTo(HashSet()) { word -> Param.of(word.substringBefore(':')).takeIf { ':' in word && it !in REPEATABLE } }
             return offer(builder, tokenStart, starts.filter { it !in said && Param.of(it.removeSuffix(":")) !in keys })
         }
         val comma = token.lastIndexOf(',')
@@ -727,6 +728,8 @@ class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType
         Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, null -> emptyList()
     }
 }
+
+private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
 private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF)
 
