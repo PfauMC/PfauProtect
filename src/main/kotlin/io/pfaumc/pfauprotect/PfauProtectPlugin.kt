@@ -74,6 +74,7 @@ import io.pfaumc.pfauprotect.command.DIALOG_KEY
 import io.pfaumc.pfauprotect.command.MAX_LIMIT
 import io.pfaumc.pfauprotect.command.ROWS_KEY
 import io.pfaumc.pfauprotect.command.askedBy
+import io.pfaumc.pfauprotect.command.mayTeleport
 import io.pfaumc.pfauprotect.command.pageRows
 import io.pfaumc.pfauprotect.command.readsInDialog
 import io.pfaumc.pfauprotect.command.showPage
@@ -143,6 +144,7 @@ internal const val ROLLBACK_PERMISSION = "pfauprotect.rollback"
 private const val STATUS_PERMISSION = "pfauprotect.status"
 private const val PURGE_PERMISSION = "pfauprotect.purge"
 internal const val TELEPORT_PERMISSION = "pfauprotect.teleport"
+internal const val TELEPORT_SPECTATOR_PERMISSION = "pfauprotect.teleport.spectator"
 
 private class Help(val permission: String, val usage: String, val typed: String, val en: String, val ru: String)
 
@@ -651,7 +653,7 @@ class PfauProtectPlugin : JavaPlugin() {
 
     // What the mark on a lookup line runs: to where the row happened, in the world it happened in.
     private fun teleportNode() = Commands.literal("tp")
-        .requires { it.sender.hasPermission(TELEPORT_PERMISSION) && it.executor is Player }
+        .requires { mayTeleport(it.sender) && it.executor is Player }
         .then(
             Commands.argument("position", ArgumentTypes.blockPosition())
                 .executes { teleport(it, null) }
@@ -664,6 +666,15 @@ class PfauProtectPlugin : JavaPlugin() {
 
     private fun teleport(context: CommandContext<CommandSourceStack>, worldName: String?): Int {
         val player = context.source.executor as? Player ?: return 0
+        // The spectator node outranks the plain one, so an op or a group that also holds the plain one stays
+        // limited. The mode is checked here, not in `requires`: the client keeps the command tree across a
+        // game mode change, and the refusal deserves its own words rather than "unknown command". The node is
+        // the asker's: a console running `execute as` a limited player is not limited by it.
+        val sender = context.source.sender
+        if (sender.hasPermission(TELEPORT_SPECTATOR_PERMISSION) && player.gameMode != GameMode.SPECTATOR) {
+            sender.say("Teleport only works in spectator mode.")
+            return 0
+        }
         val world = if (worldName == null) player.world else server.getWorld(worldName)
         if (world == null) {
             context.source.sender.say("Unknown world: $worldName")
