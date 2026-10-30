@@ -1059,7 +1059,7 @@ class Lookups(
         val items = itemLines(page.entries, query, users)
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
-        val changes = blockLines(target, query, users, steps)
+        val (changes, planesComplete) = blockLines(target, query, users, steps)
         // The coordinates come after, set apart by the heading.
         val where = when {
             query.radius != null -> Ui.text(tr("radius ${query.radius} around", "радиус ${query.radius} вокруг"))
@@ -1067,7 +1067,7 @@ class Lookups(
             else -> Ui.text(tr("place", "место"))
         }
         if (blocks.get(target.world) == null) sender.say("This world's block log is not open.")
-        answer(sender, items + changes, page.complete && !steps.ranOut, where, query, target)
+        answer(sender, items + changes, page.complete && planesComplete && !steps.ranOut, where, query, target)
     }
 
     /**
@@ -1282,25 +1282,32 @@ class Lookups(
         if (!complete) sender.sendMessage(Ui.text(tr("  … the read stopped early; these are counts of what it saw", "  … чтение остановилось раньше; это сводка прочитанного"), Ui.MUTED))
     }
 
-    /** Block and entity plane lines; empty when the world's log is not open, which report() tells the reader. */
-    private fun blockLines(target: LookupTarget, query: LookupQuery, users: Set<UUID>, steps: Steps): List<Line> {
-        val log = blocks.get(target.world) ?: return emptyList()
+    /**
+     * Block and entity plane lines, and whether one place's read saw all of its rows: it stops at a count before the
+     * filter runs, and a page cut there is not the last. An area's read says so through [steps]. Empty when the
+     * world's log is not open, which report() tells the reader.
+     */
+    private fun blockLines(target: LookupTarget, query: LookupQuery, users: Set<UUID>, steps: Steps): Pair<List<Line>, Boolean> {
+        val log = blocks.get(target.world) ?: return emptyList<Line>() to true
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius
         val keeps = rowFilter(query, users)
         val rows: List<BlockRow>
         val entities: List<EntityRow>
+        var complete = true
         if (radius == null) {
             rows = log.at(target.x, target.y, target.z, fromTs, toTs, limit = query.fetch, reverse = true)
-            entities = log.entitiesAt(target.x, target.y, target.z, fromTs, toTs, MAX_ENTITY_WALK).rows
+            val window = log.entitiesAt(target.x, target.y, target.z, fromTs, toTs, MAX_ENTITY_WALK)
+            entities = window.rows
+            complete = rows.size < query.fetch && window.complete
         } else {
             val found = log.newestInBox(target.box(radius), fromTs, toTs, boxWanted(query), steps, keeps::keeps, keeps::keeps)
             rows = found.blocks
             entities = found.entities
         }
         // Not cut to the page: runs fold only afterwards, and a cut before them shifts every later page.
-        return planeLines(target.world, rows, entities, keeps)
+        return planeLines(target.world, rows, entities, keeps) to complete
     }
 
     private fun planeLines(world: UUID, rows: List<BlockRow>, entities: List<EntityRow>, keeps: RowFilter): List<Line> =

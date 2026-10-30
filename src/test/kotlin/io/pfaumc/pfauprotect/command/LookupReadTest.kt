@@ -97,6 +97,18 @@ class LookupReadTest : BothPlanes() {
         assertTrue(second.none { it.contains("block.minecraft.tnt") }, "$second")
     }
 
+    // The block plane's read of one place stops at a count before the filter too: forty blasts over the one placement
+    // asked for leave it behind the cut, which has to be said rather than answered "nothing recorded".
+    @Test
+    fun `a block read cut short at one place says so`() {
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
+        repeat(40) { log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + 1000 + it))) }
+        log.drain()
+
+        val lines = said(LookupQuery(rows = 1, causes = setOf(Cause.BLK_PLAYER_PLACE)))
+        assertTrue(lines.single().contains("limit:4"), "$lines")
+    }
+
     // A clock or a griefer at work writes rows while the pages are read; « has to bring back the page that was left.
     @Test
     fun `a page asked as of a moment holds still while rows keep coming`() {

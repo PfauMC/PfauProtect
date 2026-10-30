@@ -850,6 +850,8 @@ class PfauProtectPlugin : JavaPlugin() {
                 sender, asked, Ui.text(tr("chat and commands", "чат и команды")), drawn, emptyList(),
                 back = asked.pageCommand("chat", asked.page - 1).takeIf { asked.page > 1 },
                 forward = asked.pageCommand("chat", asked.page + 1).takeIf { runs.size > asked.limit * asked.page },
+                // A read that stopped at its cap may have left older lines behind it, so the page is not called the last.
+                more = runs.size > asked.limit * asked.page || read.size == reading,
             )
         }
     }
