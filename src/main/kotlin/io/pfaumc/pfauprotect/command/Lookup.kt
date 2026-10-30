@@ -739,8 +739,8 @@ private val BOXED = setOf(
 
 // One line of an answer, from either plane, so the two read in the order things happened. `same` is what
 // a run of lines folds on: who did what to which thing, which way. `amount` is what a folded line adds
-// up — items, or one per block. `place` is where it happened, drawn by the answer rather than the line, as
-// a lookup of one place says it once in its heading.
+// up — items, or one per block. `places` are where it happened, both ends of a movement, drawn by the answer
+// rather than the line, as a lookup of one place says it once in its heading.
 internal class Line(
     val timestamp: Long,
     val cause: Cause,
@@ -749,7 +749,7 @@ internal class Line(
     val amount: Int,
     val undone: Boolean,
     val event: EventRef?,
-    val place: WorldBlock? = null,
+    val places: List<WorldBlock> = emptyList(),
     val draw: (amount: Int, rows: Int) -> Component,
 )
 
@@ -1161,8 +1161,8 @@ class Lookups(
             // A slot posting names its player as a holder rather than as its actor.
             val who = entry.actor ?: playerOf(entry.holder) ?: playerOf(entry.counterparty)
             val same = "i ${entry.cause} $who ${entry.itemFormId} ${entry.qty > 0} ${slotless(entry.holder)} ${slotless(entry.counterparty)}"
-            val place = entry.holder.block ?: entry.counterparty.block
-            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, place) { amount, _ ->
+            val places = listOfNotNull(entry.holder.block, entry.counterparty.block)
+            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, places) { amount, _ ->
                 draw(entry, who, amount)
             }
         }
@@ -1171,14 +1171,14 @@ class Lookups(
     private fun lineOf(world: UUID, row: BlockRow, back: Boolean): Line {
         val change = blockChange(row)
         val same = "b ${row.cause} ${row.actor} ${row.confidence} ${change.sign} ${change.from} ${change.to}"
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), WorldBlock(world, row.x, row.y, row.z)) { _, rows ->
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), listOf(WorldBlock(world, row.x, row.y, row.z))) { _, rows ->
             draw(row, change, rows)
         }
     }
 
     private fun lineOf(world: UUID, row: EntityRow, back: Boolean): Line {
         val same = "e ${row.cause} ${row.actor} ${row.confidence} ${row.kind} ${row.type}"
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), WorldBlock(world, row.x, row.y, row.z)) { _, rows ->
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), listOf(WorldBlock(world, row.x, row.y, row.z))) { _, rows ->
             draw(row, rows)
         }
     }
@@ -1193,11 +1193,12 @@ class Lookups(
         pages: Boolean = true,
     ) {
         val shown = query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found
-        // A page about a place gives its coordinates in the heading, apart, in their own colour and the way there;
-        // one read world-wide or from a player's hands only names its world.
-        val place = if (query.global || query.players.isNotEmpty()) null
+        // A page about a place gives its coordinates in the heading, apart, in their own colour and the way there.
+        // One read world-wide, or an entity's story around where it stands, only names its world; a player's hands
+        // are read in every world and name none.
+        val place = if (query.global || query.players.isNotEmpty() || !pages) null
         else Ui.coordinates(target.world, target.x, target.y, target.z, query.teleports)
-        val title = if (place != null) where else where.append(Ui.text(" · ${Ui.worldName(target.world)}", Ui.MUTED))
+        val title = if (place != null || query.players.isNotEmpty()) where else where.append(Ui.text(" · ${Ui.worldName(target.world)}", Ui.MUTED))
         val placed = place?.let { title.append(Ui.text(" ")).append(it) } ?: title
         if (query.count) return summary(sender, shown, complete, placed)
         val matched = shown.sortedByDescending { it.timestamp }
@@ -1241,7 +1242,7 @@ class Lookups(
             if (mark != null) out = out.append(Ui.text("  ")).append(mark)
             // First on the line, where it is found in the same place on every line and a wrap cannot leave it alone
             // on a line of its own; and outside the strike and the hover, which are the row's.
-            val spot = line.place?.takeIf { it != here }?.let { Ui.place(it.world, it.x, it.y, it.z, clickable) }
+            val spot = line.places.firstOrNull { it != here }?.let { Ui.place(it.world, it.x, it.y, it.z, clickable) }
             val start = Component.text().append(Ui.text(" "))
             if (spot != null) start.append(spot).append(Ui.text(" "))
             start.append(out).build()

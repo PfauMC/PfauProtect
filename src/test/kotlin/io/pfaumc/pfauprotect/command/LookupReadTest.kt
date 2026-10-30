@@ -411,6 +411,17 @@ class LookupReadTest : BothPlanes() {
         assertTrue(back.single().contains("{container_remove}"), "$back")
     }
 
+    // A lookup of one place leaves out the place it is about on its lines, but not the other end of a movement:
+    // a hopper fed from a chest elsewhere still says where the chest stands.
+    @Test
+    fun `a line of a lookup of one place gives only the other end's place`() {
+        shared.submit(Transfer(Cause.HOPPER_PULL_CONTAINER, Container(world, 10, 65, -3, 0), Container(world, 10, 64, -3, 0), stone, null, 1, T0))
+        shared.drain()
+
+        val line = said().single { it.contains("{hopper_pull_container}") }
+        assertTrue(line.trimStart().startsWith("10 65 -3") && !line.contains("10 64 -3 "), line)
+    }
+
     // What a player carried has no position, and a crafting grid is booked to them as an entity. Both
     // are read by whose they are, and only theirs.
     @Test

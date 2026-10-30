@@ -57,17 +57,18 @@ object Ui {
 
     fun place(name: String, x: Int, y: Int, z: Int, clickable: Boolean): Component {
         if (!clickable) return text("$x $y $z", FAINT)
-        return hover(text("⌖", MUTED), "$x $y $z $name", tr("Click to teleport", "Клик — телепорт"))
-            .clickEvent(ClickEvent.runCommand("/pp tp $x $y $z $name"))
+        return teleport(text("⌖", MUTED), name, x, y, z, "$x $y $z $name")
     }
 
     /** The place a whole page is about, in its heading: written out, set apart by colour, and the way there. */
     fun coordinates(world: UUID, x: Int, y: Int, z: Int, clickable: Boolean): Component {
         val name = worldName(world)
         val shown = text("($x $y $z $name)", WHERE)
-        if (!clickable) return shown
-        return hover(shown, tr("Click to teleport", "Клик — телепорт")).clickEvent(ClickEvent.runCommand("/pp tp $x $y $z $name"))
+        return if (clickable) teleport(shown, name, x, y, z) else shown
     }
+
+    private fun teleport(label: Component, name: String, x: Int, y: Int, z: Int, vararg hint: String): Component =
+        hover(label, *hint, tr("Click to teleport", "Клик — телепорт")).clickEvent(ClickEvent.runCommand("/pp tp $x $y $z $name"))
 
     fun worldName(world: UUID): String = runCatching { Bukkit.getWorld(world)?.name }.getOrNull() ?: world.toString().take(8)
 

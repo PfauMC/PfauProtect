@@ -95,6 +95,7 @@ import org.bukkit.Location
 import org.bukkit.block.Block
 import org.bukkit.block.data.BlockData
 import org.bukkit.command.CommandSender
+import org.bukkit.command.ConsoleCommandSender
 import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.entity.Entity
 import org.bukkit.entity.Player
@@ -654,8 +655,9 @@ class PfauProtectPlugin : JavaPlugin() {
     // What the mark on a lookup line runs: to where the row happened, in the world it happened in. Who is to be taken
     // is checked in the executor, not here: the server marks a node restricted when a probe with every permission but
     // no executor fails its check, and the client then asks to confirm each click on ⌖ as a command for operators.
+    // The console, which has nobody to take, is still kept out; the probe is not the console.
     private fun teleportNode() = Commands.literal("tp")
-        .requires { mayTeleport(it.sender) }
+        .requires { mayTeleport(it.sender) && it.sender !is ConsoleCommandSender }
         .then(
             Commands.argument("position", ArgumentTypes.blockPosition())
                 .executes { teleport(it, null) }
@@ -838,10 +840,11 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.QUIT -> Ui.text(tr(" left", " · выход"), Ui.MUTED)
                     ChatKind.HIT -> hitOf(run)
                 }
-                // A run reads at its first hit: who started is what it is looked up for.
-                val out = Component.text().append(Ui.text(" ")).append(Ui.ago(run.oldest)).append(Ui.text("  ")).append(who).append(what)
-                if (line.world.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.place(line.world, line.x, line.y, line.z, asked.teleports))
-                out.build()
+                // A run reads at its first hit: who started is what it is looked up for. The place goes first, as on
+                // a lookup's lines.
+                val out = Component.text().append(Ui.text(" "))
+                if (line.world.isNotEmpty()) out.append(Ui.place(line.world, line.x, line.y, line.z, asked.teleports)).append(Ui.text(" "))
+                out.append(Ui.ago(run.oldest)).append(Ui.text("  ")).append(who).append(what).build()
             }
             showPage(
                 sender, asked, Ui.text(tr("chat and commands", "чат и команды")), drawn, emptyList(),
