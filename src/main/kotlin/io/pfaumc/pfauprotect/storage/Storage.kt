@@ -435,10 +435,23 @@ internal fun <T> RocksDB.newestInBox(
                 head.iter.prev()
                 if (head.settle()) heads += head
             }
+            // A page that filled on the window's last entry in the box left nothing out either. The entries after it
+            // may all stand outside the box, in the chunks it grazes, so they are walked to the next one inside it;
+            // a walk that runs out of steps leaves it unknown, which reads as left.
+            var left = false
+            while (counted >= wanted) {
+                val head = heads.poll() ?: break
+                if (timeAt(head.key, tail) < fromTs) break
+                val (x, y, z) = ChunkTime.position(head.key, scope.size)
+                if (x in box.minX..box.maxX && y in box.minY..box.maxY && z in box.minZ..box.maxZ || !steps.take()) {
+                    left = true
+                    break
+                }
+                head.iter.prev()
+                if (head.settle()) heads += head
+            }
             // An I/O error ends a walk as its last entry does, and only the status tells them apart.
             walks.forEach { it.iter.status() }
-            // A page that filled on the window's last entry left nothing out either.
-            val left = heads.peek()?.let { timeAt(it.key, tail) >= fromTs } ?: false
             return BoxPage(kept, counted < wanted || !left)
         } finally {
             walks.forEach { it.iter.close() }
