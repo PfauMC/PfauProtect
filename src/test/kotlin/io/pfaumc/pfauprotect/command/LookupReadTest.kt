@@ -107,6 +107,20 @@ class LookupReadTest : BothPlanes() {
 
         val lines = said(LookupQuery(rows = 1, causes = setOf(Cause.BLK_PLAYER_PLACE)))
         assertTrue(lines.single().contains("limit:4"), "$lines")
+        val counted = said(LookupQuery(rows = 1, causes = setOf(Cause.BLK_PLAYER_PLACE), count = true))
+        assertTrue(counted.single().contains("the read stopped early"), "$counted")
+    }
+
+    // A read that comes to exactly as many rows as it may take has seen them all, and its page is the last.
+    @Test
+    fun `a block read of exactly its size is whole`() {
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
+        // A page of one row reads 32: the placement and 31 blasts.
+        repeat(31) { log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + 1000 + it))) }
+        log.drain()
+
+        val lines = said(LookupQuery(rows = 1, causes = setOf(Cause.BLK_PLAYER_PLACE)))
+        assertTrue(lines.any { it.contains("{blk_player_place}") } && lines.last().contains("page 1, the last"), "$lines")
     }
 
     // A clock or a griefer at work writes rows while the pages are read; « has to bring back the page that was left.

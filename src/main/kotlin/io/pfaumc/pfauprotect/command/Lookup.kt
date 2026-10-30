@@ -1272,7 +1272,10 @@ class Lookups(
     // How many rows of each cause and player, the most first: where a griefer was busiest, before the rows.
     private fun summary(sender: CommandSender, found: List<Line>, complete: Boolean, where: Component) {
         if (found.isEmpty()) {
-            sender.sendMessage(Component.text().append(where).append(Ui.text(" — ${tr("nothing recorded", "ничего не записано")}", Ui.MUTED)).build())
+            // A read cut short may have stopped before the rows asked for; "nothing" would clear whoever they name.
+            val why = if (complete) tr("nothing recorded", "ничего не записано")
+            else tr("nothing matched, but the read stopped early", "ничего не найдено, но чтение остановилось раньше")
+            sender.sendMessage(Component.text().append(where).append(Ui.text(" — $why", Ui.MUTED)).build())
             return
         }
         sender.sendMessage(Component.text().append(Ui.text(tr("Count of ${found.size} rows: ", "Сводка, строк ${found.size}: "), Ui.FAINT)).append(where).build())
@@ -1297,10 +1300,12 @@ class Lookups(
         val entities: List<EntityRow>
         var complete = true
         if (radius == null) {
-            rows = log.at(target.x, target.y, target.z, fromTs, toTs, limit = query.fetch, reverse = true)
+            // One row past the read, which is how it knows whether it saw them all.
+            val read = log.at(target.x, target.y, target.z, fromTs, toTs, limit = query.fetch + 1, reverse = true)
+            rows = read.take(query.fetch)
             val window = log.entitiesAt(target.x, target.y, target.z, fromTs, toTs, MAX_ENTITY_WALK)
             entities = window.rows
-            complete = rows.size < query.fetch && window.complete
+            complete = read.size <= query.fetch && window.complete
         } else {
             val found = log.newestInBox(target.box(radius), fromTs, toTs, boxWanted(query), steps, keeps::keeps, keeps::keeps)
             rows = found.blocks
