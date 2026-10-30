@@ -97,6 +97,42 @@ class LookupReadTest : BothPlanes() {
         assertTrue(second.none { it.contains("block.minecraft.tnt") }, "$second")
     }
 
+    // The block plane's read of one place stops at a count before the filter too: forty blasts over the one placement
+    // asked for leave it behind the cut, which has to be said rather than answered "nothing recorded".
+    @Test
+    fun `a block read cut short at one place says so`() {
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
+        repeat(40) { log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + 1000 + it))) }
+        log.drain()
+
+        val lines = said(LookupQuery(rows = 1, causes = setOf(Cause.BLK_PLAYER_PLACE)))
+        assertTrue(lines.single().contains("limit:4"), "$lines")
+        val counted = said(LookupQuery(rows = 1, causes = setOf(Cause.BLK_PLAYER_PLACE), count = true))
+        assertTrue(counted.single().contains("the read stopped early"), "$counted")
+    }
+
+    // An area's read stops once it has its rows, and a count of them is a count of what it saw.
+    @Test
+    fun `an area count cut at its read says so`() {
+        repeat(40) { log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + it))) }
+        log.drain()
+
+        val counted = said(LookupQuery(rows = 1, radius = 1, count = true))
+        assertTrue(counted.last().contains("the read stopped early"), "$counted")
+    }
+
+    // A read that comes to exactly as many rows as it may take has seen them all, and its page is the last.
+    @Test
+    fun `a block read of exactly its size is whole`() {
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
+        // A page of one row reads 32: the placement and 31 blasts.
+        repeat(31) { log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + 1000 + it))) }
+        log.drain()
+
+        val lines = said(LookupQuery(rows = 1, causes = setOf(Cause.BLK_PLAYER_PLACE)))
+        assertTrue(lines.any { it.contains("{blk_player_place}") } && lines.last().contains("page 1, the last"), "$lines")
+    }
+
     // A clock or a griefer at work writes rows while the pages are read; « has to bring back the page that was left.
     @Test
     fun `a page asked as of a moment holds still while rows keep coming`() {
@@ -341,7 +377,8 @@ class LookupReadTest : BothPlanes() {
         val lines = said(query)
         assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
         assertTrue(lines.none { it.contains("page:2") }, "$lines")
-        assertTrue(lines.last().contains("limit:4"), "$lines")
+        // Said inside the page, above its closing rule.
+        assertTrue(lines.dropLast(1).last().contains("limit:4"), "$lines")
     }
 
     // A radius asks its filter of each row as it walks the index, so the rows it drops do not use up the read
@@ -401,9 +438,29 @@ class LookupReadTest : BothPlanes() {
 
         val lines = said()
         assertTrue(lines.single { it.contains("{container_remove}") }.contains("rolled back"), "$lines")
+        // Out of the chest into her hands reads as taken out, and the chest the lookup is about is not repeated on
+        // the line, by its ends or its place: the heading has it.
+        assertTrue(lines.single { it.contains("{container_remove}") }.let { "took out" in it && "→" !in it && "10 64 -3" !in it }, "$lines")
+        assertTrue(lines.first().contains("(10 64 -3 "), "$lines")
+        // A page alone is the last one, and says so.
+        assertTrue(lines.last().let { it.startsWith("-----") && "page 1, the last" in it }, "$lines")
         assertTrue(lines.single { it.contains("{rollback}") }.let { !it.contains("rolled back") }, "$lines")
-        val back = said(LookupQuery(rolledBack = true)).drop(1)
+        val back = said(LookupQuery(rolledBack = true)).drop(1).dropLast(1)
         assertTrue(back.single().contains("{container_remove}"), "$back")
+    }
+
+    // A lookup of one place leaves out the place it is about on its lines, but not the other end of a movement:
+    // a hopper fed from a chest elsewhere still says where the chest stands.
+    @Test
+    fun `a line of a lookup of one place gives only the other end's place`() {
+        shared.submit(Transfer(Cause.HOPPER_PULL_CONTAINER, Container(world, 10, 65, -3, 0), Container(world, 10, 64, -3, 0), stone, null, 1, T0))
+        shared.drain()
+
+        // radius:0 reads the one place too.
+        for (query in listOf(LookupQuery(), LookupQuery(radius = 0))) {
+            val line = said(query).single { it.contains("{hopper_pull_container}") }
+            assertTrue(line.trimStart().startsWith("10 65 -3") && !line.contains("10 64 -3 "), line)
+        }
     }
 
     // What a player carried has no position, and a crafting grid is booked to them as an entity. Both
@@ -421,10 +478,10 @@ class LookupReadTest : BothPlanes() {
 
         val lines = said(LookupQuery(players = listOf("Alice")), players = mapOf("Alice" to alice, "Bob" to bob))
 
-        assertTrue(lines.any { it.contains("Alice{inventory, slot 3}") }, "$lines")
+        // Her inventory, equipment and cursor read as taken out of the chest, with no ends drawn; her ender chest
+        // is not her hands and keeps both.
+        assertEquals(4, lines.count { it.contains("{container_remove}") }, "$lines")
         assertTrue(lines.any { it.contains("block.minecraft.crafting_table") && it.contains("Alice{crafting grid, slot 1}") }, "$lines")
-        assertTrue(lines.any { it.contains("Alice{equipment, slot 5}") }, "$lines")
-        assertTrue(lines.any { it.contains("Alice{cursor}") }, "$lines")
         assertTrue(lines.any { it.contains("ender_chest") && it.contains("{slot 7}") }, "$lines")
         assertTrue(lines.none { it.contains("Bob") }, "$lines")
         // Refused, not answered: no header, so nothing reads as an empty area.
@@ -492,7 +549,7 @@ class LookupReadTest : BothPlanes() {
         val lines = said(target = LookupTarget(other, 1, 64, 1, "stone at 1 64 1"))
 
         assertTrue(lines.any { it.contains("placed") }, "$lines")
-        assertEquals(1, lines.indexOfFirst { it.startsWith("PfauProtect") }, "one notice before the answer: $lines")
+        assertEquals(1, lines.indexOfFirst { it.startsWith("-----") }, "one notice before the answer: $lines")
     }
 
     @Test

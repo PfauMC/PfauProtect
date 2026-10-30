@@ -652,6 +652,21 @@ class BlockStoreTest : BothPlanes() {
         assertFalse(log.newestInBox(box, 0, Long.MAX_VALUE, 1, Steps(1000), { true }) { true }.complete)
     }
 
+    // What is left of a chunk the box only grazes is not left of the box: a page that took the box's last row is
+    // whole though older rows stand beside it in the chunk, and is not once one more stands inside it behind them.
+    @Test
+    fun `a box's last row fills the page though its chunk goes on outside it`() {
+        log.submit(listOf(placed(2, 64, 2, ts = T0 + 10)))
+        repeat(3) { log.submit(listOf(placed(9, 64, 9, ts = T0 + 5 + it))) }
+        log.drain()
+        val box = Box(0, 4, 60, 70, 0, 4)
+
+        assertTrue(log.newestInBox(box, 0, Long.MAX_VALUE, 1, Steps(1000), { true }) { true }.complete)
+        log.submit(listOf(placed(3, 64, 3, ts = T0)))
+        log.drain()
+        assertFalse(log.newestInBox(box, 0, Long.MAX_VALUE, 1, Steps(1000), { true }) { true }.complete)
+    }
+
     // The rollback rows of a box come back whatever the filter, to mark what they gave back, and take no place on
     // the page: a box rolled back again and again would otherwise fill the page with rows the filter then drops.
     @Test
