@@ -95,7 +95,7 @@ bukkit {
                 default = BukkitPluginDescription.Permission.Default.OP
             }
         }
-        // Granted on purpose only, and it outranks pfauprotect.teleport: a holder of both is still limited.
+        // Held by no one by default, and it outranks pfauprotect.teleport: a holder of both is still limited.
         register("pfauprotect.teleport.spectator") {
             description = "Teleport by a lookup line's mark only while in spectator mode, even with pfauprotect.teleport"
             default = BukkitPluginDescription.Permission.Default.FALSE
