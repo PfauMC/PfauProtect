@@ -1286,9 +1286,9 @@ class Lookups(
     }
 
     /**
-     * Block and entity plane lines, and whether one place's read saw all of its rows: it stops at a count before the
-     * filter runs, and a page cut there is not the last. An area's read says so through [steps]. Empty when the
-     * world's log is not open, which report() tells the reader.
+     * Block and entity plane lines, and whether the read saw all of its rows: one place's stops at a count before the
+     * filter runs, an area's once its page is full or [steps] run out, and a page cut there is not the last. Empty when
+     * the world's log is not open, which report() tells the reader.
      */
     private fun blockLines(target: LookupTarget, query: LookupQuery, users: Set<UUID>, steps: Steps): Pair<List<Line>, Boolean> {
         val log = blocks.get(target.world) ?: return emptyList<Line>() to true
@@ -1310,6 +1310,7 @@ class Lookups(
             val found = log.newestInBox(target.box(radius), fromTs, toTs, boxWanted(query), steps, keeps::keeps, keeps::keeps)
             rows = found.blocks
             entities = found.entities
+            complete = found.complete
         }
         // Not cut to the page: runs fold only afterwards, and a cut before them shifts every later page.
         return planeLines(target.world, rows, entities, keeps) to complete

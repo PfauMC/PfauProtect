@@ -111,6 +111,16 @@ class LookupReadTest : BothPlanes() {
         assertTrue(counted.single().contains("the read stopped early"), "$counted")
     }
 
+    // An area's read stops once it has its rows, and a count of them is a count of what it saw.
+    @Test
+    fun `an area count cut at its read says so`() {
+        repeat(40) { log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + it))) }
+        log.drain()
+
+        val counted = said(LookupQuery(rows = 1, radius = 1, count = true))
+        assertTrue(counted.last().contains("the read stopped early"), "$counted")
+    }
+
     // A read that comes to exactly as many rows as it may take has seen them all, and its page is the last.
     @Test
     fun `a block read of exactly its size is whole`() {
