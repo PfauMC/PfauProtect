@@ -406,6 +406,8 @@ class LookupReadTest : BothPlanes() {
         // the line, by its ends or its place: the heading has it.
         assertTrue(lines.single { it.contains("{container_remove}") }.let { "took out" in it && "→" !in it && "10 64 -3" !in it }, "$lines")
         assertTrue(lines.first().contains("(10 64 -3 "), "$lines")
+        // A page alone is the last one, and says so.
+        assertTrue(lines.last().let { it.startsWith("-----") && "page 1, the last" in it }, "$lines")
         assertTrue(lines.single { it.contains("{rollback}") }.let { !it.contains("rolled back") }, "$lines")
         val back = said(LookupQuery(rolledBack = true)).drop(1).dropLast(1)
         assertTrue(back.single().contains("{container_remove}"), "$back")
@@ -418,8 +420,11 @@ class LookupReadTest : BothPlanes() {
         shared.submit(Transfer(Cause.HOPPER_PULL_CONTAINER, Container(world, 10, 65, -3, 0), Container(world, 10, 64, -3, 0), stone, null, 1, T0))
         shared.drain()
 
-        val line = said().single { it.contains("{hopper_pull_container}") }
-        assertTrue(line.trimStart().startsWith("10 65 -3") && !line.contains("10 64 -3 "), line)
+        // radius:0 reads the one place too.
+        for (query in listOf(LookupQuery(), LookupQuery(radius = 0))) {
+            val line = said(query).single { it.contains("{hopper_pull_container}") }
+            assertTrue(line.trimStart().startsWith("10 65 -3") && !line.contains("10 64 -3 "), line)
+        }
     }
 
     // What a player carried has no position, and a crafting grid is booked to them as an entity. Both

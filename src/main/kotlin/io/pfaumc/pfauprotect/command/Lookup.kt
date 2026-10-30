@@ -932,6 +932,7 @@ internal fun showPage(
     back: String?,
     forward: String?,
     place: Component? = null,
+    more: Boolean = forward != null,
 ) {
     val paged = back != null || forward != null
     if (!query.dialog || sender !is Player) {
@@ -942,7 +943,7 @@ internal fun showPage(
         sender.sendMessage(top.build())
         lines.forEach(sender::sendMessage)
         notes.forEach(sender::sendMessage)
-        sender.sendMessage(footer(query.page, back, forward, query.teleports))
+        sender.sendMessage(footer(query.page, back, forward, query.teleports, more))
         return
     }
     fun arrow(mark: String, to: Int, command: String?) = command?.let {
@@ -975,20 +976,19 @@ private fun undo(event: EventRef, dialog: Boolean): Component {
 
 private val RULE = Ui.text("-----", Ui.FAINT)
 
-// The rule under a page, with « page 2 » in it when there are more, the arrows that go somewhere clickable, and the
-// last page said to be the last: no count of them is kept, as that would read every row. The console is told the
-// words to type.
-private fun footer(page: Int, back: String?, forward: String?, clickable: Boolean): Component {
-    if (back == null && forward == null) return RULE
-    val last = if (forward == null) tr(", the last", ", последняя") else ""
+// The rule under a page, with the page in it, the arrows that go somewhere clickable, and the last page said to be
+// the last: no count of them is kept, as that would read every row. [more] is whether rows are left past this page,
+// which a page with no command for the next one can still have. The console is told the words to type.
+private fun footer(page: Int, back: String?, forward: String?, clickable: Boolean, more: Boolean): Component {
+    val last = if (more) "" else tr(", the last", ", последняя")
     val said = when {
-        clickable -> {
+        clickable && (back != null || forward != null) -> {
             fun arrow(mark: String, to: Int, command: String?) =
                 if (command != null) Ui.button(mark, command, Ui.WHO, tr("Page $to", "Стр. $to")) else Ui.text(mark, Ui.FAINT)
             Component.text().append(arrow("«", page - 1, back)).append(Ui.text(" ${tr("page", "стр.")} $page$last ", Ui.MUTED))
                 .append(arrow("»", page + 1, forward)).build()
         }
-        forward != null -> Ui.text(tr("older rows: page:${page + 1}", "старые строки: page:${page + 1}"), Ui.MUTED)
+        forward != null -> Ui.text(tr("page $page · older rows: page:${page + 1}", "стр. $page · старые строки: page:${page + 1}"), Ui.MUTED)
         else -> Ui.text("${tr("page", "стр.")} $page$last", Ui.MUTED)
     }
     return Component.text().append(RULE).append(Ui.text(" ")).append(said).append(Ui.text(" ")).append(RULE).build()
@@ -1221,7 +1221,7 @@ class Lookups(
         val clickable = query.teleports
         // Every line of a lookup of one place happened there, which the heading already says; a line's own mark is
         // left only where it happened somewhere else, as the other end of a movement can.
-        val here = WorldBlock(target.world, target.x, target.y, target.z).takeIf { place != null && query.radius == null }
+        val here = WorldBlock(target.world, target.x, target.y, target.z).takeIf { place != null && (query.radius ?: 0) == 0 }
         val drawn = lines.map { run ->
             val line = run.first
             var out = line.draw(run.amount, run.rows)
@@ -1265,6 +1265,7 @@ class Lookups(
             back = query.pageCommand(target, query.page - 1).takeIf { pages && query.page > 1 },
             forward = query.pageCommand(target, query.page + 1).takeIf { pages && more },
             place = place,
+            more = more || !complete,
         )
     }
 
