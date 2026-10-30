@@ -90,6 +90,7 @@ object Texts {
         r("This world's block log is not open\\.") to "Журнал блоков этого мира не открыт.",
         r("Unknown player: (.*)") to "Неизвестный игрок: $1",
         r("Unknown world: (.*)") to "Неизвестный мир: $1",
+        r("Teleport only works in spectator mode\\.") to "Телепорт работает только в режиме наблюдателя.",
         // Inspector, purge, status, self-checks, reconcile
         r("Only a player can use the inspector\\.") to "Инспектором может пользоваться только игрок.",
         r("Purge refused: give an age of at least a day, for example 90d\\.") to "Очистка отклонена: укажи возраст не меньше дня, например 90d.",

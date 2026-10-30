@@ -72,6 +72,7 @@ import io.pfaumc.pfauprotect.Settings
 import kotlin.math.abs
 import io.pfaumc.pfauprotect.ROLLBACK_PERMISSION
 import io.pfaumc.pfauprotect.TELEPORT_PERMISSION
+import io.pfaumc.pfauprotect.TELEPORT_SPECTATOR_PERMISSION
 import io.pfaumc.pfauprotect.Texts
 import io.pfaumc.pfauprotect.Ui
 import io.pfaumc.pfauprotect.tr
@@ -862,8 +863,12 @@ internal fun boxAround(x: Int, y: Int, z: Int, radius: Int, column: Boolean = fa
 internal fun Holder.placedIn(box: (Int, Int, Int) -> Boolean, unplaced: Boolean): Boolean =
     block?.let { box(it.x, it.y, it.z) } ?: unplaced
 
-// A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it.
-internal fun canTeleport(sender: CommandSender) = sender is Player && sender.hasPermission(TELEPORT_PERMISSION)
+// A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it. The spectator
+// node lets ⌖ stay clickable in any mode: /pp tp itself refuses outside spectator, with its own message.
+internal fun mayTeleport(sender: CommandSender) =
+    sender.hasPermission(TELEPORT_PERMISSION) || sender.hasPermission(TELEPORT_SPECTATOR_PERMISSION)
+
+internal fun canTeleport(sender: CommandSender) = sender is Player && mayTeleport(sender)
 
 internal val DIALOG_KEY = NamespacedKey("pfauprotect", "dialog")
 
