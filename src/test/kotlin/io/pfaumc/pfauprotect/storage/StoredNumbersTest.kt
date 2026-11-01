@@ -261,7 +261,7 @@ class StoredNumbersTest {
             Kind.entries.associate { it.name to it.id },
         )
         assertEquals(
-            mapOf("FACT" to 0, "INFERRED" to 1, "NEARBY" to 2),
+            mapOf("FACT" to 0, "INFERRED" to 1, "NEARBY" to 2, "AGGRO" to 3),
             Confidence.entries.associate { it.name to it.id },
         )
         assertEquals(

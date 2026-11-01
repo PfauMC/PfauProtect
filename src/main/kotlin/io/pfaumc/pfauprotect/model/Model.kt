@@ -14,6 +14,9 @@ enum class Confidence(val id: Int) {
     INFERRED(1),
     // A player who was near when something set a mechanism off, and no more: nothing tied them to it.
     NEARBY(2),
+    // The player a creeper went off at, who did not light it. Rolled back with them like any guess, but
+    // shown apart: one such blast is bad luck, several are a creeper led to somebody's wall on purpose.
+    AGGRO(3),
     ;
 
     companion object { val byId = idIndex(entries) { it.id } }

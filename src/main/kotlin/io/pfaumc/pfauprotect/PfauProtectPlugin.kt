@@ -830,9 +830,14 @@ class PfauProtectPlugin : JavaPlugin() {
             if (lines.isEmpty()) return@offThread sender.say("Nothing said or run matches.")
             val drawn = lines.map { run ->
                 val line = run.first
-                val inferred = line.hit?.confidence == Confidence.INFERRED
-                val who = if (inferred) Ui.hover(Ui.text("${nameOrId(line.player)}?", Ui.WHO), tr("worked out, not seen", "вычислено, не видели напрямую"))
-                else Ui.text(nameOrId(line.player), Ui.WHO)
+                val who = when (line.hit?.confidence) {
+                    Confidence.INFERRED -> Ui.hover(Ui.text("${nameOrId(line.player)}?", Ui.WHO), tr("worked out, not seen", "вычислено, не видели напрямую"))
+                    Confidence.AGGRO -> Ui.hover(
+                        Ui.text("${nameOrId(line.player)}*", Ui.WHO),
+                        tr("a creeper went off at them; they did not light it", "крипер взорвался на нём, сам не поджигал"),
+                    )
+                    else -> Ui.text(nameOrId(line.player), Ui.WHO)
+                }
                 val what = when (line.kind) {
                     ChatKind.CHAT -> Ui.text(": " + line.text)
                     ChatKind.COMMAND -> Ui.text(" " + line.text, Ui.CHANGED)

@@ -524,11 +524,11 @@ class BlockDestructionTest : BothPlanes() {
 
         val creeper = stub(Creeper::class.java, mapOf("getType" to EntityType.CREEPER, "getTarget" to player(alice), "getUniqueId" to UUID.randomUUID()), lenient = true)
         val earlier = written.size
-        assertEquals(alice to Confidence.NEARBY, blowUp(creeper, 33).let { it.actor to it.confidence })
-        // An item row has no confidence to say the player was only near, so it names nobody.
+        assertEquals(alice to Confidence.AGGRO, blowUp(creeper, 33).let { it.actor to it.confidence })
+        // The one it went off at answers for the blast, the item rows included; only the block row says how.
         val off = written.drop(earlier).flatten().single()
         assertEquals(Void, off.to)
-        assertNull(off.actor)
+        assertEquals(alice, off.actor)
     }
 
     // A cactus whose sand was taken away breaks on its own tick, and the item it drops is the world's

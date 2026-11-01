@@ -258,6 +258,14 @@ internal fun litBy(source: Entity): Player? = when (source) {
     else -> null
 }
 
+/**
+ * The last rung for a creeper nobody lit: whoever it went off at. Led to a wall, that is the one who led it;
+ * met by chance, the one it met, and the row says which kind of guess it is, so a moderator can tell one
+ * unlucky blast from a run of them.
+ */
+internal fun aggroOf(source: Entity): Attributed? =
+    ((source as? Creeper)?.target as? Player)?.let { Attributed(it.uniqueId, Confidence.AGGRO) }
+
 // A bolt answers to the player whose trident called it down, else to whoever summoned it, else to the weather.
 internal fun boltBy(bolt: LightningStrike, summonerOf: (UUID) -> Attributed?): Attributed =
     (bolt.causingEntity as? Player)?.witnessed()
@@ -2127,9 +2135,7 @@ class BlockDestructionListener(
         if (source.type == EntityType.TNT) {
             attribution.placerOrJournal(positionOf(source.location.block), TNT)?.let { return it }
         }
-        // The last rung: a creeper goes off at whoever it was after. Led to a wall, that is the one who led
-        // it; met by chance, the one it met. Either way only a witness, never rolled back on its own.
-        return ((source as? Creeper)?.target as? Player)?.let { Attributed(it.uniqueId, Confidence.NEARBY) }
+        return aggroOf(source)
     }
 
     private fun shellForm(state: String) = codec.shellOf(blockBehind(state))

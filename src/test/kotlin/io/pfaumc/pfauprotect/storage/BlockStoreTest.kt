@@ -107,6 +107,7 @@ class BlockStoreTest : BothPlanes() {
 
         val headers = mapOf(
             row.copy(confidence = Confidence.NEARBY) to 0x74,
+            row.copy(confidence = Confidence.AGGRO) to 0x7C,
             row.copy(alongside = true) to 0xF8,
         )
         for ((other, header) in headers) {

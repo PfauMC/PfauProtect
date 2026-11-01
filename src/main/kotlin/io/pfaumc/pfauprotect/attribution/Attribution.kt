@@ -91,7 +91,7 @@ internal fun flowing(state: String): Boolean =
 
 /**
  * Somebody worked out rather than somebody witnessed. Whatever this file works out is `INFERRED`, or
- * `NEARBY` where the row it read only knew who stood near; the direct source on the event — a TNT
+ * `NEARBY` / `AGGRO` where the row it read only knew who stood near or whom a creeper was after; the direct source on the event — a TNT
  * entity whose source is a player — is the caller's own rung and the only one that may carry `FACT`.
  * A flight or an origin hands back the confidence it was noted with.
  */
@@ -277,9 +277,10 @@ class Attribution(
 
     private fun newestRowAt(at: WorldBlock): BlockRow? = blocks.get(at.world)?.standingAt(at.x, at.y, at.z)?.row
 
-    // A row may name a player who was only near the block, and the answer stays that and no more.
+    // A row may name a player who was only near the block, or the one a creeper went off at, and the
+    // answer stays that and no more.
     private fun journalActorOf(row: BlockRow): Attributed? {
-        val confidence = if (row.confidence == Confidence.NEARBY) Confidence.NEARBY else Confidence.INFERRED
+        val confidence = if (row.confidence == Confidence.NEARBY || row.confidence == Confidence.AGGRO) row.confidence else Confidence.INFERRED
         return row.actor?.let { Attributed(it, confidence) }
     }
 

@@ -1413,6 +1413,10 @@ class Lookups(
             Ui.text("(${playerName(actor)})", Ui.MUTED),
             tr("only nearby", "был только рядом") + away?.let { tr(", $it blocks away", ", в $it блоках") }.orEmpty(),
         )
+        confidence == Confidence.AGGRO -> Ui.hover(
+            Ui.text("${playerName(actor)}*", Ui.WHO),
+            tr("a creeper went off at them; they did not light it", "крипер взорвался на нём, сам не поджигал"),
+        )
         else -> Ui.text(playerName(actor), Ui.WHO)
     }
 

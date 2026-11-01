@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.attribution.typeOf
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
+import io.pfaumc.pfauprotect.capture.block.aggroOf
 import io.pfaumc.pfauprotect.capture.block.boltBy
 import io.pfaumc.pfauprotect.capture.block.explosionCause
 import io.pfaumc.pfauprotect.capture.block.firedBy
@@ -809,6 +810,6 @@ class EntityCapture(
         entities.summonerOf(shooter.uniqueId)?.let { return Culprit(cause, it) }
         // A dog set on somebody's cow is its owner's doing, as far as anything can say.
         ((shooter as? Tameable)?.owner as? Player)?.let { return Culprit(cause, Attributed(it.uniqueId)) }
-        return Culprit(cause, null)
+        return Culprit(cause, aggroOf(damager))
     }
 }
