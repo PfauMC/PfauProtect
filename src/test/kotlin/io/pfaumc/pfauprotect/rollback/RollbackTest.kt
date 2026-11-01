@@ -23,6 +23,8 @@ import io.pfaumc.pfauprotect.command.Action
 import io.pfaumc.pfauprotect.command.EventRef
 import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.RowFilter
+import io.pfaumc.pfauprotect.command.parseLookupQuery
+import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
@@ -343,6 +345,29 @@ class RollbackTest : BothPlanes() {
         assertFalse(keeps(LookupQuery(causes = Action.EXPLOSION.causes), rollback = false))
         assertTrue(keeps(LookupQuery(all = true), rollback = false))
         assertTrue(keeps(LookupQuery(causes = setOf(Cause.BLK_SHAPE)), rollback = false))
+    }
+
+    // A frame a creeper blew off is filed under the creeper, one that fell with its wall under a break: both
+    // are an entity gone, and `-entity` takes both. The player the creeper went off at answers for it by name;
+    // one who was only near does not.
+    @Test
+    fun `entity actions go by what became of the entity, and a creeper's target is rolled back by name`() {
+        val blown = EntityRow(1, 64, 1, T0, 1, 0, EntityKind.REMOVED, Cause.BLK_CREEPER, "minecraft:item_frame", UUID.randomUUID(), Confidence.AGGRO, alice)
+        val fell = blown.copy(cause = Cause.ENTITY_BROKEN, confidence = Confidence.INFERRED)
+        val placed = blown.copy(kind = EntityKind.CREATED, cause = Cause.PLACE_ENTITY_ITEM, confidence = Confidence.FACT)
+        val undone = blown.copy(cause = Cause.ROLLBACK)
+        fun keeps(words: String, row: EntityRow, users: Set<UUID> = emptySet()) =
+            RowFilter(shared, parseLookupQuery(words), users, emptySet(), rollback = true).keeps(row)
+
+        assertTrue(keeps("action:-entity", blown) && keeps("action:-entity", fell))
+        assertFalse(keeps("action:-entity", placed))
+        assertTrue(keeps("action:+entity", placed))
+        assertTrue(keeps("action:entity", blown) && keeps("action:entity", placed))
+        assertFalse(keeps("action:-entity", undone))
+        assertTrue(keeps("action:explosion", blown))
+
+        assertTrue(keeps("", blown, setOf(alice)))
+        assertFalse(keeps("", blown.copy(confidence = Confidence.NEARBY), setOf(alice)))
     }
 
     // A neighbour's chest emptied or block broken in the same second is somebody else's doing, not part of

@@ -213,6 +213,8 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
         "spawn", "spawned", "bred",
     ),
     ENTITY(ENTITY_CAUSES, "entity", "entities"),
+    ENTITY_ADD(emptySet(), "+entity", "+entities"),
+    ENTITY_REMOVE(emptySet(), "-entity", "-entities"),
     DROP(
         setOf(
             Cause.DROP_FROM_HAND, Cause.DROP_FROM_MENU, Cause.DROP_MENU_CLOSE, Cause.DROP_ON_DISCONNECT,
@@ -234,6 +236,19 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     // What a rollback did, in both planes. Naming it is also the only way to roll a rollback back.
     ROLLBACK(setOf(Cause.ROLLBACK), "rollback", "rollbacks", "undo"),
     ;
+
+    /**
+     * The entity rows it takes by what became of the entity, whatever the cause: a frame an explosion broke
+     * is filed under the explosion's cause, one that fell with its wall under a break of its own, and both
+     * are an entity gone.
+     */
+    val kinds: Set<EntityKind>
+        get() = when (this) {
+            ENTITY -> EntityKind.entries.toSet() - EntityKind.DROPPED
+            ENTITY_ADD -> setOf(EntityKind.CREATED)
+            ENTITY_REMOVE -> setOf(EntityKind.REMOVED, EntityKind.PLAYER_DIED, EntityKind.TOTEM_POPPED)
+            else -> emptySet()
+        }
 
     companion object {
         private val byKey = entries.flatMap { action -> action.keys.map { it to action } }.toMap()
@@ -304,6 +319,8 @@ data class LookupQuery(
     val included: List<String> = emptyList(),
     val excluded: List<String> = emptyList(),
     val causes: Set<Cause>? = null,
+    // Entity rows `action:` takes by their kind on top of `causes`, which is then never null.
+    val kinds: Set<EntityKind> = emptySet(),
     val secondsBack: Long? = null,
     // The near end of a span, `time:2h-1h`: how long ago it stops. Null is now.
     val secondsUntil: Long? = null,
@@ -481,6 +498,7 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
             Param.RADIUS -> query.copy(radius = radiusOrNull(value) ?: fail(reader, BAD_RADIUS, value))
             Param.ACTION -> query.copy(
                 causes = (query.causes ?: emptySet()) + causes(reader, valueStart, value),
+                kinds = query.kinds + values(value).flatMap { Action.of(it.lowercase())?.kinds.orEmpty() },
                 steal = query.steal || values(value).any { Action.of(it.lowercase()) == Action.STEAL },
                 pvp = query.pvp || values(value).any { Action.of(it.lowercase()) == Action.PVP },
             )
@@ -620,6 +638,7 @@ internal class RowFilter(
     private val rollback: Boolean = false,
 ) {
     private val causes = query.causes
+    private val kinds = query.kinds
     private val all = query.all
     private val amount = query.amount
     internal val event = query.event?.id
@@ -635,7 +654,9 @@ internal class RowFilter(
     }
 
     fun keeps(row: EntityRow): Boolean {
-        if (!keepsActed(row.cause, row.eventId, row.actor, row.confidence)) return false
+        // A rollback's own rows stay `action:rollback`'s alone, whatever they did to an entity.
+        val byKind = row.kind in kinds && row.cause != Cause.ROLLBACK && row.cause != Cause.PURGE_OPENING
+        if (!keepsActed(row.cause, row.eventId, row.actor, row.confidence, byKind)) return false
         return (included.isEmpty() || row.type in included) && row.type !in excluded
     }
 
@@ -648,8 +669,8 @@ internal class RowFilter(
         return (included.isEmpty() || named.any { it in included }) && named.none { it in excluded }
     }
 
-    private fun keepsActed(cause: Cause, eventId: Long, actor: UUID?, confidence: Confidence): Boolean {
-        if (!caused(cause) || amount != null || event != null && eventId != event) return false
+    private fun keepsActed(cause: Cause, eventId: Long, actor: UUID?, confidence: Confidence, kind: Boolean = false): Boolean {
+        if (!(kind || caused(cause)) || amount != null || event != null && eventId != event) return false
         if (users.isNotEmpty() && (actor !in users || rollback && confidence == Confidence.NEARBY)) return false
         return actor == null || actor !in excludedUsers
     }
