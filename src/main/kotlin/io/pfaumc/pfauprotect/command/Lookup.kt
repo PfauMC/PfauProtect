@@ -667,7 +667,10 @@ internal class RowFilter(
 }
 
 // A rollback reads by place and time, so the words that only shape a lookup's answer are not offered for it.
-class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType<LookupQuery, String> {
+class LookupArgument(
+    private val rollback: Boolean = false,
+    private val names: () -> List<String> = ::knownNames,
+) : CustomArgumentType<LookupQuery, String> {
     override fun getNativeType(): ArgumentType<String> = StringArgumentType.greedyString()
 
     override fun parse(reader: StringReader): LookupQuery = parseLookupQuery(reader)
@@ -709,14 +712,15 @@ class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType
     ): CompletableFuture<Suggestions> {
         val out = builder.createOffset(builder.start + offset)
         val typed = out.remainingLowerCase
-        for (candidate in candidates) if (candidate.startsWith(typed)) out.suggest(candidate)
+        // Typed is lowercased and a name is not: Brigadier's own matching is case-blind too.
+        for (candidate in candidates) if (candidate.lowercase().startsWith(typed)) out.suggest(candidate)
         return out.buildFuture()
     }
 
     private fun valuesFor(param: Param?): List<String> = when (param) {
-        Param.USER, Param.PLAYER -> Bukkit.getOnlinePlayers().map { it.name }
+        Param.USER, Param.PLAYER -> names()
         // Takes players and items in one list.
-        Param.EXCLUDE -> Bukkit.getOnlinePlayers().map { it.name } + ITEM_NAMES + BLOCK_NAMES
+        Param.EXCLUDE -> names() + ITEM_NAMES + BLOCK_NAMES
         Param.TIME -> TIME_EXAMPLES
         Param.RADIUS -> RADIUS_EXAMPLES
         Param.ACTION -> Action.names
@@ -728,6 +732,11 @@ class LookupArgument(private val rollback: Boolean = false) : CustomArgumentType
         Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, null -> emptyList()
     }
 }
+
+// A griefer is looked up after they have gone, so everyone who ever played is offered, not only who is on.
+// ponytail: the server lists its player files on every keystroke; cache the names if a big server feels it.
+private fun knownNames(): List<String> =
+    (Bukkit.getOnlinePlayers().map { it.name } + Bukkit.getOfflinePlayers().mapNotNull { it.name }).distinct()
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
