@@ -130,19 +130,25 @@ class Ghosts(private val plugin: Plugin) : Listener {
     }
 
     // A half of a double chest opens with its other half, as the game opens it: the right half on top. The other
-    // half holds what the preview says it would, or nothing where the preview puts it back empty, or what it
-    // holds now.
+    // half holds what the preview gives back to it, or what it holds now where it stands and the preview at most
+    // makes it a half, or nothing where the preview puts it back anew. One in a region this thread does not own
+    // is left out.
     private fun open(player: Player, clicked: Block, at: WorldBlock, contents: Contents, mine: Shown) {
         val state = (contents.data as CraftBlockData).state
         var items = contents.items
         if (state.block is ChestBlock && state.getValue(ChestBlock.TYPE) != ChestType.SINGLE) {
             val pos = ChestBlock.getConnectedBlockPos(BlockPos(at.x, at.y, at.z), state)
             val partnerAt = at.copy(x = pos.x, y = pos.y, z = pos.z)
-            val ghost = mine.byChunk[chunkOf(partnerAt)]?.find { it.at == partnerAt }
-            val real = clicked.world.getBlockAt(pos.x, pos.y, pos.z)
-            val other = mine.contents[partnerAt]?.items
-                ?: if (ghost != null) List(items.size) { ItemStack.empty() }.takeIf { ghost.data.material == contents.data.material }
-                else (real.state as? Chest)?.blockInventory?.contents?.map { it ?: ItemStack.empty() }?.takeIf { real.type == contents.data.material }
+            val other = mine.contents[partnerAt]?.items ?: run {
+                if (!Bukkit.isOwnedByCurrentRegion(clicked.world, pos.x shr 4, pos.z shr 4)) return@run null
+                val real = clicked.world.getBlockAt(pos.x, pos.y, pos.z)
+                val becomes = mine.byChunk[chunkOf(partnerAt)]?.find { it.at == partnerAt }?.data?.material ?: real.type
+                when {
+                    becomes != contents.data.material -> null
+                    real.type == becomes -> (real.state as? Chest)?.blockInventory?.contents?.map { it ?: ItemStack.empty() }
+                    else -> List(items.size) { ItemStack.empty() }
+                }
+            }
             if (other != null) items = if (state.getValue(ChestBlock.TYPE) == ChestType.RIGHT) items + other else other + items
         }
         val peek = Peek()

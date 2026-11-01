@@ -491,7 +491,8 @@ class ChunkRollback(
     // Tells the entity capture that a removal is the rollback's own and written by it.
     private val forget: (UUID) -> Unit,
 ) {
-    fun run(level: ServerLevel, chunk: ChunkPlan, actor: UUID?, apply: Boolean): Tally {
+    // `planned` is every position of the run in this world, whichever chunk puts it back.
+    fun run(level: ServerLevel, chunk: ChunkPlan, actor: UUID?, apply: Boolean, planned: Set<WorldBlock> = emptySet()): Tally {
         val tally = Tally()
         val world = level.world.uid
         val positions = chunk.positions
@@ -539,18 +540,24 @@ class ChunkRollback(
             }
         }
         // The halves of a chest go back as a pair, in the preview as in the world.
+        // A partner another chunk of the plan puts back is that chunk's to pair: read here, it is not back yet.
+        val reachable = { pos: BlockPos ->
+            owned(level, pos) && (pos.x shr 4 == chunk.chunkX && pos.z shr 4 == chunk.chunkZ || WorldBlock(world, pos.x, pos.y, pos.z) !in planned)
+        }
         val paired = ArrayList<Pair<BlockPos, Standing>>()
+        val shown = HashMap<BlockPos, BlockState>()
         if (!apply) {
-            val shown = tally.ghosts.associateBy { BlockPos(it.at.x, it.at.y, it.at.z) }
-            val fixes = pairChests(shown.keys, { shown[it]?.let { ghost -> (ghost.data as CraftBlockData).state } ?: level.getBlockState(it) }) { owned(level, it) }
+            for (ghost in tally.ghosts) shown[BlockPos(ghost.at.x, ghost.at.y, ghost.at.z)] = (ghost.data as CraftBlockData).state
+            val fixes = pairChests(shown.keys.toList(), { shown[it] ?: level.getBlockState(it) }, reachable)
             if (fixes.isNotEmpty()) {
                 tally.ghosts.removeAll { BlockPos(it.at.x, it.at.y, it.at.z) in fixes }
                 for ((pos, state) in fixes) tally.ghosts += Ghost(WorldBlock(world, pos.x, pos.y, pos.z), state.asBlockData())
+                shown += fixes
             }
         }
         if (apply) {
             val put = spots.filterIndexed { i, _ -> touched[i] }
-            for ((pos, state) in pairChests(put, level::getBlockState) { owned(level, it) }) {
+            for ((pos, state) in pairChests(put, level::getBlockState, reachable)) {
                 paired += pos to standingAt(level, pos, codec)
                 level.setBlock(pos, state, SHAPE_FLAGS)
             }
@@ -593,7 +600,7 @@ class ChunkRollback(
             }
         }
         if (!apply) positions.forEachIndexed { i, plan ->
-            if (plan.refills.isNotEmpty()) contentsAfter(level, spots[i], plan, decisions[i])?.let { tally.contents[plan.at.copy(world = world)] = it }
+            if (plan.refills.isNotEmpty()) contentsAfter(level, spots[i], plan, decisions[i], shown[spots[i]])?.let { tally.contents[plan.at.copy(world = world)] = it }
         }
         // After the blocks, so a frame comes back to a wall that is there again.
         val seats = ArrayList<Pair<UUID, UUID>>()
@@ -611,10 +618,10 @@ class ChunkRollback(
                 blockRow = touched[i] || spots[i] in dousedAt || spots[i] in pairedAt,
             )
         }
-        val planned = spots.toHashSet()
+        val ours = spots.toHashSet()
         // A partner outside the plan made the other half again: a row of its own, like a fire put out beside it.
         val besides = LinkedHashMap<BlockPos, Standing>()
-        for ((pos, was) in paired + doused) if (pos !in planned) besides.putIfAbsent(pos, was)
+        for ((pos, was) in paired + doused) if (pos !in ours) besides.putIfAbsent(pos, was)
         for ((pos, was) in besides) difference.add(pos.x, pos.y, pos.z, was, standingAt(level, pos, codec), blockRow = true)
         if (difference.rows.isNotEmpty()) logs.get(world)?.submit(difference.rows)
         givenBackRows(difference, givenBack, actor).takeIf { it.isNotEmpty() }?.let(sink)
@@ -871,18 +878,11 @@ class ChunkRollback(
     }
 
     /**
-     * The neighbours outside the plan told of what came back beside them, the way the game tells them of any
-     * block set: leaves count their way to a log again. One that takes its shape from what is beside it is
-     * left as it stands, since what a griefer made of it is a row of its own and in the plan: worked out
-     * again it would lose a shape no rule of the game gives, which a builder's tool put there. Before the
-     * observers are quietened, which this would set off.
-     */
-    /**
      * What a container will hold once the rollback is through, for the preview: what it holds now, or nothing
      * where the block goes back anew or with its tag (`put` empties those), and then the slot postings given
-     * back, on a copy that no world knows.
+     * back, on a copy that no world knows. [shown] is the block the preview draws there, a chest's half paired.
      */
-    private fun contentsAfter(level: ServerLevel, pos: BlockPos, plan: PositionPlan, decision: Decision): Contents? {
+    private fun contentsAfter(level: ServerLevel, pos: BlockPos, plan: PositionPlan, decision: Decision, shown: BlockState?): Contents? {
         val target = decision.target.takeIf { decision.reshaped }
         val standing = level.getBlockState(pos)
         val state = target?.let { (Bukkit.createBlockData(it) as CraftBlockData).state } ?: standing
@@ -893,9 +893,16 @@ class ChunkRollback(
         for (refill in plan.refills) {
             putBack(copy, refill.at.slot, codec.decode(refill.form, 1, refill.damage), refill.qty) { codec.encode(it).form.contentEquals(refill.form) }
         }
-        return Contents(state.asBlockData(), (0 until copy.size).map { CraftItemStack.asBukkitCopy(copy.get(it)) })
+        return Contents((shown ?: state).asBlockData(), (0 until copy.size).map { CraftItemStack.asBukkitCopy(copy.get(it)) })
     }
 
+    /**
+     * The neighbours outside the plan told of what came back beside them, the way the game tells them of any
+     * block set: leaves count their way to a log again. One that takes its shape from what is beside it is
+     * left as it stands, since what a griefer made of it is a row of its own and in the plan: worked out
+     * again it would lose a shape no rule of the game gives, which a builder's tool put there. Before the
+     * observers are quietened, which this would set off.
+     */
     private fun reshapeAround(level: ServerLevel, put: List<BlockPos>) {
         val planned = put.toHashSet()
         for (pos in planned) {
@@ -1216,6 +1223,7 @@ class Rollbacks(
             // A few chunks at a time, each starting the next as it ends: a /pp cancel then reaches the chunks not
             // begun yet, and a big rollback does not land on every region in the same tick.
             val queue = ConcurrentLinkedQueue(work)
+            val planned = work.flatMapTo(HashSet()) { (_, chunk) -> chunk.positions.map { it.at } }
             fun next() {
                 while (true) {
                     val (level, chunk) = queue.poll() ?: return
@@ -1229,7 +1237,7 @@ class Rollbacks(
                         chunk.chunkX - 1, chunk.chunkX + 1, chunk.chunkZ - 1, chunk.chunkZ + 1, Priority.NORMAL,
                     ) {
                         try {
-                            total.add(chunks.run(level, chunk, actor, apply))
+                            total.add(chunks.run(level, chunk, actor, apply, planned))
                         } catch (failure: Throwable) {
                             plugin.logger.log(Level.SEVERE, "a rollback chunk at ${chunk.chunkX} ${chunk.chunkZ} failed", failure)
                             total.add(Tally().apply { failed = chunk.positions.size })

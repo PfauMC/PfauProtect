@@ -41,6 +41,8 @@ import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockRow
+import io.pfaumc.pfauprotect.storage.BlockCodec
+import io.pfaumc.pfauprotect.storage.rawPut
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -331,6 +333,20 @@ class RollbackTest : BothPlanes() {
             val reading = reader.at(world, setOf(WorldBlock(world, x, 64, 1)), 0, Long.MAX_VALUE, rollbackFilter())
             assertTrue((reading as? Refused)?.reason?.contains("could not be read") == true, "at x=$x: ${(reading as? Refused)?.reason ?: "planned"}")
         }
+    }
+
+    // Around a place the read goes by the chunk-time index: a row it finds there and cannot decode refuses as well.
+    @Test
+    fun `a rollback around a place over a row it cannot read is refused`() {
+        log.submit(listOf(BlockChange(3, 64, 3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.drain()
+        val row = log.windowAt(3, 64, 3, 0, Long.MAX_VALUE, 100).rows.single()
+        logs.close(world)
+        rawPut(dir.resolve("blocks").resolve(world.toString()), "rows", BlockCodec.key(3, 64, 3, row.timestamp, row.eventId, row.ordinal), ByteArray(0))
+        log = logs.open(world)
+
+        val reading = RollbackReader(shared, logs).around(world, 3, 64, 3, 2, 0, Long.MAX_VALUE, rollbackFilter())
+        assertTrue((reading as? Refused)?.reason?.contains("could not be read") == true, (reading as? Refused)?.reason ?: "planned")
     }
 
     @Test
