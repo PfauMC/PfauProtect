@@ -107,6 +107,12 @@ internal fun Entity.witnessed() = Attributed(uniqueId, Confidence.FACT)
 internal fun Attributed?.culprit(): UUID? = this?.takeIf { it.confidence != Confidence.NEARBY }?.actor
 
 /**
+ * The player a tracker note may keep. A note holds no confidence, and whatever reads it back takes the name
+ * for a plain guess, so the one a creeper went off at is left to the journal, whose row says how it was.
+ */
+internal fun Attributed?.noted(): UUID? = this?.takeIf { it.confidence != Confidence.NEARBY && it.confidence != Confidence.AGGRO }?.actor
+
+/**
  * A block between the position it broke loose from and the one it lands in. The form travels with the
  * block rather than being fetched back at the landing: the position it left is free the moment it leaves,
  * and whatever moves in there during the flight owns the note by then.
@@ -201,7 +207,7 @@ class Attribution(
     ): Attributed? {
         placerAt(at, standing)?.let { return it }
         val found = journalPlacerAt(at, standing, causes) ?: return null
-        if (renote) found.culprit()?.let { placed(at, standing, it) }
+        if (renote) found.noted()?.let { placed(at, standing, it) }
         return found
     }
 

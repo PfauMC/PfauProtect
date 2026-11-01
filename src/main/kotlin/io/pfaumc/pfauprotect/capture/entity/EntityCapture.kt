@@ -633,12 +633,14 @@ class EntityCapture(
     fun onResurrect(event: EntityResurrectEvent) {
         val victim = event.entity as? Player ?: return
         if (event.hand == null) return
-        val culprit = culpritOf(victim, Cause.TOTEM_CONSUME)
-        val by = culprit.by ?: return
+        // The blow that would have killed: a zombie's a moment after a player's is the zombie's, not the
+        // player's the game still remembers. Without a blow — a fall after a knock — the game's own killer.
+        val damager = (victim.lastDamageCause as? EntityDamageByEntityEvent)?.damager
+        val by = (if (damager != null) byEntity(damager, Cause.TOTEM_CONSUME) else culpritOf(victim, Cause.TOTEM_CONSUME)).by ?: return
         val striker = by.culprit() ?: return
         if (striker == victim.uniqueId || striker == LIGHTNING) return
-        val damage = victim.lastDamageCause
-        (damage as? EntityDamageByEntityEvent)?.let { hit(ChatKind.TOTEM, victim, it.damager, striker, by, it.finalDamage) }
+        // The blow itself is already a hit line with its damage; this one only says what it cost.
+        if (damager != null) hit(ChatKind.TOTEM, victim, damager, striker, by, 0.0)
         val log = logs.get(victim.world.uid) ?: return
         val block = victim.location.block
         val now = System.currentTimeMillis()

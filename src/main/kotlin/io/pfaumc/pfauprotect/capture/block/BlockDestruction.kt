@@ -38,6 +38,7 @@ import io.pfaumc.pfauprotect.capture.item.containerAt
 import io.pfaumc.pfauprotect.check.emptied
 import io.pfaumc.pfauprotect.attribution.energyAt
 import io.pfaumc.pfauprotect.attribution.culprit
+import io.pfaumc.pfauprotect.attribution.noted
 import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.capture.item.packShulker
 import io.pfaumc.pfauprotect.capture.item.positionOf
@@ -1074,7 +1075,7 @@ class BlockDestructionListener(
         val entity = event.ignitingEntity
         if (player == null && entity != null) {
             val by = behindChange(entity) ?: return
-            by.culprit()?.let { attribution.placed(positionOf(block), lit, it) }
+            by.noted()?.let { attribution.placed(positionOf(block), lit, it) }
             readBack(listOf(block), by.inferred(), Cause.BLK_FIRE_SPREAD)
             return
         }
@@ -1082,7 +1083,7 @@ class BlockDestructionListener(
             // Lava sets fire on a random tick, and nothing else announces the fire it puts down.
             if (event.cause != BlockIgniteEvent.IgniteCause.LAVA) return
             val by = event.ignitingBlock?.let(::pouredBy)
-            by.culprit()?.let { attribution.placed(positionOf(block), lit, it) }
+            by.noted()?.let { attribution.placed(positionOf(block), lit, it) }
             changed(block, block.blockData, lit, Cause.BLK_FIRE_SPREAD, by)
             return
         }
@@ -1145,7 +1146,7 @@ class BlockDestructionListener(
         val by = event.ignitingBlock?.let(::fireStartedBy)
         // What the block leaves may be fire, and that fire may leap on before its row reaches the journal:
         // it is noted at once, as a fire that spread is. Left as air, the position never matches the note.
-        by.culprit()?.let {
+        by.noted()?.let {
             val fire = BaseFireBlock.getState(block.level, block.position).asBlockData().asString
             attribution.placed(positionOf(block), fire, it)
         }
@@ -1162,7 +1163,7 @@ class BlockDestructionListener(
         // fire it leapt from is on the event. The find is written forward onto this position, as the
         // carry does, so an arbitrarily long chain stays attributed while no note covers more than a step.
         val leapt = if (blockNameOf(after) in FIRES) fireStartedBy(event.source) else null
-        leapt.culprit()?.let { attribution.placed(at, after, it) }
+        leapt.noted()?.let { attribution.placed(at, after, it) }
         // A block burnt away in this very tick, with fire leaping straight into the air it left: the burn's
         // read-back files the block to fire. A row of the spread's own here would settle the position and
         // the read-back would drop the block, which a rollback then never puts back.
@@ -1308,7 +1309,7 @@ class BlockDestructionListener(
             ?: sourcesOf(liquid).firstNotNullOfOrNull {
                 attribution.journalPlacerAt(positionOf(it), it.blockData.asString, POURING_CAUSES)
             } ?: return null
-        found.culprit()?.let { attribution.placed(at, standing, it) }
+        found.noted()?.let { attribution.placed(at, standing, it) }
         return found
     }
 
@@ -1631,7 +1632,7 @@ class BlockDestructionListener(
             ?: attribution.placerOrJournal(at, TNT)
         val standing = block.blockData
         file(log, listOf(Site(block, standing, AIR)), Cause.BLK_TNT, who, expectsDrops = false)
-        who?.culprit()?.let { attribution.placed(at, standing.asString, it) }
+        who?.noted()?.let { attribution.placed(at, standing.asString, it) }
         // The entity carries it too: dynamite lit by a redstone block in the air fell and went off where
         // nobody had put any, and the whole crater was nobody's.
         who?.let { priming[at] = it to System.currentTimeMillis() }
@@ -1851,7 +1852,7 @@ class BlockDestructionListener(
             file(log, emptyList(), Cause.BLK_FALL_START, by, timestamp, carried = listOf(site))
             // A column comes down one block at a time, and each take-off is what the block above it
             // finds: without a note here the chain would be attributed at its first step only.
-            by.culprit()?.let { noteRemoval(at, becomes, it) }
+            by.noted()?.let { noteRemoval(at, becomes, it) }
             return
         }
         val flight = attribution.landed(entity.uniqueId)
@@ -1919,7 +1920,7 @@ class BlockDestructionListener(
             if (site.went != null || !expectsDrops || emptied(site.beforeState)) continue
             dropsOf(site.block, cause, by, packBox(site, by, timestamp), dropReach)
         }
-        by.culprit()?.let { actor ->
+        by.noted()?.let { actor ->
             for (site in gone) {
                 noteRemoval(site.at, site.after, actor)
                 attribution.felledBy(site.block, actor)
@@ -2071,7 +2072,7 @@ class BlockDestructionListener(
         // arrives after the spawn it explains is a note nobody can claim.
         if (expectsDrops) dropsOf(block, cause, by)
         // The log is still standing here, and by the read-back it is not.
-        by.culprit()?.let { attribution.givingWay(block, it); attribution.felledBy(block, it) }
+        by.noted()?.let { attribution.givingWay(block, it); attribution.felledBy(block, it) }
         onRegionOf(block) {
             readBacks.done(at)
             val now = block.blockData.asString
@@ -2080,7 +2081,7 @@ class BlockDestructionListener(
             if (alreadyFiled(log, at, before.asString, now)) return@onRegionOf
             val site = Site(block, before, now, payload)
             log.submit(row(site, cause, by, timestamp))
-            by.culprit()?.let { noteRemoval(at, now, it) }
+            by.noted()?.let { noteRemoval(at, now, it) }
             // A tick has passed, and a position something has since been put into is no longer this
             // read's to speak for: the note standing there was written by whoever filled it, and
             // clearing it would cost that block its form when it is broken in turn.

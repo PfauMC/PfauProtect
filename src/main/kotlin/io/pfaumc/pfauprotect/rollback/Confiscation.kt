@@ -68,6 +68,9 @@ private const val PACK_LAG_MILLIS = 1_000L
 // How far apart a totem's row and its spent posting may be written: the posting waits for the player's pass.
 private const val TOTEM_SLACK_MILLIS = 5_000L
 
+// The posting is written after the event, but the two clocks are read on different threads.
+private const val CLOCK_SLACK_MILLIS = 1_000L
+
 /** Who holds what a rollback put back: a player, or a pile still lying in the world. */
 sealed interface Taker
 
@@ -319,7 +322,9 @@ internal class Fallen(private val ledger: RocksItemLog, private val death: Entit
     // The pass writes the spent totem a tick or so after the event that wrote the row; a slot of either hand.
     private val totem: LedgerEntry? = if (death.kind != EntityKind.TOTEM_POPPED) null else
         listOf(PlayerInv(death.uuid, 0), PlayerEquip(death.uuid, 0))
-            .flatMap { ledger.holderEntries(it, death.timestamp - TOTEM_SLACK_MILLIS, death.timestamp + TOTEM_SLACK_MILLIS) }
+            // Read from just before the row, not seconds before it: a fight fills the inventory with postings,
+            // and the read is cut off at its limit.
+            .flatMap { ledger.holderEntries(it, death.timestamp - CLOCK_SLACK_MILLIS, death.timestamp + TOTEM_SLACK_MILLIS, limit = ENTITY_ROWS) }
             .filter { it.cause == Cause.TOTEM_CONSUME && it.qty < 0 }
             .minByOrNull { kotlin.math.abs(it.timestamp - death.timestamp) }
 

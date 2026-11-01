@@ -379,6 +379,9 @@ class RollbackTest : BothPlanes() {
         assertTrue(keeps("action:entity", blown) && keeps("action:entity", placed))
         assertFalse(keeps("action:-entity", undone))
         assertTrue(keeps("action:explosion", blown))
+        val popped = blown.copy(kind = EntityKind.TOTEM_POPPED, cause = Cause.TOTEM_CONSUME, type = "minecraft:player")
+        assertTrue(keeps("action:pvp", popped) && keeps("action:-entity", popped))
+        assertFalse(keeps("action:pvp", blown))
 
         assertTrue(keeps("", blown, setOf(alice)))
         assertFalse(keeps("", blown.copy(confidence = Confidence.NEARBY), setOf(alice)))

@@ -868,7 +868,10 @@ class PfauProtectPlugin : JavaPlugin() {
             .append(Ui.hover(Ui.text(" ⚔ ", Ui.LOST), tr("hit", "удар")))
             .append(Ui.text(nameOrId(hit.victim), Ui.WHO))
         if (run.first.text.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.any(run.first.text))
-        out.append(Ui.text("  ")).append(Ui.hover(Ui.text(String.format(Locale.ROOT, "%.1f", run.damage), Ui.LOST), tr("damage after armour", "урон после брони")))
+        // A totem line follows the hit that cost it, whose damage that line already shows.
+        if (run.first.kind != ChatKind.TOTEM) {
+            out.append(Ui.text("  ")).append(Ui.hover(Ui.text(String.format(Locale.ROOT, "%.1f", run.damage), Ui.LOST), tr("damage after armour", "урон после брони")))
+        }
         if (run.rows > 1) out.append(Ui.hover(Ui.text(" ×${run.rows}", Ui.MUTED), tr("${run.rows} in a row; #all shows each", "${run.rows} подряд; #all покажет каждое")))
         if (run.first.kind == ChatKind.TOTEM) out.append(Ui.text(tr("  totem popped", "  сбит тотем"), Ui.LOST))
         return out.build()

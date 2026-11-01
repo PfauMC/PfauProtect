@@ -207,7 +207,8 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
         "kill", "kills", "killed", "death", "deaths",
     ),
     // A fight between players: the kill and the totem it cost in a lookup, and in /pp chat every hit that led to it.
-    PVP(setOf(Cause.PLAYER_KILLED, Cause.TOTEM_CONSUME), "pvp", "hit", "hits", "fight"),
+    // The totem by its entity row: a totem spent on a fall writes the same cause in the item plane.
+    PVP(setOf(Cause.PLAYER_KILLED), "pvp", "hit", "hits", "fight"),
     SPAWN(
         setOf(Cause.SPAWN_EGG_USE, Cause.MOB_BRED, Cause.BUCKET_RELEASE_MOB, Cause.PLACE_ENTITY_ITEM, Cause.MOB_TRANSFORM),
         "spawn", "spawned", "bred",
@@ -247,6 +248,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
             ENTITY -> EntityKind.entries.toSet() - EntityKind.DROPPED
             ENTITY_ADD -> setOf(EntityKind.CREATED)
             ENTITY_REMOVE -> setOf(EntityKind.REMOVED, EntityKind.PLAYER_DIED, EntityKind.TOTEM_POPPED)
+            PVP -> setOf(EntityKind.TOTEM_POPPED)
             else -> emptySet()
         }
 
@@ -266,8 +268,9 @@ private val TRANSFORM_CAUSES = setOf(
     Cause.BOTTLE_FILL, Cause.BOTTLE_EMPTY, Cause.CAULDRON_WASH, Cause.TRANSMUTE_ON_BREAK,
 )
 
-// Everything the entity plane writes, and what a player's hand does to a mob in the item plane.
-private val ENTITY_CAUSES = ENTITY_PLANE_CAUSES + setOf(
+// Everything the entity plane writes, and what a player's hand does to a mob in the item plane. A totem's
+// cause is the item plane's too, where it is every totem spent; its entity row is taken by kind.
+private val ENTITY_CAUSES = ENTITY_PLANE_CAUSES - Cause.TOTEM_CONSUME + setOf(
     Cause.FEED_MOB, Cause.TAME_MOB, Cause.EQUIP_MOB, Cause.SHEAR_MOB, Cause.DYE_MOB,
     Cause.NAME_TAG, Cause.LEASH_ATTACH, Cause.LEASH_DROP, Cause.GIVE_ITEM_TO_MOB, Cause.ARMOR_STAND_SWAP,
 )
@@ -756,9 +759,19 @@ class LookupArgument(
 }
 
 // A griefer is looked up after they have gone, so everyone who ever played is offered, not only who is on.
-// ponytail: the server lists its player files on every keystroke; cache the names if a big server feels it.
-private fun knownNames(): List<String> =
-    (Bukkit.getOnlinePlayers().map { it.name } + Bukkit.getOfflinePlayers().mapNotNull { it.name }).distinct()
+// Listing the player files on every keystroke costs a big server, so the names who have been off are read
+// once a minute at most; who is on now is always offered.
+private const val NAMES_MILLIS = 60_000L
+
+@Volatile private var offlineNames: Pair<Long, List<String>> = 0L to emptyList()
+
+private fun knownNames(): List<String> {
+    val now = System.currentTimeMillis()
+    val (at, names) = offlineNames
+    val offline = if (now - at < NAMES_MILLIS) names
+    else Bukkit.getOfflinePlayers().mapNotNull { it.name }.also { offlineNames = now to it }
+    return (Bukkit.getOnlinePlayers().map { it.name } + offline).distinct()
+}
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
