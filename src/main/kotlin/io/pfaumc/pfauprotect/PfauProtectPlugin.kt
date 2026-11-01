@@ -4,7 +4,6 @@ import com.mojang.brigadier.arguments.IntegerArgumentType
 import com.mojang.brigadier.arguments.LongArgumentType
 import com.mojang.brigadier.arguments.StringArgumentType
 import com.mojang.brigadier.context.CommandContext
-import com.mojang.brigadier.exceptions.CommandSyntaxException
 import io.papermc.paper.command.brigadier.CommandSourceStack
 import io.papermc.paper.command.brigadier.Commands
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes
@@ -566,8 +565,11 @@ class PfauProtectPlugin : JavaPlugin() {
             )
             root.then(
                 gated("chat", LOOKUP_PERMISSION)
-                    .executes { chat(it.source, "") }
-                    .then(Commands.argument("words", StringArgumentType.greedyString()).executes { chat(it.source, StringArgumentType.getString(it, "words")) })
+                    .executes { chat(it.source, LookupQuery()) }
+                    .then(
+                        Commands.argument("query", LookupArgument(chat = true))
+                            .executes { chat(it.source, it.getArgument("query", LookupQuery::class.java)) }
+                    )
             )
             root.then(gated("status", STATUS_PERMISSION).executes { status(it.source) })
             root.then(
@@ -828,14 +830,7 @@ class PfauProtectPlugin : JavaPlugin() {
         return !event.isCancelled
     }
 
-    private fun chat(source: CommandSourceStack, words: String): Int = withRunning(source) { running, sender ->
-        val query = try {
-            parseLookupQuery(words)
-        } catch (failure: CommandSyntaxException) {
-            // The message alone: the rest is Brigadier's "at position" in English, about a line not typed here.
-            sender.sendMessage(failure.rawMessage.string)
-            return 0
-        }
+    private fun chat(source: CommandSourceStack, query: LookupQuery): Int = withRunning(source) { running, sender ->
         // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
         val asked = query.askedBy(sender)
         offThread(sender, "the chat lookup failed", "The chat lookup failed; the server log has the details.") {

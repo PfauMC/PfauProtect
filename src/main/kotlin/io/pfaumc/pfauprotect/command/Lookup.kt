@@ -693,17 +693,22 @@ internal class RowFilter(
 }
 
 // A rollback reads by place and time, so the words that only shape a lookup's answer are not offered for it.
+// `chat` offers only what `/pp chat` reads: without it the client showed a bare <words>, which reads as asking for
+// the text of a message.
 class LookupArgument(
     private val rollback: Boolean = false,
+    private val chat: Boolean = false,
     private val names: () -> List<String> = ::knownNames,
 ) : CustomArgumentType<LookupQuery, String> {
     override fun getNativeType(): ArgumentType<String> = StringArgumentType.greedyString()
 
     override fun parse(reader: StringReader): LookupQuery = parseLookupQuery(reader)
 
-    private val starts: List<String> =
-        if (rollback) Param.entries.filter { it !in ANSWER_ONLY }.map { "${it.canonical}:" }
-        else Param.prefixes + listOf("#count", "#all")
+    private val starts: List<String> = when {
+        chat -> CHAT_PARAMS.map { "${it.canonical}:" } + "#all"
+        rollback -> Param.entries.filter { it !in ANSWER_ONLY }.map { "${it.canonical}:" }
+        else -> Param.prefixes + listOf("#count", "#all")
+    }
 
     override fun <S : Any> listSuggestions(
         context: CommandContext<S>,
@@ -749,7 +754,7 @@ class LookupArgument(
         Param.EXCLUDE -> names() + ITEM_NAMES + BLOCK_NAMES
         Param.TIME -> TIME_EXAMPLES
         Param.RADIUS -> RADIUS_EXAMPLES
-        Param.ACTION -> Action.names
+        Param.ACTION -> if (chat) listOf(Action.PVP.keys.first()) else Action.names
         Param.INCLUDE -> ITEM_NAMES + BLOCK_NAMES
         Param.LIMIT -> LIMIT_EXAMPLES
         Param.PAGE -> listOf("2", "3")
@@ -775,6 +780,8 @@ private fun knownNames(): List<String> {
     }
     return (Bukkit.getOnlinePlayers().map { it.name } + offline).distinct()
 }
+
+private val CHAT_PARAMS = listOf(Param.USER, Param.TIME, Param.FILTER, Param.ACTION, Param.PAGE)
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
