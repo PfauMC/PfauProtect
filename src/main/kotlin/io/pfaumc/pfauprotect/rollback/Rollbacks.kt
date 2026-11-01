@@ -56,6 +56,7 @@ import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.ObserverBlock
 import net.minecraft.world.level.block.ChestBlock
+import net.minecraft.world.level.block.EntityBlock
 import net.minecraft.world.level.block.state.properties.ChestType
 import net.minecraft.world.level.block.LeavesBlock
 import net.minecraft.world.level.levelgen.structure.BoundingBox
@@ -83,6 +84,7 @@ import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
 import org.bukkit.craftbukkit.CraftWorld
 import org.bukkit.craftbukkit.block.data.CraftBlockData
+import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Player
 import org.bukkit.plugin.Plugin
 import java.time.Instant
@@ -234,6 +236,9 @@ class Tally {
     // What a preview would put back, for the previewing player to see.
     val ghosts = ArrayList<Ghost>()
 
+    // What the containers a preview gives back to would hold after it, for a right click to show.
+    val contents = HashMap<WorldBlock, Contents>()
+
     @Synchronized
     fun add(other: Tally) {
         changed += other.changed
@@ -257,6 +262,7 @@ class Tally {
         deaths += other.deaths
         buckets += other.buckets
         ghosts += other.ghosts
+        contents += other.contents
     }
 }
 
@@ -586,6 +592,9 @@ class ChunkRollback(
                 }
             }
         }
+        if (!apply) positions.forEachIndexed { i, plan ->
+            if (plan.refills.isNotEmpty()) contentsAfter(level, spots[i], plan, decisions[i])?.let { tally.contents[plan.at.copy(world = world)] = it }
+        }
         // After the blocks, so a frame comes back to a wall that is there again.
         val seats = ArrayList<Pair<UUID, UUID>>()
         for (plan in positions) for (entity in plan.entities) entity(level, entity, actor, apply, tally, seats)
@@ -868,6 +877,25 @@ class ChunkRollback(
      * again it would lose a shape no rule of the game gives, which a builder's tool put there. Before the
      * observers are quietened, which this would set off.
      */
+    /**
+     * What a container will hold once the rollback is through, for the preview: what it holds now, or nothing
+     * where the block goes back anew or with its tag (`put` empties those), and then the slot postings given
+     * back, on a copy that no world knows.
+     */
+    private fun contentsAfter(level: ServerLevel, pos: BlockPos, plan: PositionPlan, decision: Decision): Contents? {
+        val target = decision.target.takeIf { decision.reshaped }
+        val standing = level.getBlockState(pos)
+        val state = target?.let { (Bukkit.createBlockData(it) as CraftBlockData).state } ?: standing
+        val copy = slotsOf((state.block as? EntityBlock)?.newBlockEntity(pos, state)) ?: return null
+        val now = slotsOf(level.getBlockEntity(pos))
+        val kept = target == null || decision.settled.back?.payloadBefore == null && standing.block == state.block
+        if (now != null && kept) for (i in 0 until minOf(now.size, copy.size)) copy.set(i, now.get(i).copy())
+        for (refill in plan.refills) {
+            putBack(copy, refill.at.slot, codec.decode(refill.form, 1, refill.damage), refill.qty) { codec.encode(it).form.contentEquals(refill.form) }
+        }
+        return Contents(state.asBlockData(), (0 until copy.size).map { CraftItemStack.asBukkitCopy(copy.get(it)) })
+    }
+
     private fun reshapeAround(level: ServerLevel, put: List<BlockPos>) {
         val planned = put.toHashSet()
         for (pos in planned) {
@@ -1235,7 +1263,7 @@ class Rollbacks(
         private fun finish() {
             val owed = owedFor(ledger, total)
             report()
-            if (!apply) (sender as? Player)?.let { ghosts.show(it, total.ghosts) }
+            if (!apply) (sender as? Player)?.let { ghosts.show(it, total.ghosts, total.contents) }
             // A killed player gets back what fell out of them, wherever it went.
             for (death in total.deaths.distinctBy { it.eventId to it.uuid }) {
                 val fallen = Fallen(ledger, death)

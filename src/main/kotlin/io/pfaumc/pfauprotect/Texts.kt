@@ -36,6 +36,7 @@ object Texts {
         r("action:steal is worked out for a lookup only; roll back action:withdraw instead\\.") to "action:steal вычисляется только для поиска; для отката укажи action:withdraw.",
         r("Rollback preview dropped\\.") to "Предпросмотр отката сброшен.",
         r("  you see the blocks as they would stand; nothing changes before /pp apply\\.") to "  вы видите блоки такими, какими они станут; до /pp apply в мире ничего не меняется.",
+        r("  right-click a container it gives back to, to see what it would hold\\.") to "  ПКМ по контейнеру, в который откат возвращает предметы, покажет, что в нём будет.",
         r("  you see the nearest blocks \\((\\d+) of (\\d+)\\) as they would stand; nothing changes before /pp apply\\.") to
             "  вы видите ближайшие блоки ($1 из $2) такими, какими они станут; до /pp apply в мире ничего не меняется.",
         r("No rollback preview to drop\\.") to "Нет предпросмотра отката.",
