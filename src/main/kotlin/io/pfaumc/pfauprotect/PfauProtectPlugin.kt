@@ -814,7 +814,7 @@ class PfauProtectPlugin : JavaPlugin() {
             // line as much as the attacker's: who hit Bob is asked as `user:Bob`.
             val keeps = { line: ChatLine ->
                 (users.isEmpty() || line.player in users || line.hit?.victim in users) &&
-                    (!asked.pvp || line.kind == ChatKind.HIT) && (text == null || text in line.text.lowercase())
+                    (!asked.pvp || line.kind.struck) && (text == null || text in line.text.lowercase())
             }
             // A one-sided fight folds a whole read into a line or two, so the read goes on until the runs fill
             // this page and start the next, or the log runs out. Past the cap a run that long is the last page.
@@ -843,7 +843,7 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.COMMAND -> Ui.text(" " + line.text, Ui.CHANGED)
                     ChatKind.JOIN -> Ui.text(tr(" joined", " · вход"), Ui.GAINED)
                     ChatKind.QUIT -> Ui.text(tr(" left", " · выход"), Ui.MUTED)
-                    ChatKind.HIT -> hitOf(run)
+                    ChatKind.HIT, ChatKind.TOTEM -> hitOf(run)
                 }
                 // A run reads at its first hit: who started is what it is looked up for. The place goes first, as on
                 // a lookup's lines.
@@ -870,6 +870,7 @@ class PfauProtectPlugin : JavaPlugin() {
         if (run.first.text.isNotEmpty()) out.append(Ui.text("  ")).append(Ui.any(run.first.text))
         out.append(Ui.text("  ")).append(Ui.hover(Ui.text(String.format(Locale.ROOT, "%.1f", run.damage), Ui.LOST), tr("damage after armour", "урон после брони")))
         if (run.rows > 1) out.append(Ui.hover(Ui.text(" ×${run.rows}", Ui.MUTED), tr("${run.rows} in a row; #all shows each", "${run.rows} подряд; #all покажет каждое")))
+        if (run.first.kind == ChatKind.TOTEM) out.append(Ui.text(tr("  totem popped", "  сбит тотем"), Ui.LOST))
         return out.build()
     }
 

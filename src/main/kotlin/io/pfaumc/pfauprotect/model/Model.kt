@@ -42,6 +42,9 @@ enum class EntityKind(val id: Int) {
     DROPPED(4),
     // A player died there, and the row names who did it and what fell out.
     PLAYER_DIED(5),
+    // A player was struck down and a totem took the death instead; the row names who struck. Nothing fell,
+    // and the totem is all a rollback of the striker gives back.
+    TOTEM_POPPED(6),
     ;
 
     companion object { val byId = idIndex(entries) { it.id } }

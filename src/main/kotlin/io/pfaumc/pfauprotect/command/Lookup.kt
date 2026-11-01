@@ -206,8 +206,8 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
         setOf(Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.PLAYER_KILLED, Cause.MOB_TRANSFORM, Cause.BUCKET_CAPTURE_MOB),
         "kill", "kills", "killed", "death", "deaths",
     ),
-    // A fight between players: the kill in a lookup, and in /pp chat every hit that led to it.
-    PVP(setOf(Cause.PLAYER_KILLED), "pvp", "hit", "hits", "fight"),
+    // A fight between players: the kill and the totem it cost in a lookup, and in /pp chat every hit that led to it.
+    PVP(setOf(Cause.PLAYER_KILLED, Cause.TOTEM_CONSUME), "pvp", "hit", "hits", "fight"),
     SPAWN(
         setOf(Cause.SPAWN_EGG_USE, Cause.MOB_BRED, Cause.BUCKET_RELEASE_MOB, Cause.PLACE_ENTITY_ITEM, Cause.MOB_TRANSFORM),
         "spawn", "spawned", "bred",
@@ -797,7 +797,7 @@ internal fun chatRuns(lines: List<ChatLine>, all: Boolean): List<ChatRun> {
         val hit = line.hit
         // The run is drawn as its first hit, so one worked out and one seen do not share a line.
         val first = run?.first?.hit
-        if (!all && hit != null && first != null && first.victim == hit.victim && first.confidence == hit.confidence &&
+        if (!all && hit != null && first != null && first.victim == hit.victim && first.confidence == hit.confidence && run.first.kind == line.kind &&
             run.first.player == line.player && run.first.text == line.text && run.oldest - line.timestamp <= FOLD_MILLIS
         ) {
             run.rows++
@@ -1491,7 +1491,7 @@ class Lookups(
             else -> "-"
         }
         val subject = when (row.kind) {
-            EntityKind.PLAYER_DIED -> Ui.text(playerName(row.uuid), Ui.WHO)
+            EntityKind.PLAYER_DIED, EntityKind.TOTEM_POPPED -> Ui.text(playerName(row.uuid), Ui.WHO)
             EntityKind.DROPPED -> Ui.text(tr("${row.drops.size} items fell out", "выпало предметов: ${row.drops.size}"), Ui.THING)
             else -> Component.text().color(Ui.THING).append(Ui.entity(row.type)).append(times(rows)).build()
         }
@@ -1503,6 +1503,7 @@ class Lookups(
                 EntityKind.CREATED -> tr("brought in", "появление")
                 EntityKind.CHANGED -> tr("changed", "изменение")
                 EntityKind.MOVED -> tr("led away", "увод")
+                EntityKind.TOTEM_POPPED -> tr("a totem took the death", "тотем спас от смерти")
                 else -> null
             },
             row.death?.let {
