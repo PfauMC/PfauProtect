@@ -1473,14 +1473,15 @@ class Lookups(
 
     /**
      * The name of a container a click on which shows what was inside: what it held as it went for a
-     * line of its going, what it held after for any other. The hover keeps its lines and gains one. A
-     * folded ×N line stands for N containers and would show one of them as if it were all, so, like the
-     * rollback mark, it waits for #all.
+     * line of its going, what it held after for any other, and the other side when that one held nothing
+     * (a filled chest swapped for a sign). The hover keeps its lines and gains one. A folded ×N line stands
+     * for N containers and would show one of them as if it were all, so, like the rollback mark, it waits
+     * for #all.
      */
     private fun opens(subject: Component, before: Long?, after: Long?, gone: Boolean, rows: Int): Component {
         if (rows > 1) return subject
-        val payload = (if (gone) before ?: after else after ?: before) ?: return subject
-        if (ledger.payload(payload)?.let(::holdsItems) != true) return subject
+        val payload = (if (gone) listOf(before, after) else listOf(after, before)).filterNotNull()
+            .firstOrNull { ledger.payload(it)?.let(::holdsItems) == true } ?: return subject
         val hover = subject.hoverEvent()?.value() as? Component ?: Component.empty()
         val hint = Ui.text(tr("Click: what was inside", "Клик: что было внутри"), Ui.MUTED)
         return subject.decorate(TextDecoration.UNDERLINED)
