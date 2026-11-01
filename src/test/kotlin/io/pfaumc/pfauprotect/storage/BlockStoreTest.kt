@@ -236,11 +236,11 @@ class BlockStoreTest : BothPlanes() {
         assertEquals(3, log.inChunk(0, 0, 0, Long.MAX_VALUE, limit = 100, reverse = false).size)
         assertEquals(stateOf(DIRT), log.standingAt(2, 64, 2).row?.stateAfter)
 
-        val whole = log.windowInChunk(0, 0, 0, Long.MAX_VALUE, budget = 100) { x, _, _ -> x == 2 }
+        val whole = log.windowAt(2, 64, 2, 0, Long.MAX_VALUE, budget = 100)
         assertEquals(listOf(stateOf(STONE), stateOf(DIRT)), whole.rows.map { it.stateAfter })
         assertEquals(1, whole.unreadable)
         assertTrue(whole.complete)
-        assertFalse(log.windowInChunk(0, 0, 0, Long.MAX_VALUE, budget = 3) { _, _, _ -> true }.complete)
+        assertFalse(log.windowAt(2, 64, 2, 0, Long.MAX_VALUE, budget = 2).complete)
         assertEquals(listOf(T0 + 10), log.windowAt(2, 64, 2, T0 + 6, Long.MAX_VALUE, 100).rows.map { it.timestamp })
     }
 

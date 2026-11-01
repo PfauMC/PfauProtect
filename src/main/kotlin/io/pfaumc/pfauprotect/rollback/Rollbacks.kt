@@ -73,6 +73,7 @@ import net.minecraft.world.level.block.entity.CampfireBlockEntity
 import net.minecraft.world.level.block.entity.LecternBlockEntity
 import net.minecraft.world.level.storage.TagValueInput
 import net.kyori.adventure.text.Component
+import io.pfaumc.pfauprotect.Debug
 import io.pfaumc.pfauprotect.Texts
 import io.pfaumc.pfauprotect.Ui
 import io.pfaumc.pfauprotect.tr
@@ -934,6 +935,7 @@ class Rollbacks(
         plugin.offThread(sender, "the rollback at ${target.label} failed", "The rollback failed; the server log has the details.") {
             // From before the read, which on a long window is most of the time a rollback takes.
             val began = System.nanoTime()
+            Debug.log { "rollback ${if (apply) "apply" else "preview"} by ${sender.name} at ${target.label}: $query" }
             try {
                 val users = lookups.resolveAll(sender, query.users)
                 if (users == null) {
@@ -949,6 +951,7 @@ class Rollbacks(
                 val to = event?.let { it.at + EVENT_MILLIS } ?: minOf(query.toTs(now), now)
                 val radius = if (event != null) query.radius ?: EVENT_RADIUS else query.radius
                 val at = if (event != null) LookupTarget(target.world, event.x, event.y, event.z, "event ${event.id} at ${event.x} ${event.y} ${event.z}") else target
+                Debug.log { "  users $users, window $from..$to, radius $radius around ${at.label}" }
                 val since = TIME_FORMAT.format(Instant.ofEpochMilli(from)) +
                     if (query.secondsUntil != null) " until ${TIME_FORMAT.format(Instant.ofEpochMilli(to))}" else ""
                 val readings = try {
@@ -980,6 +983,10 @@ class Rollbacks(
                 val plans = readings.filterIsInstance<Planned>()
                 val positions = plans.sumOf { it.positions }
                 val limit = Settings.maxRollbackPositions
+                Debug.log {
+                    "  read in ${(System.nanoTime() - began) / 1_000_000} ms: ${plans.size} worlds, $positions positions, " +
+                        "${refused?.reason?.let { "refused: $it" } ?: "limit $limit"}"
+                }
                 when {
                     refused != null || positions > limit -> {
                         sender.say("Rollback refused: ${(refused ?: reader.tooMany(positions)).reason}.")
@@ -1006,7 +1013,8 @@ class Rollbacks(
     // Every loaded world, read at the positions the players' rows stand at.
     private fun everywhere(users: Set<UUID>, from: Long, now: Long, keeps: RowFilter): List<Reading> {
         val touched = reader.touchedBy(users, from, now)
-            ?: return listOf(Refused("those players did more in that window than one rollback reads; narrow the time"))
+        Debug.log { "  positions the players touched: ${touched?.mapValues { it.value.size } ?: "more than $MAX_ROLLBACK_ROWS rows, refused"}" }
+        if (touched == null) return listOf(Refused("those players did more in that window than one rollback reads; narrow the time"))
         return touched.map { (world, positions) -> reader.at(world, positions, from, now, keeps) }
     }
 

@@ -11,6 +11,7 @@ import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.Settings
+import io.pfaumc.pfauprotect.Debug
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.senderInto
 import io.pfaumc.pfauprotect.stub
@@ -616,6 +617,44 @@ class RollbackTest : BothPlanes() {
         val named = around(rollbackFilter(alice), column = true)
         assertEquals(listOf(WorldBlock(world, 2, 104, 2)), positions(named).map { it.at })
         assertTrue(positions(around(rollbackFilter(alice))).isEmpty())
+    }
+
+    // A busy hopper line in the same chunk filed more postings in the window than one rollback may undo. None of
+    // them stand in Alice's box or are hers, so they cost the walk steps and never a place under the cap; the old
+    // read of whole chunks counted them and refused every rollback there.
+    @Test
+    fun `others' postings in the chunk do not count against a small rollback's cap`() {
+        val hopper = Container(world, 12, 64, 12, 0)
+        val below = Container(world, 12, 63, 12, 0)
+        for (batch in (0..MAX_ROLLBACK_ROWS).chunked(1000)) {
+            for (i in batch) shared.submit(Transfer(Cause.HOPPER_PUSH, hopper, below, diamond, null, 1, T0 + i))
+            shared.drain()
+        }
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, Container(world, 2, 64, 2, 0), PlayerInv(alice, 0), diamond, null, 1, T0))
+        shared.drain()
+
+        val lines = ArrayList<String>()
+        Debug.sink = { lines += it }
+        Debug.on = true
+        val reading = try {
+            RollbackReader(shared, logs).around(world, 2, 64, 2, 2, 0, Long.MAX_VALUE, rollbackFilter(alice), column = true)
+        } finally {
+            Debug.on = false
+        }
+        val planned = reading as? Planned ?: throw AssertionError((reading as Refused).reason)
+        assertEquals(listOf(WorldBlock(world, 2, 64, 2)), positions(planned).map { it.at })
+        assertTrue(lines.any { "item plane: kept 1 postings" in it }, lines.joinToString("\n"))
+        // And a rollback that would undo the line itself is refused, naming the plane in the answer and the
+        // limit in the log.
+        lines.clear()
+        Debug.on = true
+        val refused = try {
+            RollbackReader(shared, logs).around(world, 12, 64, 12, 1, 0, Long.MAX_VALUE, rollbackFilter())
+        } finally {
+            Debug.on = false
+        }
+        assertTrue((refused as Refused).reason.startsWith("that window holds more item history"), refused.reason)
+        assertTrue(lines.any { "refused: item history over the item rows cap" in it }, lines.joinToString("\n"))
     }
 
     private fun around(filter: RowFilter, from: Long = 0, column: Boolean = false, to: Long = Long.MAX_VALUE): Planned {
