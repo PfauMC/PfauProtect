@@ -1467,15 +1467,18 @@ class Lookups(
         }
         return row(
             Ui.ago(row.timestamp), who(row.actor, row.confidence, pressed?.second), act(change.sign, row.cause),
-            opens(Ui.hover(thing.build(), *details.toTypedArray()), row.payloadBefore, row.payloadAfter, change.sign == "-"), extra,
+            opens(Ui.hover(thing.build(), *details.toTypedArray()), row.payloadBefore, row.payloadAfter, change.sign == "-", rows), extra,
         )
     }
 
     /**
      * The name of a container a click on which shows what was inside: what it held as it went for a
-     * line of its going, what it held after for any other. The hover keeps its lines and gains one.
+     * line of its going, what it held after for any other. The hover keeps its lines and gains one. A
+     * folded ×N line stands for N containers and would show one of them as if it were all, so, like the
+     * rollback mark, it waits for #all.
      */
-    private fun opens(subject: Component, before: Long?, after: Long?, gone: Boolean): Component {
+    private fun opens(subject: Component, before: Long?, after: Long?, gone: Boolean, rows: Int): Component {
+        if (rows > 1) return subject
         val payload = (if (gone) before ?: after else after ?: before) ?: return subject
         if (ledger.payload(payload)?.let(::holdsItems) != true) return subject
         val hover = subject.hoverEvent()?.value() as? Component ?: Component.empty()
@@ -1516,7 +1519,7 @@ class Lookups(
         val via = row.via?.let { Component.text().color(Ui.MUTED).append(Ui.text("← ")).append(Ui.any(it)).build() }
         return row(
             Ui.ago(row.timestamp), who(row.actor, row.confidence), act(sign, row.cause),
-            opens(Ui.hover(subject, *details.toTypedArray()), row.payloadBefore, row.payloadAfter, sign == "-"), via,
+            opens(Ui.hover(subject, *details.toTypedArray()), row.payloadBefore, row.payloadAfter, sign == "-", rows), via,
         )
     }
 

@@ -49,9 +49,11 @@ class ContentsTest {
     }
 
     @Test
-    fun `sprites come from the item's own atlas, and an item drawn by code has none`() {
+    fun `sprites come from the item's own atlas, and an item that would pass for its material has none`() {
         assertEquals("items" to "item/diamond", ItemSprites.of("minecraft:diamond"))
         assertEquals("blocks" to "block/stone", ItemSprites.of("minecraft:stone"))
+        // Drawn by code, its particles are planks; a stair's faces are planks too.
         assertNull(ItemSprites.of("minecraft:chest"))
+        assertNull(ItemSprites.of("minecraft:oak_stairs"))
     }
 }

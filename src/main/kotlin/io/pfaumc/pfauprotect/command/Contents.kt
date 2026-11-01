@@ -27,7 +27,7 @@ import org.bukkit.entity.Player
 import org.bukkit.plugin.Plugin
 
 /** What a container held, as one payload of a block or an entity kept it: its type, its shape, its filled slots. */
-internal class Contents(val id: String, val columns: Int, val cells: Int, val items: Map<Int, ItemStack>)
+internal class Stored(val id: String, val columns: Int, val cells: Int, val items: Map<Int, ItemStack>)
 
 // The shape of the containers whose window is not nine wide: a hopper's row of five, a dispenser's square.
 // The id is the block entity's or the entity's, so every colour of shulker box is one "shulker_box".
@@ -35,7 +35,7 @@ private val SHAPES = mapOf(
     "minecraft:hopper" to (5 to 5), "minecraft:hopper_minecart" to (5 to 5), "minecraft:brewing_stand" to (5 to 5),
     "minecraft:dispenser" to (3 to 9), "minecraft:dropper" to (3 to 9), "minecraft:crafter" to (3 to 9),
     "minecraft:furnace" to (3 to 3), "minecraft:blast_furnace" to (3 to 3), "minecraft:smoker" to (3 to 3),
-    "minecraft:campfire" to (4 to 4), "minecraft:chiseled_bookshelf" to (3 to 6),
+    "minecraft:campfire" to (4 to 4), "minecraft:chiseled_bookshelf" to (3 to 6), "minecraft:shelf" to (3 to 3),
 )
 private const val ROW = 9
 private const val CHEST = 27
@@ -48,7 +48,7 @@ internal fun holdsItems(bytes: ByteArray): Boolean =
  * The slots of a payload, null when it holds nothing. Read the way the game loads a container, so a slot
  * a later version wrote and this one cannot read is left empty rather than failing the window.
  */
-internal fun contentsOf(bytes: ByteArray, registries: HolderLookup.Provider): Contents? {
+internal fun contentsOf(bytes: ByteArray, registries: HolderLookup.Provider): Stored? {
     val tag = runCatching { nbtOf(bytes) }.getOrNull() ?: return null
     val items = TagValueInput.create(ProblemReporter.DISCARDING, registries, tag)
         .listOrEmpty("Items", ItemStackWithSlot.CODEC)
@@ -59,7 +59,7 @@ internal fun contentsOf(bytes: ByteArray, registries: HolderLookup.Provider): Co
     val (columns, size) = SHAPES[id] ?: (ROW to CHEST)
     // A donkey's chest or anything not in the table: as many rows as its last filled slot needs.
     val cells = maxOf(size, (items.keys.max() / columns + 1) * columns)
-    return Contents(id, columns, cells, items)
+    return Stored(id, columns, cells, items)
 }
 
 /**
@@ -85,17 +85,18 @@ private const val CARD_WIDTH = 160
 
 private fun keyOf(stack: ItemStack) = BuiltInRegistries.ITEM.getKey(stack.item).toString()
 
-/** A cell's face: the sprite and how many, or the item's name when it has no sprite. */
+/** A cell's face: the sprite, or the item's name when it has no sprite, and how many. */
 private fun face(stack: ItemStack): Component {
-    val count = if (stack.count > 1) Ui.text("${stack.count}") else Component.empty()
-    val (atlas, sprite) = ItemSprites.of(keyOf(stack)) ?: return CraftItemStack.asBukkitCopy(stack).effectiveName()
-    return Component.text().append(Component.`object`(ObjectContents.sprite(Key.key(atlas), Key.key(sprite)))).append(count).build()
+    val picture = ItemSprites.of(keyOf(stack))?.let { (atlas, sprite) -> Component.`object`(ObjectContents.sprite(Key.key(atlas), Key.key(sprite))) }
+        ?: CraftItemStack.asBukkitCopy(stack).effectiveName()
+    val count = if (stack.count > 1) Ui.text(" ${stack.count}") else Component.empty()
+    return Component.text().append(picture).append(count).build()
 }
 
 private fun name(stack: ItemStack): Component =
     Component.text().append(CraftItemStack.asBukkitCopy(stack).effectiveName()).append(Ui.text(" ×${stack.count}", Ui.MUTED)).build()
 
-private fun heading(contents: Contents): Component =
+private fun heading(contents: Stored): Component =
     Component.text().append(Ui.text("PfauProtect · ", Ui.FAINT)).append(Ui.any(contents.id).color(Ui.THING)).build()
 
 /**
@@ -103,7 +104,7 @@ private fun heading(contents: Contents): Component =
  * item, drawn by the game itself with its whole tooltip; an empty one opens the grid again, as a button
  * without an action would close it.
  */
-internal fun showContents(player: Player, payload: Long, contents: Contents) {
+internal fun showContents(player: Player, payload: Long, contents: Stored) {
     val grid = "/pp contents $payload"
     val cells = (0 until contents.cells).map { slot ->
         val stack = contents.items[slot]
@@ -117,7 +118,7 @@ internal fun showContents(player: Player, payload: Long, contents: Contents) {
 }
 
 /** One item of a container: the game's own picture of it, its tooltip on the hover, and the way back to the grid. */
-internal fun showItem(player: Player, payload: Long, contents: Contents, slot: Int) {
+internal fun showItem(player: Player, payload: Long, contents: Stored, slot: Int) {
     val stack = contents.items[slot] ?: return showContents(player, payload, contents)
     val about = DialogBody.plainMessage(
         Component.text().append(name(stack)).append(Ui.text(" · ${tr("slot", "слот")} $slot", Ui.MUTED)).build(), CARD_WIDTH,

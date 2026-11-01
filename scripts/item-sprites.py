@@ -15,7 +15,7 @@ MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 OUT = pathlib.Path(__file__).resolve().parent.parent / "src/main/resources/item-sprites.txt"
 # The texture of a model that best stands for the item in one flat square: a flat item's own layer, a
 # block's face, and for a model drawn by code (a chest, a bed, a shulker box) what its particles are made of.
-KEYS = ("layer0", "all", "side", "front", "texture", "cross", "plant", "wall", "wool", "top", "end", "north", "up", "particle")
+KEYS = ("layer0", "all", "front", "side", "texture", "cross", "plant", "wall", "wool", "top", "end", "north", "up", "particle")
 
 
 def get(url):
@@ -107,9 +107,10 @@ def main(version):
         # Then any texture named after the item, which is how a model of its own (a beacon) names its face.
         for key in KEYS + tuple(sorted(texs)):
             sprite = resolve(texs, texs.get(key))
-            # Particles of a model drawn by code are any material (planks for a chest, a bed or a banner,
-            # soul sand for a head), which would pass the item off as that block; the button then names it.
-            if (key == "particle" or key not in KEYS) and sprite and item not in sprite:
+            # A flat item's layer is its own picture, whatever it is called. Any other texture is a face of
+            # some block, and stands for the item only when named after it: the planks of a slab, a stair, a
+            # button, a chest or a bed would pass the item off as planks. The button then names it instead.
+            if key != "layer0" and sprite and item not in sprite:
                 sprite = None
             atlas = sprite and atlas_of(sprite)
             if atlas:

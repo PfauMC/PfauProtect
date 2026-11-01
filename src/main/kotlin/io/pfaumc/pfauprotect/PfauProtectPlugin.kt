@@ -579,10 +579,12 @@ class PfauProtectPlugin : JavaPlugin() {
                     )
             )
             root.then(teleportNode())
-            // What a click on a container in a lookup line runs; a link's target, so it is not in help.
+            // What a click on a container in a lookup line runs; a link's target, so it is not in help. The player
+            // is checked in the executor, as for `tp`: a node a probe without an executor fails is asked about on
+            // every click.
             root.then(
                 Commands.literal("contents")
-                    .requires { it.sender.hasPermission(LOOKUP_PERMISSION) && it.executor is Player }
+                    .requires { it.sender.hasPermission(LOOKUP_PERMISSION) && it.sender !is ConsoleCommandSender }
                     .then(
                         Commands.argument("payload", LongArgumentType.longArg(0))
                             .executes { contents(it.source, LongArgumentType.getLong(it, "payload"), null) }
