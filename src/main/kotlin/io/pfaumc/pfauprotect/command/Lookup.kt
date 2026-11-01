@@ -1467,8 +1467,22 @@ class Lookups(
         }
         return row(
             Ui.ago(row.timestamp), who(row.actor, row.confidence, pressed?.second), act(change.sign, row.cause),
-            Ui.hover(thing.build(), *details.toTypedArray()), extra,
+            opens(Ui.hover(thing.build(), *details.toTypedArray()), row.payloadBefore, row.payloadAfter, change.sign == "-"), extra,
         )
+    }
+
+    /**
+     * The name of a container a click on which shows what was inside: what it held as it went for a
+     * line of its going, what it held after for any other. The hover keeps its lines and gains one.
+     */
+    private fun opens(subject: Component, before: Long?, after: Long?, gone: Boolean): Component {
+        val payload = (if (gone) before ?: after else after ?: before) ?: return subject
+        if (ledger.payload(payload)?.let(::holdsItems) != true) return subject
+        val hover = subject.hoverEvent()?.value() as? Component ?: Component.empty()
+        val hint = Ui.text(tr("Click: what was inside", "Клик: что было внутри"), Ui.MUTED)
+        return subject.decorate(TextDecoration.UNDERLINED)
+            .hoverEvent(HoverEvent.showText(Component.text().append(hover).append(Component.newline()).append(hint)))
+            .clickEvent(ClickEvent.runCommand("/pp contents $payload"))
     }
 
     private fun draw(row: EntityRow, rows: Int): Component {
@@ -1502,7 +1516,7 @@ class Lookups(
         val via = row.via?.let { Component.text().color(Ui.MUTED).append(Ui.text("← ")).append(Ui.any(it)).build() }
         return row(
             Ui.ago(row.timestamp), who(row.actor, row.confidence), act(sign, row.cause),
-            Ui.hover(subject, *details.toTypedArray()), via,
+            opens(Ui.hover(subject, *details.toTypedArray()), row.payloadBefore, row.payloadAfter, sign == "-"), via,
         )
     }
 

@@ -141,6 +141,7 @@ object Texts {
         r("Anything held before the ledger was opened differs by exactly that much for ever; a difference that stays put is that constant rather than a leak\\.") to "Всё, что было до открытия журнала, навсегда расходится ровно на эту величину; неизменная разница — это она, а не утечка.",
         r("The ledger is not open\\.") to "Журнал не открыт.",
         r("Nothing said or run matches\\.") to "Ничего сказанного или выполненного не найдено.",
+        r("Nothing was inside\\.") to "Внутри ничего не было.",
     )
 
     private val WORDS: List<Pair<Regex, String>> = listOf(
