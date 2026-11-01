@@ -637,6 +637,7 @@ internal class RowFilter(
     private val excludedUsers: Set<UUID>,
     private val rollback: Boolean = false,
 ) {
+    internal val namesUsers: Boolean get() = users.isNotEmpty()
     private val causes = query.causes
     private val kinds = query.kinds
     private val all = query.all

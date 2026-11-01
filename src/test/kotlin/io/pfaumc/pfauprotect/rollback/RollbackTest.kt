@@ -208,6 +208,20 @@ class RollbackTest : BothPlanes() {
         assertNull(settle(AIR, position.steps, position.origin).back)
     }
 
+    // Alice built a chest long ago and a creeper blew it up inside the window. A rollback of the place names
+    // nobody, so there is no "before her" to stop at: the window is undone and the chest stands again.
+    @Test
+    fun `a rollback of a place puts back what stood at the window's start whoever built it`() {
+        val chest = "minecraft:chest[facing=south,type=single,waterlogged=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, chest, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, chest, AIR, Cause.BLK_CREEPER, T0 + 100, Confidence.AGGRO, actor = bob)))
+        log.drain()
+
+        val position = positions(around(RowFilter(shared, LookupQuery(), emptySet(), emptySet(), rollback = true), from = T0 + 50)).single()
+        assertNull(position.origin)
+        assertEquals(chest, settle(AIR, position.steps, position.origin).back?.before)
+    }
+
     // A row stamped with the window's very start is the window's: undone, and not also read as what the
     // position stood as before it, where Bob's stone would otherwise be taken for her beginning.
     @Test
