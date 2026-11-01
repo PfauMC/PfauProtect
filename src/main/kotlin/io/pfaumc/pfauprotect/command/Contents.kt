@@ -29,16 +29,22 @@ import org.bukkit.plugin.Plugin
 /** What a container held, as one payload of a block or an entity kept it: its type, its shape, its filled slots. */
 internal class Stored(val id: String, val columns: Int, val cells: Int, val items: Map<Int, ItemStack>)
 
-// The shape of the containers whose window is not nine wide: a hopper's row of five, a dispenser's square.
-// The id is the block entity's or the entity's, so every colour of shulker box is one "shulker_box".
+private const val ROW = 9
+private val CHEST = ROW to 27
+
+// The shape of each container whose size is known: columns and slots. The id is the block entity's or the
+// entity's, so every colour of shulker box is one "shulker_box" and a copper chest is a "chest".
 private val SHAPES = mapOf(
+    "minecraft:chest" to CHEST, "minecraft:trapped_chest" to CHEST, "minecraft:barrel" to CHEST,
+    "minecraft:shulker_box" to CHEST, "minecraft:chest_minecart" to CHEST,
     "minecraft:hopper" to (5 to 5), "minecraft:hopper_minecart" to (5 to 5), "minecraft:brewing_stand" to (5 to 5),
     "minecraft:dispenser" to (3 to 9), "minecraft:dropper" to (3 to 9), "minecraft:crafter" to (3 to 9),
     "minecraft:furnace" to (3 to 3), "minecraft:blast_furnace" to (3 to 3), "minecraft:smoker" to (3 to 3),
     "minecraft:campfire" to (4 to 4), "minecraft:chiseled_bookshelf" to (3 to 6), "minecraft:shelf" to (3 to 3),
 )
-private const val ROW = 9
-private const val CHEST = 27
+
+// Every wood's chest boat is an entity type of its own, all of them a chest.
+private fun shapeOf(id: String) = SHAPES[id] ?: CHEST.takeIf { id.endsWith("_chest_boat") || id.endsWith("_chest_raft") }
 
 /** Whether a payload holds any item worth a window: an emptied chest is still a payload, with nothing in it. */
 internal fun holdsItems(bytes: ByteArray): Boolean =
@@ -56,8 +62,9 @@ internal fun contentsOf(bytes: ByteArray, registries: HolderLookup.Provider): St
         .associate { it.slot() to it.stack() }
     if (items.isEmpty()) return null
     val id = tag.getStringOr("id", "")
-    val (columns, size) = SHAPES[id] ?: (ROW to CHEST)
-    // A donkey's chest or anything not in the table: as many rows as its last filled slot needs.
+    // A donkey's chest, whose size goes with its strength, or anything not in the table: rows of nine, as
+    // many as its last filled slot needs. A known one is never cut short by a slot beyond it either.
+    val (columns, size) = shapeOf(id) ?: (ROW to 0)
     val cells = maxOf(size, (items.keys.max() / columns + 1) * columns)
     return Stored(id, columns, cells, items)
 }

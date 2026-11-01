@@ -33,11 +33,15 @@ class ContentsTest {
     }
 
     @Test
-    fun `a hopper is a row of five and an unknown container as long as its last slot`() {
+    fun `a hopper is a row of five, a chest boat a chest, and an unknown container as long as its last slot`() {
         val hopper = contentsOf(payload("minecraft:hopper", 2 to "minecraft:diamond"), ServerRegistries.access)!!
         assertEquals(5 to 5, hopper.columns to hopper.cells)
-        val donkey = contentsOf(payload("minecraft:donkey", 30 to "minecraft:diamond"), ServerRegistries.access)!!
-        assertEquals(9 to 36, donkey.columns to donkey.cells)
+        val boat = contentsOf(payload("minecraft:oak_chest_boat", 2 to "minecraft:diamond"), ServerRegistries.access)!!
+        assertEquals(9 to 27, boat.columns to boat.cells)
+        val sparse = contentsOf(payload("minecraft:donkey", 2 to "minecraft:diamond"), ServerRegistries.access)!!
+        assertEquals(9 to 9, sparse.columns to sparse.cells)
+        val full = contentsOf(payload("minecraft:donkey", 14 to "minecraft:diamond"), ServerRegistries.access)!!
+        assertEquals(9 to 18, full.columns to full.cells)
     }
 
     @Test
