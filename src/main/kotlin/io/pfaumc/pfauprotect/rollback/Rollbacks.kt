@@ -55,6 +55,8 @@ import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.ObserverBlock
+import net.minecraft.world.level.block.ChestBlock
+import net.minecraft.world.level.block.state.properties.ChestType
 import net.minecraft.world.level.block.LeavesBlock
 import net.minecraft.world.level.levelgen.structure.BoundingBox
 import net.minecraft.world.level.block.LiquidBlock
@@ -392,6 +394,36 @@ internal fun slotsOf(entity: BlockEntity?): Slots? = when (entity) {
 private fun owned(level: ServerLevel, pos: BlockPos) = Bukkit.isOwnedByCurrentRegion(level.world, pos.x shr 4, pos.z shr 4)
 
 /**
+ * What the chest halves among [put] need to stand as a pair again. Each half is put back from its own rows, and
+ * the plan may hold only one of them: a radius that takes in one half, a filter or a later change that keeps the
+ * other where it stands, left single by the break. Applied, the world reshapes a neighbour outside the plan; a
+ * preview's ghost has nothing to reshape it, and the client drew half a chest beside a single one. A half that
+ * names a partner which is no half of it is drawn so and taken apart at the next update. So a single chest it can
+ * join becomes its other half, and with none it is single itself. Two chests put side by side as singles name no
+ * partner and stay as they are.
+ */
+internal fun pairChests(put: Collection<BlockPos>, stateAt: (BlockPos) -> BlockState, reachable: (BlockPos) -> Boolean): Map<BlockPos, BlockState> {
+    val fixes = LinkedHashMap<BlockPos, BlockState>()
+    for (pos in put) {
+        val state = fixes[pos] ?: stateAt(pos)
+        val chest = state.block as? ChestBlock ?: continue
+        val type = state.getValue(ChestBlock.TYPE)
+        if (type == ChestType.SINGLE) continue
+        val at = ChestBlock.getConnectedBlockPos(pos, state)
+        if (!reachable(at)) continue
+        val partner = fixes[at] ?: stateAt(at)
+        val joins = partner.block is ChestBlock && chest.chestCanConnectTo(partner) &&
+            partner.getValue(ChestBlock.FACING) == state.getValue(ChestBlock.FACING)
+        when {
+            joins && partner.getValue(ChestBlock.TYPE) == type.opposite -> Unit
+            joins && partner.getValue(ChestBlock.TYPE) == ChestType.SINGLE -> fixes[at] = partner.setValue(ChestBlock.TYPE, type.opposite)
+            else -> fixes[pos] = state.setValue(ChestBlock.TYPE, ChestType.SINGLE)
+        }
+    }
+    return fixes
+}
+
+/**
  * Puts back (`qty` above zero) or takes out (below zero) one slot posting: in its own slot first, then
  * wherever else in the same block the item fits or is found. Returns how much of it moved; the rest had
  * no room or was not there.
@@ -500,8 +532,22 @@ class ChunkRollback(
                 plugin.logger.log(Level.WARNING, "a rollback could not put back the block at ${spots[i]}", failure)
             }
         }
+        // The halves of a chest go back as a pair, in the preview as in the world.
+        val paired = ArrayList<Pair<BlockPos, Standing>>()
+        if (!apply) {
+            val shown = tally.ghosts.associateBy { BlockPos(it.at.x, it.at.y, it.at.z) }
+            val fixes = pairChests(shown.keys, { shown[it]?.let { ghost -> (ghost.data as CraftBlockData).state } ?: level.getBlockState(it) }) { owned(level, it) }
+            if (fixes.isNotEmpty()) {
+                tally.ghosts.removeAll { BlockPos(it.at.x, it.at.y, it.at.z) in fixes }
+                for ((pos, state) in fixes) tally.ghosts += Ghost(WorldBlock(world, pos.x, pos.y, pos.z), state.asBlockData())
+            }
+        }
         if (apply) {
             val put = spots.filterIndexed { i, _ -> touched[i] }
+            for ((pos, state) in pairChests(put, level::getBlockState) { owned(level, it) }) {
+                paired += pos to standingAt(level, pos, codec)
+                level.setBlock(pos, state, SHAPE_FLAGS)
+            }
             reshapeAround(level, put)
             // Leaves put back at distance 1 count their way to a log again: the tick sets the distance and tells the
             // leaves beside it, which count on from there.
@@ -549,11 +595,18 @@ class ChunkRollback(
         val difference = rollbackDifference(world, actor, System.currentTimeMillis())
         // A position of the plan that was only doused is one row, written here with the rest of the plan.
         val dousedAt = doused.mapTo(HashSet()) { it.first }
+        val pairedAt = paired.mapTo(HashSet()) { it.first }
         positions.forEachIndexed { i, plan ->
-            difference.add(plan.at.x, plan.at.y, plan.at.z, before[i], standingAt(level, spots[i], codec), blockRow = touched[i] || spots[i] in dousedAt)
+            difference.add(
+                plan.at.x, plan.at.y, plan.at.z, before[i], standingAt(level, spots[i], codec),
+                blockRow = touched[i] || spots[i] in dousedAt || spots[i] in pairedAt,
+            )
         }
         val planned = spots.toHashSet()
-        for ((pos, was) in doused) if (pos !in planned) difference.add(pos.x, pos.y, pos.z, was, standingAt(level, pos, codec), blockRow = true)
+        // A partner outside the plan made the other half again: a row of its own, like a fire put out beside it.
+        val besides = LinkedHashMap<BlockPos, Standing>()
+        for ((pos, was) in paired + doused) if (pos !in planned) besides.putIfAbsent(pos, was)
+        for ((pos, was) in besides) difference.add(pos.x, pos.y, pos.z, was, standingAt(level, pos, codec), blockRow = true)
         if (difference.rows.isNotEmpty()) logs.get(world)?.submit(difference.rows)
         givenBackRows(difference, givenBack, actor).takeIf { it.isNotEmpty() }?.let(sink)
         difference.writeOff(plugin, placed, sink)
