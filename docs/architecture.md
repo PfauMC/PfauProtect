@@ -91,4 +91,4 @@ them.
   with `radius:global` it reads every position the player touched, through `by_actor`. `time:` takes a span
   (`2h-1h`), `page:` pages through the answer, `at:x,y,z` pins the place (the page buttons add it). Runs of
   the same thing within a minute fold into one `×N` line; `#all` shows each. `action:steal`, `amount:`,
-  `rolledback:`, `#count`/`#sum` narrow it. `/pp purge` keeps the newest old row per place and writes `purge_opening` rows so balances hold.
+  `rolledback:`, `#count`/`#sum` narrow it. `/pp purge` works per plane: the item ledger (`Storage.purgeBefore`) deletes every posting older than the cutoff and, in the same write, records what each holder held then as `Cause.PURGE_OPENING` openings, so balances hold; the block log (`BlockStore.purgeBefore`) deletes old rows except the newest of each position no later row covers, their index entries, and entity rows older than the cutoff.
