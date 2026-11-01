@@ -17,7 +17,7 @@ PPT_LANG=ru scripts/test-server.sh start                           # Russian liv
 - Nothing is shaded. Runtime deps go through `library(...)`; `kotlin.stdlib.default.dependency=false`, so declare a new dependency twice: `library(...)` and `testImplementation(...)`.
 - Canvas build is pinned in `canvasBuild` (`build.gradle.kts`) and `CANVAS_BUILD` (`scripts/test-server.sh`): change both.
 - RocksDB is `compileOnly`; native classifier jars: server gets `osx`, `linux64` (literals in `bukkit { libraries }`), tests also get `win64` (`testImplementation`). A platform the server must run on goes into both lists. `runServer` on Windows cannot load the plugin: use `scripts/test-server.sh`.
-- First test run is slow (`ServerRegistries` bootstraps registries, writes gitignored `config/`, `logs/` to repo root).
+- First test run is slow (`ServerRegistries` bootstraps registries, writes gitignored `config/`, `logs/` to `build/test-work`).
 - Never rebuild or run `gradle test` while a `runServer` server runs from this build (jar swap). The Docker server uses a copy in `run/plugins` made at `start`.
 
 ## Rules

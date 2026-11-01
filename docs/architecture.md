@@ -18,26 +18,31 @@ Packages under `io.pfaumc.pfauprotect`; tests sit in the package of the code the
 
 **Item plane (`Storage.kt`, `RocksItemLog`).** Single RocksDB at `ledger/`, with column families entries,
 item_forms, registry, meta, nested_owners, tx, placed_forms, block_payloads, compensated (which postings a
-rollback gave back) and confiscations (what offline players owe a rollback), all written by one writer thread
-(`pfauprotect-ledger-writer`). Every row is a `Transfer` of `qty > 0` from one `Holder` to another (`Model.kt`):
+rollback gave back), confiscations (what offline players owe a rollback) and by_chunk. Capture transactions are
+serialized by one writer thread (`pfauprotect-ledger-writer`); `purgeBefore` and registry persistence write directly
+(`db.write`, `writeSynced`) under the shared database lock. Logically, every change is a `Transfer` of `qty > 0`
+from one `Holder` to another (`Model.kt`); `entries` stores it as two `LedgerEntry` postings, a negative one on the
+source and a positive one on the target, and skips holders that are not addressable. Holders are:
 player inv/equip/cursor/ender, menu slot (not addressable), container, entity slot, item entity, nested
 (shulker/bundle contents), `VOID`, world block. A row also carries a `Kind` (TRANSFER/MUTATE/CLONE) and a
-`Confidence` (FACT/INFERRED).
+`Confidence` (FACT/INFERRED/NEARBY: a player who was only near when a mechanism fired).
 
 **Block plane (`BlockStore.kt`, `BlockLogs`).** One RocksDB per world (`blocks/<uuid>`), opened and closed on
-world load and unload, with column families rows, meta and by_actor (every row that names an actor, keyed by the
-actor). Block-state ids and block-entity payloads are interned in the shared ledger, and referenced
+world load and unload, with column families rows, meta, by_actor (every row that names an actor, keyed by the
+actor), entities and by_chunk. Block-state ids and block-entity payloads are interned in the shared ledger, and referenced
 data is written first so a block row never points at nothing.
 
 **Write path.**
-- Capture listeners feed `TickCoalescer`, which merges changes within a tick, and `Uncovered`, which counts
+- Block and entity capture (`BlockCaptureListener`, `EntityCapture`) write through `BlockLogs` directly. Mechanism
+  and item listeners feed `TickCoalescer`, which merges changes within a tick, and `Uncovered`, which counts
   what could not be explained, by reason.
 - Player slots are written only by the recompute pass. Events leave an `Intent` (`Intents.kt`), and the pass
   diffs the inventory and assigns causes.
 - Listener registration order matters: `NestedCaptureListener` must be registered before `BlockMechanismListener`.
 
 **Attribution (`Attribution.kt`, plus `SpawnOrigins`/`EntityOrigins`).** Attribution climbs a ladder: direct
-source, then in-memory trackers, then the ledger. Anything that was not observed directly is `INFERRED`. Rows are
+source, then in-memory trackers, then the ledger. Anything that was not observed directly is `INFERRED`, except a
+player who was only nearby, which is `NEARBY`. Rows are
 never rewritten after the fact.
 
 **Self-checks, scheduled from `PfauProtectPlugin`.**
@@ -63,13 +68,14 @@ help, chat) is drawn as Adventure components through `Ui.kt` and put together in
 ru)`; the game's own names go out as translatable components, in the client's language. `Verbs.kt` holds the
 words of every `Cause`, and the cause's code waits on the hover. `PPT_LANG=ru scripts/test-server.sh start` starts the
 test server in Russian for a live check. `ChatLog` is a base of its own (`chat/`): chat, commands, joins and quits, and every hit of a player on another (`action:pvp` shows only those; no rollback reads them), no IP addresses.
-`api/PfauProtectApi` is registered in the ServicesManager; `PfauProtectPreLogEvent` can veto a row before it
-is written and is raised only while someone listens.
+`api/PfauProtectApi` is registered in the ServicesManager; `PfauProtectPreLogEvent` can veto a block-plane or
+entity-plane row before it is written (item-plane transfers are not vetoed) and is raised only while someone listens.
 
 **Rollback (`rollback/`).** `/pp rollback` takes the lookup's words and previews; `/pp apply` reads everything
 again and runs it, a chunk per region task, eight at a time; `/pp cancel` stops the chunks not begun yet.
 The previewing player is shown the blocks as they would stand (client-side only, `Ghosts.kt`: the nearest first, sent again when the client gets their chunk or clicks one) until apply, cancel or expiry.
-`event:<token>` from a lookup line rolls back that one event. It writes compensating rows (`Cause.ROLLBACK`) in both planes and never
+`event:<token>` from a lookup line rolls back that one event: it reads a window around the event (default radius 8
+blocks, ±1 second) and keeps the event's own rows. It writes compensating rows (`Cause.ROLLBACK`) in both planes and never
 edits old ones. A rollback's own rows are only rolled back when `action:rollback` names them, which is also how a
 rollback is undone. What it put back is then taken back from whoever carried it off (`Confiscation.kt`): from an
 online player through an `Intent`, from an offline one at their next join, from a pile still lying where it lies.

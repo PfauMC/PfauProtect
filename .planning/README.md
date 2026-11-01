@@ -2,7 +2,7 @@
 
 - SPEC-v1 is the foundation and long-term goals (rollback, dupe detection by balance; the second not built yet).
 - SPEC-v2 covers item entities and player inventory. SPEC-v3 covers the block plane, attribution and plane sync.
-  SPEC-v4 covers crafting and stations. Later specs override earlier ones, and SPEC-v3 supersedes BLOCKS-notes.
+  SPEC-v4 covers crafting and stations. Later specs override earlier ones, and SPEC-v3 supersedes BLOCKS-notes only where they conflict; the rest stays supporting analysis (SPEC-v7 cites it for rollback semantics).
   PLAN-v1-iteration-1 is outdated.
 - SPEC-v5 is full coverage: every cause class the earlier phases deferred (0x30 rest, 0x50, 0x60, 0x70,
   0xF0, creative), what they missed, and the phase order 5.1–5.8. It overrides the "deferred" lists of
@@ -31,6 +31,6 @@
 - TESTING-v5 is the live run for SPEC-v5, closed on 2026-10-03. TESTING-v5-RESULTS holds it: the D17–D50
   defects, the O2–O11 observations and the stop tally of every session. TESTING-v4-RESULTS holds the v4
   run, the D1–D16 defects and the v3 leftovers (R1).
-- TESTING-v3 / TESTING-v3-RESULTS is the manual test plan and its 2026-08-18 run. Sections B–F must be run in
-  survival. TESTING-v4 covers crafting and stations, plus section R with the unrun v3 items and re-checks
+- TESTING-v3 / TESTING-v3-RESULTS is the manual test plan and its 2026-08-18 run. Sections B–F run in
+  survival, except the cases marked creative (B4, B5, B6). TESTING-v4 covers crafting and stations, plus section R with the unrun v3 items and re-checks
   of every fix made since v3.
