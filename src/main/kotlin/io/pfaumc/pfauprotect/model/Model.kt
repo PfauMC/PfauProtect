@@ -14,6 +14,9 @@ enum class Confidence(val id: Int) {
     INFERRED(1),
     // A player who was near when something set a mechanism off, and no more: nothing tied them to it.
     NEARBY(2),
+    // The player a creeper went off at, who did not light it. Rolled back with them like any guess, but
+    // shown apart: one such blast is bad luck, several are a creeper led to somebody's wall on purpose.
+    AGGRO(3),
     ;
 
     companion object { val byId = idIndex(entries) { it.id } }
@@ -39,6 +42,9 @@ enum class EntityKind(val id: Int) {
     DROPPED(4),
     // A player died there, and the row names who did it and what fell out.
     PLAYER_DIED(5),
+    // A player was struck down and a totem took the death instead; the row names who struck. Nothing fell,
+    // and the totem is all a rollback of the striker gives back.
+    TOTEM_POPPED(6),
     ;
 
     companion object { val byId = idIndex(entries) { it.id } }

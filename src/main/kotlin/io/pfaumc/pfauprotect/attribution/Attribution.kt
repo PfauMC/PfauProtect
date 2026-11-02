@@ -91,7 +91,7 @@ internal fun flowing(state: String): Boolean =
 
 /**
  * Somebody worked out rather than somebody witnessed. Whatever this file works out is `INFERRED`, or
- * `NEARBY` where the row it read only knew who stood near; the direct source on the event — a TNT
+ * `NEARBY` / `AGGRO` where the row it read only knew who stood near or whom a creeper was after; the direct source on the event — a TNT
  * entity whose source is a player — is the caller's own rung and the only one that may carry `FACT`.
  * A flight or an origin hands back the confidence it was noted with.
  */
@@ -105,6 +105,12 @@ internal fun Entity.witnessed() = Attributed(uniqueId, Confidence.FACT)
  * as the one who did it; the block rows of the same chain say who was near.
  */
 internal fun Attributed?.culprit(): UUID? = this?.takeIf { it.confidence != Confidence.NEARBY }?.actor
+
+/**
+ * The player a tracker note may keep. A note holds no confidence, and whatever reads it back takes the name
+ * for a plain guess, so the one a creeper went off at is left to the journal, whose row says how it was.
+ */
+internal fun Attributed?.noted(): UUID? = this?.takeIf { it.confidence != Confidence.NEARBY && it.confidence != Confidence.AGGRO }?.actor
 
 /**
  * A block between the position it broke loose from and the one it lands in. The form travels with the
@@ -201,7 +207,7 @@ class Attribution(
     ): Attributed? {
         placerAt(at, standing)?.let { return it }
         val found = journalPlacerAt(at, standing, causes) ?: return null
-        if (renote) found.culprit()?.let { placed(at, standing, it) }
+        if (renote) found.noted()?.let { placed(at, standing, it) }
         return found
     }
 
@@ -277,9 +283,10 @@ class Attribution(
 
     private fun newestRowAt(at: WorldBlock): BlockRow? = blocks.get(at.world)?.standingAt(at.x, at.y, at.z)?.row
 
-    // A row may name a player who was only near the block, and the answer stays that and no more.
+    // A row may name a player who was only near the block, or the one a creeper went off at, and the
+    // answer stays that and no more.
     private fun journalActorOf(row: BlockRow): Attributed? {
-        val confidence = if (row.confidence == Confidence.NEARBY) Confidence.NEARBY else Confidence.INFERRED
+        val confidence = if (row.confidence == Confidence.NEARBY || row.confidence == Confidence.AGGRO) row.confidence else Confidence.INFERRED
         return row.actor?.let { Attributed(it, confidence) }
     }
 

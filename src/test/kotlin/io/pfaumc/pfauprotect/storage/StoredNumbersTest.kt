@@ -261,15 +261,15 @@ class StoredNumbersTest {
             Kind.entries.associate { it.name to it.id },
         )
         assertEquals(
-            mapOf("FACT" to 0, "INFERRED" to 1, "NEARBY" to 2),
+            mapOf("FACT" to 0, "INFERRED" to 1, "NEARBY" to 2, "AGGRO" to 3),
             Confidence.entries.associate { it.name to it.id },
         )
         assertEquals(
-            mapOf("REMOVED" to 0, "CREATED" to 1, "CHANGED" to 2, "MOVED" to 3, "DROPPED" to 4, "PLAYER_DIED" to 5),
+            mapOf("REMOVED" to 0, "CREATED" to 1, "CHANGED" to 2, "MOVED" to 3, "DROPPED" to 4, "PLAYER_DIED" to 5, "TOTEM_POPPED" to 6),
             EntityKind.entries.associate { it.name to it.id },
         )
         assertEquals(
-            mapOf("CHAT" to 0, "COMMAND" to 1, "JOIN" to 2, "QUIT" to 3, "HIT" to 4),
+            mapOf("CHAT" to 0, "COMMAND" to 1, "JOIN" to 2, "QUIT" to 3, "HIT" to 4, "TOTEM" to 5),
             ChatKind.entries.associate { it.name to it.id },
         )
         assertEquals(

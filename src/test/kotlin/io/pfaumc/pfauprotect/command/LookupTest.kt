@@ -50,6 +50,17 @@ class LookupTest {
         assertTrue(offered.containsAll(listOf("user:", "include:", "radius:", "#all")), "$offered")
     }
 
+    // Brigadier hands the typed part over lowercased, and a name with a capital in it used to drop out
+    // of the list at its first letter.
+    @Test
+    fun `a name is offered whatever case it is typed in`() {
+        val offered = LookupArgument(names = { listOf("SPY_me", "Test1") }).listSuggestions(
+            CommandContext<Any>(Any(), "", emptyMap(), null, null, emptyList(), StringRange.at(0), null, null, false),
+            SuggestionsBuilder("u:spy", 0),
+        ).get().list.map { it.text }
+        assertEquals(listOf("SPY_me"), offered)
+    }
+
     @Test
     fun `comma separated values accumulate and repeated parameters append`() {
         assertEquals(listOf("Steve", "Alex"), parseLookupQuery("u:Steve,Alex").users)

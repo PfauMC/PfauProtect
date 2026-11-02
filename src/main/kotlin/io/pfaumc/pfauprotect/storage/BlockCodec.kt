@@ -54,13 +54,16 @@ data class EntityRow(
 private const val NEARBY_FLAG = 0x04
 private const val CONFIDENCE_FLAG = 0x08
 
+// The fourth confidence is both flags at once, a pair no older row ever wrote.
 private fun confidenceBits(confidence: Confidence): Int = when (confidence) {
     Confidence.INFERRED -> CONFIDENCE_FLAG
     Confidence.NEARBY -> NEARBY_FLAG
+    Confidence.AGGRO -> NEARBY_FLAG or CONFIDENCE_FLAG
     Confidence.FACT -> 0
 }
 
 private fun confidenceOf(header: Int): Confidence = when {
+    header and (NEARBY_FLAG or CONFIDENCE_FLAG) == NEARBY_FLAG or CONFIDENCE_FLAG -> Confidence.AGGRO
     header and NEARBY_FLAG != 0 -> Confidence.NEARBY
     header and CONFIDENCE_FLAG != 0 -> Confidence.INFERRED
     else -> Confidence.FACT

@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
@@ -63,6 +64,13 @@ private const val ENTITY_ROWS = 1000
 
 // The packing of a broken box's contents is written at the end of the tick, the break itself at once.
 private const val PACK_LAG_MILLIS = 1_000L
+
+// How far apart a totem's row and its spent posting may be written: the posting waits for the player's pass.
+private const val TOTEM_SLACK_MILLIS = 5_000L
+
+// The posting is written after the event, but its time may be read a moment before the row's, by the
+// other listener of the same event. Shorter than the half second a second pop needs.
+private const val CLOCK_SLACK_MILLIS = 250L
 
 /** Who holds what a rollback put back: a player, or a pile still lying in the world. */
 sealed interface Taker
@@ -303,17 +311,38 @@ private fun wholePile(pile: UUID, rowsOf: (ItemEntityRef) -> List<LedgerEntry>):
 
 private fun birthsOf(rows: List<LedgerEntry>) = rows.filter { it.qty > 0 && it.cause != Cause.ITEM_MERGE }
 
-/** The piles that fell out of a killed player, each read from the ledger once. Off the region thread. */
+/**
+ * The piles that fell out of a killed player, each read from the ledger once, or the totem that took the
+ * death in their place. Off the region thread.
+ */
 internal class Fallen(private val ledger: RocksItemLog, private val death: EntityRow) {
     private val fromLedger = pileRows(ledger)
     private val read = death.drops.distinct().associateWith { fromLedger(ItemEntityRef(it)) }
     private val rowsOf = { pile: ItemEntityRef -> read[pile.uuid] ?: fromLedger(pile) }
 
+    // The pass writes the spent totem a tick or so after the event that wrote the row, from a slot of either
+    // hand. The first one written from the row on is this pop's: a second pop needs a second lethal blow,
+    // which the hurt cooldown keeps half a second away, so each pop pairs with its own posting the same way
+    // on every read, and a second rollback finds the posting the first one already gave back.
+    private val totem: LedgerEntry? = if (death.kind != EntityKind.TOTEM_POPPED) null else
+        listOf(PlayerInv(death.uuid, 0), PlayerEquip(death.uuid, 0))
+            // Read from just before the row, not seconds before it: a fight fills the inventory with postings,
+            // and the read is cut off at its limit.
+            .flatMap { ledger.holderEntries(it, death.timestamp - CLOCK_SLACK_MILLIS, death.timestamp + TOTEM_SLACK_MILLIS, limit = ENTITY_ROWS) }
+            .filter { it.cause == Cause.TOTEM_CONSUME && it.qty < 0 }
+            .minWithOrNull(compareBy<LedgerEntry> { it.timestamp }.thenBy { it.txId }.thenBy { it.ordinal })
+
     /**
      * Where everything that fell out of the victim is now: who picked it up, what still lies there, what is
-     * gone for good. The victim's own hands are left out: what they picked up again they have.
+     * gone for good. The victim's own hands are left out: what they picked up again they have. A totem is
+     * gone for good the moment it is spent, and comes back out of nothing.
      */
     fun restitution(): List<Owed> {
+        if (death.kind == EntityKind.TOTEM_POPPED) {
+            val spent = totem ?: return emptyList()
+            if (ledger.compensated(listOf(spent.ref)).isNotEmpty()) return emptyList()
+            return listOf(Owed(Vanished(death.uuid), spent.itemFormId, -spent.qty))
+        }
         val gone = restituted()
         return merged(death.drops.filter { it !in gone }.flatMap { wholePile(it, rowsOf) })
             .filter { it.qty > 0 && it.taker != Carrier(death.uuid) }
@@ -323,14 +352,16 @@ internal class Fallen(private val ledger: RocksItemLog, private val death: Entit
      * The births of the piles, by pile: what a rollback that gave the victim back their loss marks as given
      * back, so a second rollback gives nothing twice.
      */
-    fun births(): Map<UUID, List<PostingRef>> = death.drops.associateWith { pile -> birthsOf(read.getValue(pile)).map { it.ref } }
+    fun births(): Map<UUID, List<PostingRef>> =
+        totem?.let { mapOf(death.uuid to listOf(it.ref)) }
+            ?: death.drops.associateWith { pile -> birthsOf(read.getValue(pile)).map { it.ref } }
 
     /**
      * Where on the victim each item fell out of, by form: the slots its piles were born from. Armour goes
      * back onto the body and a shield into the off hand, not into the first free pocket.
      */
     fun slots(): Map<Long, List<Int>> =
-        death.drops.flatMap { read.getValue(it) }
+        totem?.let { mapOf(it.itemFormId to listOf(it.holder.slot)) } ?: death.drops.flatMap { read.getValue(it) }
             .filter { it.qty > 0 && it.cause == Cause.DEATH_DROP }
             .mapNotNull { row -> (row.counterparty as? PlayerHolder)?.takeIf { it.uuid == death.uuid }?.let { row.itemFormId to it.slot } }
             .groupBy({ it.first }, { it.second })
@@ -473,7 +504,7 @@ class Confiscations(
     // Out of nothing into a player's hands: what fits goes in now, through the pass as a reason for the
     // gain; what does not, at their next join.
     private fun give(player: UUID, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList()) {
-        val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) } }
+        val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor, slots = slots) } }
         val online = Bukkit.getPlayer(player)
         if (online == null) {
             owe()
@@ -499,7 +530,7 @@ class Confiscations(
         val left = if (rest == 0) 0 else inventory.addItem(CraftItemStack.asBukkitCopy(codec.decode(form, rest, null))).values.sumOf { it.amount }
         val added = qty - left
         if (added > 0) capture.intend(player, Intent(Cause.ROLLBACK, from = Void, form = form, qty = added, actor = actor))
-        if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor) }
+        if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor, slots = slots) }
         val message = "  gave back $added ${name(formId)} to ${player.name}" + if (left > 0) "; $left more at their next join." else "."
         tell(sender, message)
     }
@@ -753,7 +784,7 @@ class Confiscations(
                         fromPlayer(player, taking.map { trails.getValue(it) }, actor, null) { item, left ->
                             fromStashes(item, left, actor, null, { _, _ -> }, { _, _ -> })
                         }
-                        for (item in giving) toPlayer(player, item.formId, -item.qty, actor, null)
+                        for (item in giving) toPlayer(player, item.formId, -item.qty, actor, null, item.slots)
                     }
                     Bukkit.getAsyncScheduler().runNow(plugin) { ledger.forgive(owedItems) }
                 } catch (failure: Exception) {

@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.attribution.inferred
 import io.pfaumc.pfauprotect.attribution.typeOf
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
+import io.pfaumc.pfauprotect.capture.block.aggroOf
 import io.pfaumc.pfauprotect.capture.block.boltBy
 import io.pfaumc.pfauprotect.capture.block.explosionCause
 import io.pfaumc.pfauprotect.capture.block.firedBy
@@ -73,6 +74,7 @@ import org.bukkit.event.entity.EntityCombustByBlockEvent
 import org.bukkit.event.entity.EntityDamageByBlockEvent
 import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.event.entity.EntityPlaceEvent
+import org.bukkit.event.entity.EntityResurrectEvent
 import org.bukkit.event.hanging.HangingPlaceEvent
 import org.bukkit.event.player.PlayerBucketEmptyEvent
 import org.bukkit.event.player.PlayerBucketEntityEvent
@@ -605,16 +607,59 @@ class EntityCapture(
         val by = byEntity(damager, Cause.PLAYER_KILLED).by ?: return
         val attacker = by.culprit() ?: return
         if (attacker == victim.uniqueId || attacker == LIGHTNING) return
-        // A blow by hand is dealt within reach, so the hand that dealt it is on this region as well.
-        val weapon = if (damager is Player) damager.inventory.itemInMainHand.type.takeUnless { it.isAir }?.key?.toString().orEmpty()
+        hit(ChatKind.HIT, victim, weaponOf(damager), attacker, by, event.finalDamage)
+    }
+
+    // A blow by hand is dealt within reach, so the hand that dealt it is on this region as well.
+    private fun weaponOf(damager: Entity): String =
+        if (damager is Player) damager.inventory.itemInMainHand.type.takeUnless { it.isAir }?.key?.toString().orEmpty()
         else typeOf(damager)
+
+    private fun hit(kind: ChatKind, victim: Player, weapon: String, attacker: UUID, by: Attributed, damage: Double) {
         val at = victim.location
         hits(
             ChatLine(
-                System.currentTimeMillis(), ChatKind.HIT, attacker, weapon, at.world.name, at.blockX, at.blockY, at.blockZ,
-                Hit(victim.uniqueId, event.finalDamage.toFloat(), by.confidence),
+                System.currentTimeMillis(), kind, attacker, weapon, at.world.name, at.blockX, at.blockY, at.blockZ,
+                Hit(victim.uniqueId, damage.toFloat(), by.confidence),
             )
         )
+    }
+
+    /**
+     * A totem took a death another player dealt: the fight's turning point in `/pp chat`, and a row on the
+     * striker, so a rollback of them gives the totem back the way a kill gives back what fell. The blow
+     * itself is already in the chat as a hit; this line says what it cost. A totem spent on a fall or on
+     * a zombie is the item plane's alone.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onResurrect(event: EntityResurrectEvent) {
+        val victim = event.entity as? Player ?: return
+        if (event.hand == null) return
+        // The blow that would have killed: a zombie's a moment after a player's is the zombie's, not the
+        // player's the game still remembers. Without a blow — a fall after a knock — the game's own killer.
+        val damager = (victim.lastDamageCause as? EntityDamageByEntityEvent)?.damager
+        val by = (if (damager != null) byEntity(damager, Cause.TOTEM_CONSUME) else culpritOf(victim, Cause.TOTEM_CONSUME)).by ?: return
+        val striker = by.culprit() ?: return
+        if (striker == victim.uniqueId || striker == LIGHTNING) return
+        // The blow itself is already a hit line with its damage; this one only says what it cost. Fire or
+        // lava somebody put down struck no blow, and the line names the block that burned instead.
+        val weapon = damager?.let(::weaponOf) ?: when (victim.lastDamageCause?.cause) {
+            DamageCause.FIRE, DamageCause.FIRE_TICK -> "minecraft:fire"
+            DamageCause.LAVA -> "minecraft:lava"
+            else -> victim.lastDamageCause?.cause?.name?.lowercase().orEmpty()
+        }
+        hit(ChatKind.TOTEM, victim, weapon, striker, by, 0.0)
+        val log = logs.get(victim.world.uid) ?: return
+        val block = victim.location.block
+        val now = System.currentTimeMillis()
+        later(victim.location) {
+            log.submit(
+                EntityChange(
+                    block.x, block.y, block.z, EntityKind.TOTEM_POPPED, Cause.TOTEM_CONSUME, "minecraft:player", victim.uniqueId,
+                    now, by.confidence, striker,
+                )
+            )
+        }
     }
 
     internal fun firstSighting(entity: UUID, now: Long): Boolean {
@@ -809,6 +854,6 @@ class EntityCapture(
         entities.summonerOf(shooter.uniqueId)?.let { return Culprit(cause, it) }
         // A dog set on somebody's cow is its owner's doing, as far as anything can say.
         ((shooter as? Tameable)?.owner as? Player)?.let { return Culprit(cause, Attributed(it.uniqueId)) }
-        return Culprit(cause, null)
+        return Culprit(cause, aggroOf(damager))
     }
 }

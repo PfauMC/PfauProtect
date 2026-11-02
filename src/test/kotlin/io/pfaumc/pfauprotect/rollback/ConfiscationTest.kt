@@ -220,6 +220,47 @@ class ConfiscationTest : OneLedger() {
         assertTrue(Fallen(log, death).restitution().isEmpty())
     }
 
+    // Bob knocked out Alice's totem: nothing fell, the totem from her off hand comes back into it out of
+    // nothing, and only once.
+    @Test
+    fun `a totem a player knocked out is given back once`() {
+        val totem = byteArrayOf(43)
+        log.submit(Transfer(Cause.TOTEM_CONSUME, PlayerEquip(alice, 40), Void, totem, null, 1, T0 + 50))
+        log.drain()
+        val popped = EntityRow(0, 64, 0, T0, 1, 0, EntityKind.TOTEM_POPPED, Cause.TOTEM_CONSUME, "minecraft:player", alice, actor = bob)
+        val fallen = Fallen(log, popped)
+        val id = log.forms.lookup(totem)!!
+
+        assertEquals(listOf(Vanished(alice) to 1), fallen.restitution().map { it.taker to it.qty })
+        assertEquals(mapOf(id to listOf(40)), fallen.slots())
+        log.submit(Transfer(Cause.ROLLBACK, Void, Void, totem, null, 1, T0 + 100, reverts = fallen.births().values.flatten()))
+        log.drain()
+        assertTrue(Fallen(log, popped).restitution().isEmpty())
+    }
+
+    // Two totems knocked out a second apart, a plain one from the off hand and a named one from the hand: each
+    // pop is paired with its own spending, the same way however often it is read, so neither gives back the
+    // other's totem and a second rollback of the first gives back nothing.
+    @Test
+    fun `two totems knocked out in a row are each given back their own`() {
+        val plain = byteArrayOf(43)
+        val named = byteArrayOf(44)
+        log.submit(Transfer(Cause.TOTEM_CONSUME, PlayerEquip(alice, 40), Void, plain, null, 1, T0 + 50))
+        log.submit(Transfer(Cause.TOTEM_CONSUME, PlayerInv(alice, 0), Void, named, null, 1, T0 + 1050))
+        log.drain()
+        fun pop(at: Long) = EntityRow(0, 64, 0, at, 1, 0, EntityKind.TOTEM_POPPED, Cause.TOTEM_CONSUME, "minecraft:player", alice, actor = bob)
+        val first = Fallen(log, pop(T0))
+        val second = Fallen(log, pop(T0 + 1000))
+
+        assertEquals(listOf(log.forms.lookup(plain)), first.restitution().map { it.formId })
+        assertEquals(listOf(log.forms.lookup(named)), second.restitution().map { it.formId })
+        assertEquals(mapOf(log.forms.lookup(named) to listOf(0)), second.slots())
+        log.submit(Transfer(Cause.ROLLBACK, Void, Void, plain, null, 1, T0 + 2000, reverts = first.births().values.flatten()))
+        log.drain()
+        assertTrue(Fallen(log, pop(T0)).restitution().isEmpty())
+        assertEquals(1, Fallen(log, pop(T0 + 1000)).restitution().size)
+    }
+
     // A hopper took it into some other chest: past where a rollback follows, and owed by nobody.
     @Test
     fun `a pile a hopper took is beyond reach`() {

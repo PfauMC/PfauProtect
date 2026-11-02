@@ -48,6 +48,8 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.event.entity.EntityDamageEvent
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityDeathEvent
+import org.bukkit.event.entity.EntityResurrectEvent
+import org.bukkit.inventory.EquipmentSlot
 import org.bukkit.event.entity.PlayerDeathEvent
 import org.bukkit.event.hanging.HangingBreakEvent
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -182,9 +184,38 @@ class EntityCaptureTest : BothPlanes() {
         assertEquals(listOf(drop), row.drops)
     }
 
+    // A totem that took a death Bob dealt is a row on Bob, which is how a rollback of him finds it; one spent
+    // on a death nobody dealt is the item plane's alone.
+    @Test
+    fun `a totem knocked out by another player is written on them`() {
+        val capture = capture()
+        fun player(id: UUID, killer: Player? = null) = stub(Player::class.java, mapOf(
+            "getUniqueId" to id,
+            "getKiller" to killer,
+            "getLastDamageCause" to null,
+            "getWorld" to ground,
+            "getLocation" to { _: Array<out Any?> -> Location(ground, 3.5, 64.0, 3.5) },
+        ))
+        fun pop(victim: Player) {
+            capture.onResurrect(EntityResurrectEvent(victim, EquipmentSlot.OFF_HAND))
+            runTasks()
+            log.drain()
+        }
+
+        pop(player(alice))
+        assertTrue(rowsHere().isEmpty())
+
+        pop(player(alice, killer = player(bob)))
+        val row = rowsHere().single()
+        assertEquals(EntityKind.TOTEM_POPPED, row.kind)
+        assertEquals(Cause.TOTEM_CONSUME, row.cause)
+        assertEquals(alice to bob, row.uuid to row.actor)
+    }
+
     private val ground by lazy {
         stub(World::class.java, mapOf(
             "getUID" to world,
+            "getName" to "world",
             "getBlockAt" to { _: Array<out Any?> -> blockStub(world, 3, 64, 3, Blocks.AIR.defaultBlockState().asBlockData()) },
             "getChunkAt" to { _: Array<out Any?> -> stub(Chunk::class.java, mapOf("getEntities" to emptyArray<Entity>())) },
         ))
@@ -235,6 +266,7 @@ class EntityCaptureTest : BothPlanes() {
         val wall = blockStub(world, 3, 64, 2, Blocks.AIR.defaultBlockState().asBlockData())
         val ground = stub(World::class.java, mapOf(
             "getUID" to world,
+            "getName" to "world",
             "getBlockAt" to { _: Array<out Any?> ->
                 blockStub(world, 3, 64, 3, Blocks.AIR.defaultBlockState().asBlockData(), mapOf(BlockFace.NORTH to wall))
             },

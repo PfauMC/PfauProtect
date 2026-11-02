@@ -466,11 +466,12 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
 
     // Read off the region threads with the rest of the plan; a window from the beginning has nothing before it.
     // A position somebody else changed inside the window does not stand as the players found it, whatever it
-    // holds, so it gets no origin.
+    // holds, so it gets no origin. Nor does any position of a rollback that names nobody: every older row is
+    // then "theirs", and the walk would reach back to before the chest a blast just took was ever built.
     private fun origins(
         log: BlockLog, world: UUID, rows: List<BlockRow>, foreign: List<BlockRow>, fromTs: Long, keeps: RowFilter,
     ): Map<WorldBlock, String> {
-        if (fromTs <= 0) return emptyMap()
+        if (fromTs <= 0 || !keeps.namesUsers) return emptyMap()
         val touched = foreign.mapTo(HashSet()) { it.spot }
         return rows.mapTo(HashSet()) { it.spot }.filter { it !in touched }.mapNotNull { (x, y, z) ->
             originOf(log.rowsBefore(x, y, z, fromTs, ORIGIN_WALK)) { keeps.keeps(it) }?.let(::state)?.let { WorldBlock(world, x, y, z) to it }
@@ -526,7 +527,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         for (row in marks) {
             when (row.kind) {
                 EntityKind.DROPPED -> dropped.getOrPut(WorldBlock(world, row.x, row.y, row.z)) { ArrayList() } += row.drops
-                EntityKind.PLAYER_DIED -> deaths += row
+                EntityKind.PLAYER_DIED, EntityKind.TOTEM_POPPED -> deaths += row
                 else -> Unit
             }
         }

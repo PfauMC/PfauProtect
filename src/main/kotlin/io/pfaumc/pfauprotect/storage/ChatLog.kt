@@ -20,7 +20,10 @@ import kotlin.concurrent.write
  * the planes. A build that has no name for a kind skips the line.
  */
 enum class ChatKind(val id: Int) {
-    CHAT(0), COMMAND(1), JOIN(2), QUIT(3), HIT(4);
+    // TOTEM is the hit a totem took instead of a death: the same fields as a hit.
+    CHAT(0), COMMAND(1), JOIN(2), QUIT(3), HIT(4), TOTEM(5);
+
+    val struck: Boolean get() = this == HIT || this == TOTEM
 
     companion object {
         val byId = idIndex(entries) { it.id }
@@ -117,7 +120,7 @@ class ChatLog(dir: Path) : AutoCloseable {
             .byte(VERSION).byte(line.kind.id)
             .uuid(line.player)
             .intBE(world.size).bytes(world).intBE(line.x).intBE(line.y).intBE(line.z)
-        if (line.kind == ChatKind.HIT) {
+        if (line.kind.struck) {
             val hit = requireNotNull(line.hit) { "a hit line without its hit" }
             out.uuid(hit.victim).intBE(hit.damage.toRawBits()).byte(hit.confidence.id)
         }
@@ -133,7 +136,7 @@ class ChatLog(dir: Path) : AutoCloseable {
         val x = b.intBE()
         val y = b.intBE()
         val z = b.intBE()
-        val hit = if (kind == ChatKind.HIT) {
+        val hit = if (kind.struck) {
             Hit(b.uuid(), Float.fromBits(b.intBE()), Confidence.byId(b.byte()) ?: return null)
         } else null
         val text = b.bytes(b.remaining).toString(Charsets.UTF_8)
