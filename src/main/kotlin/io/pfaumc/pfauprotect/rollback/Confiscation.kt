@@ -68,8 +68,9 @@ private const val PACK_LAG_MILLIS = 1_000L
 // How far apart a totem's row and its spent posting may be written: the posting waits for the player's pass.
 private const val TOTEM_SLACK_MILLIS = 5_000L
 
-// The posting is written after the event, but the two clocks are read on different threads.
-private const val CLOCK_SLACK_MILLIS = 1_000L
+// The posting is written after the event, but its time may be read a moment before the row's, by the
+// other listener of the same event. Shorter than the half second a second pop needs.
+private const val CLOCK_SLACK_MILLIS = 250L
 
 /** Who holds what a rollback put back: a player, or a pile still lying in the world. */
 sealed interface Taker
@@ -319,14 +320,17 @@ internal class Fallen(private val ledger: RocksItemLog, private val death: Entit
     private val read = death.drops.distinct().associateWith { fromLedger(ItemEntityRef(it)) }
     private val rowsOf = { pile: ItemEntityRef -> read[pile.uuid] ?: fromLedger(pile) }
 
-    // The pass writes the spent totem a tick or so after the event that wrote the row; a slot of either hand.
+    // The pass writes the spent totem a tick or so after the event that wrote the row, from a slot of either
+    // hand. The first one written from the row on is this pop's: a second pop needs a second lethal blow,
+    // which the hurt cooldown keeps half a second away, so each pop pairs with its own posting the same way
+    // on every read, and a second rollback finds the posting the first one already gave back.
     private val totem: LedgerEntry? = if (death.kind != EntityKind.TOTEM_POPPED) null else
         listOf(PlayerInv(death.uuid, 0), PlayerEquip(death.uuid, 0))
             // Read from just before the row, not seconds before it: a fight fills the inventory with postings,
             // and the read is cut off at its limit.
             .flatMap { ledger.holderEntries(it, death.timestamp - CLOCK_SLACK_MILLIS, death.timestamp + TOTEM_SLACK_MILLIS, limit = ENTITY_ROWS) }
             .filter { it.cause == Cause.TOTEM_CONSUME && it.qty < 0 }
-            .minByOrNull { kotlin.math.abs(it.timestamp - death.timestamp) }
+            .minWithOrNull(compareBy<LedgerEntry> { it.timestamp }.thenBy { it.txId }.thenBy { it.ordinal })
 
     /**
      * Where everything that fell out of the victim is now: who picked it up, what still lies there, what is
@@ -500,7 +504,7 @@ class Confiscations(
     // Out of nothing into a player's hands: what fits goes in now, through the pass as a reason for the
     // gain; what does not, at their next join.
     private fun give(player: UUID, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList()) {
-        val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor) } }
+        val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor, slots = slots) } }
         val online = Bukkit.getPlayer(player)
         if (online == null) {
             owe()
@@ -526,7 +530,7 @@ class Confiscations(
         val left = if (rest == 0) 0 else inventory.addItem(CraftItemStack.asBukkitCopy(codec.decode(form, rest, null))).values.sumOf { it.amount }
         val added = qty - left
         if (added > 0) capture.intend(player, Intent(Cause.ROLLBACK, from = Void, form = form, qty = added, actor = actor))
-        if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor) }
+        if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor, slots = slots) }
         val message = "  gave back $added ${name(formId)} to ${player.name}" + if (left > 0) "; $left more at their next join." else "."
         tell(sender, message)
     }
@@ -780,7 +784,7 @@ class Confiscations(
                         fromPlayer(player, taking.map { trails.getValue(it) }, actor, null) { item, left ->
                             fromStashes(item, left, actor, null, { _, _ -> }, { _, _ -> })
                         }
-                        for (item in giving) toPlayer(player, item.formId, -item.qty, actor, null)
+                        for (item in giving) toPlayer(player, item.formId, -item.qty, actor, null, item.slots)
                     }
                     Bukkit.getAsyncScheduler().runNow(plugin) { ledger.forgive(owedItems) }
                 } catch (failure: Exception) {

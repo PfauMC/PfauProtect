@@ -764,12 +764,14 @@ class LookupArgument(
 private const val NAMES_MILLIS = 60_000L
 
 @Volatile private var offlineNames: Pair<Long, List<String>> = 0L to emptyList()
+private val namesLock = Any()
 
 private fun knownNames(): List<String> {
-    val now = System.currentTimeMillis()
-    val (at, names) = offlineNames
-    val offline = if (now - at < NAMES_MILLIS) names
-    else Bukkit.getOfflinePlayers().mapNotNull { it.name }.also { offlineNames = now to it }
+    fun fresh() = offlineNames.takeIf { System.currentTimeMillis() - it.first < NAMES_MILLIS }?.second
+    // Two completions that find the list stale at once read the files once: the second waits and takes it.
+    val offline = fresh() ?: synchronized(namesLock) {
+        fresh() ?: Bukkit.getOfflinePlayers().mapNotNull { it.name }.also { offlineNames = System.currentTimeMillis() to it }
+    }
     return (Bukkit.getOnlinePlayers().map { it.name } + offline).distinct()
 }
 

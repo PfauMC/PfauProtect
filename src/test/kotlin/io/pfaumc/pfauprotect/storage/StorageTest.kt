@@ -304,6 +304,18 @@ class StorageTest : OneLedger() {
         assertEquals(listOf(2), log.owedBy(bob).map { it.qty })
     }
 
+    // A totem owed to a player who was offline goes back into the hand it was spent from: the slot trails the
+    // value after `since`, which is written as zero to keep its place.
+    @Test
+    fun `a debt keeps the slots it goes back to`() {
+        log.owe(alice, 7, -1, bob, slots = listOf(40))
+        log.owe(alice, 8, -1, null, since = T0, slots = listOf(3, 4))
+        log.owe(alice, 9, 2, null)
+
+        assertEquals(listOf(listOf(40), listOf(3, 4), emptyList()), log.owedBy(alice).map { it.slots })
+        assertEquals(listOf(0L, T0, 0L), log.owedBy(alice).map { it.since })
+    }
+
     // A rollback goes ahead on what a region read hands it, so a row the read could not decode has to
     // be counted where the rollback can see it.
     @Test

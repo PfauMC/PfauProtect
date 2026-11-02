@@ -215,6 +215,7 @@ class EntityCaptureTest : BothPlanes() {
     private val ground by lazy {
         stub(World::class.java, mapOf(
             "getUID" to world,
+            "getName" to "world",
             "getBlockAt" to { _: Array<out Any?> -> blockStub(world, 3, 64, 3, Blocks.AIR.defaultBlockState().asBlockData()) },
             "getChunkAt" to { _: Array<out Any?> -> stub(Chunk::class.java, mapOf("getEntities" to emptyArray<Entity>())) },
         ))
@@ -265,6 +266,7 @@ class EntityCaptureTest : BothPlanes() {
         val wall = blockStub(world, 3, 64, 2, Blocks.AIR.defaultBlockState().asBlockData())
         val ground = stub(World::class.java, mapOf(
             "getUID" to world,
+            "getName" to "world",
             "getBlockAt" to { _: Array<out Any?> ->
                 blockStub(world, 3, 64, 3, Blocks.AIR.defaultBlockState().asBlockData(), mapOf(BlockFace.NORTH to wall))
             },

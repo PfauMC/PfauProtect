@@ -607,13 +607,15 @@ class EntityCapture(
         val by = byEntity(damager, Cause.PLAYER_KILLED).by ?: return
         val attacker = by.culprit() ?: return
         if (attacker == victim.uniqueId || attacker == LIGHTNING) return
-        hit(ChatKind.HIT, victim, damager, attacker, by, event.finalDamage)
+        hit(ChatKind.HIT, victim, weaponOf(damager), attacker, by, event.finalDamage)
     }
 
-    private fun hit(kind: ChatKind, victim: Player, damager: Entity, attacker: UUID, by: Attributed, damage: Double) {
-        // A blow by hand is dealt within reach, so the hand that dealt it is on this region as well.
-        val weapon = if (damager is Player) damager.inventory.itemInMainHand.type.takeUnless { it.isAir }?.key?.toString().orEmpty()
+    // A blow by hand is dealt within reach, so the hand that dealt it is on this region as well.
+    private fun weaponOf(damager: Entity): String =
+        if (damager is Player) damager.inventory.itemInMainHand.type.takeUnless { it.isAir }?.key?.toString().orEmpty()
         else typeOf(damager)
+
+    private fun hit(kind: ChatKind, victim: Player, weapon: String, attacker: UUID, by: Attributed, damage: Double) {
         val at = victim.location
         hits(
             ChatLine(
@@ -639,8 +641,14 @@ class EntityCapture(
         val by = (if (damager != null) byEntity(damager, Cause.TOTEM_CONSUME) else culpritOf(victim, Cause.TOTEM_CONSUME)).by ?: return
         val striker = by.culprit() ?: return
         if (striker == victim.uniqueId || striker == LIGHTNING) return
-        // The blow itself is already a hit line with its damage; this one only says what it cost.
-        if (damager != null) hit(ChatKind.TOTEM, victim, damager, striker, by, 0.0)
+        // The blow itself is already a hit line with its damage; this one only says what it cost. Fire or
+        // lava somebody put down struck no blow, and the line names the block that burned instead.
+        val weapon = damager?.let(::weaponOf) ?: when (victim.lastDamageCause?.cause) {
+            DamageCause.FIRE, DamageCause.FIRE_TICK -> "minecraft:fire"
+            DamageCause.LAVA -> "minecraft:lava"
+            else -> victim.lastDamageCause?.cause?.name?.lowercase().orEmpty()
+        }
+        hit(ChatKind.TOTEM, victim, weapon, striker, by, 0.0)
         val log = logs.get(victim.world.uid) ?: return
         val block = victim.location.block
         val now = System.currentTimeMillis()
