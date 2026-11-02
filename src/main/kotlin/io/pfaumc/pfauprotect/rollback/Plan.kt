@@ -383,10 +383,11 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         )
         Debug.log { "rollback read around $x $y $z of $world, $box, window $fromTs..$toTs" }
         val read = Collected(keeps)
-        // Other players' rows come too, to see what stops it, but only the kept ones count against the cap.
+        // Other players' rows come too, to see what stops it, and a liquid's flow, which it never undoes; only the
+        // rows it undoes count against the cap.
         val blockSteps = Steps(WALK_BUDGET)
         val found = log.windowInBox(box, fromTs, toTs, MAX_ROLLBACK_ROWS, blockSteps) { row ->
-            if (row is BlockRow) keeps.keeps(row) else keeps.keeps(row as EntityRow)
+            if (row is BlockRow) row.cause != Cause.BLK_LIQUID_FLOW && keeps.keeps(row) else keeps.keeps(row as EntityRow)
         }
         read.add(found.blocks, found.entities, found.unreadable)
         Debug.log {
