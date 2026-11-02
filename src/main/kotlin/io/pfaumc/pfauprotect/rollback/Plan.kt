@@ -477,6 +477,9 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             if (read.rows.size + slots.size > MAX_ROLLBACK_ROWS) {
                 return tooMuch(if (slots.size > read.rows.size) History.ITEM else History.BLOCK, "rows cap $MAX_ROLLBACK_ROWS")
             }
+            // Each position's reads are capped on their own, so the sums are held to the cap here as around a place.
+            if (read.entityRows.size > MAX_ROLLBACK_ROWS) return tooMuch(History.ENTITY, "entity rows cap $MAX_ROLLBACK_ROWS")
+            if (losses.size > MAX_ROLLBACK_ROWS) return tooMuch(History.ITEM, "item rows cap $MAX_ROLLBACK_ROWS")
         }
         Debug.log {
             "  kept ${read.rows.size} block and ${read.entityRows.size} entity rows, ${slots.size} slot postings, " +
