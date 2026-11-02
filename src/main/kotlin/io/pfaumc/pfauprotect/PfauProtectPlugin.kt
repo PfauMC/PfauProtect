@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect
 import com.mojang.brigadier.Command
 import com.mojang.brigadier.arguments.IntegerArgumentType
+import com.mojang.brigadier.arguments.LongArgumentType
 import com.mojang.brigadier.arguments.StringArgumentType
 import com.mojang.brigadier.context.CommandContext
 import com.mojang.brigadier.exceptions.CommandSyntaxException
@@ -81,6 +82,7 @@ import io.pfaumc.pfauprotect.command.showPage
 import io.pfaumc.pfauprotect.command.durationOrNull
 import io.pfaumc.pfauprotect.command.lookupTargetAt
 import io.pfaumc.pfauprotect.command.offThread
+import io.pfaumc.pfauprotect.command.openContents
 import io.pfaumc.pfauprotect.command.parseLookupQuery
 import io.pfaumc.pfauprotect.command.targetOr
 import io.pfaumc.pfauprotect.rollback.ChunkRollback
@@ -577,6 +579,21 @@ class PfauProtectPlugin : JavaPlugin() {
                     )
             )
             root.then(teleportNode())
+            // What a click on a container in a lookup line runs; a link's target, so it is not in help. The player
+            // is checked in the executor, as for `tp`: a node a probe without an executor fails is asked about on
+            // every click.
+            root.then(
+                Commands.literal("contents")
+                    .requires { it.sender.hasPermission(LOOKUP_PERMISSION) && it.sender !is ConsoleCommandSender }
+                    .then(
+                        Commands.argument("payload", LongArgumentType.longArg(0))
+                            .executes { contents(it.source, LongArgumentType.getLong(it, "payload"), null) }
+                            .then(
+                                Commands.argument("slot", IntegerArgumentType.integer(0))
+                                    .executes { contents(it.source, LongArgumentType.getLong(it, "payload"), IntegerArgumentType.getInteger(it, "slot")) }
+                            )
+                    )
+            )
             root.then(
                 gated("apply", ROLLBACK_PERMISSION)
                     .executes { withRunning(it.source) { running, sender -> running.rollbacks.applyPreview(sender) } }
@@ -687,6 +704,11 @@ class PfauProtectPlugin : JavaPlugin() {
         val at = context.getArgument("position", BlockPositionResolver::class.java).resolve(context.source)
         player.teleportAsync(Location(world, at.blockX() + 0.5, at.blockY().toDouble(), at.blockZ() + 0.5, player.location.yaw, player.location.pitch))
         return Command.SINGLE_SUCCESS
+    }
+
+    private fun contents(source: CommandSourceStack, payload: Long, slot: Int?): Int {
+        val player = source.executor as? Player ?: return 0
+        return withRunning(source) { running, _ -> openContents(player, running.ledger, payload, slot) }
     }
 
     // Inline so that a refusal inside `action` can return its own 0 from the handler.
