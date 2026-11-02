@@ -89,6 +89,7 @@ bukkit {
             "status" to "See how big the bases are and what waits to be written",
             "teleport" to "Teleport to where a lookup line happened by clicking its mark",
             "rollback" to "Preview and apply rollbacks of what the ledger recorded",
+            "debug" to "Write what lookups and rollbacks read into the server log",
         ).forEach { (name, text) ->
             register("pfauprotect.$name") {
                 description = text

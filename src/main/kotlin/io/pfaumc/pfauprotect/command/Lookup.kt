@@ -2,6 +2,7 @@ package io.pfaumc.pfauprotect.command
 import io.pfaumc.pfauprotect.attribution.AIRS
 import io.pfaumc.pfauprotect.attribution.blockNameOf
 import io.pfaumc.pfauprotect.say
+import io.pfaumc.pfauprotect.Debug
 import com.mojang.brigadier.LiteralMessage
 import com.mojang.brigadier.StringReader
 import com.mojang.brigadier.arguments.ArgumentType
@@ -692,17 +693,22 @@ internal class RowFilter(
 }
 
 // A rollback reads by place and time, so the words that only shape a lookup's answer are not offered for it.
+// `chat` offers only what `/pp chat` reads: without it the client showed a bare <words>, which reads as asking for
+// the text of a message.
 class LookupArgument(
     private val rollback: Boolean = false,
+    private val chat: Boolean = false,
     private val names: () -> List<String> = ::knownNames,
 ) : CustomArgumentType<LookupQuery, String> {
     override fun getNativeType(): ArgumentType<String> = StringArgumentType.greedyString()
 
     override fun parse(reader: StringReader): LookupQuery = parseLookupQuery(reader)
 
-    private val starts: List<String> =
-        if (rollback) Param.entries.filter { it !in ANSWER_ONLY }.map { "${it.canonical}:" }
-        else Param.prefixes + listOf("#count", "#all")
+    private val starts: List<String> = when {
+        chat -> CHAT_PARAMS.map { "${it.canonical}:" } + "#all"
+        rollback -> Param.entries.filter { it !in ANSWER_ONLY }.map { "${it.canonical}:" }
+        else -> Param.prefixes + listOf("#count", "#all")
+    }
 
     override fun <S : Any> listSuggestions(
         context: CommandContext<S>,
@@ -748,7 +754,7 @@ class LookupArgument(
         Param.EXCLUDE -> names() + ITEM_NAMES + BLOCK_NAMES
         Param.TIME -> TIME_EXAMPLES
         Param.RADIUS -> RADIUS_EXAMPLES
-        Param.ACTION -> Action.names
+        Param.ACTION -> if (chat) listOf(Action.PVP.keys.first()) else Action.names
         Param.INCLUDE -> ITEM_NAMES + BLOCK_NAMES
         Param.LIMIT -> LIMIT_EXAMPLES
         Param.PAGE -> listOf("2", "3")
@@ -774,6 +780,8 @@ private fun knownNames(): List<String> {
     }
     return (Bukkit.getOnlinePlayers().map { it.name } + offline).distinct()
 }
+
+private val CHAT_PARAMS = listOf(Param.USER, Param.TIME, Param.FILTER, Param.ACTION, Param.PAGE)
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
@@ -900,7 +908,7 @@ internal fun wholeTransactions(ledger: RocksItemLog, entries: List<LedgerEntry>)
 fun Plugin.offThread(sender: CommandSender, logged: String, told: String, task: () -> Unit) {
     Bukkit.getAsyncScheduler().runNow(this) {
         try {
-            task()
+            Debug.request(task)
         } catch (failure: Throwable) {
             logger.log(Level.SEVERE, logged, failure)
             sender.say(told)
@@ -915,16 +923,6 @@ internal fun chunksAround(x: Int, z: Int, radius: Int): List<Pair<Int, Int>> =
 
 /** The cube of `radius` around where a lookup stands, as both planes read it. */
 internal fun LookupTarget.box(radius: Int) = Box(x - radius, x + radius, y - radius, y + radius, z - radius, z + radius)
-
-/** The cube of `radius` around a point, or with `column` the whole height of its square. */
-internal fun boxAround(x: Int, y: Int, z: Int, radius: Int, column: Boolean = false): (Int, Int, Int) -> Boolean =
-    { bx, by, bz ->
-        bx in (x - radius)..(x + radius) && (column || by in (y - radius)..(y + radius)) && bz in (z - radius)..(z + radius)
-    }
-
-/** Whether a positional holder stands in `box`; a holder with no position answers `unplaced`. */
-internal fun Holder.placedIn(box: (Int, Int, Int) -> Boolean, unplaced: Boolean): Boolean =
-    block?.let { box(it.x, it.y, it.z) } ?: unplaced
 
 // A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it. The spectator
 // node lets ⌖ stay clickable in any mode: /pp tp itself refuses outside spectator, with its own message.
@@ -1091,6 +1089,7 @@ class Lookups(
     }
 
     internal fun report(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+        Debug.log { "lookup by ${sender.name} at ${target.label}: $query, window ${query.fromTs()}..${query.toTs()}" }
         if (query.players.isNotEmpty()) return reportPlayers(sender, target, query)
         val users = resolveAll(sender, query.users) ?: return
         if (query.global) {
@@ -1106,6 +1105,10 @@ class Lookups(
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
         val (changes, planesComplete) = blockLines(target, query, users, steps)
+        Debug.log {
+            "  ${page.entries.size} postings (complete ${page.complete}), ${items.size} item and ${changes.size} block lines " +
+                "(complete $planesComplete), steps ${steps.used} of $BOX_STEPS${if (steps.ranOut) " (ran out)" else ""}"
+        }
         // The coordinates come after, set apart by the heading.
         val where = when {
             query.radius != null -> Ui.text(tr("radius ${query.radius} around", "радиус ${query.radius} вокруг"))

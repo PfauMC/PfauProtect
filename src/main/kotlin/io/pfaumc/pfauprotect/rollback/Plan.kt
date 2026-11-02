@@ -7,10 +7,8 @@ import io.pfaumc.pfauprotect.attribution.flowing
 import io.pfaumc.pfauprotect.capture.block.FIRES
 import io.pfaumc.pfauprotect.capture.block.reshaped
 import io.pfaumc.pfauprotect.command.RowFilter
-import io.pfaumc.pfauprotect.command.boxAround
-import io.pfaumc.pfauprotect.command.chunksAround
-import io.pfaumc.pfauprotect.command.placedIn
 import io.pfaumc.pfauprotect.command.stateName
+import io.pfaumc.pfauprotect.Debug
 import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
@@ -32,16 +30,20 @@ import io.pfaumc.pfauprotect.storage.Window
 import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.storage.RocksItemLog
+import io.pfaumc.pfauprotect.storage.Box
+import io.pfaumc.pfauprotect.storage.Steps
 import java.util.UUID
 import kotlin.math.abs
 
-// Rows one rollback may hold, per plane. A place with more history than this in the window is more than
-// one rollback should undo, and it is refused rather than cut.
+// Rows one rollback may undo, per plane: those its filter keeps. A place with more of them in the window is
+// more than one rollback should undo, and it is refused rather than cut. Other players' rows, which it only
+// reads to see what stops it, do not count.
 internal const val MAX_ROLLBACK_ROWS = 100_000
 
-// How many rows of the block plane the walk may step over in all, inside the window or not: a chunk's
-// rows are keyed by position before time, so a window costs the whole history of every chunk it reads.
-internal const val BLOCK_WALK_BUDGET = 2_000_000
+// How many entries one plane's walk may step over in all. Around a place: every entry of the window in the
+// chunks the box touches, inside the box or not. At positions: a position's rows are keyed before time, so
+// a window costs its whole history.
+internal const val WALK_BUDGET = 2_000_000
 
 // The entity rows that say what an entity was before: the rest only mark an event at a place.
 private val STORIES = setOf(EntityKind.REMOVED, EntityKind.CREATED, EntityKind.CHANGED, EntityKind.MOVED)
@@ -295,16 +297,24 @@ private class Collected(private val keeps: RowFilter) {
     val foreign = ArrayList<BlockRow>()
     val entityRows = ArrayList<EntityRow>()
     var unreadable = 0
-    var budget = BLOCK_WALK_BUDGET
+    var budget = WALK_BUDGET
     // Who changed which block, when, and whether by placing it, by the rows kept.
     private val movers = HashMap<Pair<Triple<Int, Int, Int>, UUID?>, MutableList<Pair<Long, Boolean>>>()
 
-    /** False when a walk ran out of budget, which refuses the rollback; the entity walk gets what is left. */
-    fun collect(window: Window<BlockRow>, entities: (Int) -> Window<EntityRow>): Boolean {
-        if (!window.complete) return false
+    /** The plane whose walk ran out of budget, which refuses the rollback, or null; the entity walk gets what is left. */
+    fun collect(window: Window<BlockRow>, entities: (Int) -> Window<EntityRow>): History? {
+        if (!window.complete) return History.BLOCK
         budget -= window.walked
-        unreadable += window.unreadable
-        for (row in window.rows) when {
+        val read = entities(budget)
+        if (!read.complete) return History.ENTITY
+        budget -= read.walked
+        add(window.rows, read.rows, window.unreadable + read.unreadable)
+        return null
+    }
+
+    fun add(blocks: List<BlockRow>, entities: List<EntityRow>, unreadable: Int) {
+        this.unreadable += unreadable
+        for (row in blocks) when {
             keeps.keeps(row) -> if (row.cause != Cause.BLK_LIQUID_FLOW) {
                 rows += row
                 movers.getOrPut(row.spot to row.actor) { ArrayList() } += row.timestamp to (row.cause == Cause.BLK_PLAYER_PLACE)
@@ -312,12 +322,7 @@ private class Collected(private val keeps: RowFilter) {
             passable(row) -> nature += row
             else -> foreign += row
         }
-        val read = entities(budget)
-        if (!read.complete) return false
-        budget -= read.walked
-        unreadable += read.unreadable
-        read.rows.filterTo(entityRows) { keeps.keeps(it) }
-        return true
+        entities.filterTo(entityRows) { keeps.keeps(it) }
     }
 
     // What a block's own break or placing moved, the block itself and its slots, goes back with the block
@@ -336,6 +341,9 @@ private class Collected(private val keeps: RowFilter) {
             .any { (ts, placed) -> placed == placing && abs(entry.timestamp - ts) <= CARRIED_LAG_MILLIS }
     }
 }
+
+// Which plane's history a refused read had too much of.
+private enum class History { BLOCK, ITEM, ENTITY }
 
 private val ON_PLACE = setOf(Cause.CONTAINER_PLACE_UNPACK)
 private val ON_BREAK = setOf(Cause.BLOCK_DROP, Cause.CONTAINER_BREAK_DROP, Cause.CONTAINER_BREAK_PACK)
@@ -368,21 +376,38 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         column: Boolean = false,
     ): Reading {
         val log = blocks.get(world) ?: return closed()
-        val inBox = boxAround(x, y, z, radius, column)
-        val read = Collected(keeps)
-        for ((cx, cz) in chunksAround(x, z, radius)) {
-            val window = log.windowInChunk(cx, cz, fromTs, toTs, read.budget, inBox)
-            if (!read.collect(window) { log.entitiesInChunk(cx, cz, fromTs, toTs, it, inBox) }) return tooMuch()
-            if (read.rows.size + read.entityRows.size > MAX_ROLLBACK_ROWS) return tooMuch()
-        }
-        val page = ledger.regionPage(
-            world, x - radius, z - radius, x + radius, z + radius, fromTs, toTs,
-            limit = MAX_ROLLBACK_ROWS,
-            within = { it.placedIn(inBox, unplaced = false) },
+        val box = Box(
+            x - radius, x + radius,
+            if (column) Int.MIN_VALUE else y - radius, if (column) Int.MAX_VALUE else y + radius,
+            z - radius, z + radius,
         )
-        if (!page.complete) return tooMuch()
+        Debug.log { "rollback read around $x $y $z of $world, $box, window $fromTs..$toTs" }
+        val read = Collected(keeps)
+        // Other players' rows come too, to see what stops it, and a liquid's flow, which it never undoes; only the
+        // rows it undoes count against the cap.
+        val blockSteps = Steps(WALK_BUDGET)
+        val found = log.windowInBox(box, fromTs, toTs, MAX_ROLLBACK_ROWS, blockSteps) { row ->
+            if (row is BlockRow) row.cause != Cause.BLK_LIQUID_FLOW && keeps.keeps(row) else keeps.keeps(row as EntityRow)
+        }
+        read.add(found.blocks, found.entities, found.unreadable)
+        Debug.log {
+            "  block plane: ${found.blocks.size} block and ${found.entities.size} entity rows in the window and the box; " +
+                "kept ${read.rows.size} block and ${read.entityRows.size} entity rows, nature ${read.nature.size}, " +
+                "others' ${read.foreign.size}, unreadable ${found.unreadable}; complete ${found.complete}, " +
+                "steps ${blockSteps.used} of $WALK_BUDGET${if (blockSteps.ranOut) " (ran out)" else ""}"
+        }
+        // A base closed under the read answers incomplete without a step taken.
+        if (!found.complete && blockSteps.used == 0) return closed()
+        if (!found.complete) return tooMuch(History.BLOCK, if (blockSteps.ranOut) "block walk budget" else "block rows cap $MAX_ROLLBACK_ROWS")
+        val itemSteps = Steps(WALK_BUDGET)
+        val page = ledger.boxPage(world, box, fromTs, toTs, MAX_ROLLBACK_ROWS, itemSteps, read::keeps)
+        Debug.log {
+            "  item plane: kept ${page.entries.size} postings, unreadable ${page.unreadable}; complete ${page.complete}, " +
+                "steps ${itemSteps.used} of $WALK_BUDGET${if (itemSteps.ranOut) " (ran out)" else ""}"
+        }
+        if (!page.complete) return tooMuch(History.ITEM, if (itemSteps.ranOut) "item walk budget" else "item rows cap $MAX_ROLLBACK_ROWS")
         read.unreadable += page.unreadable
-        val (slots, positions) = page.entries.filter(read::keeps).partition { it.holder is Container }
+        val (slots, positions) = page.entries.partition { it.holder is Container }
         return planOf(log, world, read, slots, positions.filter { it.qty < 0 }, fromTs, toTs, keeps)
     }
 
@@ -432,21 +457,34 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
     internal fun at(world: UUID, positions: Set<WorldBlock>, fromTs: Long, toTs: Long, keeps: RowFilter): Reading {
         val log = blocks.get(world) ?: return closed()
         if (positions.size > Settings.maxRollbackPositions) return tooMany(positions.size)
+        Debug.log { "rollback read at ${positions.size} positions of $world, window $fromTs..$toTs" }
         val read = Collected(keeps)
         val slots = ArrayList<LedgerEntry>()
         val losses = ArrayList<LedgerEntry>()
         for (at in positions) {
             val window = log.windowAt(at.x, at.y, at.z, fromTs, toTs, read.budget)
-            if (!read.collect(window) { log.entitiesAt(at.x, at.y, at.z, fromTs, toTs, it) }) return tooMuch()
+            read.collect(window) { log.entitiesAt(at.x, at.y, at.z, fromTs, toTs, it) }?.let {
+                return tooMuch(it, "walk budget $WALK_BUDGET at ${at.x} ${at.y} ${at.z}")
+            }
             for (holder in listOf(Container(world, at.x, at.y, at.z, 0), at)) {
                 val page = ledger.holderPage(holder, fromTs, toTs, limit = MAX_ROLLBACK_ROWS)
-                if (!page.complete) return tooMuch()
+                if (!page.complete) return tooMuch(History.ITEM, "item rows cap $MAX_ROLLBACK_ROWS of $holder")
                 read.unreadable += page.unreadable
                 for (entry in page.entries.filter(read::keeps)) {
                     if (entry.holder is Container) slots += entry else if (entry.qty < 0) losses += entry
                 }
             }
-            if (read.rows.size + slots.size > MAX_ROLLBACK_ROWS) return tooMuch()
+            if (read.rows.size + slots.size > MAX_ROLLBACK_ROWS) {
+                return tooMuch(if (slots.size > read.rows.size) History.ITEM else History.BLOCK, "rows cap $MAX_ROLLBACK_ROWS")
+            }
+            // Each position's reads are capped on their own, so the sums are held to the cap here as around a place.
+            if (read.entityRows.size > MAX_ROLLBACK_ROWS) return tooMuch(History.ENTITY, "entity rows cap $MAX_ROLLBACK_ROWS")
+            if (losses.size > MAX_ROLLBACK_ROWS) return tooMuch(History.ITEM, "item rows cap $MAX_ROLLBACK_ROWS")
+        }
+        Debug.log {
+            "  kept ${read.rows.size} block and ${read.entityRows.size} entity rows, ${slots.size} slot postings, " +
+                "${losses.size} losses; nature ${read.nature.size}, others' ${read.foreign.size}, unreadable ${read.unreadable}, " +
+                "steps ${WALK_BUDGET - read.budget} of $WALK_BUDGET"
         }
         return planOf(log, world, read, slots, losses, fromTs, toTs, keeps)
     }
@@ -541,7 +579,7 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             // Whatever its own slots did after the moment it goes back to has to be undone with it, whoever
             // did it: the NBT it goes back to already holds them as they were then.
             val page = ledger.holderPage(EntitySlot(uuid, 0), oldest.timestamp, toTs, limit = MAX_ROLLBACK_ROWS)
-            if (!page.complete) return tooMuch()
+            if (!page.complete) return tooMuch(History.ENTITY, "item rows cap $MAX_ROLLBACK_ROWS of the slots of $uuid")
             if (page.unreadable > 0) return unreadable(page.unreadable)
             val owed = ledger.compensated(page.entries.map { it.ref })
             // An earlier rollback's postings put the slots back as the NBT already holds them; only a run that
@@ -573,6 +611,10 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
             }
             .groupBy { (it.at.x shr 4) to (it.at.z shr 4) }
             .map { (chunk, plans) -> ChunkPlan(chunk.first, chunk.second, plans) }
+        Debug.log {
+            "  planned: ${positions.size} positions in ${chunks.size} chunks, ${rows.size} block and ${entityRows.size} " +
+                "entity rows, ${entries.size} slot postings, ${losses.size} losses, ${deaths.size} deaths"
+        }
         return Planned(world, chunks, rows.size + entityRows.size, entries.size, deaths)
     }
 
@@ -584,16 +626,27 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         positions,
     )
 
-    private fun closed() = Refused("the block history of this world is not open")
+    private fun closed() = refused("the block history of this world is not open")
 
-    private fun tooMuch() = Refused(
-        "that window holds more history than one rollback reads; narrow the radius or the time"
-    )
+    // What the admin is told names the plane; the log under `/pp debug` names the limit.
+    private fun tooMuch(what: History, limit: String): Refused {
+        Debug.log { "  refused: ${what.name.lowercase()} history over the $limit" }
+        return when (what) {
+            History.BLOCK -> Refused("that window holds more block history than one rollback reads; narrow the radius or the time")
+            History.ITEM -> Refused("that window holds more item history than one rollback reads; narrow the radius or the time")
+            History.ENTITY -> Refused("that window holds more entity history than one rollback reads; narrow the radius or the time")
+        }
+    }
 
-    private fun unreadable(count: Int) = Refused(
+    private fun unreadable(count: Int) = refused(
         "$count rows in that window could not be read by this build, and a rollback over part of the " +
             "history would put back part of the place; nothing was done"
     )
+
+    private fun refused(reason: String): Refused {
+        Debug.log { "  refused: $reason" }
+        return Refused(reason)
+    }
 }
 
 private val SIGNAL_POWER = Regex("(?<=[\\[,])power=\\d+")

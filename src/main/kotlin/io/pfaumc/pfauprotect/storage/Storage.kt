@@ -307,8 +307,15 @@ class Steps(private var left: Int) {
     var ranOut = false
         private set
 
+    // For `/pp debug`: how much of the budget the walks took.
+    var used = 0
+        private set
+
     fun take(): Boolean {
-        if (left <= 0) ranOut = true else left--
+        if (left <= 0) ranOut = true else {
+            left--
+            used++
+        }
         return !ranOut
     }
 }
@@ -794,18 +801,21 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit)
     }
 
-    /** The newest postings of the holders standing in the box, newest first, see [newestInBox]. */
-    /** The newest postings of the holders standing in the box that [keep] keeps, see [newestInBox]. */
+    /**
+     * The newest postings of the holders standing in the box that [keep] keeps, see [newestInBox], with the
+     * postings in the box that this build could not decode counted apart.
+     */
     fun boxPage(world: UUID, box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps, keep: (LedgerEntry) -> Boolean): EntryPage {
         val worldNo = registries.lookupUuid(RegistryNamespace.WORLD, world) ?: return EntryPage(emptyList(), true)
         return dbLock.read {
             if (closed) return EntryPage(emptyList(), false)
             val scope = ByteWriter(2).shortBE(worldNo).toByteArray()
+            var unreadable = 0
             val page = db.newestInBox(byChunkCf, scope, box, fromTs, toTs, wanted, steps, { index ->
                 val key = ChunkTime.rowKey(index, scope.size, byteArrayOf(ChunkTime.tag(index).toByte()) + scope)
-                db.get(entriesCf, key)?.let { EntryCodec.decodeOrNull(key, it, registries) }
+                db.get(entriesCf, key)?.let { EntryCodec.decodeOrNull(key, it, registries) ?: null.also { unreadable++ } }
             }, keep)
-            EntryPage(page.rows, page.complete)
+            EntryPage(page.rows, page.complete, unreadable)
         }
     }
 

@@ -30,6 +30,10 @@ import org.junit.jupiter.api.Test
 import net.minecraft.world.SimpleContainer
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
+import net.minecraft.world.level.block.ChestBlock
+import net.minecraft.world.level.block.state.BlockState
+import net.minecraft.world.level.block.state.properties.ChestType
 import net.minecraft.world.level.block.entity.CampfireBlockEntity
 import net.minecraft.world.level.block.entity.LecternBlockEntity
 import net.minecraft.world.level.block.entity.SignBlockEntity
@@ -338,5 +342,30 @@ class RollbackRulesTest {
         assertEquals(1, short.missed)
         assertEquals(listOf(PostingRef(9, 0)), some.postings)
         assertEquals(listOf(1), short.traces.map { it.qty }, "what moved is followed, not what was asked")
+    }
+
+    // One half of a chest was broken and the radius takes in only that half: put back from its rows, it names a
+    // partner the other, left single, does not. The single one becomes its other half; a half with nothing to
+    // join is single; two singles side by side and a whole pair are left as they stand.
+    @Test
+    fun `the halves of a chest go back as a pair`() {
+        fun chest(type: ChestType, facing: Direction = Direction.NORTH) =
+            Blocks.CHEST.defaultBlockState().setValue(ChestBlock.FACING, facing).setValue(ChestBlock.TYPE, type)
+        val left = BlockPos(0, 64, 0)
+        val right = ChestBlock.getConnectedBlockPos(left, chest(ChestType.LEFT))
+        fun pair(world: Map<BlockPos, BlockState>, put: List<BlockPos> = world.keys.toList()) =
+            pairChests(put, { world[it] ?: Blocks.AIR.defaultBlockState() }) { true }
+
+        assertEquals(mapOf(right to chest(ChestType.RIGHT)), pair(mapOf(left to chest(ChestType.LEFT), right to chest(ChestType.SINGLE))))
+        assertEquals(mapOf(left to chest(ChestType.SINGLE)), pair(mapOf(left to chest(ChestType.LEFT))))
+        assertEquals(
+            mapOf(left to chest(ChestType.SINGLE)),
+            pair(mapOf(left to chest(ChestType.LEFT), right to chest(ChestType.SINGLE, Direction.SOUTH))),
+            "a chest turned the other way is no partner",
+        )
+        assertTrue(pair(mapOf(left to chest(ChestType.SINGLE), right to chest(ChestType.SINGLE))).isEmpty())
+        assertTrue(pair(mapOf(left to chest(ChestType.LEFT), right to chest(ChestType.RIGHT))).isEmpty())
+        // A partner in a region this thread does not own is left to its own chunk's pass.
+        assertTrue(pairChests(listOf(left), { if (it == left) chest(ChestType.LEFT) else Blocks.AIR.defaultBlockState() }) { it == left }.isEmpty())
     }
 }

@@ -36,6 +36,7 @@ object Texts {
         r("action:steal is worked out for a lookup only; roll back action:withdraw instead\\.") to "action:steal вычисляется только для поиска; для отката укажи action:withdraw.",
         r("Rollback preview dropped\\.") to "Предпросмотр отката сброшен.",
         r("  you see the blocks as they would stand; nothing changes before /pp apply\\.") to "  вы видите блоки такими, какими они станут; до /pp apply в мире ничего не меняется.",
+        r("  right-click a container it gives back to, to see what it would hold\\.") to "  ПКМ по контейнеру, в который откат возвращает предметы, покажет, что в нём будет.",
         r("  you see the nearest blocks \\((\\d+) of (\\d+)\\) as they would stand; nothing changes before /pp apply\\.") to
             "  вы видите ближайшие блоки ($1 из $2) такими, какими они станут; до /pp apply в мире ничего не меняется.",
         r("No rollback preview to drop\\.") to "Нет предпросмотра отката.",
@@ -47,8 +48,15 @@ object Texts {
             "Откат отклонён: за это окно изменилось позиций: $1, а один откат записывает не больше $2; сузь радиус или время.",
         r("  cut it into (\\d+)×(\\d+) squares: radius:(\\d+) around points (\\d+) apart\\.") to
             "  раздели на квадраты $1×$2: radius:$3, центры шагом $4.",
-        r("Rollback refused: that window holds more history than one rollback reads; narrow the radius or the time\\.") to
-            "Откат отклонён: в этом окне больше истории, чем читает один откат; сузь радиус или время.",
+        r("Rollback refused: that window holds more block history than one rollback reads; narrow the radius or the time\\.") to
+            "Откат отклонён: в этом окне больше истории блоков, чем читает один откат; сузь радиус или время.",
+        r("Rollback refused: that window holds more item history than one rollback reads; narrow the radius or the time\\.") to
+            "Откат отклонён: в этом окне больше истории предметов, чем читает один откат; сузь радиус или время.",
+        r("Rollback refused: that window holds more entity history than one rollback reads; narrow the radius or the time\\.") to
+            "Откат отклонён: в этом окне больше истории сущностей, чем читает один откат; сузь радиус или время.",
+        r("Debug is on: lookups and rollbacks write what they read into the server log, under \\[debug\\], until /pp debug off or a restart\\.") to
+            "Отладка включена: lookup и откат пишут в лог сервера, что читают, с меткой [debug], до /pp debug off или рестарта.",
+        r("Debug is off\\.") to "Отладка выключена.",
         r("Rollback refused: (\\d+) rows in that window could not be read by this build, and a rollback over part of the history would put back part of the place; nothing was done\\.") to
             "Откат отклонён: строк в этом окне, которые эта сборка не смогла прочитать: $1; откат по части истории вернул бы место лишь отчасти, ничего не сделано.",
         r("Rollback refused: a running clock could not file the moves it held back in time, and the journal would be read a move behind; try again\\.") to

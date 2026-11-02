@@ -4,7 +4,6 @@ import com.mojang.brigadier.arguments.IntegerArgumentType
 import com.mojang.brigadier.arguments.LongArgumentType
 import com.mojang.brigadier.arguments.StringArgumentType
 import com.mojang.brigadier.context.CommandContext
-import com.mojang.brigadier.exceptions.CommandSyntaxException
 import io.papermc.paper.command.brigadier.CommandSourceStack
 import io.papermc.paper.command.brigadier.Commands
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes
@@ -146,6 +145,7 @@ private const val VERIFY_PERMISSION = "pfauprotect.verify"
 internal const val ROLLBACK_PERMISSION = "pfauprotect.rollback"
 private const val STATUS_PERMISSION = "pfauprotect.status"
 private const val PURGE_PERMISSION = "pfauprotect.purge"
+private const val DEBUG_PERMISSION = "pfauprotect.debug"
 internal const val TELEPORT_PERMISSION = "pfauprotect.teleport"
 internal const val TELEPORT_SPECTATOR_PERMISSION = "pfauprotect.teleport.spectator"
 
@@ -164,6 +164,7 @@ private val HELP = listOf(
     Help(VERIFY_PERMISSION, "/pp verify [recent]", "/pp verify", "run the self-checks now", "самопроверки сейчас"),
     Help(RECONCILE_PERMISSION, "/pp reconcile <player>", "/pp reconcile ", "a player's inventory against the ledger", "сверка инвентаря игрока с журналом"),
     Help(PURGE_PERMISSION, "/pp purge <age> [confirm]", "/pp purge ", "delete history older than an age", "удалить историю старше возраста"),
+    Help(DEBUG_PERMISSION, "/pp debug [on|off]", "/pp debug ", "write what lookups and rollbacks read into the server log", "писать в лог сервера, что читают lookup и откат"),
 )
 
 // The youngest history a purge may delete: a day, so a rollback of today always has its rows.
@@ -255,6 +256,7 @@ class PfauProtectPlugin : JavaPlugin() {
     private var running: Running? = null
 
     override fun onEnable() {
+        Debug.sink = logger::info
         saveDefaultConfig()
         Settings.load(config, logger)
         val ledger = RocksItemLog(dataFolder.toPath().resolve("ledger"))
@@ -563,10 +565,19 @@ class PfauProtectPlugin : JavaPlugin() {
             )
             root.then(
                 gated("chat", LOOKUP_PERMISSION)
-                    .executes { chat(it.source, "") }
-                    .then(Commands.argument("words", StringArgumentType.greedyString()).executes { chat(it.source, StringArgumentType.getString(it, "words")) })
+                    .executes { chat(it.source, LookupQuery()) }
+                    .then(
+                        Commands.argument("query", LookupArgument(chat = true))
+                            .executes { chat(it.source, it.getArgument("query", LookupQuery::class.java)) }
+                    )
             )
             root.then(gated("status", STATUS_PERMISSION).executes { status(it.source) })
+            root.then(
+                gated("debug", DEBUG_PERMISSION)
+                    .executes { debug(it.source, null) }
+                    .then(Commands.literal("on").executes { debug(it.source, true) })
+                    .then(Commands.literal("off").executes { debug(it.source, false) })
+            )
             root.then(
                 Commands.literal("view")
                     .requires { it.sender.hasPermission(LOOKUP_PERMISSION) && it.executor is Player }
@@ -819,14 +830,7 @@ class PfauProtectPlugin : JavaPlugin() {
         return !event.isCancelled
     }
 
-    private fun chat(source: CommandSourceStack, words: String): Int = withRunning(source) { running, sender ->
-        val query = try {
-            parseLookupQuery(words)
-        } catch (failure: CommandSyntaxException) {
-            // The message alone: the rest is Brigadier's "at position" in English, about a line not typed here.
-            sender.sendMessage(failure.rawMessage.string)
-            return 0
-        }
+    private fun chat(source: CommandSourceStack, query: LookupQuery): Int = withRunning(source) { running, sender ->
         // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
         val asked = query.askedBy(sender)
         offThread(sender, "the chat lookup failed", "The chat lookup failed; the server log has the details.") {
@@ -915,6 +919,15 @@ class PfauProtectPlugin : JavaPlugin() {
         player.persistentDataContainer.set(DIALOG_KEY, PersistentDataType.BOOLEAN, now)
         // Above the hotbar like the inspector's: a state, not an answer.
         player.sendActionBar(Ui.text(if (now) tr("Pages open in a window", "Страницы открываются в окне") else tr("Pages go to chat", "Страницы идут в чат"), Ui.MUTED))
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun debug(source: CommandSourceStack, on: Boolean?): Int {
+        on?.let { Debug.on = it }
+        source.sender.say(
+            if (Debug.on) "Debug is on: lookups and rollbacks write what they read into the server log, under [debug], until /pp debug off or a restart."
+            else "Debug is off."
+        )
         return Command.SINGLE_SUCCESS
     }
 

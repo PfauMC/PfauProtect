@@ -82,7 +82,7 @@ data class Window<T>(val rows: List<T>, val unreadable: Int, val complete: Boole
 
 data class ActorTouches(val positions: Set<List<Int>>, val complete: Boolean)
 
-data class ActorRows(val blocks: List<BlockRow>, val entities: List<EntityRow>, val complete: Boolean)
+data class ActorRows(val blocks: List<BlockRow>, val entities: List<EntityRow>, val complete: Boolean, val unreadable: Int = 0)
 
 // Raised by a change to the key layout or to the set of column families. The record version in the
 // value covers neither: without the bump an older database opens and every key is parsed as something it
@@ -461,20 +461,6 @@ class BlockLog(
     }
 
     /**
-     * Every row of a chunk inside the window and the box, in key order, with `budget` the most rows
-     * the walk may step over in all. A row that cannot be read counts wherever it lies, since its own
-     * bytes are what would have said whether it was in the window.
-     */
-    fun windowInChunk(
-        chunkX: Int,
-        chunkZ: Int,
-        fromTs: Long,
-        toTs: Long,
-        budget: Int,
-        within: (Int, Int, Int) -> Boolean,
-    ): Window<BlockRow> = window(rowsCf, Zcode.chunkPrefix(chunkX, chunkZ), fromTs, toTs, budget, within, ::blockRow)
-
-    /**
      * The newest rows of either plane standing in the box that the filters keep, see [newestInBox], and the
      * rollback rows among them whatever the filters say: those mark a row given back, and take no place on
      * the page.
@@ -487,14 +473,31 @@ class BlockLog(
         steps: Steps,
         keepBlock: (BlockRow) -> Boolean,
         keepEntity: (EntityRow) -> Boolean,
+    ): ActorRows = inBox(box, fromTs, toTs, wanted, steps, { row -> rollback(row) || kept(row, keepBlock, keepEntity) }) { row ->
+        kept(row, keepBlock, keepEntity)
+    }
+
+    /**
+     * Every row of either plane in the window standing in the box, newest first, and the rows this build could
+     * not decode counted apart: what a rollback reads around a place. By the chunk-time index the walk steps
+     * only over the window's entries, where a chunk's own rows, keyed by position before time, would cost its
+     * whole history. At most [wanted] rows that [counts] counts.
+     */
+    fun windowInBox(box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps, counts: (Any) -> Boolean): ActorRows =
+        inBox(box, fromTs, toTs, wanted, steps, { true }, counts)
+
+    private fun inBox(
+        box: Box, fromTs: Long, toTs: Long, wanted: Int, steps: Steps, keep: (Any) -> Boolean, counts: (Any) -> Boolean,
     ): ActorRows = dbLock.read {
         if (closed) return ActorRows(emptyList(), emptyList(), false)
+        var unreadable = 0
         val page = db.newestInBox<Any>(byChunkCf, NOTHING, box, fromTs, toTs, wanted, steps, { index ->
             val key = ChunkTime.rowKey(index, 0, NOTHING)
-            if (ChunkTime.tag(index) == ENTITY_PLANE) db.get(entitiesCf, key)?.let { entityRow(key, it) }
-            else db.get(rowsCf, key)?.let { blockRow(key, it) }
-        }, { row -> rollback(row) || kept(row, keepBlock, keepEntity) }) { row -> kept(row, keepBlock, keepEntity) }
-        ActorRows(page.rows.filterIsInstance<BlockRow>(), page.rows.filterIsInstance<EntityRow>(), page.complete)
+            val row = if (ChunkTime.tag(index) == ENTITY_PLANE) db.get(entitiesCf, key)?.let { entityRow(key, it) ?: null.also { unreadable++ } }
+            else db.get(rowsCf, key)?.let { blockRow(key, it) ?: null.also { unreadable++ } }
+            row
+        }, keep, counts)
+        ActorRows(page.rows.filterIsInstance<BlockRow>(), page.rows.filterIsInstance<EntityRow>(), page.complete, unreadable)
     }
 
     private fun rollback(row: Any) = (row as? BlockRow)?.cause == Cause.ROLLBACK || (row as? EntityRow)?.cause == Cause.ROLLBACK
@@ -505,7 +508,11 @@ class BlockLog(
     fun windowAt(x: Int, y: Int, z: Int, fromTs: Long, toTs: Long, budget: Int): Window<BlockRow> =
         window(rowsCf, BlockCodec.positionPrefix(x, y, z), fromTs, toTs, budget, { _, _, _ -> true }, ::blockRow)
 
-    /** The entity plane's rows of a chunk, read the way `windowInChunk` reads the block plane's. */
+    /**
+     * The entity plane's rows of a chunk inside the window and the box, in key order, with `budget` the most
+     * rows the walk may step over. A row that cannot be read counts wherever it lies, since its own bytes are
+     * what would have said whether it was in the window.
+     */
     fun entitiesInChunk(
         chunkX: Int,
         chunkZ: Int,

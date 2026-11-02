@@ -13,6 +13,22 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
 import org.bukkit.event.player.PlayerInteractEvent
+import org.bukkit.event.Event
+import org.bukkit.event.block.Action
+import org.bukkit.event.inventory.InventoryClickEvent
+import org.bukkit.event.inventory.InventoryDragEvent
+import org.bukkit.inventory.EquipmentSlot
+import org.bukkit.inventory.Inventory
+import org.bukkit.inventory.InventoryHolder
+import org.bukkit.inventory.ItemStack
+import org.bukkit.block.Block
+import org.bukkit.block.Chest
+import org.bukkit.craftbukkit.block.data.CraftBlockData
+import net.kyori.adventure.text.Component
+import net.minecraft.core.BlockPos
+import net.minecraft.world.level.block.ChestBlock
+import net.minecraft.world.level.block.state.properties.ChestType
+import io.pfaumc.pfauprotect.tr
 import org.bukkit.plugin.Plugin
 import org.bukkit.util.BoundingBox
 import java.util.UUID
@@ -24,6 +40,15 @@ private const val GHOST_LIMIT = 50_000
 /** A block as a preview would put it, shown to the player who previews until it is applied or dropped. */
 class Ghost(val at: WorldBlock, val data: BlockData) {
     val chunk get() = chunkOf(at)
+}
+
+/** What a container would hold after the rollback, and the block it would stand in. */
+class Contents(val data: BlockData, val items: List<ItemStack>)
+
+// The window a preview's contents open in: nothing in it can be taken or put.
+private class Peek : InventoryHolder {
+    lateinit var window: Inventory
+    override fun getInventory() = window
 }
 
 private fun chunkOf(at: WorldBlock) = at.world to Chunk.getChunkKey(at.x shr 4, at.z shr 4)
@@ -43,24 +68,28 @@ internal fun nearest(ghosts: List<Ghost>, world: UUID, x: Double, y: Double, z: 
 class Ghosts(private val plugin: Plugin) : Listener {
     // A class rather than the bare map for its identity: an expiry removes only the preview it was set
     // for, and a second preview of the same blocks is an equal map.
-    private class Shown(val byChunk: Map<Pair<UUID, Long>, List<Ghost>>)
+    private class Shown(val byChunk: Map<Pair<UUID, Long>, List<Ghost>>, val contents: Map<WorldBlock, Contents>)
 
     private val shown = ConcurrentHashMap<UUID, Shown>()
 
-    fun show(player: Player, ghosts: List<Ghost>) {
+    fun show(player: Player, ghosts: List<Ghost>, contents: Map<WorldBlock, Contents> = emptyMap()) {
         val at = player.location
         val kept = nearest(ghosts, at.world.uid, at.x, at.y, at.z, GHOST_LIMIT)
-        val mine = Shown(kept.groupBy { it.chunk })
+        val mine = Shown(kept.groupBy { it.chunk }, contents)
         // The old preview's blocks are told back as they are, except those the new one shows: a restore that
         // lands after the new send would otherwise put real blocks over its ghosts.
-        val old = if (kept.isEmpty()) shown.remove(player.uniqueId) else shown.put(player.uniqueId, mine)
+        val empty = kept.isEmpty() && contents.isEmpty()
+        val old = if (empty) shown.remove(player.uniqueId) else shown.put(player.uniqueId, mine)
         old?.let { restore(player, it, except = kept.mapTo(HashSet()) { it.at }) }
-        if (kept.isEmpty()) return
-        send(player, kept.filter { it.at.world == at.world.uid })
-        player.say(
-            if (kept.size < ghosts.size) "  you see the nearest blocks (${kept.size} of ${ghosts.size}) as they would stand; nothing changes before /pp apply."
-            else "  you see the blocks as they would stand; nothing changes before /pp apply."
-        )
+        if (empty) return
+        if (kept.isNotEmpty()) {
+            send(player, kept.filter { it.at.world == at.world.uid })
+            player.say(
+                if (kept.size < ghosts.size) "  you see the nearest blocks (${kept.size} of ${ghosts.size}) as they would stand; nothing changes before /pp apply."
+                else "  you see the blocks as they would stand; nothing changes before /pp apply."
+            )
+        }
+        if (contents.isNotEmpty()) player.say("  right-click a container it gives back to, to see what it would hold.")
         Bukkit.getAsyncScheduler().runDelayed(plugin, {
             if (shown.remove(player.uniqueId, mine)) restore(player, mine)
         }, PENDING_MILLIS, TimeUnit.MILLISECONDS)
@@ -74,6 +103,59 @@ class Ghosts(private val plugin: Plugin) : Listener {
     fun onChunkSent(event: PlayerChunkLoadEvent) {
         val ghosts = shown[event.player.uniqueId]?.byChunk?.get(event.world.uid to event.chunk.chunkKey) ?: return
         send(event.player, ghosts)
+    }
+
+    // A right click on a container the preview gives back to shows what it would hold instead of opening it, with
+    // either hand: denied in the main one, the server tries the off hand next and would open the real one.
+    @EventHandler(priority = EventPriority.LOWEST)
+    fun onUse(event: PlayerInteractEvent) {
+        if (event.action != Action.RIGHT_CLICK_BLOCK) return
+        val clicked = event.clickedBlock ?: return
+        val mine = shown[event.player.uniqueId] ?: return
+        val at = positionOf(clicked)
+        val contents = mine.contents[at] ?: return
+        event.setUseInteractedBlock(Event.Result.DENY)
+        event.setUseItemInHand(Event.Result.DENY)
+        if (event.hand == EquipmentSlot.HAND) open(event.player, clicked, at, contents, mine)
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    fun onPeekClick(event: InventoryClickEvent) {
+        if (event.view.topInventory.holder is Peek) event.isCancelled = true
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    fun onPeekDrag(event: InventoryDragEvent) {
+        if (event.view.topInventory.holder is Peek) event.isCancelled = true
+    }
+
+    // A half of a double chest opens with its other half, as the game opens it: the right half on top. The other
+    // half holds what the preview gives back to it, or what it holds now where it stands and the preview at most
+    // makes it a half, or nothing where the preview puts it back anew. One in a region this thread does not own
+    // is left out.
+    private fun open(player: Player, clicked: Block, at: WorldBlock, contents: Contents, mine: Shown) {
+        val state = (contents.data as CraftBlockData).state
+        var items = contents.items
+        if (state.block is ChestBlock && state.getValue(ChestBlock.TYPE) != ChestType.SINGLE) {
+            val pos = ChestBlock.getConnectedBlockPos(BlockPos(at.x, at.y, at.z), state)
+            val partnerAt = at.copy(x = pos.x, y = pos.y, z = pos.z)
+            val other = mine.contents[partnerAt]?.items ?: run {
+                if (!Bukkit.isOwnedByCurrentRegion(clicked.world, pos.x shr 4, pos.z shr 4)) return@run null
+                val real = clicked.world.getBlockAt(pos.x, pos.y, pos.z)
+                val becomes = mine.byChunk[chunkOf(partnerAt)]?.find { it.at == partnerAt }?.data?.material ?: real.type
+                when {
+                    becomes != contents.data.material -> null
+                    real.type == becomes -> (real.state as? Chest)?.blockInventory?.contents?.map { it ?: ItemStack.empty() }
+                    else -> List(items.size) { ItemStack.empty() }
+                }
+            }
+            if (other != null) items = if (state.getValue(ChestBlock.TYPE) == ChestType.RIGHT) items + other else other + items
+        }
+        val peek = Peek()
+        val title = Component.text(tr("after the rollback · ", "после отката · ")).append(Component.translatable(contents.data.material))
+        peek.window = Bukkit.createInventory(peek, ((items.size + 8) / 9 * 9).coerceIn(9, 54), title)
+        items.take(54).forEachIndexed { i, item -> peek.window.setItem(i, item) }
+        player.openInventory(peek.window)
     }
 
     // A click makes the client show the real block, there and on the clicked face, so the ghost is sent again.

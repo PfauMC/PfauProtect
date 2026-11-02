@@ -35,6 +35,8 @@ class LookupTest {
         val rollback = offered(LookupArgument(rollback = true))
         assertTrue(rollback.containsAll(listOf("user:", "time:", "radius:", "action:", "include:", "exclude:")), "$rollback")
         assertTrue(rollback.none { it in answerOnly || it.startsWith("#") }, "$rollback")
+        // The chat log has no place, no items and no rows of the planes to count.
+        assertEquals(setOf("user:", "time:", "filter:", "action:", "page:", "#all"), offered(LookupArgument(chat = true)).toSet())
     }
 
     // As CoreProtect's list does: a key once said, under any spelling, leaves the list; a list of names stays,
