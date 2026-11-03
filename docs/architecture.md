@@ -101,4 +101,8 @@ them.
   An `exclude:` word is a player if one goes by it, an item, block or entity either way, and an action only when
   it names none of those (`THING_NAMES`): `e:tnt` must not drop every explosion from a rollback, `e:explosion`
   does. `steal` is refused there, being worked out per withdrawal. In `/pp chat` it takes players and `pvp`.
+- `inventory` and `item` (each with `+`/`-`) are crossing actions: a direction across a player's hands, decided per
+  row from both ends (`crosses`, `Action.crossing`) rather than by cause, so they work in `p:`, `r:`, the inspector and `u:`
+  (which also keeps a player's rows that left their own slots with no position: drops, pickups, eating). `item`
+  leaves containers out. Block placement and purge openings are never crossings. A rollback refuses them (`refusalOf`).
 - `/pp purge` works per plane: the item ledger (`Storage.purgeBefore`) deletes every posting older than the cutoff and, in the same write, records what each holder held then as `Cause.PURGE_OPENING` openings, so balances hold; the block log (`BlockStore.purgeBefore`) deletes old rows except the newest of each position no later row covers, their index entries, and entity rows older than the cutoff.

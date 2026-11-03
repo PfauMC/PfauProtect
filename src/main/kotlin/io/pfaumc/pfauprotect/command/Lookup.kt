@@ -147,7 +147,15 @@ internal enum class Param(vararg val keys: String) {
 }
 
 // Same one-table rule as Param.
-internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
+internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val crossing: Crossing? = null) {
+    // Which way an item went across a player's hands, decided per row from both ends rather than by cause.
+    INVENTORY(INVENTORY_CAUSES, "inventory", "inv", "inventories", crossing = Crossing(inward = true, outward = true, containers = true)),
+    INVENTORY_ADD(INVENTORY_CAUSES, "+inventory", "+inv", "inventory+", "inv+", "+inventories", crossing = Crossing(inward = true, outward = false, containers = true)),
+    INVENTORY_REMOVE(INVENTORY_CAUSES, "-inventory", "-inv", "inventory-", "inv-", "-inventories", crossing = Crossing(inward = false, outward = true, containers = true)),
+    ITEM(INVENTORY_CAUSES, "item", "items", crossing = Crossing(inward = true, outward = true, containers = false)),
+    ITEM_ADD(INVENTORY_CAUSES, "+item", "+items", "item+", "items+", crossing = Crossing(inward = true, outward = false, containers = false)),
+    ITEM_REMOVE(INVENTORY_CAUSES, "-item", "-items", "item-", "items-", crossing = Crossing(inward = false, outward = true, containers = false)),
+
     CONTAINER(
         setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
         "container", "chest", "transaction", "transactions",
@@ -261,6 +269,36 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     }
 }
 
+// A direction across a player's hands: `inward` into them, `outward` out of them; `containers` whether a container
+// counts as the other side (`inventory`) or only the ground, the void and other entities (`item`).
+internal class Crossing(val inward: Boolean, val outward: Boolean, val containers: Boolean)
+
+// Everything but the block plane's causes: building is the block plane's `+block`, and a purge's opening
+// balance stands for what was held before, not for anything done.
+private val INVENTORY_CAUSES: Set<Cause> =
+    Cause.entries.filter { !it.name.startsWith("BLK_") }.toSet() - Cause.BLOCK_PLACE - Cause.PURGE_OPENING
+
+// The player whose hands a holder is, if it is: the crafting grid is their entity slot, which is also a
+// projectile's or a frame's, hence the check. An ender chest is a container, not a hand.
+private fun handsOf(holder: Holder, isPlayer: (UUID) -> Boolean): UUID? = when (holder) {
+    is PlayerInv -> holder.uuid
+    is PlayerEquip -> holder.uuid
+    is PlayerCursor -> holder.uuid
+    is EntitySlot -> holder.uuid.takeIf(isPlayer)
+    else -> null
+}
+
+// Whether the row moved the item across a player's hands in a direction [crossing] asks for, from both ends.
+internal fun crosses(entry: LedgerEntry, crossing: Crossing, isPlayer: (UUID) -> Boolean): Boolean {
+    if (entry.cause == Cause.BLOCK_PLACE || entry.cause == Cause.PURGE_OPENING || entry.kind == Kind.MUTATE) return false
+    val (from, to) = if (entry.qty > 0) entry.counterparty to entry.holder else entry.holder to entry.counterparty
+    val mine = handsOf(from, isPlayer)
+    val yours = handsOf(to, isPlayer)
+    val other = if (mine != null) to else from
+    if (!crossing.containers && other is Container) return false
+    return crossing.outward && mine != null && yours != mine || crossing.inward && yours != null && mine != yours
+}
+
 // Every way one item becomes another, which is one question however many benches answer it.
 private val TRANSFORM_CAUSES = setOf(
     Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Cause.CRAFT_REMAINDER, Cause.SMELT, Cause.BREW,
@@ -366,6 +404,10 @@ data class LookupQuery(
     val asOf: Long? = null,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
+
+    // Whether any action asked for is a direction across a player's hands, which has no block to roll back.
+    val crosses: Boolean
+        get() = (actions + excluded).any { group -> allOf(group).any { Action.of(it.lowercase())?.crossing != null } }
 
     val limit: Int get() = rows ?: DEFAULT_LIMIT
 
@@ -674,6 +716,8 @@ internal class RowFilter(
     // Which of `exclude:`'s words are players, by the word lowercased.
     excludedPlayers: Map<String, UUID> = emptyMap(),
     private val rollback: Boolean = false,
+    // Whether a uuid is a player: the crafting grid is an entity slot, like a frame's or a projectile's.
+    private val isPlayer: (UUID) -> Boolean = { false },
 ) {
     internal val namesUsers: Boolean get() = users.isNotEmpty()
     private val causes = query.causes
@@ -681,9 +725,10 @@ internal class RowFilter(
     private val all = query.all
     private val amount = query.amount
     internal val event = query.event?.id
-    // Read only when some group joins actions with `&`: otherwise `causes` and `kinds` already say it all.
+    // Read only when some group joins actions with `&` or names a crossing, which a cause cannot tell:
+    // otherwise `causes` and `kinds` already say it all.
     private val actions = query.actions.map { group -> allOf(group).mapNotNull { Action.of(it.lowercase()) } }
-        .takeIf { groups -> groups.any { it.size > 1 } }
+        .takeIf { groups -> groups.any { it.size > 1 || it.any { action -> action.crossing != null } } }
     private val included = query.included.map { group -> allOf(group).map(::normalizeItem) }
     private val excluded = query.excluded.map { group ->
         allOf(group).map { word ->
@@ -707,7 +752,8 @@ internal class RowFilter(
         if (!caused(entry.cause)) return false
         if (amount != null && abs(entry.qty) !in amount) return false
         if (plain) return true
-        return about(Seen(setOf(itemKey(ledger, entry.itemFormId)), { entry.cause in it.causes }) { player, _ -> namesUser(entry, setOf(player)) })
+        val acts = { action: Action -> action.crossing?.let { crosses(entry, it, isPlayer) } ?: (entry.cause in action.causes) }
+        return about(Seen(setOf(itemKey(ledger, entry.itemFormId)), acts) { player, _ -> namesUser(entry, setOf(player)) })
     }
 
     // `u:A&B` is what A did to B, a kill above all; `u:B` alone stays what B did.
@@ -716,7 +762,7 @@ internal class RowFilter(
         val countsKind = row.cause != Cause.ROLLBACK && row.cause != Cause.PURGE_OPENING
         if (!keepsActed(row.cause, row.eventId, row.confidence, row.kind in kinds && countsKind)) return false
         if (plain) return true
-        return about(Seen(setOf(row.type), { row.cause in it.causes || countsKind && row.kind in it.kinds }) { player, group ->
+        return about(Seen(setOf(row.type), { it.crossing == null && (row.cause in it.causes || countsKind && row.kind in it.kinds) }) { player, group ->
             player == row.actor || player == row.uuid && row.actor in group
         })
     }
@@ -728,7 +774,7 @@ internal class RowFilter(
         if (!keepsActed(row.cause, row.eventId, row.confidence)) return false
         if (plain) return true
         val named = setOf(stateName(ledger, row.stateBefore), stateName(ledger, row.stateAfter))
-        return about(Seen(named, { row.cause in it.causes }) { player, _ -> player == row.actor }, shape = row.cause == Cause.BLK_SHAPE)
+        return about(Seen(named, { it.crossing == null && row.cause in it.causes }) { player, _ -> player == row.actor }, shape = row.cause == Cause.BLK_SHAPE)
     }
 
     private fun keepsActed(cause: Cause, eventId: Long, confidence: Confidence, kind: Boolean = false): Boolean {
@@ -1262,7 +1308,13 @@ class Lookups(
         }
         // What they put in or took out names them on their own slots; what fell out of a container they broke
         // names them only as its actor, on the container, so the places of their rows are read too.
-        val traded = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query).entries.filter { it.counterparty.block?.world == target.world }
+        // Drops, pickups and eating have no position at all, so they are kept when they left a player's own
+        // slots, as CoreProtect shows them; a click between two of one player's own slots is not that.
+        fun own(holder: Holder) = (holder as? PlayerHolder)?.uuid ?: (holder as? EntitySlot)?.uuid?.takeIf { it in users }
+        val traded = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query).entries.filter {
+            val at = it.counterparty.block
+            if (at != null) at.world == target.world else own(it.counterparty).let { mine -> mine == null || mine != own(it.holder) }
+        }
         // A block put down drops nothing, so only the places they changed otherwise are read for what fell out.
         val broken = placesOf(rows, { Triple(it.x, it.y, it.z) }, { it.timestamp }) { it.cause != Cause.BLK_PLAYER_PLACE }
         val dropped = broken.flatMap { (at, ts) ->
@@ -1559,6 +1611,7 @@ class Lookups(
         ledger, query, groupsOf(query.users),
         query.excluded.flatMap(::allOf).mapNotNull { word -> idOf(word)?.let { word.lowercase() to it } }.toMap(),
         rollback,
+        isPlayer = ConcurrentHashMap<UUID, Boolean>().let { seen -> { uuid -> seen.computeIfAbsent(uuid) { knownName(it) != null } } },
     )
 
     internal fun chatFilter(query: LookupQuery): (ChatLine) -> Boolean = chatFilter(query, idOf)

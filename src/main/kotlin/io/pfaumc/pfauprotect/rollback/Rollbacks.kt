@@ -960,6 +960,7 @@ internal fun refusalOf(query: LookupQuery): String? = when {
     query.amount != null -> "amount: narrows a lookup to item rows; a rollback does not take it."
     query.rolledBack != null -> "rolledback: narrows what a lookup shows; a rollback does not take it."
     query.steal -> "action:steal is worked out for a lookup only; roll back action:withdraw instead."
+    query.crosses -> "action:inventory and action:item read a player's hands, which have no place to roll back; roll back action:+container or action:-container instead."
     else -> null
 }
 

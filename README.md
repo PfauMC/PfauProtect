@@ -146,6 +146,7 @@ Alex, или строки Bob. В `filter:` работает только `&`, �
 
 | Группа | Значения |
 | --- | --- |
+| Руки игрока | `inventory`, `+inventory`, `-inventory` (что пришло в руки игрока или ушло из них, без постройки), `item`, `+item`, `-item` (то же без контейнеров) |
 | Контейнеры | `container`, `+container` (положил), `-container` (взял), `steal` (взял из чужого), `loot`, `hopper` (воронки и выбрасыватели) |
 | Предметы | `transform` (крафт, печь, станки), `use` (съел, израсходовал), `projectile`, `drop`, `pickup` |
 | Блоки | `block`, `+block` (поставил), `-block` (сломал), `explosion`, `fire`, `liquid`, `piston`, `gravity` |

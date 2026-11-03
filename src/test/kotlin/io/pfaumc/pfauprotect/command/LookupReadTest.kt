@@ -15,6 +15,10 @@ import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
+import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.ItemEntityRef
+import io.pfaumc.pfauprotect.rollback.refusalOf
+import org.junit.jupiter.api.Assertions.assertNotNull
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.PlayerCursor
@@ -265,6 +269,51 @@ class LookupReadTest : BothPlanes() {
         assertFalse(filter("exclude:stone").keeps(broken))
         assertTrue(filter("exclude:stone").keeps(taken))
         assertFalse(filter("exclude:diamond").keeps(taken))
+    }
+
+    // inventory/item read the direction across a player's hands from both ends of a row, whichever side wrote it.
+    @Test
+    fun `crossing actions are decided per row from both ends`() {
+        val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
+        val chest = Container(world, 11, 64, -3, 0)
+        val drop = ItemEntityRef(UUID.randomUUID())
+        val grid = EntitySlot(alice, 1)
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, diamond, null, 1, T0))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), diamond, null, 1, T0 + 1))
+        shared.submit(Transfer(Cause.QUICK_MOVE, PlayerInv(alice, 0), PlayerInv(alice, 5), diamond, null, 1, T0 + 2))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 0), WorldBlock(world, 1, 64, 1), diamond, null, 1, T0 + 3))
+        shared.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 0), drop, diamond, null, 1, T0 + 4))
+        shared.submit(Transfer(Cause.PICKUP, drop, PlayerInv(bob, 1), diamond, null, 1, T0 + 5))
+        shared.submit(Transfer(Cause.CRAFT_CONSUME, grid, Void, diamond, null, 1, T0 + 6))
+        shared.drain()
+        fun filter(words: String, isPlayer: (UUID) -> Boolean = { false }) = RowFilter(shared, parseLookupQuery(words), isPlayer = isPlayer)
+        // A slot-0 read covers every slot, so one move can answer with both its halves.
+        fun RowFilter.on(ts: Long, holder: Holder) = shared.holderEntries(holder, 0, Long.MAX_VALUE).filter { it.timestamp == ts }.any(::keeps)
+
+        // The deposit, from the player's side and from the container's.
+        assertTrue(filter("a:-inventory").on(T0, PlayerInv(alice, 0)))
+        assertTrue(filter("a:-inventory").on(T0, chest))
+        assertFalse(filter("a:+inventory").on(T0, chest))
+        // The withdrawal comes in.
+        assertTrue(filter("a:+inventory").on(T0 + 1, PlayerInv(bob, 0)))
+        assertTrue(filter("a:+inventory").on(T0 + 1, chest))
+        // Within one player, and a build, are not crossings.
+        assertFalse(filter("a:inventory").on(T0 + 2, PlayerInv(alice, 5)))
+        assertFalse(filter("a:inventory").on(T0 + 3, PlayerInv(alice, 0)))
+        // `item` leaves containers out, not the ground.
+        assertFalse(filter("a:-item").on(T0, PlayerInv(alice, 0)))
+        assertTrue(filter("a:-item").on(T0 + 4, PlayerInv(alice, 0)))
+        assertTrue(filter("a:+item").on(T0 + 5, PlayerInv(bob, 1)))
+        // An entity slot is a crafting grid only when a player owns it.
+        assertFalse(filter("a:-inventory").on(T0 + 6, grid))
+        assertTrue(filter("a:-inventory", isPlayer = { it == alice }).on(T0 + 6, grid))
+        assertFalse(filter("e:-inventory").on(T0, PlayerInv(alice, 0)))
+        assertTrue(filter("e:-inventory").on(T0 + 5, PlayerInv(bob, 1)))
+
+        assertTrue(parseLookupQuery("a:-inv").crosses)
+        assertTrue(parseLookupQuery("a:+inventory").crosses)
+        assertFalse(parseLookupQuery("a:drop").crosses)
+        assertNotNull(refusalOf(parseLookupQuery("t:1h r:5 a:-inventory")))
     }
 
     // `&` asks one row for all of a group: a block by both its states, a kill by who did it and to whom, an
