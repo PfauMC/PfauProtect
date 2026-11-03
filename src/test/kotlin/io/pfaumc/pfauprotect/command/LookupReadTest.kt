@@ -15,8 +15,13 @@ import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
+import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.ItemEntityRef
+import io.pfaumc.pfauprotect.rollback.refusalOf
+import org.junit.jupiter.api.Assertions.assertNotNull
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.model.Kind
+import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.PlayerEquip
@@ -151,6 +156,23 @@ class LookupReadTest : BothPlanes() {
     }
 
     @Test
+    fun `a part reads the contents of a container or its block apart`() {
+        val chest = Container(world, 10, 64, -3, 0)
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, stone, null, 1, T0))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, WorldBlock(world, 10, 64, -3), stone, null, 1, T0 + 1))
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 2)))
+        shared.drain()
+        log.drain()
+
+        val contents = said(LookupQuery(part = Part.CONTENTS))
+        assertTrue(contents.any { it.contains("{container_add}") }, "$contents")
+        assertTrue(contents.none { it.contains("{blk_player_place}") || it.contains("{block_place}") }, "$contents")
+        val block = said(LookupQuery(part = Part.BLOCK))
+        assertTrue(block.none { it.contains("{container_add}") }, "$block")
+        assertTrue(block.any { it.contains("{blk_player_place}") } && block.any { it.contains("{block_place}") }, "$block")
+    }
+
+    @Test
     fun `a position answers with both planes in the order things happened`() {
         val at = WorldBlock(world, 10, 64, -3)
         shared.submit(Transfer(Cause.BLOCK_PLACE, Void, at, stone, null, 1, T0))
@@ -267,6 +289,61 @@ class LookupReadTest : BothPlanes() {
         assertFalse(filter("exclude:diamond").keeps(taken))
     }
 
+    // inventory/item read the direction across a player's hands from both ends of a row, whichever side wrote it.
+    @Test
+    fun `crossing actions are decided per row from both ends`() {
+        val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
+        val chest = Container(world, 11, 64, -3, 0)
+        val drop = ItemEntityRef(UUID.randomUUID())
+        val grid = EntitySlot(alice, 1)
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, diamond, null, 1, T0))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), diamond, null, 1, T0 + 1))
+        shared.submit(Transfer(Cause.QUICK_MOVE, PlayerInv(alice, 0), PlayerInv(alice, 5), diamond, null, 1, T0 + 2))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 0), WorldBlock(world, 1, 64, 1), diamond, null, 1, T0 + 3))
+        shared.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 0), drop, diamond, null, 1, T0 + 4))
+        shared.submit(Transfer(Cause.PICKUP, drop, PlayerInv(bob, 1), diamond, null, 1, T0 + 5))
+        shared.submit(Transfer(Cause.CRAFT_CONSUME, grid, Void, diamond, null, 1, T0 + 6))
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), PlayerEnder(alice, 3), diamond, null, 1, T0 + 7))
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 2), Nested(UUID.randomUUID(), 0), diamond, null, 1, T0 + 8))
+        shared.drain()
+        fun filter(words: String, isPlayer: (UUID) -> Boolean = { false }) = RowFilter(shared, parseLookupQuery(words), isPlayer = isPlayer)
+        // A slot-0 read covers every slot, so one move can answer with both its halves.
+        fun RowFilter.on(ts: Long, holder: Holder) = shared.holderEntries(holder, 0, Long.MAX_VALUE).filter { it.timestamp == ts }.any(::keeps)
+
+        // The deposit, from the player's side and from the container's.
+        assertTrue(filter("a:-inventory").on(T0, PlayerInv(alice, 0)))
+        assertTrue(filter("a:-inventory").on(T0, chest))
+        assertFalse(filter("a:+inventory").on(T0, chest))
+        // The withdrawal comes in.
+        assertTrue(filter("a:+inventory").on(T0 + 1, PlayerInv(bob, 0)))
+        assertTrue(filter("a:+inventory").on(T0 + 1, chest))
+        // Within one player, and a build, are not crossings.
+        assertFalse(filter("a:inventory").on(T0 + 2, PlayerInv(alice, 5)))
+        assertFalse(filter("a:inventory").on(T0 + 3, PlayerInv(alice, 0)))
+        // `item` leaves containers out, not the ground.
+        assertFalse(filter("a:-item").on(T0, PlayerInv(alice, 0)))
+        assertTrue(filter("a:-item").on(T0 + 4, PlayerInv(alice, 0)))
+        assertTrue(filter("a:+item").on(T0 + 5, PlayerInv(bob, 1)))
+        // An ender chest is a container for `item` too, and a bundle in the inventory is no crossing at all.
+        assertFalse(filter("a:-item").on(T0 + 7, PlayerInv(alice, 0)))
+        assertTrue(filter("a:-inventory").on(T0 + 7, PlayerInv(alice, 0)))
+        assertFalse(filter("a:-inventory").on(T0 + 8, PlayerInv(alice, 2)))
+        assertFalse(filter("a:-item").on(T0 + 8, PlayerInv(alice, 2)))
+        // An entity slot is a crafting grid only when a player owns it.
+        assertFalse(filter("a:-inventory").on(T0 + 6, grid))
+        assertTrue(filter("a:-inventory", isPlayer = { it == alice }).on(T0 + 6, grid))
+        assertFalse(filter("e:-inventory").on(T0, PlayerInv(alice, 0)))
+        assertTrue(filter("e:-inventory").on(T0 + 5, PlayerInv(bob, 1)))
+
+        // Every player death is a kill; a fight between players is not a fall.
+        assertTrue(Cause.PLAYER_DIED in parseLookupQuery("a:kill").causes.orEmpty())
+        assertFalse(Cause.PLAYER_DIED in parseLookupQuery("a:pvp").causes.orEmpty())
+        assertTrue(parseLookupQuery("a:-inv").crosses)
+        assertTrue(parseLookupQuery("a:+inventory").crosses)
+        assertFalse(parseLookupQuery("a:drop").crosses)
+        assertNotNull(refusalOf(parseLookupQuery("t:1h r:5 a:-inventory")))
+    }
+
     // `&` asks one row for all of a group: a block by both its states, a kill by who did it and to whom, an
     // entity by two actions at once.
     @Test
@@ -363,6 +440,22 @@ class LookupReadTest : BothPlanes() {
         val lines = said(LookupQuery(radius = 2))
         assertTrue(lines.any { it.contains("11 64 -4") }, "$lines")
         assertTrue(lines.none { it.contains("14 64 -12") }, "$lines")
+    }
+
+    // A drop has no holder with a position; its spot finds it by radius, and the item entity's mirrored half
+    // that the transaction pulls in must not print the same movement a second time.
+    @Test
+    fun `a drop with a spot is found by a radius and printed once with its place`() {
+        val drop = Transfer(
+            Cause.DROP_FROM_HAND, PlayerInv(alice, 3), ItemEntityRef(UUID.randomUUID()), stone, null, 1, T0,
+            actor = alice, spot = WorldBlock(world, 11, 64, -4),
+        )
+        shared.submit(drop)
+        shared.drain()
+
+        val lines = said(LookupQuery(radius = 2, causes = setOf(Cause.DROP_FROM_HAND)))
+        assertEquals(1, lines.count { it.contains("11 64 -4") }, "$lines")
+        assertTrue(said(LookupQuery(radius = 2, causes = setOf(Cause.DROP_FROM_HAND), page = 1), target = LookupTarget(world, 100, 64, 100, "far")).none { it.contains("11 64 -4") })
     }
 
     @Test

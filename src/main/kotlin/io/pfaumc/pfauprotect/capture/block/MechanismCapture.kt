@@ -8,6 +8,7 @@ import io.pfaumc.pfauprotect.storage.ItemKey
 import io.pfaumc.pfauprotect.storage.nmsView
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
+import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.capture.item.containerHolders
 import net.minecraft.core.Direction
 import net.minecraft.world.WorldlyContainer
@@ -104,6 +105,8 @@ class TickCoalescer(private val sink: (Transfer) -> Unit) {
         val item: ItemKey,
         val actor: UUID?,
         val confidence: Confidence,
+        // Part of the key: two drops of one player at different blocks are two places to find them at.
+        val spot: WorldBlock?,
     )
 
     private val pending = ConcurrentHashMap<Pending, Int>()
@@ -116,9 +119,10 @@ class TickCoalescer(private val sink: (Transfer) -> Unit) {
         qty: Int,
         actor: UUID? = null,
         confidence: Confidence = Confidence.FACT,
+        spot: WorldBlock? = null,
     ) {
         if (qty <= 0) return
-        pending.merge(Pending(from, to, cause, item, actor, confidence), qty, Int::plus)
+        pending.merge(Pending(from, to, cause, item, actor, confidence, spot), qty, Int::plus)
     }
 
     // Removal hands back everything the region threads had merged under the key, so a movement added
@@ -138,6 +142,7 @@ class TickCoalescer(private val sink: (Transfer) -> Unit) {
                     timestamp = timestamp,
                     confidence = key.confidence,
                     actor = key.actor,
+                    spot = key.spot,
                 )
             )
         }

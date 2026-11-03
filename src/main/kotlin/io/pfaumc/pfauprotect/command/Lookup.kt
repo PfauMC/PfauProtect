@@ -85,6 +85,12 @@ import net.kyori.adventure.text.format.TextDecoration
 import net.kyori.adventure.text.event.ClickEvent
 import net.kyori.adventure.text.event.HoverEvent
 import org.bukkit.entity.Player
+import java.time.DateTimeException
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -134,20 +140,30 @@ internal enum class Param(vararg val keys: String) {
     // The moment the first page was read, which the page buttons pin: rows written since would shift every
     // page under the reader, and « would show what was never on the page they left. Not offered to type.
     ASOF("asof"),
+    // Which part of a place the inspector asks about, `block` or `contents`; the page buttons keep it. Not offered to type.
+    PART("part"),
     ;
 
     val canonical: String get() = keys.first()
 
     companion object {
         private val byKey = entries.flatMap { param -> param.keys.map { it to param } }.toMap()
-        val prefixes = entries.filter { it != ASOF }.map { "${it.canonical}:" }
+        val prefixes = entries.filter { it != ASOF && it != PART }.map { "${it.canonical}:" }
         val help = prefixes.joinToString(" ")
         fun of(key: String): Param? = byKey[key]
     }
 }
 
 // Same one-table rule as Param.
-internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
+internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val crossing: Crossing? = null) {
+    // Which way an item went across a player's hands, decided per row from both ends rather than by cause.
+    INVENTORY(INVENTORY_CAUSES, "inventory", "inv", "inventories", crossing = Crossing(inward = true, outward = true, containers = true)),
+    INVENTORY_ADD(INVENTORY_CAUSES, "+inventory", "+inv", "inventory+", "inv+", "+inventories", crossing = Crossing(inward = true, outward = false, containers = true)),
+    INVENTORY_REMOVE(INVENTORY_CAUSES, "-inventory", "-inv", "inventory-", "inv-", "-inventories", crossing = Crossing(inward = false, outward = true, containers = true)),
+    ITEM(INVENTORY_CAUSES, "item", "items", crossing = Crossing(inward = true, outward = true, containers = false)),
+    ITEM_ADD(INVENTORY_CAUSES, "+item", "+items", "item+", "items+", crossing = Crossing(inward = true, outward = false, containers = false)),
+    ITEM_REMOVE(INVENTORY_CAUSES, "-item", "-items", "item-", "items-", crossing = Crossing(inward = false, outward = true, containers = false)),
+
     CONTAINER(
         setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
         "container", "chest", "transaction", "transactions",
@@ -205,7 +221,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
 
     // The entity plane: what died, what a player brought into the world, and everything done to an entity.
     KILL(
-        setOf(Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.PLAYER_KILLED, Cause.MOB_TRANSFORM, Cause.BUCKET_CAPTURE_MOB),
+        setOf(Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.PLAYER_KILLED, Cause.PLAYER_DIED, Cause.MOB_TRANSFORM, Cause.BUCKET_CAPTURE_MOB),
         "kill", "kills", "killed", "death", "deaths",
     ),
     // A fight between players: the kill and the totem it cost in a lookup, and in /pp chat every hit that led to it.
@@ -261,6 +277,38 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String) {
     }
 }
 
+// A direction across a player's hands: `inward` into them, `outward` out of them; `containers` whether a container
+// counts as the other side (`inventory`) or only the ground, the void and other entities (`item`).
+internal class Crossing(val inward: Boolean, val outward: Boolean, val containers: Boolean)
+
+// Everything but the block plane's causes: building is the block plane's `+block`, and a purge's opening
+// balance stands for what was held before, not for anything done.
+private val INVENTORY_CAUSES: Set<Cause> =
+    Cause.entries.filter { !it.name.startsWith("BLK_") }.toSet() - Cause.BLOCK_PLACE - Cause.PURGE_OPENING
+
+// The player whose hands a holder is, if it is: the crafting grid is their entity slot, which is also a
+// projectile's or a frame's, hence the check. An ender chest is a container (as is a station's menu slot) in CoreProtect's sense, not a hand.
+private fun handsOf(holder: Holder, isPlayer: (UUID) -> Boolean): UUID? = when (holder) {
+    is PlayerInv -> holder.uuid
+    is PlayerEquip -> holder.uuid
+    is PlayerCursor -> holder.uuid
+    is EntitySlot -> holder.uuid.takeIf(isPlayer)
+    else -> null
+}
+
+// Whether the row moved the item across a player's hands in a direction [crossing] asks for, from both ends.
+internal fun crosses(entry: LedgerEntry, crossing: Crossing, isPlayer: (UUID) -> Boolean): Boolean {
+    if (entry.cause == Cause.BLOCK_PLACE || entry.cause == Cause.PURGE_OPENING || entry.kind == Kind.MUTATE) return false
+    val (from, to) = if (entry.qty > 0) entry.counterparty to entry.holder else entry.holder to entry.counterparty
+    val mine = handsOf(from, isPlayer)
+    val yours = handsOf(to, isPlayer)
+    // Items moved into a bundle or shulker inside an inventory never left the hands.
+    if (from is Nested || to is Nested) return false
+    val other = if (mine != null) to else from
+    if (!crossing.containers && (other is Container || other is PlayerEnder || other is MenuSlot)) return false
+    return crossing.outward && mine != null && yours != mine || crossing.inward && yours != null && mine != yours
+}
+
 // Every way one item becomes another, which is one question however many benches answer it.
 private val TRANSFORM_CAUSES = setOf(
     Cause.CRAFT_CONSUME, Cause.CRAFT_RESULT, Cause.CRAFT_REMAINDER, Cause.SMELT, Cause.BREW,
@@ -288,7 +336,7 @@ private val USE_CAUSES = setOf(
 )
 
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
-private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")
+private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w", "12:00-13:00")
 private val RADIUS_EXAMPLES = listOf("0", "5", "10", "20", "50", "global")
 private val LIMIT_EXAMPLES = listOf("10", "25", "50", "100")
 
@@ -322,6 +370,9 @@ private const val BOX_STEPS = 250_000
 // fell out of a container broken there. A rollback further back than that behind a busy place goes unmarked.
 private const val LATER_READ = 32
 
+/** Which part of one place a lookup reads: the inspector asks a container for its block and its contents apart. */
+enum class Part(val word: String?) { ALL(null), BLOCK("block"), CONTENTS("contents") }
+
 data class LookupQuery(
     val users: List<String> = emptyList(),
     // Whose own slots to read, rather than where. `users` narrows the rows of a place down to the
@@ -337,6 +388,10 @@ data class LookupQuery(
     val secondsBack: Long? = null,
     // The near end of a span, `time:2h-1h`: how long ago it stops. Null is now.
     val secondsUntil: Long? = null,
+    // The same two ends when a clock time or a date was typed: absolute, so a page asked for later
+    // (with `asOf` moved) still covers the same window. They win over the seconds.
+    val fromMillis: Long? = null,
+    val untilMillis: Long? = null,
     val radius: Int? = null,
     // The `limit:` said, else the reader's own page size, filled in where they asked; null is the default.
     val rows: Int? = null,
@@ -364,15 +419,29 @@ data class LookupQuery(
     val dialog: Boolean = false,
     // What "now" is for this answer: set when the first page is asked for and pinned by the page buttons.
     val asOf: Long? = null,
+    // Of a single place: its block, its contents, or both. A radius or a player ignores it.
+    val part: Part = Part.ALL,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
+    // Whether any action asked for is a direction across a player's hands, which has no block to roll back.
+    val crosses: Boolean
+        get() = (actions + excluded).any { group -> allOf(group).any { Action.of(it.lowercase())?.crossing != null } }
+
     val limit: Int get() = rows ?: DEFAULT_LIMIT
 
-    fun fromTs(now: Long = asOf ?: System.currentTimeMillis()): Long = secondsBack?.let { now - it * 1000 } ?: 0
+    val hasFrom: Boolean get() = secondsBack != null || fromMillis != null
+
+    // Whether the span stops before now.
+    val hasUntil: Boolean get() = secondsUntil != null || untilMillis != null
+
+    fun fromTs(now: Long = asOf ?: System.currentTimeMillis()): Long = fromMillis ?: secondsBack?.let { now - it * 1000 } ?: 0
 
     // Pinned, the moment itself is left out: a row of that millisecond may land after the first page was read.
-    fun toTs(now: Long = asOf ?: System.currentTimeMillis()): Long = secondsUntil?.let { now - it * 1000 } ?: asOf?.minus(1) ?: Long.MAX_VALUE
+    fun toTs(now: Long = asOf ?: System.currentTimeMillis()): Long =
+        // A typed end still ahead (`t:03.11` on that day) stops at the pin too, or later pages would shift.
+        untilMillis?.let { until -> asOf?.let { minOf(until, it - 1) } ?: until }
+            ?: secondsUntil?.let { now - it * 1000 } ?: asOf?.minus(1) ?: Long.MAX_VALUE
 
     // Rows a page needs read: every page before it as well, since a read is newest first. Runs folded
     // into one line each eat rows, so a folded page reads further.
@@ -389,12 +458,12 @@ data class LookupQuery(
     fun pageCommand(subcommand: String, page: Int, vararg pinned: String): String {
         // A bare word is a player, even one named `page`.
         val kept = words.split(' ').filter { it.isNotBlank() && it.substringBefore(':', "").lowercase() !in PAGED_AWAY }
-        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }) + "page:$page").joinToString(" ")
+        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }, part.word?.let { "part:$it" }) + "page:$page").joinToString(" ")
     }
 }
 
 private const val GROUPED_READ = 4
-private val PAGED_AWAY = setOf("page", "pg", "at", "asof")
+private val PAGED_AWAY = setOf("page", "pg", "at", "asof", "part")
 
 /** Where a lookup asked with `at:` reads, in the world it was asked from. */
 fun LookupQuery.targetOr(fallback: LookupTarget): LookupTarget {
@@ -442,7 +511,7 @@ private val UNKNOWN_PARAMETER = DynamicCommandExceptionType {
 }
 private val EMPTY_VALUE = DynamicCommandExceptionType { said("'$it:' has no value") }
 private val BAD_TIME = DynamicCommandExceptionType {
-    said("'$it' is not a time span, expected something like 30m, 2h or 1d6h")
+    said("'$it' is not a time, expected 1h, 2h-1h, 14:00, 03.11 or 03.11_14:00-03.11_18:00")
 }
 private val BAD_RADIUS = DynamicCommandExceptionType {
     said("'$it' is not a radius, expected 0 to ${Settings.maxRadius} blocks or 'global'")
@@ -457,6 +526,7 @@ private val BAD_EVENT = DynamicCommandExceptionType { said("'$it' is not an even
 private val UNKNOWN_FLAG = DynamicCommandExceptionType { said("unknown flag '$it', expected #count, #sum or #all") }
 private val BAD_POSITION = DynamicCommandExceptionType { said("'$it' is not a position, expected x,y,z") }
 private val BAD_MOMENT = DynamicCommandExceptionType { said("'$it' is not a moment; the page buttons fill it in") }
+private val BAD_PART = DynamicCommandExceptionType { said("'$it' is not a part, expected part:block or part:contents") }
 private val STEAL_EXCLUDED = DynamicCommandExceptionType {
     said("'$it': a theft is worked out for each withdrawal, so exclude:steal is not taken; use exclude:withdraw instead")
 }
@@ -464,15 +534,27 @@ private val BAD_LIMIT = DynamicCommandExceptionType {
     said("'$it' is not a row count between 1 and $MAX_LIMIT")
 }
 
-fun parseLookupQuery(input: String): LookupQuery = parseLookupQuery(StringReader(input))
+fun parseLookupQuery(input: String, now: ZonedDateTime = ZonedDateTime.now(ZoneId.systemDefault())): LookupQuery =
+    parseLookupQuery(StringReader(input), now)
 
 // Parsing walks the caller's reader instead of a copied string so that every exception carries the
 // real cursor: the client underlines the offending token rather than the whole argument.
-fun parseLookupQuery(reader: StringReader): LookupQuery {
+fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.now(ZoneId.systemDefault())): LookupQuery {
     var query = LookupQuery(words = reader.remaining)
+    // The `time:` value as typed: `asof:` may come after it, and the moment it names is resolved against that.
+    var rawTime: String? = null
     while (true) {
         while (reader.canRead() && reader.peek() == ' ') reader.skip()
-        if (!reader.canRead()) return query.userEverywhere()
+        if (!reader.canRead()) {
+            // Page buttons ask again with `asof:` pinned: `t:14:00` typed at 13:59 is yesterday's, and must stay so at 14:01.
+            val pinned = query.asOf?.let { Instant.ofEpochMilli(it).atZone(now.zone) } ?: now
+            val timed = rawTime?.let { raw ->
+                timeSpanOrNull(raw, pinned)?.let {
+                    query.copy(secondsBack = it.secondsBack, secondsUntil = it.secondsUntil, fromMillis = it.fromMillis, untilMillis = it.untilMillis)
+                }
+            } ?: query
+            return timed.userEverywhere()
+        }
         val tokenStart = reader.cursor
         while (reader.canRead() && reader.peek() != ' ') reader.skip()
         val token = reader.string.substring(tokenStart, reader.cursor)
@@ -517,7 +599,10 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
         query = when (param) {
             Param.USER -> query.copy(users = query.users + values(value))
             Param.PLAYER -> query.copy(players = query.players + values(value))
-            Param.TIME -> spanOrNull(value)?.let { (back, until) -> query.copy(secondsBack = back, secondsUntil = until) } ?: fail(reader, BAD_TIME, value)
+            Param.TIME -> timeSpanOrNull(value, now)?.let {
+                rawTime = value
+                query.copy(secondsBack = it.secondsBack, secondsUntil = it.secondsUntil, fromMillis = it.fromMillis, untilMillis = it.untilMillis)
+            } ?: fail(reader, BAD_TIME, value)
             Param.RADIUS -> query.copy(radius = radiusOrNull(value) ?: fail(reader, BAD_RADIUS, value))
             Param.ACTION -> {
                 val named = actions(reader, valueStart, value)
@@ -545,6 +630,7 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
             Param.FILTER -> query.copy(filter = value)
             Param.AT -> query.copy(at = positionOrNull(value) ?: fail(reader, BAD_POSITION, value))
             Param.ASOF -> query.copy(asOf = value.toLongOrNull()?.takeIf { it > 0 } ?: fail(reader, BAD_MOMENT, value))
+            Param.PART -> query.copy(part = Part.entries.firstOrNull { it.word == value.lowercase() } ?: fail(reader, BAD_PART, value))
         }
         reader.cursor = tokenStart + token.length
     }
@@ -613,6 +699,84 @@ internal fun spanOrNull(value: String): Pair<Long, Long?>? {
     return if (a == b) null else maxOf(a, b) to minOf(a, b)
 }
 
+/** Both ends of a `time:` value, each end either relative (seconds back) or absolute (epoch millis). */
+internal data class TimeSpan(
+    val secondsBack: Long? = null,
+    val secondsUntil: Long? = null,
+    val fromMillis: Long? = null,
+    val untilMillis: Long? = null,
+)
+
+// One end as typed: where it falls (a date alone: its start), and what it stands for as the near end.
+// [today] is the same clock time taken today, kept when it was ahead of now and so taken as yesterday.
+private class End(val at: Long, val relative: Long?, val nearAt: Long, val today: End? = null, val wholeDay: Boolean = false)
+
+private val DATE = Regex("""(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?""")
+private val CLOCK = Regex("""(\d{1,2}):(\d{2})(?::(\d{2}))?""")
+
+private fun endOrNull(text: String, now: ZonedDateTime): End? {
+    durationOrNull(text)?.let { return End(now.toInstant().toEpochMilli() - it * 1000, it, 0) }
+    val parts = text.split('_')
+    if (parts.size > 2) return null
+    val date = parts.firstOrNull()?.takeIf { '.' in it }
+    val clock = parts.getOrNull(if (date != null) 1 else 0)
+    if (date == null && clock == null || parts.size == 2 && (date == null || clock == null)) return null
+    try {
+        val time = if (clock == null) null else CLOCK.matchEntire(clock)?.let { LocalTime.of(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].ifEmpty { "0" }.toInt()) } ?: return null
+        val zone = now.zone
+        fun at(day: LocalDate) = day.atTime(time ?: LocalTime.MIDNIGHT).atZone(zone)
+        val day = if (date == null) now.toLocalDate() else DATE.matchEntire(date)?.let { m ->
+            // No year: this year, or last if that lands ahead of now.
+            m.groupValues[3].takeIf { it.isNotEmpty() }?.let { LocalDate.of(it.toInt(), m.groupValues[2].toInt(), m.groupValues[1].toInt()) }
+                ?: LocalDate.of(now.year, m.groupValues[2].toInt(), m.groupValues[1].toInt()).let { d ->
+                    if (at(d).isAfter(now)) LocalDate.of(now.year - 1, d.monthValue, d.dayOfMonth) else d
+                }
+        } ?: return null
+        // A clock time alone: today, or yesterday if that is still ahead.
+        val ahead = date == null && at(day).isAfter(now)
+        val moment = at(if (ahead) day.minusDays(1) else day)
+        val start = moment.toInstant().toEpochMilli()
+        // A date without a time is the whole day, a time without seconds its whole minute: as the near end it
+        // stops at their last millisecond, so `t:14:00-14:05` takes what happened at 14:05:30.
+        val whole = when {
+            time == null -> 24 * 3600_000L
+            CLOCK.matchEntire(clock!!)!!.groupValues[3].isEmpty() -> 60_000L
+            else -> 1L
+        }
+        val nearAt = start + whole - 1
+        val today = at(day).toInstant().toEpochMilli().takeIf { ahead }?.let { End(it, null, it + whole - 1) }
+        return End(start, null, nearAt, today, wholeDay = time == null)
+    } catch (_: DateTimeException) {
+        return null
+    }
+}
+
+/**
+ * A `time:` value: a span of durations as [spanOrNull] reads it, or clock times and dates (`14:00`, `03.11`,
+ * `03.11_14:00`) in the server's zone, alone or mixed with durations. A lone date is its whole day, a lone
+ * time runs up to now.
+ */
+internal fun timeSpanOrNull(value: String, now: ZonedDateTime = ZonedDateTime.now(ZoneId.systemDefault())): TimeSpan? {
+    spanOrNull(value)?.let { (back, until) -> return TimeSpan(secondsBack = back, secondsUntil = until) }
+    val ends = value.split('-').map { endOrNull(it, now) ?: return null }
+    if (ends.size == 1) {
+        val end = ends[0]
+        // A lone date is its day; a lone time runs up to now.
+        return TimeSpan(fromMillis = end.at, untilMillis = end.nearAt.takeIf { end.wholeDay })
+    }
+    if (ends.size != 2) return null
+    // `t:00:24-00:29` at 00:27 runs to a minute still ahead, not from yesterday's 00:29: an end typed second that
+    // is ahead of now stays today when that keeps it after the first. `t:23:00-01:00` at 02:00 is unaffected,
+    // the one taken as yesterday being the first.
+    val second = ends[1].today?.takeIf { it.at > ends[0].at } ?: ends[1]
+    if (ends[0].at == second.at) return null
+    val (far, near) = listOf(ends[0], second).sortedBy { it.at }
+    return TimeSpan(
+        secondsBack = far.relative, fromMillis = far.at.takeIf { far.relative == null },
+        secondsUntil = near.relative, untilMillis = near.nearAt.takeIf { near.relative == null },
+    )
+}
+
 fun durationOrNull(value: String): Long? {
     val text = value.lowercase()
     var total = 0L
@@ -674,6 +838,8 @@ internal class RowFilter(
     // Which of `exclude:`'s words are players, by the word lowercased.
     excludedPlayers: Map<String, UUID> = emptyMap(),
     private val rollback: Boolean = false,
+    // Whether a uuid is a player: the crafting grid is an entity slot, like a frame's or a projectile's.
+    private val isPlayer: (UUID) -> Boolean = { false },
 ) {
     internal val namesUsers: Boolean get() = users.isNotEmpty()
     private val causes = query.causes
@@ -681,9 +847,10 @@ internal class RowFilter(
     private val all = query.all
     private val amount = query.amount
     internal val event = query.event?.id
-    // Read only when some group joins actions with `&`: otherwise `causes` and `kinds` already say it all.
+    // Read only when some group joins actions with `&` or names a crossing, which a cause cannot tell:
+    // otherwise `causes` and `kinds` already say it all.
     private val actions = query.actions.map { group -> allOf(group).mapNotNull { Action.of(it.lowercase()) } }
-        .takeIf { groups -> groups.any { it.size > 1 } }
+        .takeIf { groups -> groups.any { it.size > 1 || it.any { action -> action.crossing != null } } }
     private val included = query.included.map { group -> allOf(group).map(::normalizeItem) }
     private val excluded = query.excluded.map { group ->
         allOf(group).map { word ->
@@ -707,7 +874,8 @@ internal class RowFilter(
         if (!caused(entry.cause)) return false
         if (amount != null && abs(entry.qty) !in amount) return false
         if (plain) return true
-        return about(Seen(setOf(itemKey(ledger, entry.itemFormId)), { entry.cause in it.causes }) { player, _ -> namesUser(entry, setOf(player)) })
+        val acts = { action: Action -> action.crossing?.let { crosses(entry, it, isPlayer) } ?: (entry.cause in action.causes) }
+        return about(Seen(setOf(itemKey(ledger, entry.itemFormId)), acts) { player, _ -> namesUser(entry, setOf(player)) })
     }
 
     // `u:A&B` is what A did to B, a kill above all; `u:B` alone stays what B did.
@@ -716,7 +884,7 @@ internal class RowFilter(
         val countsKind = row.cause != Cause.ROLLBACK && row.cause != Cause.PURGE_OPENING
         if (!keepsActed(row.cause, row.eventId, row.confidence, row.kind in kinds && countsKind)) return false
         if (plain) return true
-        return about(Seen(setOf(row.type), { row.cause in it.causes || countsKind && row.kind in it.kinds }) { player, group ->
+        return about(Seen(setOf(row.type), { it.crossing == null && (row.cause in it.causes || countsKind && row.kind in it.kinds) }) { player, group ->
             player == row.actor || player == row.uuid && row.actor in group
         })
     }
@@ -728,7 +896,7 @@ internal class RowFilter(
         if (!keepsActed(row.cause, row.eventId, row.confidence)) return false
         if (plain) return true
         val named = setOf(stateName(ledger, row.stateBefore), stateName(ledger, row.stateAfter))
-        return about(Seen(named, { row.cause in it.causes }) { player, _ -> player == row.actor }, shape = row.cause == Cause.BLK_SHAPE)
+        return about(Seen(named, { it.crossing == null && row.cause in it.causes }) { player, _ -> player == row.actor }, shape = row.cause == Cause.BLK_SHAPE)
     }
 
     private fun keepsActed(cause: Cause, eventId: Long, confidence: Confidence, kind: Boolean = false): Boolean {
@@ -831,7 +999,7 @@ class LookupArgument(
         Param.PAGE -> listOf("2", "3")
         Param.ROLLEDBACK -> listOf("no", "yes")
         Param.AMOUNT -> listOf(">=8", ">=64", "<4")
-        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, null -> emptyList()
+        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, Param.PART, null -> emptyList()
     }
 }
 
@@ -862,7 +1030,7 @@ private val EXCLUDABLE: List<String> by lazy {
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
-private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF)
+private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF, Param.PART)
 
 // The clicks of a window, which `verb` words "moved", and the container causes themselves: what a line between a
 // player's hands and a container may be drawn as put in or taken out.
@@ -1219,10 +1387,15 @@ class Lookups(
                 "(complete $planesComplete), steps ${steps.used} of $BOX_STEPS${if (steps.ranOut) " (ran out)" else ""}"
         }
         // The coordinates come after, set apart by the heading.
-        val where = when {
+        val place = when {
             query.radius != null -> Ui.text(tr("radius ${query.radius} around", "радиус ${query.radius} вокруг"))
             target.block != null -> Ui.block(target.block)
             else -> Ui.text(tr("place", "место"))
+        }
+        val where = if (query.radius == null && query.part == Part.CONTENTS) {
+            Component.text().append(place).append(Ui.text(tr(", contents", ", содержимое"), Ui.MUTED)).build()
+        } else {
+            place
         }
         if (blocks.get(target.world) == null) sender.say("This world's block log is not open.")
         answer(sender, items + changes, page.complete && planesComplete && !steps.ranOut, where, query, target)
@@ -1232,7 +1405,8 @@ class Lookups(
      * Everything the named players did in this world, newest first: their own block and entity rows by the
      * index of rows that name them, the containers they traded with by their own slots, and only as many
      * of either as the page needs. The rest of each place's history is read only to see what a rollback
-     * has since given back.
+     * has since given back. Item rows with no position (eating, crafting, rows from before drops had a spot)
+     * have no world, so they show in the answer of each world.
      */
     private fun reportEverywhere(sender: CommandSender, target: LookupTarget, query: LookupQuery, users: Set<UUID>) {
         val log = blocks.get(target.world) ?: return sender.say("This world's block log is not open.")
@@ -1262,7 +1436,14 @@ class Lookups(
         }
         // What they put in or took out names them on their own slots; what fell out of a container they broke
         // names them only as its actor, on the container, so the places of their rows are read too.
-        val traded = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query).entries.filter { it.counterparty.block?.world == target.world }
+        // Drops, pickups and eating have no position at all, so they are kept when they left a player's own
+        // slots, as CoreProtect shows them; a click between two of one player's own slots is not that.
+        fun own(holder: Holder) = (holder as? PlayerHolder)?.uuid ?: (holder as? EntitySlot)?.uuid?.takeIf { it in users }
+        val traded = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query).entries.filter {
+            // A drop or pickup from this version on says where it happened; the world decides, as for a block.
+            val at = it.spot ?: it.counterparty.block
+            if (at != null) at.world == target.world else own(it.counterparty).let { mine -> mine == null || mine != own(it.holder) }
+        }
         // A block put down drops nothing, so only the places they changed otherwise are read for what fell out.
         val broken = placesOf(rows, { Triple(it.x, it.y, it.z) }, { it.timestamp }) { it.cause != Cause.BLK_PLAYER_PLACE }
         val dropped = broken.flatMap { (at, ts) ->
@@ -1296,9 +1477,29 @@ class Lookups(
         val between = page.entries.filter { entry ->
             groups.any { group -> group.all { it == owner(entry.holder) || it == owner(entry.counterparty) } }
         }
-        val items = itemLines(between, query)
+        // Their deaths are no slot's business: each world's log files them under the victim.
+        val fromTs = query.fromTs()
+        val toTs = query.toTs()
+        val keeps = rowFilter(query)
+        var complete = page.complete
+        // Walking a player's whole index per world for `a:pickup` would find nothing and could only mark the
+        // answer cut short. A kill is filed under its culprit's cause, an explosion or a fire too, so any cause
+        // of the entity or block plane may name a death; `a:-entity` names deaths by kind with no cause.
+        val wantsDeaths = query.causes?.any { it in ENTITY_PLANE_CAUSES || it in BLOCK_CAUSES } ?: true ||
+            query.kinds.any { it == EntityKind.PLAYER_DIED || it == EntityKind.TOTEM_POPPED }
+        val deaths = if (!wantsDeaths) emptyList() else blocks.worlds.flatMap { world ->
+            val log = blocks.get(world) ?: return@flatMap emptyList()
+            players.flatMap { victim ->
+                val found = log.byActor(victim, fromTs, toTs, query.wanted + 1, GLOBAL_WALK, { false }) {
+                    (it.kind == EntityKind.PLAYER_DIED || it.kind == EntityKind.TOTEM_POPPED) && it.uuid == victim && keeps.keeps(it)
+                }
+                complete = complete && found.complete
+                planeLines(world, emptyList(), found.entities, keeps)
+            }
+        }
+        val items = itemLines(between, query) + deaths
         val who = query.players.joinToString(", ")
-        answer(sender, items, page.complete, Ui.text(tr("what $who carried", "вещи $who")), query, target)
+        answer(sender, items, complete, Ui.text(tr("what $who carried", "вещи $who")), query, target)
     }
 
     // Every name has to be known: dropping the one that was misspelt would answer about the rest as
@@ -1329,7 +1530,7 @@ class Lookups(
             // A slot posting names its player as a holder rather than as its actor.
             val who = entry.actor ?: playerOf(entry.holder) ?: playerOf(entry.counterparty)
             val same = "i ${entry.cause} $who ${entry.itemFormId} ${entry.qty > 0} ${slotless(entry.holder)} ${slotless(entry.counterparty)}"
-            val places = listOfNotNull(entry.holder.block, entry.counterparty.block)
+            val places = listOfNotNull(entry.holder.block, entry.counterparty.block, entry.spot)
             Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, places) { amount, _ ->
                 draw(entry, who, amount)
             }
@@ -1460,6 +1661,8 @@ class Lookups(
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius
+        // What a container holds is the item plane alone; the block and entity planes are about the block.
+        if (radius == null && query.part == Part.CONTENTS) return emptyList<Line>() to true
         val keeps = rowFilter(query)
         val rows: List<BlockRow>
         val entities: List<EntityRow>
@@ -1511,7 +1714,7 @@ class Lookups(
     private fun read(target: LookupTarget, query: LookupQuery, steps: Steps): EntryPage {
         val fromTs = query.fromTs()
         val toTs = query.toTs()
-        val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z), fromTs, toTs, query)
+        val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z, query.part), fromTs, toTs, query)
         val keeps = rowFilter(query)
         return ledger.boxPage(target.world, target.box(radius), fromTs, toTs, boxWanted(query), steps, keeps::keeps)
     }
@@ -1520,8 +1723,10 @@ class Lookups(
     // one; a count is of everything the read reaches.
     private fun boxWanted(query: LookupQuery) = if (query.count) query.fetch else query.wanted + 1
 
-    private fun holdersAt(world: UUID, x: Int, y: Int, z: Int): List<Holder> =
-        listOf(Container(world, x, y, z, 0), WorldBlock(world, x, y, z))
+    private fun holdersAt(world: UUID, x: Int, y: Int, z: Int, part: Part = Part.ALL): List<Holder> = listOfNotNull(
+        Container(world, x, y, z, 0).takeIf { part != Part.BLOCK },
+        WorldBlock(world, x, y, z).takeIf { part != Part.CONTENTS },
+    )
 
     private fun holderRows(holders: List<Holder>, fromTs: Long, toTs: Long, query: LookupQuery): EntryPage {
         val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = query.fetch) }
@@ -1559,6 +1764,7 @@ class Lookups(
         ledger, query, groupsOf(query.users),
         query.excluded.flatMap(::allOf).mapNotNull { word -> idOf(word)?.let { word.lowercase() to it } }.toMap(),
         rollback,
+        isPlayer = ConcurrentHashMap<UUID, Boolean>().let { seen -> { uuid -> seen.computeIfAbsent(uuid) { knownName(it) != null } } },
     )
 
     internal fun chatFilter(query: LookupQuery): (ChatLine) -> Boolean = chatFilter(query, idOf)

@@ -10,6 +10,7 @@ import io.pfaumc.pfauprotect.capture.block.SpawnOrigins
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.capture.block.spotOf
+import io.pfaumc.pfauprotect.capture.block.toWorldBlock
 import org.bukkit.Material
 import org.bukkit.NamespacedKey
 import org.bukkit.entity.AbstractArrow
@@ -56,10 +57,11 @@ class ProjectileListener(
         if (!event.shouldConsume()) return
         val form = codec.encodeOrNull(event.itemStack)?.form ?: return
         val projectile = event.projectile
+        val at = event.player.location.toWorldBlock()
         val intent = when (projectile) {
-            is Trident -> Intent(Cause.PROJ_SHOT, to = booked(projectile), form = form, qty = 1)
-            is Firework -> Intent(Cause.FIREWORK_LAUNCH, to = Void, form = form, qty = 1)
-            else -> Intent(Cause.THROWN_CONSUMED, to = Void, form = form, qty = 1)
+            is Trident -> Intent(Cause.PROJ_SHOT, to = booked(projectile), form = form, qty = 1, spot = at)
+            is Firework -> Intent(Cause.FIREWORK_LAUNCH, to = Void, form = form, qty = 1, spot = at)
+            else -> Intent(Cause.THROWN_CONSUMED, to = Void, form = form, qty = 1, spot = at)
         }
         capture.intend(event.player, intent)
     }
@@ -82,7 +84,7 @@ class ProjectileListener(
         if (!event.shouldConsumeItem()) return
         val form = codec.encodeOrNull(event.consumable)?.form ?: return
         val to = if (shot != null) booked(shot) else Void
-        capture.intend(player, Intent(Cause.PROJ_SHOT, to = to, form = form, qty = 1))
+        capture.intend(player, Intent(Cause.PROJ_SHOT, to = to, form = form, qty = 1, spot = player.location.toWorldBlock()))
     }
 
     // The ammunition goes into the crossbow's own form, so loading is one item changing into another.
@@ -99,7 +101,10 @@ class ProjectileListener(
         val player = event.player
         capture.intend(
             player,
-            Intent(Cause.FIREWORK_LAUNCH, to = Void, form = form, qty = 1, holder = capture.handSlot(player, event.hand)),
+            Intent(
+                Cause.FIREWORK_LAUNCH, to = Void, form = form, qty = 1, holder = capture.handSlot(player, event.hand),
+                spot = player.location.toWorldBlock(),
+            ),
         )
     }
 
@@ -112,7 +117,7 @@ class ProjectileListener(
         val from = carriedBy(arrow)
         val returning = arrow is Trident && arrow.loyaltyLevel > 0 && arrow.hasDealtDamage()
         val cause = if (returning) Cause.TRIDENT_LOYALTY_RETURN else Cause.PROJ_PICKUP
-        capture.intend(event.player, Intent(cause, from = from, form = encoded.form, qty = encoded.count))
+        capture.intend(event.player, Intent(cause, from = from, form = encoded.form, qty = encoded.count, spot = arrow.location.toWorldBlock()))
     }
 
     // A loyal trident whose owner is gone falls out as an item.

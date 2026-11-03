@@ -8,6 +8,7 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.block
+import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.LedgerEntry
 import io.pfaumc.pfauprotect.model.PlayerInv
@@ -178,15 +179,17 @@ class StorageTest : OneLedger() {
     }
 
     // Versions 5, 6 and 7 only add families, so an older ledger is opened, given them and stamped anew, with
-    // every row it had still there; 7 also indexes the rows it had by chunk and time.
+    // every row it had still there; 6 also indexes the rows it had by chunk and time. Version 8 adds the spot
+    // to a value and its entries to the index, but a 7 has the index and no spot rows, so it only gets the stamp.
     @Test
-    fun `a version 4, 5 or 6 ledger is widened in place`(@TempDir older: Path) {
+    fun `a version 4, 5, 6 or 7 ledger is widened in place`(@TempDir older: Path) {
         var current = 0L
         reopen { current = storedSchemaOf(dir) }
         val widensFrom = mapOf(
             4L to everyColumnFamily - "compensated" - "confiscations" - "by_chunk",
             5L to everyColumnFamily - "confiscations" - "by_chunk",
             6L to everyColumnFamily - "by_chunk",
+            7L to everyColumnFamily,
         )
         for ((version, earlier) in widensFrom) {
             val base = older.resolve("v$version")
@@ -352,7 +355,7 @@ class StorageTest : OneLedger() {
     @Test
     fun `a fresh ledger is stamped with the version that matches its families`() {
         reopen {
-            assertEquals(7L, storedSchemaOf(dir))
+            assertEquals(8L, storedSchemaOf(dir))
             assertEquals(everyColumnFamily.sorted(), familiesOf(dir).sorted())
         }
     }
@@ -807,6 +810,62 @@ class StorageTest : OneLedger() {
         )
         assertEquals(7, openings.size)
         assertTrue(openings.all { it.counterparty == Void && it.timestamp == cutoff }, "$openings")
+    }
+
+    private val dropAt = WorldBlock(world, 500, 70, 500)
+    private val aroundDrop = Box(499, 501, 69, 71, 499, 501)
+    private val aroundChest = Box(chest.x, chest.x, chest.y, chest.y, chest.z, chest.z)
+
+    private fun spotRows(): List<Pair<String, String>> =
+        rawRowsOf(dir, "by_chunk").entries.filter { it.key.length == 58 && it.key.substring(50, 52) == "f0" }.map { it.key to it.value }
+
+    private fun dropTransfer(ts: Long) = Transfer(
+        Cause.DROP_FROM_HAND, aliceInv, ItemEntityRef(UUID.randomUUID()), torch, null, 2, ts, actor = alice, spot = dropAt,
+    )
+
+    // Zcode holds y in -32768..32767; a drop from above that is still booked, without a spot.
+    @Test
+    fun `a drop from a y the position code cannot hold is kept without its spot`() {
+        log.submit(Transfer(Cause.DROP_FROM_HAND, aliceInv, ItemEntityRef(UUID.randomUUID()), torch, null, 2, T0 + 40, actor = alice, spot = WorldBlock(world, 500, 40_000, 500)))
+        log.drain()
+        val kept = log.holderEntries(aliceInv, T0 + 40, T0 + 40).single()
+        assertEquals(-2, kept.qty)
+        assertNull(kept.spot)
+    }
+
+    // The drop has no positional holder: the spot finds the player's posting, and only that one, so a radius
+    // does not see the movement twice. A purge takes the index entry with the posting.
+    @Test
+    fun `a drop with a spot is found around the spot and its index entry goes with a purge`() {
+        log.submit(dropTransfer(T0 + 40))
+        log.drain()
+
+        val found = log.boxPage(world, aroundDrop, 0, Long.MAX_VALUE, 10, Steps(1000)) { true }.entries
+        assertEquals(listOf(aliceInv to -2), found.map { it.holder to it.qty })
+        assertEquals(dropAt, found.single().spot)
+        assertTrue(log.boxPage(world, aroundChest, 0, Long.MAX_VALUE, 10, Steps(1000)) { true }.entries.none { it.spot != null })
+        reopen { assertEquals(1, spotRows().size) }
+
+        log.purgeBefore(T0 + 100, dryRun = false)
+        assertTrue(log.boxPage(world, aroundDrop, 0, Long.MAX_VALUE, 10, Steps(1000)) { true }.entries.isEmpty())
+        reopen { assertEquals(emptyList<Pair<String, String>>(), spotRows()) }
+    }
+
+    // A base stamped older than 7 has no chunk-time index; opening it indexes every posting, spot ones included,
+    // so a lost index is rebuilt from the values.
+    @Test
+    fun `the spot entries are rebuilt from the values when the schema is older`() {
+        log.submit(dropTransfer(T0 + 40))
+        log.drain()
+        reopen {
+            rawEdit(dir) { raw, family ->
+                val keys = ArrayList<ByteArray>()
+                raw.newIterator(family("by_chunk")).use { it.seekToFirst(); while (it.isValid) { keys += it.key(); it.next() } }
+                keys.forEach { raw.delete(family("by_chunk"), it) }
+            }
+            stampSchema(dir, 6)
+        }
+        assertEquals(listOf(-2), log.boxPage(world, aroundDrop, 0, Long.MAX_VALUE, 10, Steps(1000)) { true }.entries.map { it.qty })
     }
 
     @Test

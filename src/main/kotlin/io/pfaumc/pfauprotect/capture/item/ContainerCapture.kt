@@ -31,6 +31,7 @@ import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.WorldBlock
 import io.pfaumc.pfauprotect.capture.block.spotOf
+import io.pfaumc.pfauprotect.capture.block.toWorldBlock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Level
@@ -453,6 +454,7 @@ internal fun transferOf(move: Move, timestamp: Long, kind: Kind): Transfer = Tra
     kind = if (move.cause == Cause.CREATIVE_CLONE) Kind.CLONE else kind,
     confidence = move.confidence,
     actor = move.actor,
+    spot = move.spot,
 )
 
 // Nothing named this end. The cause says so rather than borrowing the name of a click that never
@@ -804,6 +806,7 @@ class ContainerCaptureListener(
                         key = encoded.key,
                         qty = encoded.count,
                         timestamp = System.currentTimeMillis(),
+                        spot = player.location.toWorldBlock(),
                     )
                 )
             )
@@ -811,7 +814,8 @@ class ContainerCaptureListener(
         }
         // Nothing open and the player's own inventory screen report the same type, so a drop out of
         // the survival inventory is indistinguishable from a drop out of the hand and reads as one.
-        closingDrop(player, drop.uniqueId, encoded)?.let { row ->
+        val at = player.location.toWorldBlock()
+        closingDrop(player, drop.uniqueId, encoded, at)?.let { row ->
             sink(listOf(row))
             return
         }
@@ -825,6 +829,7 @@ class ContainerCaptureListener(
                 qty = encoded.count,
                 // Also what tells a drop the pass could not find apart: one conjured by creative.
                 actor = player.uniqueId,
+                spot = at,
             )
         )
     }
@@ -994,7 +999,7 @@ class ContainerCaptureListener(
     }
 
     // The drop out of a closing window, written from the slot it left, or null where it was not one.
-    private fun closingDrop(player: Player, drop: UUID, encoded: EncodedItem): Transfer? {
+    private fun closingDrop(player: Player, drop: UUID, encoded: EncodedItem, spot: WorldBlock): Transfer? {
         val left = closing[player.uniqueId] ?: return null
         val at = closingSlot(left.map { it.form to it.count }, encoded.form, encoded.count) ?: return null
         return Transfer(
@@ -1005,6 +1010,7 @@ class ContainerCaptureListener(
             qty = encoded.count,
             timestamp = System.currentTimeMillis(),
             actor = player.uniqueId,
+            spot = spot,
         )
     }
 

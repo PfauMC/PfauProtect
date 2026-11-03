@@ -149,7 +149,7 @@ class EntityCaptureTest : BothPlanes() {
     // A player who dies of their own arrow or their own dynamite is no grief between players. What fell
     // out of a player killed by another is named on the row, for a rollback of the killer to take back.
     @Test
-    fun `a player killed by another is written with their drops and one killed by themselves is not`() {
+    fun `a player killed by another is written with their drops and one killed by themselves has no actor`() {
         val spawns = Spawns()
         val capture = capture(spawns)
         fun player(id: UUID, killer: Player? = null) = stub(Player::class.java, mapOf(
@@ -166,7 +166,10 @@ class EntityCaptureTest : BothPlanes() {
         }
 
         die(player(alice, killer = player(alice)))
-        assertTrue(rowsHere().isEmpty())
+        // A death with nobody behind it is written too, with no actor.
+        val own = rowsHere().single()
+        assertEquals(Cause.PLAYER_DIED, own.cause)
+        assertNull(own.actor)
 
         val spot = Spot(world, 3.5, 64.0, 3.5)
         val drop = UUID.randomUUID()
@@ -176,7 +179,7 @@ class EntityCaptureTest : BothPlanes() {
             assertEquals(1, spawns.origins.claim(drop, spot, key("diamond"), 1))
             assertEquals(1, spawns.origins.claim(UUID.randomUUID(), spot, key("diamond"), 1))
         }
-        val row = rowsHere().single()
+        val row = rowsHere().single { it.actor != null }
         assertEquals(EntityKind.PLAYER_DIED, row.kind)
         assertEquals(alice, row.uuid)
         assertEquals(bob, row.actor)

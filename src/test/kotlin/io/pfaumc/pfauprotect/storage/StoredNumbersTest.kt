@@ -72,6 +72,7 @@ class StoredNumbersTest {
                 "BEEHIVE_HARVEST" to 0xA6,
                 "BRUSHABLE_REVEAL" to 0xA7,
                 "CONTAINER_NAMED" to 0xA8,
+                "PLAYER_DIED" to 0xA9,
                 "ITEM_SPAWN" to 0x20,
                 "ITEM_MERGE" to 0x21,
                 "ITEM_DESPAWN" to 0x22,
@@ -251,6 +252,7 @@ class StoredNumbersTest {
                 "NESTED" to 8,
                 "VOID" to 9,
                 "WORLD_BLOCK" to 10,
+                "SPOT_TAG" to 0xF0,
             ),
             HolderType::class.java.declaredFields
                 .filter { Modifier.isStatic(it.modifiers) && it.type == Int::class.javaPrimitiveType }

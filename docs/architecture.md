@@ -27,6 +27,13 @@ player inv/equip/cursor/ender, menu slot (not addressable), container, entity sl
 (shulker/bundle contents), `VOID`, world block. A row also carries a `Kind` (TRANSFER/MUTATE/CLONE) and a
 `Confidence` (FACT/INFERRED/NEARBY: a player who was only near when a mechanism fired).
 
+A player's drop, pickup or throw has no positional holder, so a `Transfer` may carry a `spot` (a `WorldBlock`).
+Both postings store it in the entry value (record version 1: world number and `Zcode` position between the actor and
+the damage; rows without a spot stay version 0). The player's own posting also gets a `by_chunk` entry of the usual
+layout under `HolderType.SPOT_TAG` (0xF0), whose value is that posting's `entries` key, so `boxPage` finds it by radius;
+the item entity's half is not indexed, which keeps one movement from showing twice. Schema 8; rows written before it
+have no spot and stay unindexed.
+
 **Block plane (`BlockStore.kt`, `BlockLogs`).** One RocksDB per world (`blocks/<uuid>`), opened and closed on
 world load and unload, with column families rows, meta, by_actor (every row that names an actor, keyed by the
 actor), entities and by_chunk. Block-state ids and block-entity payloads are interned in the shared ledger, and referenced
@@ -59,6 +66,7 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 A page of `lookup`, `near` or `chat` goes through `showPage` (`Lookup.kt`): a Paper dialog with the arrows as
 buttons for a player who reads in one (`lookup.dialog` in `config.yml`, overridden per player by `/pp view` and
 kept in their PDC), chat lines otherwise. The console, the inspector and the short answers stay in chat.
+The inspector aims with its own ray (a spectator inside terrain starts it past that block) and asks `part:block` or `part:contents` of a container (`Part`, hidden like `asof:`; the page buttons keep it).
 
 **Settings, texts, chat, API.** `Settings.kt` reads `config.yml` (language, disabled worlds and causes, limits,
 the mob death thresholds). Messages are written in English and go out through `CommandSender.say()`
@@ -82,14 +90,18 @@ online player through an `Intent`, from an offline one at their next join, from 
 `radius:global` with `user:` finds a player's positions through `by_actor` and their own item rows. Entities go
 back to what their oldest row in the window says they were (brought back from NBT with the same UUID, taken away,
 changed back, returned to where they stood), and a player killed by the one rolled back gets back what fell out of
-them.
+them. Every player death is an entity row; one with no player behind it (fall, lava, mob) has cause `player_died`
+and no actor, and is never rolled back. A death and a popped totem are also indexed in `by_actor` under the
+victim, so `p:` finds them, while `u:` still names only what the victim did.
 
 ## `/pp lookup` and `/pp purge` semantics
 
 - `/pp lookup` reads by position, or with `player:<name>` by a player's own holders (inventory, equipment,
   cursor, ender chest, crafting grid). `user:` is something else: a filter on the actor of positional rows;
   with `radius:global` it reads every position the player touched, through `by_actor`. `time:` takes a span
-  (`2h-1h`), `page:` pages through the answer, `at:x,y,z` pins the place (the page buttons add it). Runs of
+  (`2h-1h`) whose ends are durations or moments (`14:00`, `03.11`, `03.11_14:00`, in the system zone; a date
+  alone is its whole day). Moments are kept as epoch millis (`fromMillis`/`untilMillis`) so the page buttons
+  keep the same window while `asOf` moves. `page:` pages through the answer, `at:x,y,z` pins the place (the page buttons add it). Runs of
   the same thing within a minute fold into one `×N` line; `#all` shows each. `action:steal`, `amount:`,
   `rolledback:`, `#count`/`#sum` narrow it.
 - In the list parameters (`user:`, `player:`, `action:`, `include:`, `exclude:`) `,` is either and `&` is all of
@@ -101,4 +113,8 @@ them.
   An `exclude:` word is a player if one goes by it, an item, block or entity either way, and an action only when
   it names none of those (`THING_NAMES`): `e:tnt` must not drop every explosion from a rollback, `e:explosion`
   does. `steal` is refused there, being worked out per withdrawal. In `/pp chat` it takes players and `pvp`.
+- `inventory` and `item` (each with `+`/`-`) are crossing actions: a direction across a player's hands, decided per
+  row from both ends (`crosses`, `Action.crossing`) rather than by cause, so they work in `p:`, `r:`, the inspector and `u:`
+  (which also keeps a player's rows that left their own slots with no position: drops, pickups, eating). `item`
+  leaves containers out. Block placement and purge openings are never crossings. A rollback refuses them (`refusalOf`).
 - `/pp purge` works per plane: the item ledger (`Storage.purgeBefore`) deletes every posting older than the cutoff and, in the same write, records what each holder held then as `Cause.PURGE_OPENING` openings, so balances hold; the block log (`BlockStore.purgeBefore`) deletes old rows except the newest of each position no later row covers, their index entries, and entity rows older than the cutoff.

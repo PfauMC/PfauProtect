@@ -18,6 +18,8 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.util.UUID
 
 class LookupTest {
@@ -291,6 +293,59 @@ class LookupTest {
     }
 
     @Test
+    fun `a time span reads clock times and dates`() {
+        val now = ZonedDateTime.of(2026, 11, 4, 15, 0, 0, 0, ZoneId.of("Europe/Moscow"))
+        fun ms(d: Int, m: Int, h: Int, min: Int, s: Int = 0, y: Int = 2026) =
+            ZonedDateTime.of(y, m, d, h, min, s, 0, now.zone).toInstant().toEpochMilli()
+        fun span(v: String) = timeSpanOrNull(v, now)
+        // Behind now: today; ahead of it: yesterday. Up to now either way.
+        assertEquals(TimeSpan(fromMillis = ms(4, 11, 14, 0)), span("14:00"))
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 16, 0)), span("16:00"))
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 0, 0), untilMillis = ms(4, 11, 0, 0) - 1), span("03.11"))
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 0, 0), untilMillis = ms(5, 11, 0, 0) - 1), span("03.11-04.11"))
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 0, 0), untilMillis = ms(5, 11, 0, 0) - 1), span("04.11-03.11"))
+        // A time without seconds as the near end takes its whole minute.
+        val minute = 59_999L
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 14, 0), untilMillis = ms(3, 11, 18, 0) + minute), span("03.11_14:00-03.11_18:00"))
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 14, 0), untilMillis = ms(3, 11, 18, 0, 30)), span("03.11_14:00-03.11_18:00:30"))
+        // A date still ahead is last year's.
+        assertEquals(ms(5, 12, 0, 0, y = 2025), span("05.12")?.fromMillis)
+        assertEquals(ms(5, 12, 0, 0, y = 2024), span("05.12.2024")?.fromMillis)
+        assertEquals(TimeSpan(fromMillis = ms(4, 11, 13, 0), secondsUntil = 3600), span("13:00-1h"))
+        assertEquals(TimeSpan(secondsBack = 7200, untilMillis = ms(4, 11, 14, 30) + minute), span("2h-14:30"))
+        assertEquals(TimeSpan(secondsBack = 7200, secondsUntil = 3600), span("2h-1h"))
+        // An end still ahead stays today after a start behind now; a start ahead of now is still yesterday's.
+        assertEquals(TimeSpan(fromMillis = ms(4, 11, 14, 0), untilMillis = ms(4, 11, 15, 30) + minute), span("14:00-15:30"))
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 23, 0), untilMillis = ms(4, 11, 1, 0) + minute), span("23:00-01:00"))
+        for (bad in listOf("25:00", "30.02", "03.11_", "14:00_03.11", "03.11-03.11", "14:00-14:00", "1.2.3")) assertNull(span(bad), bad)
+    }
+
+    // Typed times stay put when the page buttons pin another "now".
+    @Test
+    fun `an absolute time window does not move with asOf`() {
+        val q = parseLookupQuery("t:03.11-04.11")
+        assertEquals(q.fromTs(1L), q.fromTs(Long.MAX_VALUE / 2))
+        assertEquals(q.toTs(1L), q.copy(asOf = Long.MAX_VALUE).toTs())
+        // A pin inside the window caps its end.
+        assertEquals(4L, q.copy(asOf = 5L).toTs())
+        assertTrue(q.hasFrom && q.hasUntil)
+    }
+
+    // `t:14:00` typed at 13:59 is yesterday's; the page buttons ask again at 14:01 with `asof:` pinned, in either word order.
+    @Test
+    fun `a clock time is resolved against asof, whatever the wall clock says`() {
+        val zone = ZoneId.of("Europe/Moscow")
+        val typed = ZonedDateTime.of(2026, 11, 4, 13, 59, 0, 0, zone)
+        val later = typed.plusMinutes(2)
+        val asOf = typed.toInstant().toEpochMilli()
+        val yesterday = ZonedDateTime.of(2026, 11, 3, 14, 0, 0, 0, zone).toInstant().toEpochMilli()
+        for (words in listOf("t:14:00 asof:$asOf", "asof:$asOf t:14:00")) {
+            assertEquals(yesterday, parseLookupQuery(words, typed).fromMillis, words)
+            assertEquals(yesterday, parseLookupQuery(words, later).fromMillis, words)
+        }
+    }
+
+    @Test
     fun `amounts, undone rows, theft and a count are understood`() {
         assertEquals(5..Int.MAX_VALUE, amountOrNull(">=5"))
         assertEquals(6..Int.MAX_VALUE, amountOrNull(">5"))
@@ -343,4 +398,13 @@ class LookupTest {
         assertEquals(query.copy(page = 3, words = asked.words), asked)
     }
 
+
+    @Test
+    fun `a part parses and the page button keeps it`() {
+        val query = parseLookupQuery("part:contents")
+        assertEquals(Part.CONTENTS, query.part)
+        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("part:x") }
+        val command = query.copy(words = "part:contents page:1").pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2)
+        assertTrue(command.contains("part:contents") && command.split(" ").count { it.startsWith("part:") } == 1, command)
+    }
 }

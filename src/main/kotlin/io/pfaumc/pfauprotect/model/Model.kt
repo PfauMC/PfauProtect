@@ -69,6 +69,10 @@ object HolderType {
     // The holders that address a block position. Their keys differ only in this leading byte, so a
     // scan that names one of them answers with half the rows and looks complete doing it.
     val POSITIONAL = listOf(CONTAINER, WORLD_BLOCK)
+
+    // Not a holder: the tag of a by_chunk entry that points at a player's posting through the spot in
+    // its value. On disk like the ids above, and out of their range so the two never meet.
+    const val SPOT_TAG = 0xF0
 }
 
 sealed class Holder(
@@ -159,6 +163,9 @@ data class LedgerEntry(
     val qty: Int,
     val damage: Int?,
     val actor: UUID?,
+    // Where a movement happened that no holder says: a player's drop, pickup or throw. Null for every
+    // row written before it existed and for every holder that has a position of its own.
+    val spot: WorldBlock? = null,
 ) {
     val ref: PostingRef get() = PostingRef(txId, ordinal)
 }
@@ -181,6 +188,8 @@ class Transfer(
     // The postings a rollback gives back by this movement. They are filed against the transaction this
     // lands in, in the same batch, so a second rollback can tell they were already given back.
     val reverts: List<PostingRef> = emptyList(),
+    // Both postings carry it; the player's own is also found by a radius, see [LedgerEntry.spot].
+    val spot: WorldBlock? = null,
 ) {
     constructor(
         cause: Cause,
@@ -192,7 +201,8 @@ class Transfer(
         kind: Kind = Kind.TRANSFER,
         confidence: Confidence = Confidence.FACT,
         actor: UUID? = null,
-    ) : this(cause, from, to, key.form, key.damage, qty, timestamp, kind, confidence, actor)
+        spot: WorldBlock? = null,
+    ) : this(cause, from, to, key.form, key.damage, qty, timestamp, kind, confidence, actor, spot = spot)
 
     init {
         require(qty > 0) { "transfer quantity must be positive, got $qty" }

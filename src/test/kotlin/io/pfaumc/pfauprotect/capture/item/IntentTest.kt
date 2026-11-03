@@ -267,6 +267,21 @@ class IntentTest {
         assertEquals(emptyList<Cause>(), handed)
     }
 
+    // A drop and a pickup of the same stack in one pass cancel in the slots; each still keeps its own place,
+    // or a radius would never find the drop.
+    @Test
+    fun `a drop and a pickup that cancelled keep their places`() {
+        val dropped = WorldBlock(world, 1, 64, 1)
+        val picked = WorldBlock(world, 3, 64, 1)
+        val other = ItemEntityRef(UUID.randomUUID())
+        val intents = listOf(
+            Intent(Cause.DROP_FROM_HAND, to = ground, form = "dirt".toByteArray(), qty = 4, actor = alice, holder = bag(0), spot = dropped),
+            Intent(Cause.PICKUP, from = other, form = "dirt".toByteArray(), qty = 4, actor = alice, holder = bag(0), spot = picked),
+        )
+        val moves = Intents.explain(emptyList(), intents, alice) { bag(7) }
+        assertEquals(listOf(dropped, picked), moves.map { it.spot })
+    }
+
     @Test
     fun `a pair with no slot to run through writes nothing and is handed back instead`() {
         val handed = ArrayList<Cause>()

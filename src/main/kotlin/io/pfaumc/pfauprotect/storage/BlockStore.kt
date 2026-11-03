@@ -87,8 +87,10 @@ data class ActorRows(val blocks: List<BlockRow>, val entities: List<EntityRow>, 
 // Raised by a change to the key layout or to the set of column families. The record version in the
 // value covers neither: without the bump an older database opens and every key is parsed as something it
 // never was. A version 1 base gets its by-actor index built from its rows on first open; a version 2 base
-// simply has no entity rows yet. Anything before 4 gets its chunk-time index built the same way.
-private const val BLOCK_SCHEMA_VERSION = 4L
+// simply has no entity rows yet. Anything before 4 gets its chunk-time index built the same way, and
+// anything before 5 gets its deaths filed under their victims.
+private const val BLOCK_SCHEMA_VERSION = 5L
+private const val WITHOUT_VICTIMS = 4L
 private const val INDEXED_FROM = 1L
 private const val WITHOUT_ENTITIES = 2L
 private const val WITHOUT_CHUNK_TIME = 3L
@@ -200,7 +202,7 @@ class BlockLog(
         // Read before the open, as the ledger's is, so a base refused for its schema is left as it was found.
         val stored = cleaningUpOnFailure({ closeOptions() }) {
             storedSchema(path, BLOCK_META_CF, META_SCHEMA_KEY)?.also {
-                require(it == BLOCK_SCHEMA_VERSION || it == INDEXED_FROM || it == WITHOUT_ENTITIES || it == WITHOUT_CHUNK_TIME) {
+                require(it == BLOCK_SCHEMA_VERSION || it == INDEXED_FROM || it == WITHOUT_ENTITIES || it == WITHOUT_CHUNK_TIME || it == WITHOUT_VICTIMS) {
                     "block database schema $it cannot be read by this build (schema $BLOCK_SCHEMA_VERSION)"
                 }
             }
@@ -223,7 +225,10 @@ class BlockLog(
 
         cleaningUpOnFailure({ closeNatives() }) {
             if (stored == INDEXED_FROM) indexActors()
-            if (stored != null && stored != BLOCK_SCHEMA_VERSION) indexChunks(dir)
+            if (stored != null && stored != BLOCK_SCHEMA_VERSION) {
+                indexVictims()
+                if (stored != WITHOUT_VICTIMS) indexChunks(dir)
+            }
             if (stored != BLOCK_SCHEMA_VERSION) db.put(metaCf, META_SCHEMA_KEY, longBytes(BLOCK_SCHEMA_VERSION))
             nextEventId = db.readCounter(metaCf, META_EVENT_ID)
             lastTs = db.readCounter(metaCf, META_LAST_TS)
@@ -238,6 +243,20 @@ class BlockLog(
             db.forEachRow(rowsCf) { key, value ->
                 val actor = BlockCodec.actorNumberOf(value)
                 if (actor != null && key.size == BlockCodec.KEY_SIZE) batch.put(byActorCf, actorKey(actor, key), NOTHING)
+            }
+            batch.flush()
+        }
+    }
+
+    // As indexActors, for the victims of deaths and popped totems written before they were indexed.
+    private fun indexVictims() {
+        ChunkedBatch(db, writeOptions).use { batch ->
+            db.forEachRow(entitiesCf) { key, value ->
+                if (key.size != BlockCodec.KEY_SIZE) return@forEachRow
+                val row = entityRow(key, value) ?: return@forEachRow
+                if (diedOrPopped(row.kind) && row.uuid != row.actor) {
+                    batch.put(byActorCf, actorKey(shared.registries.id(RegistryNamespace.PLAYER, row.uuid), key), NOTHING)
+                }
             }
             batch.flush()
         }
@@ -698,8 +717,13 @@ class BlockLog(
         val key = BlockCodec.key(change.x, change.y, change.z, change.timestamp, eventId, ordinal)
         batch.put(entitiesCf, key, EntityCodec.value(row, shared.registries))
         indexActor(batch, change.actor, key)
+        if (diedOrPopped(change.kind) && change.uuid != change.actor) indexActor(batch, change.uuid, key)
         batch.put(byChunkCf, chunkKey(key, ENTITY_PLANE), NOTHING)
     }
+
+    // A death is filed under the victim too, so `p:` finds a death nobody stands behind; a lookup of the
+    // victim as an actor still names only what the victim did, since RowFilter keeps the row by its actor.
+    private fun diedOrPopped(kind: EntityKind) = kind == EntityKind.PLAYER_DIED || kind == EntityKind.TOTEM_POPPED
 
     private fun writeChange(
         batch: WriteBatch,

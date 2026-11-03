@@ -400,7 +400,11 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         if (!found.complete && blockSteps.used == 0) return closed()
         if (!found.complete) return tooMuch(History.BLOCK, if (blockSteps.ranOut) "block walk budget" else "block rows cap $MAX_ROLLBACK_ROWS")
         val itemSteps = Steps(WALK_BUDGET)
-        val page = ledger.boxPage(world, box, fromTs, toTs, MAX_ROLLBACK_ROWS, itemSteps, read::keeps)
+        val page = ledger.boxPage(world, box, fromTs, toTs, MAX_ROLLBACK_ROWS, itemSteps) {
+            // A player's drop or pickup comes with the box too, through its spot; filtered here so it neither
+            // counts against the row cap nor the walk budget.
+            (it.holder is Container || it.holder is WorldBlock) && read.keeps(it)
+        }
         Debug.log {
             "  item plane: kept ${page.entries.size} postings, unreadable ${page.unreadable}; complete ${page.complete}, " +
                 "steps ${itemSteps.used} of $WALK_BUDGET${if (itemSteps.ranOut) " (ran out)" else ""}"
@@ -565,7 +569,8 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         for (row in marks) {
             when (row.kind) {
                 EntityKind.DROPPED -> dropped.getOrPut(WorldBlock(world, row.x, row.y, row.z)) { ArrayList() } += row.drops
-                EntityKind.PLAYER_DIED, EntityKind.TOTEM_POPPED -> deaths += row
+                // A death with nobody behind it is no one's to take back.
+                EntityKind.PLAYER_DIED, EntityKind.TOTEM_POPPED -> if (row.actor != null) deaths += row
                 else -> Unit
             }
         }
