@@ -10,6 +10,8 @@ import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.EntityChange
 import io.pfaumc.pfauprotect.model.EntityKind
+import io.pfaumc.pfauprotect.model.Confidence
+import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntitySlot
@@ -257,12 +259,40 @@ class LookupReadTest : BothPlanes() {
         shared.drain()
         val broken = log.at(10, 64, -3, 0, Long.MAX_VALUE, limit = 10, reverse = false).single()
         val taken = shared.holderEntries(chest, 0, Long.MAX_VALUE).single()
-        fun filter(words: String) = RowFilter(shared, parseLookupQuery(words), emptySet(), emptySet(), rollback = true)
+        fun filter(words: String) = RowFilter(shared, parseLookupQuery(words), emptyList(), emptyMap(), rollback = true)
 
         assertTrue(filter("include:stone").keeps(broken))
         assertFalse(filter("exclude:stone").keeps(broken))
         assertTrue(filter("exclude:stone").keeps(taken))
         assertFalse(filter("exclude:diamond").keeps(taken))
+    }
+
+    // `&` asks one row for all of a group: a block by both its states, a kill by who did it and to whom, an
+    // entity by two actions at once.
+    @Test
+    fun `an ampersand group holds only when one row answers every word of it`() {
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        log.drain()
+        val broken = log.at(10, 64, -3, 0, Long.MAX_VALUE, limit = 10, reverse = false).single()
+        val kill = EntityRow(1, 64, 1, T0, 2, 0, EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED, "minecraft:player", bob, Confidence.FACT, alice)
+        val blown = EntityRow(1, 64, 1, T0, 3, 0, EntityKind.REMOVED, Cause.BLK_CREEPER, "minecraft:item_frame", UUID.randomUUID(), Confidence.FACT)
+        fun filter(words: String, vararg users: Set<UUID>) = RowFilter(shared, parseLookupQuery(words), users.toList())
+
+        assertTrue(filter("i:stone&air").keeps(broken))
+        assertFalse(filter("i:stone&dirt").keeps(broken))
+        assertTrue(filter("i:stone&dirt,air").keeps(broken))
+        assertFalse(filter("e:stone&air").keeps(broken))
+        assertTrue(filter("e:stone&dirt").keeps(broken))
+
+        assertTrue(filter("", setOf(alice, bob)).keeps(kill))
+        // Alone, the one killed is not who did it.
+        assertFalse(filter("", setOf(bob)).keeps(kill))
+        assertFalse(filter("", setOf(alice, bob)).keeps(broken))
+        assertTrue(filter("", setOf(alice, bob), setOf(alice)).keeps(broken))
+
+        assertTrue(filter("a:-entity&explosion").keeps(blown))
+        assertFalse(filter("a:-entity&fire").keeps(blown))
+        assertFalse(filter("a:+entity&explosion").keeps(blown))
     }
 
     @Test

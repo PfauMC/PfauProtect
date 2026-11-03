@@ -325,6 +325,8 @@ data class LookupQuery(
     val causes: Set<Cause>? = null,
     // Entity rows `action:` takes by their kind on top of `causes`, which is then never null.
     val kinds: Set<EntityKind> = emptySet(),
+    // The words `action:` was given, for the `&` between them: `causes` and `kinds` take every one of them.
+    val actions: List<String> = emptyList(),
     val secondsBack: Long? = null,
     // The near end of a span, `time:2h-1h`: how long ago it stops. Null is now.
     val secondsUntil: Long? = null,
@@ -500,12 +502,16 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
             Param.PLAYER -> query.copy(players = query.players + values(value))
             Param.TIME -> spanOrNull(value)?.let { (back, until) -> query.copy(secondsBack = back, secondsUntil = until) } ?: fail(reader, BAD_TIME, value)
             Param.RADIUS -> query.copy(radius = radiusOrNull(value) ?: fail(reader, BAD_RADIUS, value))
-            Param.ACTION -> query.copy(
-                causes = (query.causes ?: emptySet()) + causes(reader, valueStart, value),
-                kinds = query.kinds + values(value).flatMap { Action.of(it.lowercase())?.kinds.orEmpty() },
-                steal = query.steal || values(value).any { Action.of(it.lowercase()) == Action.STEAL },
-                pvp = query.pvp || values(value).any { Action.of(it.lowercase()) == Action.PVP },
-            )
+            Param.ACTION -> {
+                val named = actions(reader, valueStart, value)
+                query.copy(
+                    causes = (query.causes ?: emptySet()) + named.flatMap { it.causes },
+                    kinds = query.kinds + named.flatMap { it.kinds },
+                    steal = query.steal || Action.STEAL in named,
+                    pvp = query.pvp || Action.PVP in named,
+                    actions = query.actions + values(value),
+                )
+            }
             Param.INCLUDE -> query.copy(included = query.included + values(value))
             Param.EXCLUDE -> query.copy(excluded = query.excluded + values(value))
             Param.LIMIT -> query.copy(rows = limitOrNull(value) ?: fail(reader, BAD_LIMIT, value))
@@ -530,19 +536,22 @@ private fun LookupQuery.userEverywhere() =
 private fun fail(reader: StringReader, type: DynamicCommandExceptionType, value: String): Nothing =
     throw type.createWithContext(reader, value)
 
-private fun values(value: String): List<String> = value.split(',').filter { it.isNotBlank() }
+// `,` is either, `&` is all of them in one row: `u:A&B,C` is a row with both A and B, or one with C. Each
+// element keeps its `&`, and whoever reads the list splits it with allOf.
+private fun values(value: String): List<String> =
+    value.split(',').map { allOf(it).joinToString("&") }.filter { it.isNotEmpty() }
 
-private fun causes(reader: StringReader, valueStart: Int, value: String): Set<Cause> {
-    val found = mutableSetOf<Cause>()
+internal fun allOf(group: String): List<String> = group.split('&').filter { it.isNotBlank() }
+
+private fun actions(reader: StringReader, valueStart: Int, value: String): List<Action> {
+    val found = mutableListOf<Action>()
     var offset = valueStart
-    for (name in value.split(',')) {
+    for (name in value.split(',', '&')) {
         if (name.isNotBlank()) {
-            val mapped = Action.of(name.lowercase())
-            if (mapped == null) {
+            found += Action.of(name.lowercase()) ?: run {
                 reader.cursor = offset
                 throw BAD_ACTION.createWithContext(reader, name)
             }
-            found += mapped.causes
         }
         offset += name.length + 1
     }
@@ -637,8 +646,10 @@ internal fun stateOf(ledger: RocksItemLog, id: Int): String =
 internal class RowFilter(
     private val ledger: RocksItemLog,
     query: LookupQuery,
-    private val users: Set<UUID>,
-    private val excludedUsers: Set<UUID>,
+    // `user:`, a group for each of its `,` elements: a row is kept when it names every player of one.
+    private val users: List<Set<UUID>> = emptyList(),
+    // Which of `exclude:`'s words are players, by the word lowercased.
+    excludedPlayers: Map<String, UUID> = emptyMap(),
     private val rollback: Boolean = false,
 ) {
     internal val namesUsers: Boolean get() = users.isNotEmpty()
@@ -647,37 +658,61 @@ internal class RowFilter(
     private val all = query.all
     private val amount = query.amount
     internal val event = query.event?.id
-    private val included = query.included.map(::normalizeItem).toSet()
-    private val excluded = query.excluded.map(::normalizeItem).toSet()
+    // Read only when some group joins actions with `&`: otherwise `causes` and `kinds` already say it all.
+    private val actions = query.actions.map { group -> allOf(group).mapNotNull { Action.of(it.lowercase()) } }
+        .takeIf { groups -> groups.any { it.size > 1 } }
+    private val included = query.included.map { group -> allOf(group).map(::normalizeItem) }
+    private val excluded = query.excluded.map { group ->
+        allOf(group).map { Word(excludedPlayers[it.lowercase()], normalizeItem(it)) }
+    }
+
+    // A word of `exclude:`: a player when one goes by it, an item or a block either way.
+    private class Word(val player: UUID?, val item: String)
+
+    // A row as the word lists read it. `names` is asked about one player of a group with the group beside it,
+    // which an entity row needs: it names the entity only beside the one who did it.
+    private class Seen(val items: Set<String?>, val acts: (Action) -> Boolean, val names: (UUID, Collection<UUID>) -> Boolean)
 
     fun keeps(entry: LedgerEntry): Boolean {
         if (!caused(entry.cause)) return false
         if (amount != null && abs(entry.qty) !in amount) return false
-        if (users.isNotEmpty() && !namesUser(entry, users)) return false
-        val item = itemKey(ledger, entry.itemFormId)
-        return (included.isEmpty() || item in included) && item !in excluded && !namesUser(entry, excludedUsers)
+        return about(Seen(setOf(itemKey(ledger, entry.itemFormId)), { entry.cause in it.causes }) { player, _ -> namesUser(entry, setOf(player)) })
     }
 
+    // `u:A&B` is what A did to B, a kill above all; `u:B` alone stays what B did.
     fun keeps(row: EntityRow): Boolean {
         // A rollback's own rows stay `action:rollback`'s alone, whatever they did to an entity.
-        val byKind = row.kind in kinds && row.cause != Cause.ROLLBACK && row.cause != Cause.PURGE_OPENING
-        if (!keepsActed(row.cause, row.eventId, row.actor, row.confidence, byKind)) return false
-        return (included.isEmpty() || row.type in included) && row.type !in excluded
+        val countsKind = row.cause != Cause.ROLLBACK && row.cause != Cause.PURGE_OPENING
+        if (!keepsActed(row.cause, row.eventId, row.confidence, row.kind in kinds && countsKind)) return false
+        return about(Seen(setOf(row.type), { row.cause in it.causes || countsKind && row.kind in it.kinds }) { player, group ->
+            player == row.actor || player == row.uuid && row.actor in group
+        })
     }
 
     // A row names a block rather than an item, so what the filter is about is either state it ran
     // between; naming an item that no block is made of therefore hides the whole plane, which is what
-    // a reader asking for one item wants.
+    // a reader asking for one item wants. `i:grass_block&dirt` is the one turned into the other.
     fun keeps(row: BlockRow): Boolean {
-        if (!keepsActed(row.cause, row.eventId, row.actor, row.confidence)) return false
+        if (!keepsActed(row.cause, row.eventId, row.confidence)) return false
         val named = setOf(stateName(ledger, row.stateBefore), stateName(ledger, row.stateAfter))
-        return (included.isEmpty() || named.any { it in included }) && named.none { it in excluded }
+        return about(Seen(named, { row.cause in it.causes }) { player, _ -> player == row.actor }, shape = row.cause == Cause.BLK_SHAPE)
     }
 
-    private fun keepsActed(cause: Cause, eventId: Long, actor: UUID?, confidence: Confidence, kind: Boolean = false): Boolean {
+    private fun keepsActed(cause: Cause, eventId: Long, confidence: Confidence, kind: Boolean = false): Boolean {
         if (!(kind || caused(cause)) || amount != null || event != null && eventId != event) return false
-        if (users.isNotEmpty() && (actor !in users || rollback && confidence == Confidence.NEARBY)) return false
-        return actor == null || actor !in excludedUsers
+        return users.isEmpty() || !(rollback && confidence == Confidence.NEARBY)
+    }
+
+    // A group of each list holds when all of its words do. The shape rows a rollback takes along are not
+    // asked about `&` of actions: they ride with whatever went back beside them.
+    private fun about(seen: Seen, shape: Boolean = false): Boolean {
+        if (users.isNotEmpty() && users.none { group -> group.all { seen.names(it, group) } }) return false
+        if (actions != null && !(rollback && shape) && actions.none { group -> group.all(seen.acts) }) return false
+        if (included.isNotEmpty() && included.none { group -> group.all { it in seen.items } }) return false
+        return excluded.none { group ->
+            val players = group.mapNotNull { it.player }
+            group.all { word -> word.player?.let { seen.names(it, players) } == true || word.item in seen.items }
+        }
     }
 
     // A neighbour's shape goes back with whatever went back beside it, so a rollback narrowed to fire or to
@@ -725,7 +760,8 @@ class LookupArgument(
             val keys = said.mapNotNullTo(HashSet()) { word -> Param.of(word.substringBefore(':')).takeIf { ':' in word && it !in REPEATABLE } }
             return offer(builder, tokenStart, starts.filter { it !in said && Param.of(it.removeSuffix(":")) !in keys })
         }
-        val comma = token.lastIndexOf(',')
+        // After `&` as after `,`: another value of the same list.
+        val comma = maxOf(token.lastIndexOf(','), token.lastIndexOf('&'))
         val param = Param.of(token.substring(0, colon).lowercase())
         // A position is one value with commas in it, not a list.
         if (param == Param.AT) {
@@ -832,6 +868,21 @@ internal fun folded(lines: List<Line>, all: Boolean): List<Folded> {
 }
 
 internal class ChatRun(val first: ChatLine, var rows: Int, var damage: Float, var oldest: Long)
+
+/**
+ * What `/pp chat` keeps of the lines it reads. A hit is the victim's line as much as the attacker's: who hit Bob
+ * is asked as `user:Bob`, and `user:A&B` is the fight between the two, whoever struck.
+ */
+internal fun chatFilter(query: LookupQuery, idOf: (String) -> UUID?): (ChatLine) -> Boolean {
+    val users = query.users.map { group -> allOf(group).map(idOf) }
+    val texts = query.filter?.lowercase()?.let(::allOf)
+    return { line ->
+        fun names(player: UUID?) = player != null && (player == line.player || player == line.hit?.victim)
+        (users.isEmpty() || users.any { group -> group.all(::names) }) &&
+            (!query.pvp || line.kind.struck) &&
+            (texts == null || line.text.lowercase().let { text -> texts.all { it in text } })
+    }
+}
 
 // Hit after hit by one player on another with one thing folds like a lookup's run; a hit back breaks it,
 // which keeps who answered whom in the order it went.
@@ -1100,11 +1151,11 @@ class Lookups(
             return reportEverywhere(sender, target, query, users)
         }
         val steps = Steps(BOX_STEPS)
-        val page = read(target, query, users, steps)
-        val items = itemLines(page.entries, query, users)
+        val page = read(target, query, steps)
+        val items = itemLines(page.entries, query)
         // The two planes are read apart and shown together: a position that was placed, blown up and
         // flowed over has a row in each, and read as two lists the order they happened in is lost.
-        val (changes, planesComplete) = blockLines(target, query, users, steps)
+        val (changes, planesComplete) = blockLines(target, query, steps)
         Debug.log {
             "  ${page.entries.size} postings (complete ${page.complete}), ${items.size} item and ${changes.size} block lines " +
                 "(complete $planesComplete), steps ${steps.used} of $BOX_STEPS${if (steps.ranOut) " (ran out)" else ""}"
@@ -1129,7 +1180,7 @@ class Lookups(
         val log = blocks.get(target.world) ?: return sender.say("This world's block log is not open.")
         val fromTs = query.fromTs()
         val toTs = query.toTs()
-        val keeps = rowFilter(query, users)
+        val keeps = rowFilter(query)
         // One row past the page, which is how the answer knows there is a next one.
         val wanted = query.wanted + 1
         val own = users.map { log.byActor(it, fromTs, toTs, wanted, GLOBAL_WALK, keeps::keeps, keeps::keeps) }
@@ -1159,7 +1210,7 @@ class Lookups(
         val dropped = broken.flatMap { (at, ts) ->
             holdersAt(target.world, at.first, at.second, at.third).flatMap { ledger.holderPage(it, ts, toTs, reverse = true, limit = LATER_READ).entries }
         }
-        val lines = itemLines((traded + dropped).distinctBy { it.ref }, query, users) +
+        val lines = itemLines((traded + dropped).distinctBy { it.ref }, query) +
             planeLines(target.world, (rows + undoes).distinct(), (entities + entityUndoes).distinct(), keeps)
         val who = query.users.joinToString(", ")
         answer(sender, lines, own.all { it.complete }, Ui.text(tr("everything by $who", "всё от $who")), query, target)
@@ -1177,10 +1228,17 @@ class Lookups(
             return
         }
         val players = resolveAll(sender, query.players) ?: return
-        val users = resolveAll(sender, query.users) ?: return
+        resolveAll(sender, query.users) ?: return
         val holders = players.flatMap { ownHolders(it) }
         val page = holderRows(holders, query.fromTs(), query.toTs(), query)
-        val items = itemLines(page.entries, query, users)
+        // `p:A&B` is what went between the two of them, the one's slots at one end and the other's at the other.
+        // The crafting grid is booked to its player as their entity slot.
+        fun owner(holder: Holder) = playerOf(holder) ?: (holder as? EntitySlot)?.uuid
+        val groups = groupsOf(query.players)
+        val between = page.entries.filter { entry ->
+            groups.any { group -> group.all { it == owner(entry.holder) || it == owner(entry.counterparty) } }
+        }
+        val items = itemLines(between, query)
         val who = query.players.joinToString(", ")
         answer(sender, items, page.complete, Ui.text(tr("what $who carried", "вещи $who")), query, target)
     }
@@ -1188,7 +1246,7 @@ class Lookups(
     // Every name has to be known: dropping the one that was misspelt would answer about the rest as
     // if it were the whole question.
     internal fun resolveAll(sender: CommandSender, names: List<String>): Set<UUID>? {
-        val named = names.associateWith { idOf(it) }
+        val named = names.flatMap(::allOf).associateWith { idOf(it) }
         val unknown = named.filterValues { it == null }.keys
         if (unknown.isNotEmpty()) {
             sender.say("Unknown player: ${unknown.joinToString(", ")}")
@@ -1200,8 +1258,8 @@ class Lookups(
     // A read for a page is several times the page, and pulling in each row's other half is a read of its
     // own, so only the rows the page can reach get theirs: one past it, which is how it knows there is a
     // next one. A count is of everything read.
-    private fun itemLines(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<Line> {
-        val kept = filter(entries, query, users)
+    private fun itemLines(entries: List<LedgerEntry>, query: LookupQuery): List<Line> {
+        val kept = filter(entries, query)
         val reachable = if (query.count) kept else kept.sortedByDescending { it.timestamp }.take(query.wanted + 1)
         return entryLines(wholeTransactions(ledger, reachable))
     }
@@ -1339,12 +1397,12 @@ class Lookups(
      * filter runs, an area's once its page is full or [steps] run out, and a page cut there is not the last. Empty when
      * the world's log is not open, which report() tells the reader.
      */
-    private fun blockLines(target: LookupTarget, query: LookupQuery, users: Set<UUID>, steps: Steps): Pair<List<Line>, Boolean> {
+    private fun blockLines(target: LookupTarget, query: LookupQuery, steps: Steps): Pair<List<Line>, Boolean> {
         val log = blocks.get(target.world) ?: return emptyList<Line>() to true
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius
-        val keeps = rowFilter(query, users)
+        val keeps = rowFilter(query)
         val rows: List<BlockRow>
         val entities: List<EntityRow>
         var complete = true
@@ -1392,11 +1450,11 @@ class Lookups(
         }
     }
 
-    private fun read(target: LookupTarget, query: LookupQuery, users: Set<UUID>, steps: Steps): EntryPage {
+    private fun read(target: LookupTarget, query: LookupQuery, steps: Steps): EntryPage {
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z), fromTs, toTs, query)
-        val keeps = rowFilter(query, users)
+        val keeps = rowFilter(query)
         return ledger.boxPage(target.world, target.box(radius), fromTs, toTs, boxWanted(query), steps, keeps::keeps)
     }
 
@@ -1412,8 +1470,8 @@ class Lookups(
         return EntryPage(pages.flatMap { it.entries }, pages.all { it.complete })
     }
 
-    private fun filter(entries: List<LedgerEntry>, query: LookupQuery, users: Set<UUID>): List<LedgerEntry> {
-        val keeps = rowFilter(query, users)
+    private fun filter(entries: List<LedgerEntry>, query: LookupQuery): List<LedgerEntry> {
+        val keeps = rowFilter(query)
         val placers = HashMap<Container, Placer>()
         return entries.filter { keeps.keeps(it) && (!query.steal || stolen(it, placers)) }
     }
@@ -1439,8 +1497,16 @@ class Lookups(
     }
 
     // `exclude:` takes items and players in one list, so a name that is a player is a player excluded.
-    internal fun rowFilter(query: LookupQuery, users: Set<UUID>, rollback: Boolean = false) =
-        RowFilter(ledger, query, users, query.excluded.mapNotNull(idOf).toSet(), rollback)
+    internal fun rowFilter(query: LookupQuery, rollback: Boolean = false) = RowFilter(
+        ledger, query, groupsOf(query.users),
+        query.excluded.flatMap(::allOf).mapNotNull { word -> idOf(word)?.let { word.lowercase() to it } }.toMap(),
+        rollback,
+    )
+
+    internal fun chatFilter(query: LookupQuery): (ChatLine) -> Boolean = chatFilter(query, idOf)
+
+    // The players of each `&` group; resolveAll has made sure by now that every name is known.
+    private fun groupsOf(names: List<String>): List<Set<UUID>> = names.map { group -> allOf(group).mapNotNullTo(HashSet(), idOf) }
 
     /** Who a row is on, and how sure: a name seen, a name worked out, a witness, or nobody. */
     private fun who(actor: UUID?, confidence: Confidence, away: String? = null): Component = when {

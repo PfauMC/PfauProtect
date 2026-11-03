@@ -220,7 +220,7 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(BlockChange(1, 64, 1, chest, AIR, Cause.BLK_CREEPER, T0 + 100, Confidence.AGGRO, actor = bob)))
         log.drain()
 
-        val position = positions(around(RowFilter(shared, LookupQuery(), emptySet(), emptySet(), rollback = true), from = T0 + 50)).single()
+        val position = positions(around(RowFilter(shared, LookupQuery(), emptyList(), emptyMap(), rollback = true), from = T0 + 50)).single()
         assertNull(position.origin)
         assertEquals(chest, settle(AIR, position.steps, position.origin).back?.before)
     }
@@ -358,7 +358,7 @@ class RollbackTest : BothPlanes() {
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, Container(world, 4, 64, 1, 0), PlayerInv(alice, 0), diamond, null, 1, T0))
         shared.drain()
 
-        val filter = RowFilter(shared, LookupQuery(), emptySet(), setOf(bob), rollback = true)
+        val filter = RowFilter(shared, LookupQuery(excluded = listOf("bob")), excludedPlayers = mapOf("bob" to bob), rollback = true)
         assertEquals(setOf(2, 4), positions(around(filter)).map { it.at.x }.toSet())
     }
 
@@ -367,7 +367,7 @@ class RollbackTest : BothPlanes() {
     @Test
     fun `a neighbour's shape row rides with a rollback and shows in a lookup only when asked`() {
         val shape = BlockRow(2, 64, 1, T0, 1, 0, Cause.BLK_SHAPE, 0, 0, actor = alice)
-        fun keeps(query: LookupQuery, rollback: Boolean) = RowFilter(shared, query, emptySet(), emptySet(), rollback).keeps(shape)
+        fun keeps(query: LookupQuery, rollback: Boolean) = RowFilter(shared, query, emptyList(), emptyMap(), rollback).keeps(shape)
 
         assertTrue(keeps(LookupQuery(causes = Action.EXPLOSION.causes), rollback = true))
         assertTrue(keeps(LookupQuery(), rollback = true))
@@ -388,7 +388,7 @@ class RollbackTest : BothPlanes() {
         val placed = blown.copy(kind = EntityKind.CREATED, cause = Cause.PLACE_ENTITY_ITEM, confidence = Confidence.FACT)
         val undone = blown.copy(cause = Cause.ROLLBACK)
         fun keeps(words: String, row: EntityRow, users: Set<UUID> = emptySet()) =
-            RowFilter(shared, parseLookupQuery(words), users, emptySet(), rollback = true).keeps(row)
+            RowFilter(shared, parseLookupQuery(words), users.map { setOf(it) }, rollback = true).keeps(row)
 
         assertTrue(keeps("action:-entity", blown) && keeps("action:-entity", fell))
         assertFalse(keeps("action:-entity", placed))
@@ -417,7 +417,7 @@ class RollbackTest : BothPlanes() {
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, neighbour, PlayerInv(bob, 0), diamond, null, 7, T0 + 1))
         shared.drain()
         val event = log.at(5, 64, 5, 0, Long.MAX_VALUE, limit = 10, reverse = false).single().eventId
-        val filter = RowFilter(shared, LookupQuery(event = EventRef(event, 5, 64, 5, T0)), emptySet(), emptySet(), rollback = true)
+        val filter = RowFilter(shared, LookupQuery(event = EventRef(event, 5, 64, 5, T0)), emptyList(), emptyMap(), rollback = true)
 
         val planned = positions(around(filter))
         assertEquals(listOf(WorldBlock(world, 5, 64, 5)), planned.map { it.at })
@@ -603,7 +603,7 @@ class RollbackTest : BothPlanes() {
             // The centre whose square starts on a chunk's last block and so spans the most chunks.
             val centre = 15 + widest % 16
             val reading = RollbackReader(shared, logs).around(
-                world, centre, 64, centre, widest, 0, Long.MAX_VALUE, RowFilter(shared, LookupQuery(all = true), emptySet(), emptySet()),
+                world, centre, 64, centre, widest, 0, Long.MAX_VALUE, RowFilter(shared, LookupQuery(all = true), emptyList(), emptyMap()),
             )
             assertTrue(reading is Planned)
             val said = ArrayList<String>()
@@ -619,7 +619,7 @@ class RollbackTest : BothPlanes() {
     @Test
     fun `a world with no open base is refused`() {
         val refused = RollbackReader(shared, logs).around(
-            UUID.randomUUID(), 0, 64, 0, 4, 0, Long.MAX_VALUE, RowFilter(shared, LookupQuery(all = true), emptySet(), emptySet()),
+            UUID.randomUUID(), 0, 64, 0, 4, 0, Long.MAX_VALUE, RowFilter(shared, LookupQuery(all = true), emptyList(), emptyMap()),
         )
         assertTrue(refused is Refused, "a world with no open base has nothing to roll back over")
     }
@@ -679,7 +679,7 @@ class RollbackTest : BothPlanes() {
     }
 
     private fun rollbackFilter(vararg users: UUID, causes: Set<Cause>? = null) =
-        RowFilter(shared, LookupQuery(causes = causes), users.toSet(), emptySet(), rollback = true)
+        RowFilter(shared, LookupQuery(causes = causes), users.map { setOf(it) }, rollback = true)
 
     private fun positions(planned: Planned) = planned.chunks.flatMap { it.positions }
 
