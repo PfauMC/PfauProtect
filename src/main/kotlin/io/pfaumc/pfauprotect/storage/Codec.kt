@@ -131,8 +131,8 @@ object Zcode {
     private const val MIN_CHUNK = -CHUNK_BIAS
     private const val MAX_CHUNK = CHUNK_BIAS - 1
     private const val Y_BIAS = 32768
-    private const val MIN_Y = -Y_BIAS
-    private const val MAX_Y = Y_BIAS - 1
+    const val MIN_Y = -Y_BIAS
+    const val MAX_Y = Y_BIAS - 1
 
     // The 48-bit Morton code of a chunk: its z on the even bits, its x on the odd ones.
     private const val EVEN_BITS = 0x5555_5555_5555L

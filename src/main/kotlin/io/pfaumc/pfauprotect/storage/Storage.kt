@@ -772,7 +772,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             payloads.load()
             // After the registries: a spot entry names its world by number. The stamp follows the index, so a
             // crash between them starts the rebuild again.
-            if (storedAtOpen != null && storedAtOpen != SCHEMA_VERSION) indexChunks()
+            // A 7 base already has the chunk-time index and no spot rows, so only 4..6 rebuild it.
+            if (storedAtOpen != null && storedAtOpen != SCHEMA_VERSION && storedAtOpen != 7L) indexChunks()
             if (storedAtOpen != SCHEMA_VERSION) db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
             writerThread.start()
         }
@@ -1478,7 +1479,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         qty = qty,
         damage = transfer.damage,
         actor = transfer.actor,
-        spot = transfer.spot,
+        // The one place every write passes: a y the position code cannot hold (a player flung far above the
+        // build limit) would make the value and the index key throw and the movement be lost.
+        spot = transfer.spot?.takeIf { it.y in Zcode.MIN_Y..Zcode.MAX_Y },
     )
 
     private inline fun forEachUnder(

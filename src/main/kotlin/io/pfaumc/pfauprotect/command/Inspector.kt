@@ -38,11 +38,20 @@ class Inspector(private val lookups: Lookups) : Listener {
     fun onInteract(event: PlayerInteractEvent) {
         val player = event.player
         if (player.uniqueId !in enabled) return
-        val left = when (event.action) {
-            Action.LEFT_CLICK_BLOCK, Action.LEFT_CLICK_AIR -> true
-            Action.RIGHT_CLICK_BLOCK, Action.RIGHT_CLICK_AIR -> false
+        val action = event.action
+        val spectator = player.gameMode == GameMode.SPECTATOR
+        val left = when (action) {
+            Action.LEFT_CLICK_BLOCK -> true
+            Action.RIGHT_CLICK_BLOCK -> false
+            // Air actions only count in spectator mode: a survival swing at a mob fires LEFT_CLICK_AIR and would
+            // flood lookups, and a survival right click in air is eating.
+            Action.LEFT_CLICK_AIR -> if (spectator) true else return
+            Action.RIGHT_CLICK_AIR -> if (spectator) false else return
             else -> return
         }
+        val onBlock = action == Action.LEFT_CLICK_BLOCK || action == Action.RIGHT_CLICK_BLOCK
+        // A block click is ours even when the ray finds nothing: else the torch meant for inspection gets broken.
+        if (onBlock) event.isCancelled = true
         // A right click reports once per hand; the off-hand pass would double every lookup.
         if (!left && event.hand != EquipmentSlot.HAND) return
         // Our own ray rather than the event's block: a spectator inside terrain gets the block that holds the
@@ -55,26 +64,27 @@ class Inspector(private val lookups: Lookups) : Listener {
             is Sign -> HitKind.SIGN
             else -> HitKind.OTHER
         }
-        val choice = choose(left, player.gameMode == GameMode.SPECTATOR, kind)
+        val choice = choose(left, spectator, kind)
         val target = if (choice.inFront) block.getRelative(hit.hitBlockFace ?: return) else block
         event.isCancelled = true
         if (again(player, target.location to choice.part)) return
         lookups.run(player, lookupTargetAt(target), LookupQuery(part = choice.part), dialog = false)
     }
 
-    // A spectator sees through the blocks they are in, so the ray starts where they leave them.
+    // A spectator sees through the block the camera is in, so the ray starts where it leaves that one block;
+    // the next solid block, a chest against the wall, is what they look at.
     private fun sight(player: Player): RayTraceResult? {
         val direction = player.eyeLocation.direction
         val start = player.eyeLocation.clone()
         var travelled = 0.0
-        while (travelled < TARGET_RANGE && !start.block.isPassable) {
-            val inside = start.block
+        val inside = start.block
+        if (!inside.isPassable) {
             while (start.block == inside && travelled < TARGET_RANGE) {
                 start.add(direction.clone().multiply(STEP))
                 travelled += STEP
             }
         }
-        return player.world.rayTraceBlocks(start, direction, TARGET_RANGE - travelled, FluidCollisionMode.NEVER, true)
+        return player.world.rayTraceBlocks(start, direction, TARGET_RANGE - travelled, FluidCollisionMode.NEVER, false)
     }
 
     private fun again(player: Player, what: Any): Boolean {

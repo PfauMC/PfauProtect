@@ -179,8 +179,8 @@ class StorageTest : OneLedger() {
     }
 
     // Versions 5, 6 and 7 only add families, so an older ledger is opened, given them and stamped anew, with
-    // every row it had still there; 7 also indexes the rows it had by chunk and time. Version 8 adds the spot
-    // to a value and its entries to the index, so a 7 has the same families and is indexed again.
+    // every row it had still there; 6 also indexes the rows it had by chunk and time. Version 8 adds the spot
+    // to a value and its entries to the index, but a 7 has the index and no spot rows, so it only gets the stamp.
     @Test
     fun `a version 4, 5, 6 or 7 ledger is widened in place`(@TempDir older: Path) {
         var current = 0L
@@ -823,6 +823,16 @@ class StorageTest : OneLedger() {
         Cause.DROP_FROM_HAND, aliceInv, ItemEntityRef(UUID.randomUUID()), torch, null, 2, ts, actor = alice, spot = dropAt,
     )
 
+    // Zcode holds y in -32768..32767; a drop from above that is still booked, without a spot.
+    @Test
+    fun `a drop from a y the position code cannot hold is kept without its spot`() {
+        log.submit(Transfer(Cause.DROP_FROM_HAND, aliceInv, ItemEntityRef(UUID.randomUUID()), torch, null, 2, T0 + 40, actor = alice, spot = WorldBlock(world, 500, 40_000, 500)))
+        log.drain()
+        val kept = log.holderEntries(aliceInv, T0 + 40, T0 + 40).single()
+        assertEquals(-2, kept.qty)
+        assertNull(kept.spot)
+    }
+
     // The drop has no positional holder: the spot finds the player's posting, and only that one, so a radius
     // does not see the movement twice. A purge takes the index entry with the posting.
     @Test
@@ -841,8 +851,8 @@ class StorageTest : OneLedger() {
         reopen { assertEquals(emptyList<Pair<String, String>>(), spotRows()) }
     }
 
-    // A base stamped 7 has no spot entries; opening it indexes the postings that carry one all the same, so a
-    // lost index is rebuilt from the values.
+    // A base stamped older than 7 has no chunk-time index; opening it indexes every posting, spot ones included,
+    // so a lost index is rebuilt from the values.
     @Test
     fun `the spot entries are rebuilt from the values when the schema is older`() {
         log.submit(dropTransfer(T0 + 40))
@@ -853,7 +863,7 @@ class StorageTest : OneLedger() {
                 raw.newIterator(family("by_chunk")).use { it.seekToFirst(); while (it.isValid) { keys += it.key(); it.next() } }
                 keys.forEach { raw.delete(family("by_chunk"), it) }
             }
-            stampSchema(dir, 7)
+            stampSchema(dir, 6)
         }
         assertEquals(listOf(-2), log.boxPage(world, aroundDrop, 0, Long.MAX_VALUE, 10, Steps(1000)) { true }.entries.map { it.qty })
     }

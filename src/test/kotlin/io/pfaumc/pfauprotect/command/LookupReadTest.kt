@@ -21,6 +21,7 @@ import io.pfaumc.pfauprotect.rollback.refusalOf
 import org.junit.jupiter.api.Assertions.assertNotNull
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.model.Kind
+import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerCursor
 import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.PlayerEquip
@@ -302,6 +303,8 @@ class LookupReadTest : BothPlanes() {
         shared.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 0), drop, diamond, null, 1, T0 + 4))
         shared.submit(Transfer(Cause.PICKUP, drop, PlayerInv(bob, 1), diamond, null, 1, T0 + 5))
         shared.submit(Transfer(Cause.CRAFT_CONSUME, grid, Void, diamond, null, 1, T0 + 6))
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), PlayerEnder(alice, 3), diamond, null, 1, T0 + 7))
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 2), Nested(UUID.randomUUID(), 0), diamond, null, 1, T0 + 8))
         shared.drain()
         fun filter(words: String, isPlayer: (UUID) -> Boolean = { false }) = RowFilter(shared, parseLookupQuery(words), isPlayer = isPlayer)
         // A slot-0 read covers every slot, so one move can answer with both its halves.
@@ -321,6 +324,11 @@ class LookupReadTest : BothPlanes() {
         assertFalse(filter("a:-item").on(T0, PlayerInv(alice, 0)))
         assertTrue(filter("a:-item").on(T0 + 4, PlayerInv(alice, 0)))
         assertTrue(filter("a:+item").on(T0 + 5, PlayerInv(bob, 1)))
+        // An ender chest is a container for `item` too, and a bundle in the inventory is no crossing at all.
+        assertFalse(filter("a:-item").on(T0 + 7, PlayerInv(alice, 0)))
+        assertTrue(filter("a:-inventory").on(T0 + 7, PlayerInv(alice, 0)))
+        assertFalse(filter("a:-inventory").on(T0 + 8, PlayerInv(alice, 2)))
+        assertFalse(filter("a:-item").on(T0 + 8, PlayerInv(alice, 2)))
         // An entity slot is a crafting grid only when a player owns it.
         assertFalse(filter("a:-inventory").on(T0 + 6, grid))
         assertTrue(filter("a:-inventory", isPlayer = { it == alice }).on(T0 + 6, grid))

@@ -311,6 +311,9 @@ class LookupTest {
         assertEquals(TimeSpan(fromMillis = ms(4, 11, 13, 0), secondsUntil = 3600), span("13:00-1h"))
         assertEquals(TimeSpan(secondsBack = 7200, untilMillis = ms(4, 11, 14, 30)), span("2h-14:30"))
         assertEquals(TimeSpan(secondsBack = 7200, secondsUntil = 3600), span("2h-1h"))
+        // An end still ahead stays today after a start behind now; a start ahead of now is still yesterday's.
+        assertEquals(TimeSpan(fromMillis = ms(4, 11, 14, 0), untilMillis = ms(4, 11, 15, 30)), span("14:00-15:30"))
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 23, 0), untilMillis = ms(4, 11, 1, 0)), span("23:00-01:00"))
         for (bad in listOf("25:00", "30.02", "03.11_", "14:00_03.11", "03.11-03.11", "14:00-14:00", "1.2.3")) assertNull(span(bad), bad)
     }
 
@@ -321,6 +324,20 @@ class LookupTest {
         assertEquals(q.fromTs(1L), q.fromTs(Long.MAX_VALUE / 2))
         assertEquals(q.toTs(1L), q.copy(asOf = 5L).toTs())
         assertTrue(q.hasFrom && q.hasUntil)
+    }
+
+    // `t:14:00` typed at 13:59 is yesterday's; the page buttons ask again at 14:01 with `asof:` pinned, in either word order.
+    @Test
+    fun `a clock time is resolved against asof, whatever the wall clock says`() {
+        val zone = ZoneId.of("Europe/Moscow")
+        val typed = ZonedDateTime.of(2026, 11, 4, 13, 59, 0, 0, zone)
+        val later = typed.plusMinutes(2)
+        val asOf = typed.toInstant().toEpochMilli()
+        val yesterday = ZonedDateTime.of(2026, 11, 3, 14, 0, 0, 0, zone).toInstant().toEpochMilli()
+        for (words in listOf("t:14:00 asof:$asOf", "asof:$asOf t:14:00")) {
+            assertEquals(yesterday, parseLookupQuery(words, typed).fromMillis, words)
+            assertEquals(yesterday, parseLookupQuery(words, later).fromMillis, words)
+        }
     }
 
     @Test

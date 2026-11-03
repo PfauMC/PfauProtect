@@ -400,16 +400,18 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         if (!found.complete && blockSteps.used == 0) return closed()
         if (!found.complete) return tooMuch(History.BLOCK, if (blockSteps.ranOut) "block walk budget" else "block rows cap $MAX_ROLLBACK_ROWS")
         val itemSteps = Steps(WALK_BUDGET)
-        val page = ledger.boxPage(world, box, fromTs, toTs, MAX_ROLLBACK_ROWS, itemSteps, read::keeps)
+        val page = ledger.boxPage(world, box, fromTs, toTs, MAX_ROLLBACK_ROWS, itemSteps) {
+            // A player's drop or pickup comes with the box too, through its spot; filtered here so it neither
+            // counts against the row cap nor the walk budget.
+            (it.holder is Container || it.holder is WorldBlock) && read.keeps(it)
+        }
         Debug.log {
             "  item plane: kept ${page.entries.size} postings, unreadable ${page.unreadable}; complete ${page.complete}, " +
                 "steps ${itemSteps.used} of $WALK_BUDGET${if (itemSteps.ranOut) " (ran out)" else ""}"
         }
         if (!page.complete) return tooMuch(History.ITEM, if (itemSteps.ranOut) "item walk budget" else "item rows cap $MAX_ROLLBACK_ROWS")
         read.unreadable += page.unreadable
-        // A player's drop or pickup comes with the box too, through its spot; it has no slot or block to restore.
-        val (slots, positions) = page.entries.filter { it.holder is Container || it.holder is WorldBlock }
-            .partition { it.holder is Container }
+        val (slots, positions) = page.entries.partition { it.holder is Container }
         return planOf(log, world, read, slots, positions.filter { it.qty < 0 }, fromTs, toTs, keeps)
     }
 

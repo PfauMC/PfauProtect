@@ -86,6 +86,7 @@ import net.kyori.adventure.text.event.ClickEvent
 import net.kyori.adventure.text.event.HoverEvent
 import org.bukkit.entity.Player
 import java.time.DateTimeException
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
@@ -286,7 +287,7 @@ private val INVENTORY_CAUSES: Set<Cause> =
     Cause.entries.filter { !it.name.startsWith("BLK_") }.toSet() - Cause.BLOCK_PLACE - Cause.PURGE_OPENING
 
 // The player whose hands a holder is, if it is: the crafting grid is their entity slot, which is also a
-// projectile's or a frame's, hence the check. An ender chest is a container, not a hand.
+// projectile's or a frame's, hence the check. An ender chest is a container (as is a station's menu slot) in CoreProtect's sense, not a hand.
 private fun handsOf(holder: Holder, isPlayer: (UUID) -> Boolean): UUID? = when (holder) {
     is PlayerInv -> holder.uuid
     is PlayerEquip -> holder.uuid
@@ -301,8 +302,10 @@ internal fun crosses(entry: LedgerEntry, crossing: Crossing, isPlayer: (UUID) ->
     val (from, to) = if (entry.qty > 0) entry.counterparty to entry.holder else entry.holder to entry.counterparty
     val mine = handsOf(from, isPlayer)
     val yours = handsOf(to, isPlayer)
+    // Items moved into a bundle or shulker inside an inventory never left the hands.
+    if (from is Nested || to is Nested) return false
     val other = if (mine != null) to else from
-    if (!crossing.containers && other is Container) return false
+    if (!crossing.containers && (other is Container || other is PlayerEnder || other is MenuSlot)) return false
     return crossing.outward && mine != null && yours != mine || crossing.inward && yours != null && mine != yours
 }
 
@@ -529,15 +532,27 @@ private val BAD_LIMIT = DynamicCommandExceptionType {
     said("'$it' is not a row count between 1 and $MAX_LIMIT")
 }
 
-fun parseLookupQuery(input: String): LookupQuery = parseLookupQuery(StringReader(input))
+fun parseLookupQuery(input: String, now: ZonedDateTime = ZonedDateTime.now(ZoneId.systemDefault())): LookupQuery =
+    parseLookupQuery(StringReader(input), now)
 
 // Parsing walks the caller's reader instead of a copied string so that every exception carries the
 // real cursor: the client underlines the offending token rather than the whole argument.
-fun parseLookupQuery(reader: StringReader): LookupQuery {
+fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.now(ZoneId.systemDefault())): LookupQuery {
     var query = LookupQuery(words = reader.remaining)
+    // The `time:` value as typed: `asof:` may come after it, and the moment it names is resolved against that.
+    var rawTime: String? = null
     while (true) {
         while (reader.canRead() && reader.peek() == ' ') reader.skip()
-        if (!reader.canRead()) return query.userEverywhere()
+        if (!reader.canRead()) {
+            // Page buttons ask again with `asof:` pinned: `t:14:00` typed at 13:59 is yesterday's, and must stay so at 14:01.
+            val pinned = query.asOf?.let { Instant.ofEpochMilli(it).atZone(now.zone) } ?: now
+            val timed = rawTime?.let { raw ->
+                timeSpanOrNull(raw, pinned)?.let {
+                    query.copy(secondsBack = it.secondsBack, secondsUntil = it.secondsUntil, fromMillis = it.fromMillis, untilMillis = it.untilMillis)
+                }
+            } ?: query
+            return timed.userEverywhere()
+        }
         val tokenStart = reader.cursor
         while (reader.canRead() && reader.peek() != ' ') reader.skip()
         val token = reader.string.substring(tokenStart, reader.cursor)
@@ -582,7 +597,8 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
         query = when (param) {
             Param.USER -> query.copy(users = query.users + values(value))
             Param.PLAYER -> query.copy(players = query.players + values(value))
-            Param.TIME -> timeSpanOrNull(value)?.let {
+            Param.TIME -> timeSpanOrNull(value, now)?.let {
+                rawTime = value
                 query.copy(secondsBack = it.secondsBack, secondsUntil = it.secondsUntil, fromMillis = it.fromMillis, untilMillis = it.untilMillis)
             } ?: fail(reader, BAD_TIME, value)
             Param.RADIUS -> query.copy(radius = radiusOrNull(value) ?: fail(reader, BAD_RADIUS, value))
@@ -690,7 +706,8 @@ internal data class TimeSpan(
 )
 
 // One end as typed: where it falls (a date alone: its start), and what it stands for as the near end.
-private class End(val at: Long, val relative: Long?, val nearAt: Long)
+// [today] is the same clock time taken today, kept when it was ahead of now and so taken as yesterday.
+private class End(val at: Long, val relative: Long?, val nearAt: Long, val today: End? = null)
 
 private val DATE = Regex("""(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?""")
 private val CLOCK = Regex("""(\d{1,2}):(\d{2})(?::(\d{2}))?""")
@@ -714,11 +731,13 @@ private fun endOrNull(text: String, now: ZonedDateTime): End? {
                 }
         } ?: return null
         // A clock time alone: today, or yesterday if that is still ahead.
-        val moment = at(if (date == null && at(day).isAfter(now)) day.minusDays(1) else day)
+        val ahead = date == null && at(day).isAfter(now)
+        val moment = at(if (ahead) day.minusDays(1) else day)
         val start = moment.toInstant().toEpochMilli()
         // A date without a time is the whole day: as the near end it stops at the day's last millisecond.
         val nearAt = if (time == null) moment.plusDays(1).toInstant().toEpochMilli() - 1 else start
-        return End(start, null, nearAt)
+        val today = at(day).toInstant().toEpochMilli().takeIf { ahead }?.let { End(it, null, it) }
+        return End(start, null, nearAt, today)
     } catch (_: DateTimeException) {
         return null
     }
@@ -736,8 +755,13 @@ internal fun timeSpanOrNull(value: String, now: ZonedDateTime = ZonedDateTime.no
         val end = ends[0]
         return TimeSpan(fromMillis = end.at, untilMillis = end.nearAt.takeIf { it > end.at })
     }
-    if (ends.size != 2 || ends[0].at == ends[1].at) return null
-    val (far, near) = ends.sortedBy { it.at }
+    if (ends.size != 2) return null
+    // `t:00:24-00:29` at 00:27 runs to a minute still ahead, not from yesterday's 00:29: an end typed second that
+    // is ahead of now stays today when that keeps it after the first. `t:23:00-01:00` at 02:00 is unaffected,
+    // the one taken as yesterday being the first.
+    val second = ends[1].today?.takeIf { it.at > ends[0].at } ?: ends[1]
+    if (ends[0].at == second.at) return null
+    val (far, near) = listOf(ends[0], second).sortedBy { it.at }
     return TimeSpan(
         secondsBack = far.relative, fromMillis = far.at.takeIf { far.relative == null },
         secondsUntil = near.relative, untilMillis = near.nearAt.takeIf { near.relative == null },
@@ -1372,7 +1396,8 @@ class Lookups(
      * Everything the named players did in this world, newest first: their own block and entity rows by the
      * index of rows that name them, the containers they traded with by their own slots, and only as many
      * of either as the page needs. The rest of each place's history is read only to see what a rollback
-     * has since given back.
+     * has since given back. Item rows with no position (eating, crafting, rows from before drops had a spot)
+     * have no world, so they show in the answer of each world.
      */
     private fun reportEverywhere(sender: CommandSender, target: LookupTarget, query: LookupQuery, users: Set<UUID>) {
         val log = blocks.get(target.world) ?: return sender.say("This world's block log is not open.")

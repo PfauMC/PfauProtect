@@ -142,7 +142,7 @@ object Texts {
         r("'(.*)' is not an amount, expected 5, >=5, <10 or 5-10") to "'$1' — не количество; ожидается 5, >=5, <10 или 5-10",
         r("'(.*)' is not an event, click a lookup line to fill one in") to "'$1' — не событие; нажми на строку поиска, чтобы подставить его",
         r("unknown flag '(.*)', expected #count, #sum or #all") to "неизвестный флаг '$1'; ожидается #count, #sum или #all",
-        r("'(.*)' is not a part, expected part:block or part:contents") to "'$1' — не часть; ожидается part:block или part:contents",
+        r("'(.*)' is not a part, expected part:block or part:contents") to "'$1' – не часть; ожидается part:block или part:contents",
         r("'(.*)' is not a position, expected x,y,z") to "'$1' — не позиция; ожидается x,y,z",
         r("'(.*)' is not a moment; the page buttons fill it in") to "'$1' — не момент времени; его подставляют кнопки страниц",
         r("'(.*)' is not a row count between 1 and (\\d+)") to "'$1' — не число строк от 1 до $2",
