@@ -293,6 +293,23 @@ class LookupReadTest : BothPlanes() {
         assertTrue(filter("a:-entity&explosion").keeps(blown))
         assertFalse(filter("a:-entity&fire").keeps(blown))
         assertFalse(filter("a:+entity&explosion").keeps(blown))
+
+        // `exclude:` takes an action as a word of its own, and beside a player.
+        fun without(words: String) = RowFilter(shared, parseLookupQuery(words), excludedPlayers = mapOf("alice" to alice, "bob" to bob))
+        assertFalse(without("e:explosion").keeps(blown))
+        assertTrue(without("e:fire").keeps(blown))
+        // A word that names a thing is the thing: leaving out TNT the item is not leaving out every explosion.
+        assertTrue(without("e:tnt,creeper").keeps(blown))
+        assertFalse(without("e:item_frame").keeps(blown))
+        log.submit(listOf(BlockChange(12, 64, -3, STONE, AIR, Cause.BLK_FIRE_BURN, T0)))
+        log.drain()
+        val burnt = log.at(12, 64, -3, 0, Long.MAX_VALUE, limit = 10, reverse = false).single()
+        assertFalse(without("e:burn").keeps(burnt))
+        // `fire` is the block, which this row never held.
+        assertTrue(without("e:fire").keeps(burnt))
+        assertFalse(without("e:-block").keeps(broken))
+        assertFalse(without("e:Alice&-block").keeps(broken))
+        assertTrue(without("e:Bob&-block").keeps(broken))
     }
 
     @Test

@@ -41,6 +41,7 @@ import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.capture.item.HolderListener
 import io.pfaumc.pfauprotect.command.ChatRun
 import io.pfaumc.pfauprotect.command.Inspector
+import io.pfaumc.pfauprotect.command.chatPlayers
 import io.pfaumc.pfauprotect.command.chatRuns
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.capture.item.ItemUseListener
@@ -833,7 +834,7 @@ class PfauProtectPlugin : JavaPlugin() {
         // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
         val asked = query.askedBy(sender)
         offThread(sender, "the chat lookup failed", "The chat lookup failed; the server log has the details.") {
-            running.lookups.resolveAll(sender, asked.users) ?: return@offThread
+            running.lookups.resolveAll(sender, chatPlayers(asked)) ?: return@offThread
             // `wanted` reads past this page, which is how it knows there is a next one.
             val keeps = running.lookups.chatFilter(asked)
             // A one-sided fight folds a whole read into a line or two, so the read goes on until the runs fill

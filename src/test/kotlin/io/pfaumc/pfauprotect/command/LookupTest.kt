@@ -37,7 +37,7 @@ class LookupTest {
         assertTrue(rollback.containsAll(listOf("user:", "time:", "radius:", "action:", "include:", "exclude:")), "$rollback")
         assertTrue(rollback.none { it in answerOnly || it.startsWith("#") }, "$rollback")
         // The chat log has no place, no items and no rows of the planes to count.
-        assertEquals(setOf("user:", "time:", "filter:", "action:", "page:", "#all"), offered(LookupArgument(chat = true)).toSet())
+        assertEquals(setOf("user:", "time:", "filter:", "action:", "exclude:", "page:", "#all"), offered(LookupArgument(chat = true)).toSet())
     }
 
     // As CoreProtect's list does: a key once said, under any spelling, leaves the list; a list of names stays,
@@ -96,6 +96,25 @@ class LookupTest {
         val text = chatFilter(parseLookupQuery("f:sell&diamond"), names::get)
         assertTrue(text(ChatLine(0, ChatKind.CHAT, alice, "Sell you a diamond")))
         assertFalse(text(ChatLine(0, ChatKind.CHAT, alice, "sell")))
+    }
+
+    @Test
+    fun `chat leaves out an excluded player and with pvp the hits`() {
+        val carol = UUID.randomUUID()
+        val names = mapOf("Alice" to alice, "Bob" to bob, "Carol" to carol)
+        fun hit(by: UUID, on: UUID) = ChatLine(0, ChatKind.HIT, by, "minecraft:iron_sword", hit = Hit(on, 2f, Confidence.FACT))
+        val notBob = chatFilter(parseLookupQuery("u:Alice e:Bob a:pvp"), names::get)
+        assertTrue(notBob(hit(alice, carol)))
+        assertFalse(notBob(hit(alice, bob)) || notBob(hit(bob, alice)))
+        val talk = chatFilter(parseLookupQuery("u:Alice e:pvp"), names::get)
+        assertTrue(talk(ChatLine(0, ChatKind.CHAT, alice, "hi")))
+        assertFalse(talk(hit(alice, bob)))
+        assertEquals(listOf("Alice", "Bob"), chatPlayers(parseLookupQuery("u:Alice e:pvp&Bob")))
+        // A player called Hit is the player, not every hit.
+        val notHit = chatFilter(parseLookupQuery("e:Hit"), (names + ("Hit" to carol))::get)
+        assertTrue(notHit(hit(alice, bob)))
+        assertFalse(notHit(hit(carol, bob)))
+        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("e:dirt,steal") }
     }
 
     @Test

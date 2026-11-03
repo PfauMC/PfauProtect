@@ -62,6 +62,7 @@ import net.minecraft.world.level.block.entity.SignText
 import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.Material
+import net.minecraft.core.registries.BuiltInRegistries
 import org.bukkit.NamespacedKey
 import org.bukkit.persistence.PersistentDataType
 import org.bukkit.block.Block
@@ -301,6 +302,12 @@ private val BLOCK_NAMES: List<String> by lazy {
     Material.entries.filter { it.isBlock && !it.isItem }.map { it.key.key }
 }
 
+// Every item, block and entity by its bare name, which an `exclude:` word is read as before it is read as an action.
+private val THING_NAMES: Set<String> by lazy {
+    listOf(BuiltInRegistries.ITEM, BuiltInRegistries.BLOCK, BuiltInRegistries.ENTITY_TYPE)
+        .flatMapTo(HashSet()) { registry -> registry.keySet().filter { it.namespace == VANILLA_NAMESPACE }.map { it.path } }
+}
+
 private val DURATION = Regex("(\\d+)(mo|[ymwdhs])")
 
 // How far a world-wide lookup of a player walks their index, past the rows a filter dropped, before it
@@ -450,6 +457,9 @@ private val BAD_EVENT = DynamicCommandExceptionType { said("'$it' is not an even
 private val UNKNOWN_FLAG = DynamicCommandExceptionType { said("unknown flag '$it', expected #count, #sum or #all") }
 private val BAD_POSITION = DynamicCommandExceptionType { said("'$it' is not a position, expected x,y,z") }
 private val BAD_MOMENT = DynamicCommandExceptionType { said("'$it' is not a moment; the page buttons fill it in") }
+private val STEAL_EXCLUDED = DynamicCommandExceptionType {
+    said("'$it': a theft is worked out for each withdrawal, so exclude:steal is not taken; use exclude:withdraw instead")
+}
 private val BAD_LIMIT = DynamicCommandExceptionType {
     said("'$it' is not a row count between 1 and $MAX_LIMIT")
 }
@@ -513,7 +523,13 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
                 )
             }
             Param.INCLUDE -> query.copy(included = query.included + values(value))
-            Param.EXCLUDE -> query.copy(excluded = query.excluded + values(value))
+            // A theft is worked out by reading who put the container down, not from the row itself, so leaving
+            // it out could only leave out every withdrawal.
+            Param.EXCLUDE -> if (value.split(',', '&').any { Action.of(it.lowercase()) == Action.STEAL }) {
+                fail(reader, STEAL_EXCLUDED, value)
+            } else {
+                query.copy(excluded = query.excluded + values(value))
+            }
             Param.LIMIT -> query.copy(rows = limitOrNull(value) ?: fail(reader, BAD_LIMIT, value))
             Param.PAGE -> query.copy(page = value.toIntOrNull()?.takeIf { it >= 1 } ?: fail(reader, BAD_PAGE, value))
             Param.ROLLEDBACK -> query.copy(rolledBack = yesNoOrNull(value) ?: fail(reader, BAD_YES_NO, value))
@@ -663,11 +679,18 @@ internal class RowFilter(
         .takeIf { groups -> groups.any { it.size > 1 } }
     private val included = query.included.map { group -> allOf(group).map(::normalizeItem) }
     private val excluded = query.excluded.map { group ->
-        allOf(group).map { Word(excludedPlayers[it.lowercase()], normalizeItem(it)) }
+        allOf(group).map { word ->
+            val player = excludedPlayers[word.lowercase()]
+            Word(player, normalizeItem(word), Action.of(word.lowercase()).takeIf { player == null && word.lowercase() !in THING_NAMES })
+        }
     }
+    // Nothing but `about` narrows a row: most reads ask nothing of it, and it is asked of every row they walk.
+    private val plain = users.isEmpty() && actions == null && included.isEmpty() && excluded.isEmpty()
 
-    // A word of `exclude:`: a player when one goes by it, an item or a block either way.
-    private class Word(val player: UUID?, val item: String)
+    // A word of `exclude:`: a player when one goes by it, else an item or a block, and an action only when it names
+    // no player and no thing. `e:tnt` leaves out the block and the item; every explosion would leave grief behind in
+    // a rollback, and `e:explosion` asks for that by a name nothing else has.
+    private class Word(val player: UUID?, val item: String, val action: Action?)
 
     // A row as the word lists read it. `names` is asked about one player of a group with the group beside it,
     // which an entity row needs: it names the entity only beside the one who did it.
@@ -676,6 +699,7 @@ internal class RowFilter(
     fun keeps(entry: LedgerEntry): Boolean {
         if (!caused(entry.cause)) return false
         if (amount != null && abs(entry.qty) !in amount) return false
+        if (plain) return true
         return about(Seen(setOf(itemKey(ledger, entry.itemFormId)), { entry.cause in it.causes }) { player, _ -> namesUser(entry, setOf(player)) })
     }
 
@@ -684,6 +708,7 @@ internal class RowFilter(
         // A rollback's own rows stay `action:rollback`'s alone, whatever they did to an entity.
         val countsKind = row.cause != Cause.ROLLBACK && row.cause != Cause.PURGE_OPENING
         if (!keepsActed(row.cause, row.eventId, row.confidence, row.kind in kinds && countsKind)) return false
+        if (plain) return true
         return about(Seen(setOf(row.type), { row.cause in it.causes || countsKind && row.kind in it.kinds }) { player, group ->
             player == row.actor || player == row.uuid && row.actor in group
         })
@@ -694,6 +719,7 @@ internal class RowFilter(
     // a reader asking for one item wants. `i:grass_block&dirt` is the one turned into the other.
     fun keeps(row: BlockRow): Boolean {
         if (!keepsActed(row.cause, row.eventId, row.confidence)) return false
+        if (plain) return true
         val named = setOf(stateName(ledger, row.stateBefore), stateName(ledger, row.stateAfter))
         return about(Seen(named, { row.cause in it.causes }) { player, _ -> player == row.actor }, shape = row.cause == Cause.BLK_SHAPE)
     }
@@ -711,7 +737,9 @@ internal class RowFilter(
         if (included.isNotEmpty() && included.none { group -> group.all { it in seen.items } }) return false
         return excluded.none { group ->
             val players = group.mapNotNull { it.player }
-            group.all { word -> word.player?.let { seen.names(it, players) } == true || word.item in seen.items }
+            group.all { word ->
+                word.player?.let { seen.names(it, players) } == true || word.item in seen.items || word.action?.let(seen.acts) == true
+            }
         }
     }
 
@@ -786,8 +814,8 @@ class LookupArgument(
 
     private fun valuesFor(param: Param?): List<String> = when (param) {
         Param.USER, Param.PLAYER -> names()
-        // Takes players and items in one list.
-        Param.EXCLUDE -> names() + ITEM_NAMES + BLOCK_NAMES
+        // Takes players, actions and items in one list; the chat log has only players and hits.
+        Param.EXCLUDE -> if (chat) names() + Action.PVP.keys.first() else names() + EXCLUDABLE + ITEM_NAMES + BLOCK_NAMES
         Param.TIME -> TIME_EXAMPLES
         Param.RADIUS -> RADIUS_EXAMPLES
         Param.ACTION -> if (chat) listOf(Action.PVP.keys.first()) else Action.names
@@ -817,7 +845,13 @@ private fun knownNames(): List<String> {
     return (Bukkit.getOnlinePlayers().map { it.name } + offline).distinct()
 }
 
-private val CHAT_PARAMS = listOf(Param.USER, Param.TIME, Param.FILTER, Param.ACTION, Param.PAGE)
+private val CHAT_PARAMS = listOf(Param.USER, Param.TIME, Param.FILTER, Param.ACTION, Param.EXCLUDE, Param.PAGE)
+
+// An `exclude:` word that is also an item, block or entity is read as the thing, so each action is offered under
+// the first of its names no thing has: `burn`, `pistons`, `hoppers`.
+private val EXCLUDABLE: List<String> by lazy {
+    Action.entries.filter { it != Action.STEAL }.mapNotNull { action -> action.keys.firstOrNull { it !in THING_NAMES } }
+}
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
@@ -874,15 +908,32 @@ internal class ChatRun(val first: ChatLine, var rows: Int, var damage: Float, va
  * is asked as `user:Bob`, and `user:A&B` is the fight between the two, whoever struck.
  */
 internal fun chatFilter(query: LookupQuery, idOf: (String) -> UUID?): (ChatLine) -> Boolean {
-    val users = query.users.map { group -> allOf(group).map(idOf) }
+    fun named(player: UUID?): (ChatLine) -> Boolean = { player != null && (player == it.player || player == it.hit?.victim) }
+    val users = query.users.map { group -> allOf(group).map { named(idOf(it)) } }
     val texts = query.filter?.lowercase()?.let(::allOf)
+    // `exclude:` takes players here, and `pvp` for the hits; any other action names nothing in the chat log,
+    // as in `action:`, and a group holding one never holds. A player called `Hit` is still the player.
+    val excluded = query.excluded.map { group ->
+        allOf(group).map { word ->
+            val player = idOf(word)
+            when {
+                player != null -> named(player)
+                Action.of(word.lowercase()) == Action.PVP -> { line: ChatLine -> line.kind.struck }
+                else -> { _: ChatLine -> false }
+            }
+        }
+    }
     return { line ->
-        fun names(player: UUID?) = player != null && (player == line.player || player == line.hit?.victim)
-        (users.isEmpty() || users.any { group -> group.all(::names) }) &&
+        (users.isEmpty() || users.any { group -> group.all { it(line) } }) &&
             (!query.pvp || line.kind.struck) &&
-            (texts == null || line.text.lowercase().let { text -> texts.all { it in text } })
+            (texts == null || line.text.lowercase().let { text -> texts.all { it in text } }) &&
+            excluded.none { group -> group.all { it(line) } }
     }
 }
+
+/** The words of a `/pp chat` asking that have to be players: an action among `exclude:`'s may be one or not. */
+internal fun chatPlayers(query: LookupQuery): List<String> =
+    query.users + query.excluded.flatMap(::allOf).filter { Action.of(it.lowercase()) == null }
 
 // Hit after hit by one player on another with one thing folds like a lookup's run; a hit back breaks it,
 // which keeps who answered whom in the order it went.

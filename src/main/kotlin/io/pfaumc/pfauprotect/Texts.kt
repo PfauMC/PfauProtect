@@ -134,6 +134,7 @@ object Texts {
         r("'(.*)' is not a time span, expected something like 30m, 2h or 1d6h") to "'$1' — не промежуток времени; ожидается вроде 30m, 2h или 1d6h",
         r("'(.*)' is not a radius, expected 0 to (\\d+) blocks or 'global'") to "'$1' — не радиус; ожидается от 0 до $2 блоков или 'global'",
         r("'(.*)' is not an action, expected one of (.*)") to "'$1' — не действие; ожидается одно из: $2",
+        r("'(.*)': a theft is worked out for each withdrawal, so exclude:steal is not taken; use exclude:withdraw instead") to "'$1': кражу вычисляют для каждого изъятия отдельно, поэтому exclude:steal не принимается; вместо него exclude:withdraw",
         r("'(.*)' is not a page number") to "'$1' — не номер страницы",
         r("'(.*)' is neither yes nor no") to "'$1' — ни 'yes', ни 'no'",
         r("'(.*)' is not an amount, expected 5, >=5, <10 or 5-10") to "'$1' — не количество; ожидается 5, >=5, <10 или 5-10",
