@@ -91,7 +91,9 @@ victim, so `p:` finds them, while `u:` still names only what the victim did.
 - `/pp lookup` reads by position, or with `player:<name>` by a player's own holders (inventory, equipment,
   cursor, ender chest, crafting grid). `user:` is something else: a filter on the actor of positional rows;
   with `radius:global` it reads every position the player touched, through `by_actor`. `time:` takes a span
-  (`2h-1h`), `page:` pages through the answer, `at:x,y,z` pins the place (the page buttons add it). Runs of
+  (`2h-1h`) whose ends are durations or moments (`14:00`, `03.11`, `03.11_14:00`, in the system zone; a date
+  alone is its whole day). Moments are kept as epoch millis (`fromMillis`/`untilMillis`) so the page buttons
+  keep the same window while `asOf` moves. `page:` pages through the answer, `at:x,y,z` pins the place (the page buttons add it). Runs of
   the same thing within a minute fold into one `×N` line; `#all` shows each. `action:steal`, `amount:`,
   `rolledback:`, `#count`/`#sum` narrow it.
 - In the list parameters (`user:`, `player:`, `action:`, `include:`, `exclude:`) `,` is either and `&` is all of

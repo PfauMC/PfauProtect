@@ -951,7 +951,7 @@ class ChunkRollback(
 
 internal fun refusalOf(query: LookupQuery): String? = when {
     query.event != null -> null
-    query.secondsBack == null -> "A rollback needs time: how far back to undo, for example time:1h."
+    !query.hasFrom -> "A rollback needs time: how far back to undo, for example time:1h."
     query.players.isNotEmpty() -> "player: reads what a player carries and has no place to roll back; use user:."
     query.radius == null -> "A rollback needs radius: the blocks around you it covers, or user: for all they did."
     query.global && query.users.isEmpty() -> "radius:global undoes what named players did; give user: as well."
@@ -1042,7 +1042,7 @@ class Rollbacks(
                 val at = if (event != null) LookupTarget(target.world, event.x, event.y, event.z, "event ${event.id} at ${event.x} ${event.y} ${event.z}") else target
                 Debug.log { "  users $users, window $from..$to, radius $radius around ${at.label}" }
                 val since = TIME_FORMAT.format(Instant.ofEpochMilli(from)) +
-                    if (query.secondsUntil != null) " until ${TIME_FORMAT.format(Instant.ofEpochMilli(to))}" else ""
+                    if (query.hasUntil) " until ${TIME_FORMAT.format(Instant.ofEpochMilli(to))}" else ""
                 val readings = try {
                     // The writers run on threads of their own, and what they still hold is history the
                     // rollback would not see; so is a clock's move held back.

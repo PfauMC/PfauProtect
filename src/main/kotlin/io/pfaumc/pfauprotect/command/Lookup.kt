@@ -85,6 +85,11 @@ import net.kyori.adventure.text.format.TextDecoration
 import net.kyori.adventure.text.event.ClickEvent
 import net.kyori.adventure.text.event.HoverEvent
 import org.bukkit.entity.Player
+import java.time.DateTimeException
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -326,7 +331,7 @@ private val USE_CAUSES = setOf(
 )
 
 private val GLOBAL_WORDS = setOf("global", "none", "off", "false", "-1")
-private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w")
+private val TIME_EXAMPLES = listOf("10m", "1h", "6h", "1d", "3d", "1w", "12:00-13:00")
 private val RADIUS_EXAMPLES = listOf("0", "5", "10", "20", "50", "global")
 private val LIMIT_EXAMPLES = listOf("10", "25", "50", "100")
 
@@ -375,6 +380,10 @@ data class LookupQuery(
     val secondsBack: Long? = null,
     // The near end of a span, `time:2h-1h`: how long ago it stops. Null is now.
     val secondsUntil: Long? = null,
+    // The same two ends when a clock time or a date was typed: absolute, so a page asked for later
+    // (with `asOf` moved) still covers the same window. They win over the seconds.
+    val fromMillis: Long? = null,
+    val untilMillis: Long? = null,
     val radius: Int? = null,
     // The `limit:` said, else the reader's own page size, filled in where they asked; null is the default.
     val rows: Int? = null,
@@ -411,10 +420,16 @@ data class LookupQuery(
 
     val limit: Int get() = rows ?: DEFAULT_LIMIT
 
-    fun fromTs(now: Long = asOf ?: System.currentTimeMillis()): Long = secondsBack?.let { now - it * 1000 } ?: 0
+    val hasFrom: Boolean get() = secondsBack != null || fromMillis != null
+
+    // Whether the span stops before now.
+    val hasUntil: Boolean get() = secondsUntil != null || untilMillis != null
+
+    fun fromTs(now: Long = asOf ?: System.currentTimeMillis()): Long = fromMillis ?: secondsBack?.let { now - it * 1000 } ?: 0
 
     // Pinned, the moment itself is left out: a row of that millisecond may land after the first page was read.
-    fun toTs(now: Long = asOf ?: System.currentTimeMillis()): Long = secondsUntil?.let { now - it * 1000 } ?: asOf?.minus(1) ?: Long.MAX_VALUE
+    fun toTs(now: Long = asOf ?: System.currentTimeMillis()): Long =
+        untilMillis ?: secondsUntil?.let { now - it * 1000 } ?: asOf?.minus(1) ?: Long.MAX_VALUE
 
     // Rows a page needs read: every page before it as well, since a read is newest first. Runs folded
     // into one line each eat rows, so a folded page reads further.
@@ -484,7 +499,7 @@ private val UNKNOWN_PARAMETER = DynamicCommandExceptionType {
 }
 private val EMPTY_VALUE = DynamicCommandExceptionType { said("'$it:' has no value") }
 private val BAD_TIME = DynamicCommandExceptionType {
-    said("'$it' is not a time span, expected something like 30m, 2h or 1d6h")
+    said("'$it' is not a time, expected 1h, 2h-1h, 14:00, 03.11 or 03.11_14:00-03.11_18:00")
 }
 private val BAD_RADIUS = DynamicCommandExceptionType {
     said("'$it' is not a radius, expected 0 to ${Settings.maxRadius} blocks or 'global'")
@@ -559,7 +574,9 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
         query = when (param) {
             Param.USER -> query.copy(users = query.users + values(value))
             Param.PLAYER -> query.copy(players = query.players + values(value))
-            Param.TIME -> spanOrNull(value)?.let { (back, until) -> query.copy(secondsBack = back, secondsUntil = until) } ?: fail(reader, BAD_TIME, value)
+            Param.TIME -> timeSpanOrNull(value)?.let {
+                query.copy(secondsBack = it.secondsBack, secondsUntil = it.secondsUntil, fromMillis = it.fromMillis, untilMillis = it.untilMillis)
+            } ?: fail(reader, BAD_TIME, value)
             Param.RADIUS -> query.copy(radius = radiusOrNull(value) ?: fail(reader, BAD_RADIUS, value))
             Param.ACTION -> {
                 val named = actions(reader, valueStart, value)
@@ -653,6 +670,69 @@ internal fun spanOrNull(value: String): Pair<Long, Long?>? {
     val a = durationOrNull(ends[0]) ?: return null
     val b = durationOrNull(ends[1]) ?: return null
     return if (a == b) null else maxOf(a, b) to minOf(a, b)
+}
+
+/** Both ends of a `time:` value, each end either relative (seconds back) or absolute (epoch millis). */
+internal data class TimeSpan(
+    val secondsBack: Long? = null,
+    val secondsUntil: Long? = null,
+    val fromMillis: Long? = null,
+    val untilMillis: Long? = null,
+)
+
+// One end as typed: where it falls (a date alone: its start), and what it stands for as the near end.
+private class End(val at: Long, val relative: Long?, val nearAt: Long)
+
+private val DATE = Regex("""(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?""")
+private val CLOCK = Regex("""(\d{1,2}):(\d{2})(?::(\d{2}))?""")
+
+private fun endOrNull(text: String, now: ZonedDateTime): End? {
+    durationOrNull(text)?.let { return End(now.toInstant().toEpochMilli() - it * 1000, it, 0) }
+    val parts = text.split('_')
+    if (parts.size > 2) return null
+    val date = parts.firstOrNull()?.takeIf { '.' in it }
+    val clock = parts.getOrNull(if (date != null) 1 else 0)
+    if (date == null && clock == null || parts.size == 2 && (date == null || clock == null)) return null
+    try {
+        val time = if (clock == null) null else CLOCK.matchEntire(clock)?.let { LocalTime.of(it.groupValues[1].toInt(), it.groupValues[2].toInt(), it.groupValues[3].ifEmpty { "0" }.toInt()) } ?: return null
+        val zone = now.zone
+        fun at(day: LocalDate) = day.atTime(time ?: LocalTime.MIDNIGHT).atZone(zone)
+        val day = if (date == null) now.toLocalDate() else DATE.matchEntire(date)?.let { m ->
+            // No year: this year, or last if that lands ahead of now.
+            m.groupValues[3].takeIf { it.isNotEmpty() }?.let { LocalDate.of(it.toInt(), m.groupValues[2].toInt(), m.groupValues[1].toInt()) }
+                ?: LocalDate.of(now.year, m.groupValues[2].toInt(), m.groupValues[1].toInt()).let { d ->
+                    if (at(d).isAfter(now)) LocalDate.of(now.year - 1, d.monthValue, d.dayOfMonth) else d
+                }
+        } ?: return null
+        // A clock time alone: today, or yesterday if that is still ahead.
+        val moment = at(if (date == null && at(day).isAfter(now)) day.minusDays(1) else day)
+        val start = moment.toInstant().toEpochMilli()
+        // A date without a time is the whole day: as the near end it stops at the day's last millisecond.
+        val nearAt = if (time == null) moment.plusDays(1).toInstant().toEpochMilli() - 1 else start
+        return End(start, null, nearAt)
+    } catch (_: DateTimeException) {
+        return null
+    }
+}
+
+/**
+ * A `time:` value: a span of durations as [spanOrNull] reads it, or clock times and dates (`14:00`, `03.11`,
+ * `03.11_14:00`) in the server's zone, alone or mixed with durations. A lone date is its whole day, a lone
+ * time runs up to now.
+ */
+internal fun timeSpanOrNull(value: String, now: ZonedDateTime = ZonedDateTime.now(ZoneId.systemDefault())): TimeSpan? {
+    spanOrNull(value)?.let { (back, until) -> return TimeSpan(secondsBack = back, secondsUntil = until) }
+    val ends = value.split('-').map { endOrNull(it, now) ?: return null }
+    if (ends.size == 1) {
+        val end = ends[0]
+        return TimeSpan(fromMillis = end.at, untilMillis = end.nearAt.takeIf { it > end.at })
+    }
+    if (ends.size != 2 || ends[0].at == ends[1].at) return null
+    val (far, near) = ends.sortedBy { it.at }
+    return TimeSpan(
+        secondsBack = far.relative, fromMillis = far.at.takeIf { far.relative == null },
+        secondsUntil = near.relative, untilMillis = near.nearAt.takeIf { near.relative == null },
+    )
 }
 
 fun durationOrNull(value: String): Long? {

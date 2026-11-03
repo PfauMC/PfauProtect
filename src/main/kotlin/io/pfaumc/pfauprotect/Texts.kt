@@ -132,7 +132,7 @@ object Texts {
         r("(\\S+) differs from the ledger on (\\d+) forms:") to "$1 расходится с журналом по предметам: $2",
         r("unknown parameter '(.*)', expected one of (.*)") to "неизвестный параметр '$1'; ожидается один из: $2",
         r("'(.*)' has no value") to "у '$1' нет значения",
-        r("'(.*)' is not a time span, expected something like 30m, 2h or 1d6h") to "'$1' — не промежуток времени; ожидается вроде 30m, 2h или 1d6h",
+        r("'(.*)' is not a time, expected 1h, 2h-1h, 14:00, 03\\.11 or 03\\.11_14:00-03\\.11_18:00") to "'$1' – не время; ожидается 1h, 2h-1h, 14:00, 03.11 или 03.11_14:00-03.11_18:00",
         r("'(.*)' is not a radius, expected 0 to (\\d+) blocks or 'global'") to "'$1' — не радиус; ожидается от 0 до $2 блоков или 'global'",
         r("'(.*)' is not an action, expected one of (.*)") to "'$1' — не действие; ожидается одно из: $2",
         r("'(.*)': a theft is worked out for each withdrawal, so exclude:steal is not taken; use exclude:withdraw instead") to "'$1': кражу вычисляют для каждого изъятия отдельно, поэтому exclude:steal не принимается; вместо него exclude:withdraw",
