@@ -155,6 +155,23 @@ class LookupReadTest : BothPlanes() {
     }
 
     @Test
+    fun `a part reads the contents of a container or its block apart`() {
+        val chest = Container(world, 10, 64, -3, 0)
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, stone, null, 1, T0))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, WorldBlock(world, 10, 64, -3), stone, null, 1, T0 + 1))
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 2)))
+        shared.drain()
+        log.drain()
+
+        val contents = said(LookupQuery(part = Part.CONTENTS))
+        assertTrue(contents.any { it.contains("{container_add}") }, "$contents")
+        assertTrue(contents.none { it.contains("{blk_player_place}") || it.contains("{block_place}") }, "$contents")
+        val block = said(LookupQuery(part = Part.BLOCK))
+        assertTrue(block.none { it.contains("{container_add}") }, "$block")
+        assertTrue(block.any { it.contains("{blk_player_place}") } && block.any { it.contains("{block_place}") }, "$block")
+    }
+
+    @Test
     fun `a position answers with both planes in the order things happened`() {
         val at = WorldBlock(world, 10, 64, -3)
         shared.submit(Transfer(Cause.BLOCK_PLACE, Void, at, stone, null, 1, T0))

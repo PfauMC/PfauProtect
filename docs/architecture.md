@@ -59,6 +59,7 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 A page of `lookup`, `near` or `chat` goes through `showPage` (`Lookup.kt`): a Paper dialog with the arrows as
 buttons for a player who reads in one (`lookup.dialog` in `config.yml`, overridden per player by `/pp view` and
 kept in their PDC), chat lines otherwise. The console, the inspector and the short answers stay in chat.
+The inspector aims with its own ray (a spectator inside terrain starts it past that block) and asks `part:block` or `part:contents` of a container (`Part`, hidden like `asof:`; the page buttons keep it).
 
 **Settings, texts, chat, API.** `Settings.kt` reads `config.yml` (language, disabled worlds and causes, limits,
 the mob death thresholds). Messages are written in English and go out through `CommandSender.say()`

@@ -9,6 +9,10 @@ import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.player.PlayerInteractEntityEvent
 import org.bukkit.event.hanging.HangingBreakByEntityEvent
 import org.bukkit.event.entity.EntityDamageByEntityEvent
+import io.pfaumc.pfauprotect.TARGET_RANGE
+import org.bukkit.FluidCollisionMode
+import org.bukkit.GameMode
+import org.bukkit.util.RayTraceResult
 import org.bukkit.block.Container
 import org.bukkit.block.Sign
 import org.bukkit.entity.ArmorStand
@@ -32,22 +36,45 @@ class Inspector(private val lookups: Lookups) : Listener {
 
     @EventHandler(priority = EventPriority.LOWEST)
     fun onInteract(event: PlayerInteractEvent) {
-        if (event.player.uniqueId !in enabled) return
-        if (event.action != Action.LEFT_CLICK_BLOCK && event.action != Action.RIGHT_CLICK_BLOCK) return
-        // A right click reports once per hand; the off-hand pass would double every lookup.
-        if (event.action == Action.RIGHT_CLICK_BLOCK && event.hand != EquipmentSlot.HAND) return
-        val block = event.clickedBlock ?: return
-        event.isCancelled = true
-        // A right click on a face asks about the place in front of it, where something was put or broken;
-        // on a chest or a sign it asks about the block itself, whose contents and text are the story.
-        val state = block.state
-        val target = if (event.action == Action.RIGHT_CLICK_BLOCK && state !is Container && state !is Sign) {
-            block.getRelative(event.blockFace)
-        } else {
-            block
+        val player = event.player
+        if (player.uniqueId !in enabled) return
+        val left = when (event.action) {
+            Action.LEFT_CLICK_BLOCK, Action.LEFT_CLICK_AIR -> true
+            Action.RIGHT_CLICK_BLOCK, Action.RIGHT_CLICK_AIR -> false
+            else -> return
         }
-        if (again(event.player, target.location)) return
-        lookups.run(event.player, lookupTargetAt(target), LookupQuery(), dialog = false)
+        // A right click reports once per hand; the off-hand pass would double every lookup.
+        if (!left && event.hand != EquipmentSlot.HAND) return
+        // Our own ray rather than the event's block: a spectator inside terrain gets the block that holds the
+        // eye from the vanilla one, and may produce only AIR actions at all.
+        val hit = sight(player) ?: return
+        val block = hit.hitBlock ?: return
+        val state = block.state
+        val kind = when (state) {
+            is Container -> HitKind.CONTAINER
+            is Sign -> HitKind.SIGN
+            else -> HitKind.OTHER
+        }
+        val choice = choose(left, player.gameMode == GameMode.SPECTATOR, kind)
+        val target = if (choice.inFront) block.getRelative(hit.hitBlockFace ?: return) else block
+        event.isCancelled = true
+        if (again(player, target.location to choice.part)) return
+        lookups.run(player, lookupTargetAt(target), LookupQuery(part = choice.part), dialog = false)
+    }
+
+    // A spectator sees through the blocks they are in, so the ray starts where they leave them.
+    private fun sight(player: Player): RayTraceResult? {
+        val direction = player.eyeLocation.direction
+        val start = player.eyeLocation.clone()
+        var travelled = 0.0
+        while (travelled < TARGET_RANGE && !start.block.isPassable) {
+            val inside = start.block
+            while (start.block == inside && travelled < TARGET_RANGE) {
+                start.add(direction.clone().multiply(STEP))
+                travelled += STEP
+            }
+        }
+        return player.world.rayTraceBlocks(start, direction, TARGET_RANGE - travelled, FluidCollisionMode.NEVER, true)
     }
 
     private fun again(player: Player, what: Any): Boolean {
@@ -97,3 +124,18 @@ class Inspector(private val lookups: Lookups) : Listener {
 }
 
 private const val REPEAT_MILLIS = 1_000L
+
+private const val STEP = 0.05
+
+enum class HitKind { CONTAINER, SIGN, OTHER }
+
+/** What a click asks about: the block hit or the place in front of its face, and which part of it. */
+data class Choice(val inFront: Boolean, val part: Part)
+
+fun choose(left: Boolean, spectator: Boolean, kind: HitKind): Choice = when {
+    left -> Choice(false, if (kind == HitKind.CONTAINER) Part.BLOCK else Part.ALL)
+    spectator -> Choice(false, Part.ALL)
+    kind == HitKind.CONTAINER -> Choice(false, Part.CONTENTS)
+    kind == HitKind.SIGN -> Choice(false, Part.ALL)
+    else -> Choice(true, Part.ALL)
+}

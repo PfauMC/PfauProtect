@@ -376,4 +376,13 @@ class LookupTest {
         assertEquals(query.copy(page = 3, words = asked.words), asked)
     }
 
+
+    @Test
+    fun `a part parses and the page button keeps it`() {
+        val query = parseLookupQuery("part:contents")
+        assertEquals(Part.CONTENTS, query.part)
+        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("part:x") }
+        val command = query.copy(words = "part:contents page:1").pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2)
+        assertTrue(command.contains("part:contents") && command.split(" ").count { it.startsWith("part:") } == 1, command)
+    }
 }

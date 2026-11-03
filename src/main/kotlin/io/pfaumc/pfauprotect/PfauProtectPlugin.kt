@@ -120,7 +120,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.LongAdder
 import java.util.logging.Level
 
-private const val TARGET_RANGE = 6
+internal const val TARGET_RANGE = 6
 
 // What `near` covers when nobody says: enough to take in the room you are standing in, and small
 // enough that a busy area still answers with the change you came to look at.
@@ -787,7 +787,10 @@ class PfauProtectPlugin : JavaPlugin() {
         val now = running.inspector.toggle(player, desired)
         // Above the hotbar rather than in chat: it is a state, not a message, and chat is where the answers go.
         player.sendActionBar(
-            if (now) Ui.text(tr("Inspector on: left click — the block, right click — the place in front, click an entity — the entity", "Инспектор включён: ЛКМ — блок, ПКМ — место перед гранью, клик по сущности — сущность"), Ui.GAINED)
+            if (now) Ui.text(tr(
+                "Inspector on: left click – the block, right click – the place in front, on a container its contents; in spectator right click – the block and its contents; click an entity – the entity",
+                "Инспектор включён: ЛКМ – блок, ПКМ – место перед гранью, у контейнера его содержимое; в наблюдателе ПКМ – блок и содержимое; клик по сущности – сущность",
+            ), Ui.GAINED)
             else Ui.text(tr("Inspector off", "Инспектор выключен"), Ui.MUTED)
         )
     }

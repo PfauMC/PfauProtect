@@ -139,13 +139,15 @@ internal enum class Param(vararg val keys: String) {
     // The moment the first page was read, which the page buttons pin: rows written since would shift every
     // page under the reader, and « would show what was never on the page they left. Not offered to type.
     ASOF("asof"),
+    // Which part of a place the inspector asks about, `block` or `contents`; the page buttons keep it. Not offered to type.
+    PART("part"),
     ;
 
     val canonical: String get() = keys.first()
 
     companion object {
         private val byKey = entries.flatMap { param -> param.keys.map { it to param } }.toMap()
-        val prefixes = entries.filter { it != ASOF }.map { "${it.canonical}:" }
+        val prefixes = entries.filter { it != ASOF && it != PART }.map { "${it.canonical}:" }
         val help = prefixes.joinToString(" ")
         fun of(key: String): Param? = byKey[key]
     }
@@ -365,6 +367,9 @@ private const val BOX_STEPS = 250_000
 // fell out of a container broken there. A rollback further back than that behind a busy place goes unmarked.
 private const val LATER_READ = 32
 
+/** Which part of one place a lookup reads: the inspector asks a container for its block and its contents apart. */
+enum class Part(val word: String?) { ALL(null), BLOCK("block"), CONTENTS("contents") }
+
 data class LookupQuery(
     val users: List<String> = emptyList(),
     // Whose own slots to read, rather than where. `users` narrows the rows of a place down to the
@@ -411,6 +416,8 @@ data class LookupQuery(
     val dialog: Boolean = false,
     // What "now" is for this answer: set when the first page is asked for and pinned by the page buttons.
     val asOf: Long? = null,
+    // Of a single place: its block, its contents, or both. A radius or a player ignores it.
+    val part: Part = Part.ALL,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
@@ -446,12 +453,12 @@ data class LookupQuery(
     fun pageCommand(subcommand: String, page: Int, vararg pinned: String): String {
         // A bare word is a player, even one named `page`.
         val kept = words.split(' ').filter { it.isNotBlank() && it.substringBefore(':', "").lowercase() !in PAGED_AWAY }
-        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }) + "page:$page").joinToString(" ")
+        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }, part.word?.let { "part:$it" }) + "page:$page").joinToString(" ")
     }
 }
 
 private const val GROUPED_READ = 4
-private val PAGED_AWAY = setOf("page", "pg", "at", "asof")
+private val PAGED_AWAY = setOf("page", "pg", "at", "asof", "part")
 
 /** Where a lookup asked with `at:` reads, in the world it was asked from. */
 fun LookupQuery.targetOr(fallback: LookupTarget): LookupTarget {
@@ -514,6 +521,7 @@ private val BAD_EVENT = DynamicCommandExceptionType { said("'$it' is not an even
 private val UNKNOWN_FLAG = DynamicCommandExceptionType { said("unknown flag '$it', expected #count, #sum or #all") }
 private val BAD_POSITION = DynamicCommandExceptionType { said("'$it' is not a position, expected x,y,z") }
 private val BAD_MOMENT = DynamicCommandExceptionType { said("'$it' is not a moment; the page buttons fill it in") }
+private val BAD_PART = DynamicCommandExceptionType { said("'$it' is not a part, expected part:block or part:contents") }
 private val STEAL_EXCLUDED = DynamicCommandExceptionType {
     said("'$it': a theft is worked out for each withdrawal, so exclude:steal is not taken; use exclude:withdraw instead")
 }
@@ -604,6 +612,7 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
             Param.FILTER -> query.copy(filter = value)
             Param.AT -> query.copy(at = positionOrNull(value) ?: fail(reader, BAD_POSITION, value))
             Param.ASOF -> query.copy(asOf = value.toLongOrNull()?.takeIf { it > 0 } ?: fail(reader, BAD_MOMENT, value))
+            Param.PART -> query.copy(part = Part.entries.firstOrNull { it.word == value.lowercase() } ?: fail(reader, BAD_PART, value))
         }
         reader.cursor = tokenStart + token.length
     }
@@ -957,7 +966,7 @@ class LookupArgument(
         Param.PAGE -> listOf("2", "3")
         Param.ROLLEDBACK -> listOf("no", "yes")
         Param.AMOUNT -> listOf(">=8", ">=64", "<4")
-        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, null -> emptyList()
+        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, Param.PART, null -> emptyList()
     }
 }
 
@@ -988,7 +997,7 @@ private val EXCLUDABLE: List<String> by lazy {
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
-private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF)
+private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF, Param.PART)
 
 // The clicks of a window, which `verb` words "moved", and the container causes themselves: what a line between a
 // player's hands and a container may be drawn as put in or taken out.
@@ -1345,10 +1354,15 @@ class Lookups(
                 "(complete $planesComplete), steps ${steps.used} of $BOX_STEPS${if (steps.ranOut) " (ran out)" else ""}"
         }
         // The coordinates come after, set apart by the heading.
-        val where = when {
+        val place = when {
             query.radius != null -> Ui.text(tr("radius ${query.radius} around", "радиус ${query.radius} вокруг"))
             target.block != null -> Ui.block(target.block)
             else -> Ui.text(tr("place", "место"))
+        }
+        val where = if (query.radius == null && query.part == Part.CONTENTS) {
+            Component.text().append(place).append(Ui.text(tr(", contents", ", содержимое"), Ui.MUTED)).build()
+        } else {
+            place
         }
         if (blocks.get(target.world) == null) sender.say("This world's block log is not open.")
         answer(sender, items + changes, page.complete && planesComplete && !steps.ranOut, where, query, target)
@@ -1607,6 +1621,8 @@ class Lookups(
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val radius = query.radius
+        // What a container holds is the item plane alone; the block and entity planes are about the block.
+        if (radius == null && query.part == Part.CONTENTS) return emptyList<Line>() to true
         val keeps = rowFilter(query)
         val rows: List<BlockRow>
         val entities: List<EntityRow>
@@ -1658,7 +1674,7 @@ class Lookups(
     private fun read(target: LookupTarget, query: LookupQuery, steps: Steps): EntryPage {
         val fromTs = query.fromTs()
         val toTs = query.toTs()
-        val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z), fromTs, toTs, query)
+        val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z, query.part), fromTs, toTs, query)
         val keeps = rowFilter(query)
         return ledger.boxPage(target.world, target.box(radius), fromTs, toTs, boxWanted(query), steps, keeps::keeps)
     }
@@ -1667,8 +1683,10 @@ class Lookups(
     // one; a count is of everything the read reaches.
     private fun boxWanted(query: LookupQuery) = if (query.count) query.fetch else query.wanted + 1
 
-    private fun holdersAt(world: UUID, x: Int, y: Int, z: Int): List<Holder> =
-        listOf(Container(world, x, y, z, 0), WorldBlock(world, x, y, z))
+    private fun holdersAt(world: UUID, x: Int, y: Int, z: Int, part: Part = Part.ALL): List<Holder> = listOfNotNull(
+        Container(world, x, y, z, 0).takeIf { part != Part.BLOCK },
+        WorldBlock(world, x, y, z).takeIf { part != Part.CONTENTS },
+    )
 
     private fun holderRows(holders: List<Holder>, fromTs: Long, toTs: Long, query: LookupQuery): EntryPage {
         val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = query.fetch) }
