@@ -115,3 +115,21 @@ Do not contradict this file from memory. If something here looks wrong, re-read 
 
 - Handlers of equal priority run in registration order, and the class that declares
   `getHandlerList()` owns the list, so a subclass event reaches a superclass handler exactly once.
+
+## Spectator clicks (MC 26.3, Canvas 956)
+
+Observed live with bot clients (PI2 of the mc-testbot pack), not read from sources: only the plugin's
+answers were visible, no event was logged, so the exact `Action` values stay unverified.
+
+- Right click on a chest from 3 blocks, real client path (use key, hit result from the client's own ray):
+  the server sees an interact for that player and the inspector answers. Whether it arrives as
+  `RIGHT_CLICK_BLOCK` or `RIGHT_CLICK_AIR` is **unverified**.
+- Left click on a block: the client sends nothing in spectator (`startDestroyBlock` is refused locally;
+  taken from the client's behaviour, the bot's `hit` produced no answer). A bare punch packet
+  (`ServerboundPunchPacket`, what `swing` sends) from 3 blocks also produced no inspector answer, so no
+  `LEFT_CLICK_AIR`/`LEFT_CLICK_BLOCK` the inspector could use reached it. Whether Canvas fires
+  `PlayerInteractEvent` for it at all is **unverified**.
+- Camera inside a solid block: not observed at event level. `clickedBlock`/`blockFace` in that case are
+  **unverified**, which is why the inspector casts its own ray (`Inspector.sight`) and steps out of the
+  one block the camera is in before it: a first version stepped out of every solid block in a row and
+  went through a chest touching that stone.
