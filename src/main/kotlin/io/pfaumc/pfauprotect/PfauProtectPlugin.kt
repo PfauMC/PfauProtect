@@ -695,18 +695,42 @@ class PfauProtectPlugin : JavaPlugin() {
                         .executes { teleport(it, StringArgumentType.getString(it, "world")) }
                 )
         )
+        // A name is no position, so the two never compete for one word.
+        .then(Commands.argument("player", ArgumentTypes.player()).executes(::teleportToPlayer))
 
-    private fun teleport(context: CommandContext<CommandSourceStack>, worldName: String?): Int {
-        val player = context.source.executor as? Player ?: return 0
-        // The spectator node outranks the plain one, so an op or a group that also holds the plain one stays
-        // limited. The mode is checked here, not in `requires`: the client keeps the command tree across a
-        // game mode change, and the refusal deserves its own words rather than "unknown command". The node is
-        // the asker's: a console running `execute as` a limited player is not limited by it.
+    // The spectator node outranks the plain one, so an op or a group that also holds the plain one stays
+    // limited. The mode is checked here, not in `requires`: the client keeps the command tree across a
+    // game mode change, and the refusal deserves its own words rather than "unknown command". The node is
+    // the asker's: a console running `execute as` a limited player is not limited by it.
+    private fun teleporting(context: CommandContext<CommandSourceStack>): Player? {
+        val player = context.source.executor as? Player ?: return null
         val sender = context.source.sender
         if (sender.hasPermission(TELEPORT_SPECTATOR_PERMISSION) && player.gameMode != GameMode.SPECTATOR) {
             sender.say("Teleport only works in spectator mode.")
+            return null
+        }
+        return player
+    }
+
+    private fun teleportToPlayer(context: CommandContext<CommandSourceStack>): Int {
+        val player = teleporting(context) ?: return 0
+        val target = context.getArgument("player", PlayerSelectorArgumentResolver::class.java).resolve(context.source).first()
+        val sender = context.source.sender
+        // Folia: the target's place is read on its own region's thread, and the teleport starts on the
+        // teleported player's, as the coordinate teleport does from the command.
+        val scheduled = target.scheduler.run(this, {
+            val at = target.location
+            player.scheduler.run(this, { player.teleportAsync(at) }, null)
+        }, null)
+        if (scheduled == null) {
+            sender.say("${target.name} is not online.")
             return 0
         }
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun teleport(context: CommandContext<CommandSourceStack>, worldName: String?): Int {
+        val player = teleporting(context) ?: return 0
         val world = if (worldName == null) player.world else server.getWorld(worldName)
         if (world == null) {
             context.source.sender.say("Unknown world: $worldName")
