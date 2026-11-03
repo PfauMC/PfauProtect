@@ -252,6 +252,7 @@ class StoredNumbersTest {
                 "NESTED" to 8,
                 "VOID" to 9,
                 "WORLD_BLOCK" to 10,
+                "SPOT_TAG" to 0xF0,
             ),
             HolderType::class.java.declaredFields
                 .filter { Modifier.isStatic(it.modifiers) && it.type == Int::class.javaPrimitiveType }

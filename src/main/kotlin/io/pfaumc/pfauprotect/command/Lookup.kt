@@ -1406,7 +1406,8 @@ class Lookups(
         // slots, as CoreProtect shows them; a click between two of one player's own slots is not that.
         fun own(holder: Holder) = (holder as? PlayerHolder)?.uuid ?: (holder as? EntitySlot)?.uuid?.takeIf { it in users }
         val traded = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query).entries.filter {
-            val at = it.counterparty.block
+            // A drop or pickup from this version on says where it happened; the world decides, as for a block.
+            val at = it.spot ?: it.counterparty.block
             if (at != null) at.world == target.world else own(it.counterparty).let { mine -> mine == null || mine != own(it.holder) }
         }
         // A block put down drops nothing, so only the places they changed otherwise are read for what fell out.
@@ -1490,7 +1491,7 @@ class Lookups(
             // A slot posting names its player as a holder rather than as its actor.
             val who = entry.actor ?: playerOf(entry.holder) ?: playerOf(entry.counterparty)
             val same = "i ${entry.cause} $who ${entry.itemFormId} ${entry.qty > 0} ${slotless(entry.holder)} ${slotless(entry.counterparty)}"
-            val places = listOfNotNull(entry.holder.block, entry.counterparty.block)
+            val places = listOfNotNull(entry.holder.block, entry.counterparty.block, entry.spot)
             Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, places) { amount, _ ->
                 draw(entry, who, amount)
             }

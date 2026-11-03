@@ -20,6 +20,7 @@ import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.capture.block.firedBy
 import io.pfaumc.pfauprotect.capture.block.litBy
 import io.pfaumc.pfauprotect.capture.block.spotOf
+import io.pfaumc.pfauprotect.capture.block.toWorldBlock
 import java.util.UUID
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.EntityType
@@ -294,6 +295,7 @@ class WorldItemListener(
                     from = ItemEntityRef(item.uniqueId),
                     form = encoded.form,
                     qty = encoded.count,
+                    spot = item.location.toWorldBlock(),
                 ),
             )
             return

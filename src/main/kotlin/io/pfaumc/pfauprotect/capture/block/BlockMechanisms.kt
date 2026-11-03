@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.attribution.Energy
 import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
+import io.pfaumc.pfauprotect.model.PlayerHolder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.storage.ItemKey
@@ -62,6 +63,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.abs
+import kotlin.math.floor
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ProjectileItem
 import net.minecraft.world.item.ItemStack as NmsItemStack
@@ -87,6 +89,10 @@ private const val SAME_TICK_MILLIS = 50L
 data class Spot(val world: UUID, val x: Double, val y: Double, val z: Double)
 
 internal fun spotOf(at: Location) = Spot(at.world.uid, at.x, at.y, at.z)
+
+internal fun Spot.toWorldBlock() = WorldBlock(world, floor(x).toInt(), floor(y).toInt(), floor(z).toInt())
+
+internal fun Location.toWorldBlock() = WorldBlock(world.uid, blockX, blockY, blockZ)
 
 // A two-position block is paid for once, on the half the placement event names, and the debit belongs
 // where the credit is whichever half the breaker struck; otherwise one half keeps a block that is gone
@@ -297,7 +303,9 @@ class SpawnOrigins(private val pending: TickCoalescer, private val clock: () -> 
             if (!matches(note)) continue
             val qty = if (note.rolled) left else minOf(left, note.qty)
             if (note.from != null) {
-                pending.add(note.from, into, note.cause, key, qty, note.actor, note.confidence)
+                // Only a player's own loss is found by where it happened; a block's drop has the block.
+                val spot = if (note.from is PlayerHolder) note.at?.toWorldBlock() else null
+                pending.add(note.from, into, note.cause, key, qty, note.actor, note.confidence, spot)
             }
             if (note.tag != null && into is ItemEntityRef) {
                 witnessed.computeIfAbsent(note.tag) { Witnessed(ConcurrentHashMap.newKeySet(), clock()) }

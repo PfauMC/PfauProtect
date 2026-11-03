@@ -190,6 +190,10 @@ fun interface IdLookup {
 object EntryCodec {
     const val VERSION = 0
 
+    // Version 1 is version 0 with a spot (world number, position) between the actor and the damage. A
+    // row without a spot is still written as version 0, so old and new builds read the same bytes.
+    const val SPOT_VERSION = 1
+
     // Fixed width rather than a varint: the registry caps a world number below 0xFFFF anyway, and a
     // varint would make the length of everything after it depend on how many worlds the server has.
     const val WORLD_NO_SIZE = 2
@@ -217,9 +221,9 @@ object EntryCodec {
     // written before a third confidence existed has it clear and reads as it always did.
     private const val CONFIDENCE_HIGH = 0x08
 
-    fun header(kind: Kind, confidence: Confidence, actor: Boolean = false): Int =
+    fun header(kind: Kind, confidence: Confidence, actor: Boolean = false, spot: Boolean = false): Int =
         (kind.id shl 6) or ((confidence.id and 1) shl 5) or (if (actor) ACTOR_FLAG else 0) or
-            (if (confidence.id and 2 != 0) CONFIDENCE_HIGH else 0) or VERSION
+            (if (confidence.id and 2 != 0) CONFIDENCE_HIGH else 0) or (if (spot) SPOT_VERSION else VERSION)
 
     fun key(holder: Holder, timestamp: Long, txId: Long, ordinal: Int, ids: IdResolver): ByteArray {
         require(ordinal in 0..MAX_ORDINAL) { "posting ordinal $ordinal does not fit in a byte" }
@@ -247,13 +251,14 @@ object EntryCodec {
     // in the reserved header bits.
     fun value(entry: LedgerEntry, ids: IdResolver): ByteArray {
         val w = ByteWriter(32)
-        w.byte(header(entry.kind, entry.confidence, entry.actor != null))
+        w.byte(header(entry.kind, entry.confidence, entry.actor != null, entry.spot != null))
         w.byte(entry.cause.id)
         w.varInt(entry.holder.slot)
         writeHolder(w, entry.counterparty, ids, withSlot = true)
         w.varLong(entry.itemFormId)
         w.zigZagInt(entry.qty)
         if (entry.actor != null) w.varInt(playerNo(entry.actor, ids))
+        if (entry.spot != null) writePosition(w, entry.spot.world, entry.spot.x, entry.spot.y, entry.spot.z, ids)
         if (entry.damage != null) w.varInt(entry.damage)
         return w.toByteArray()
     }
@@ -267,7 +272,8 @@ object EntryCodec {
     private fun decodeEntry(key: ByteArray, value: ByteArray, names: IdLookup): LedgerEntry? {
         val v = ByteReader(value)
         val header = v.byte()
-        if (header and VERSION_MASK != VERSION) return null
+        val version = header and VERSION_MASK
+        if (version != VERSION && version != SPOT_VERSION) return null
         val kindId = (header ushr 6) and 0x03
         val kind = Kind.byId(kindId) ?: throw IllegalArgumentException("unknown entry kind $kindId")
         val confidenceId = ((header ushr 5) and 0x01) or (if (header and CONFIDENCE_HIGH != 0) 2 else 0)
@@ -280,6 +286,7 @@ object EntryCodec {
         val itemFormId = v.varLong()
         val qty = v.zigZagInt()
         val actor = if (header and ACTOR_FLAG != 0) names.uuid(RegistryNamespace.PLAYER, v.varInt()) else null
+        val spot = if (version == SPOT_VERSION) readPosition(v, names) else null
         val damage = if (v.remaining > 0) v.varInt() else null
 
         val k = ByteReader(key)
@@ -297,6 +304,7 @@ object EntryCodec {
             qty = qty,
             damage = damage,
             actor = actor,
+            spot = spot,
         )
     }
 

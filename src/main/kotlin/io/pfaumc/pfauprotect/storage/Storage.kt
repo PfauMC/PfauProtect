@@ -3,6 +3,7 @@ import io.pfaumc.pfauprotect.Metrics
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.HolderType
 import io.pfaumc.pfauprotect.model.LedgerEntry
+import io.pfaumc.pfauprotect.model.PlayerHolder
 import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.WorldBlock
@@ -79,8 +80,8 @@ class OwedItem(val key: ByteArray, val formId: Long, val qty: Int, val actor: UU
 // such a database. WIDENS_FROM differ only by families this build adds on open, and an older build then
 // refuses the result by the stamp. Version 7 added the chunk-time index, built from the rows on the first
 // open of an older base.
-private const val SCHEMA_VERSION = 7L
-private val WIDENS_FROM = setOf(4L, 5L, 6L)
+private const val SCHEMA_VERSION = 8L
+private val WIDENS_FROM = setOf(4L, 5L, 6L, 7L)
 
 // How many times a giving back is followed to the giving back of itself: a rollback, its undo, the
 // undo of that. Past this a posting is taken as given back, which is the side that cannot mint items.
@@ -331,7 +332,9 @@ internal const val ROW_TAIL_SIZE = 8 + 8 + 1
  * `Zcode` writes it and the tail; turned round, it runs a scope, the chunk, the tail, a tag for which family
  * or holder type the row is in, and the rest of the position. Inside a chunk the rows then sort by time,
  * where the rows themselves sort by position first, and a radius reads the newest of a chunk without stepping
- * through the history of every position in it. The value is empty.
+ * through the history of every position in it. The value is empty, except under [HolderType.SPOT_TAG]: that
+ * entry stands for a player's posting that has a spot instead of a position of its own, and its value is the
+ * key of that posting in the entries family.
  */
 internal object ChunkTime {
     private const val POSITION_REST = Zcode.SIZE - Zcode.CHUNK_PREFIX_SIZE
@@ -697,6 +700,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     private var nextTxId: Long = 0
     private val registryCounters = ConcurrentHashMap<RegistryNamespace, Long>()
 
+    // The schema the base carried when it was opened, null for a new one.
+    private var storedAtOpen: Long? = null
+
     init {
         Files.createDirectories(dir)
         val path = dir.toAbsolutePath().toString()
@@ -740,9 +746,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         confiscationsCf = cfHandles[10]
         byChunkCf = cfHandles[11]
 
+        storedAtOpen = stored
         failClosed {
-            if (stored != null && stored != SCHEMA_VERSION) indexChunks()
-            if (stored != SCHEMA_VERSION) db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
             nextTxId = db.readCounter(metaCf, META_TX_ID)
             for (ns in RegistryNamespace.entries) registryCounters[ns] = db.readCounter(metaCf, registryCounterKey(ns))
         }
@@ -765,6 +770,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             registries.load()
             forms.load()
             payloads.load()
+            // After the registries: a spot entry names its world by number. The stamp follows the index, so a
+            // crash between them starts the rebuild again.
+            if (storedAtOpen != null && storedAtOpen != SCHEMA_VERSION) indexChunks()
+            if (storedAtOpen != SCHEMA_VERSION) db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
             writerThread.start()
         }
     }
@@ -812,8 +821,11 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             val scope = ByteWriter(2).shortBE(worldNo).toByteArray()
             var unreadable = 0
             val page = db.newestInBox(byChunkCf, scope, box, fromTs, toTs, wanted, steps, { index ->
-                val key = ChunkTime.rowKey(index, scope.size, byteArrayOf(ChunkTime.tag(index).toByte()) + scope)
-                db.get(entriesCf, key)?.let { EntryCodec.decodeOrNull(key, it, registries) ?: null.also { unreadable++ } }
+                val tag = ChunkTime.tag(index)
+                // A spot entry carries its posting's key; the other tags are the key turned round.
+                val key = if (tag == HolderType.SPOT_TAG) db.get(byChunkCf, index)
+                else ChunkTime.rowKey(index, scope.size, byteArrayOf(tag.toByte()) + scope)
+                key?.let { k -> db.get(entriesCf, k)?.let { EntryCodec.decodeOrNull(k, it, registries) ?: null.also { unreadable++ } } }
             }, keep)
             EntryPage(page.rows, page.complete, unreadable)
         }
@@ -825,12 +837,30 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         return ChunkTime.key(key.copyOfRange(1, POSITIONAL_HEAD_SIZE), key[0].toInt() and 0xFF, key, POSITIONAL_HEAD_SIZE)
     }
 
+    // The chunk-time entry of a player's posting that has a spot, which has no position in its key. Its
+    // value is the posting's key, as the entry cannot be turned back into it.
+    private fun spotKey(key: ByteArray, entry: LedgerEntry, ids: IdResolver): ByteArray? {
+        val spot = entry.spot ?: return null
+        if (entry.holder !is PlayerHolder) return null
+        val scope = ByteWriter(EntryCodec.WORLD_NO_SIZE).shortBE(ids.id(RegistryNamespace.WORLD, spot.world)).toByteArray()
+        val position = Zcode.encode(spot.x, spot.y, spot.z) + key.copyOfRange(key.size - ROW_TAIL_SIZE, key.size)
+        return ChunkTime.key(scope, HolderType.SPOT_TAG, position, 0)
+    }
+
     // Once, on the first open of a base written before the index existed, and before the schema says it has
     // one: a crash halfway through leaves the old stamp, and the next open starts again over the same keys.
     private fun indexChunks() {
         LOGGER.info("building the ledger's chunk-time index; this runs once")
         ChunkedBatch(db, writeOptions).use { batch ->
-            db.forEachRow(entriesCf) { key, _ -> chunkKey(key)?.let { batch.put(byChunkCf, it, NOTHING) } }
+            db.forEachRow(entriesCf) { key, value ->
+                chunkKey(key)?.let { batch.put(byChunkCf, it, NOTHING) }
+                // Only a version 1 value has a spot, so the others are not decoded.
+                if (value.isNotEmpty() && value[0].toInt() and 0x07 == EntryCodec.SPOT_VERSION) {
+                    EntryCodec.decodeOrNull(key, value, registries)?.let { entry ->
+                        spotKey(key, entry, knownIds)?.let { batch.put(byChunkCf, it, key) }
+                    }
+                }
+            }
             batch.flush()
         }
     }
@@ -918,6 +948,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                         if (!dryRun) {
                             batch.delete(entriesCf, key)
                             chunkKey(key)?.let { batch.delete(byChunkCf, it) }
+                            spotKey(key, entry, knownIds)?.let { batch.delete(byChunkCf, it) }
                             batch.delete(txCf, longBytes(entry.txId))
                         }
                     }
@@ -1361,6 +1392,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                 val key = EntryCodec.key(entry.holder, entry.timestamp, txId, entry.ordinal, registries)
                 batch.put(entriesCf, key, EntryCodec.value(entry, registries))
                 chunkKey(key)?.let { batch.put(byChunkCf, it, NOTHING) }
+                spotKey(key, entry, registries)?.let { batch.put(byChunkCf, it, key) }
                 keys += key
             }
         }
@@ -1446,6 +1478,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         qty = qty,
         damage = transfer.damage,
         actor = transfer.actor,
+        spot = transfer.spot,
     )
 
     private inline fun forEachUnder(

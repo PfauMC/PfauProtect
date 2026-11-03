@@ -27,6 +27,13 @@ player inv/equip/cursor/ender, menu slot (not addressable), container, entity sl
 (shulker/bundle contents), `VOID`, world block. A row also carries a `Kind` (TRANSFER/MUTATE/CLONE) and a
 `Confidence` (FACT/INFERRED/NEARBY: a player who was only near when a mechanism fired).
 
+A player's drop, pickup or throw has no positional holder, so a `Transfer` may carry a `spot` (a `WorldBlock`).
+Both postings store it in the entry value (record version 1: world number and `Zcode` position between the actor and
+the damage; rows without a spot stay version 0). The player's own posting also gets a `by_chunk` entry of the usual
+layout under `HolderType.SPOT_TAG` (0xF0), whose value is that posting's `entries` key, so `boxPage` finds it by radius;
+the item entity's half is not indexed, which keeps one movement from showing twice. Schema 8; rows written before it
+have no spot and stay unindexed.
+
 **Block plane (`BlockStore.kt`, `BlockLogs`).** One RocksDB per world (`blocks/<uuid>`), opened and closed on
 world load and unload, with column families rows, meta, by_actor (every row that names an actor, keyed by the
 actor), entities and by_chunk. Block-state ids and block-entity payloads are interned in the shared ledger, and referenced

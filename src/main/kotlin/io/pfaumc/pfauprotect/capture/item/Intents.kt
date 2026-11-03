@@ -7,6 +7,7 @@ import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerHolder
 import io.pfaumc.pfauprotect.model.Void
+import io.pfaumc.pfauprotect.model.WorldBlock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -63,6 +64,8 @@ class Intent(
     // Ticks and not time: right after a join the player's region can take hundreds of milliseconds over
     // one tick, and the command keeps that region's pace, not the clock's.
     val untilTick: Int? = null,
+    // Where the player stood, for a drop: it lands on the movement the pass writes from this intent.
+    val spot: WorldBlock? = null,
 ) {
     internal fun lingers(tick: Int) = untilTick != null && untilTick >= tick
 
@@ -91,6 +94,7 @@ data class Move(
     val cause: Cause,
     val confidence: Confidence,
     val actor: UUID? = null,
+    val spot: WorldBlock? = null,
 )
 
 // Intents belong to one player and are read on that player's own region thread a tick after they are
@@ -164,9 +168,9 @@ object Intents {
                 moves += if (loss) {
                     // Emptied out of a bundle rather than dropped out of a slot.
                     val cause = if (end is Nested && intent.cause == Cause.DROP_FROM_HAND) Cause.BUNDLE_DUMP else intent.cause
-                    Move(edge.from, intent.to!!, edge.key, qty, cause, Confidence.FACT, intent.actor)
+                    Move(edge.from, intent.to!!, edge.key, qty, cause, Confidence.FACT, intent.actor, intent.spot)
                 } else {
-                    Move(intent.from!!, edge.to, edge.key, qty, intent.cause, Confidence.FACT, intent.actor)
+                    Move(intent.from!!, edge.to, edge.key, qty, intent.cause, Confidence.FACT, intent.actor, intent.spot)
                 }
             }
         }

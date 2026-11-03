@@ -434,6 +434,22 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.none { it.contains("14 64 -12") }, "$lines")
     }
 
+    // A drop has no holder with a position; its spot finds it by radius, and the item entity's mirrored half
+    // that the transaction pulls in must not print the same movement a second time.
+    @Test
+    fun `a drop with a spot is found by a radius and printed once with its place`() {
+        val drop = Transfer(
+            Cause.DROP_FROM_HAND, PlayerInv(alice, 3), ItemEntityRef(UUID.randomUUID()), stone, null, 1, T0,
+            actor = alice, spot = WorldBlock(world, 11, 64, -4),
+        )
+        shared.submit(drop)
+        shared.drain()
+
+        val lines = said(LookupQuery(radius = 2, causes = setOf(Cause.DROP_FROM_HAND)))
+        assertEquals(1, lines.count { it.contains("11 64 -4") }, "$lines")
+        assertTrue(said(LookupQuery(radius = 2, causes = setOf(Cause.DROP_FROM_HAND), page = 1), target = LookupTarget(world, 100, 64, 100, "far")).none { it.contains("11 64 -4") })
+    }
+
     @Test
     fun `a transaction far too big for one position is not pulled in behind it`() {
         val here = WorldBlock(world, 10, 64, -3)

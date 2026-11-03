@@ -12,7 +12,10 @@ import io.pfaumc.pfauprotect.capture.block.Spot
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.testCodec
+import io.pfaumc.pfauprotect.model.WorldBlock
+import org.bukkit.Location
 import org.bukkit.Material
+import org.bukkit.World
 import org.bukkit.entity.Item
 import org.bukkit.entity.Player
 import org.bukkit.event.inventory.InventoryType
@@ -40,10 +43,12 @@ class DisconnectDropTest {
         val origins = Spawns().origins
         val listener = captureListener(codec, origins, written::add)
 
+        val world = UUID.fromString("00000000-0000-4000-8000-0000000000d3")
         val quitter = stub(
             Player::class.java,
             mapOf(
                 "getUniqueId" to player,
+                "getLocation" to Location(stub(World::class.java, mapOf("getUID" to world)), 4.5, 70.0, -7.5),
                 // What the pass reads to tell a drop out of a window from one out of the hand.
                 "getOpenInventory" to stub(InventoryView::class.java, mapOf("getType" to InventoryType.CRAFTING)),
             ),
@@ -56,6 +61,7 @@ class DisconnectDropTest {
             listOf(Cause.DROP_ON_DISCONNECT, PlayerCursor(player), ItemEntityRef(dropped), 3, Kind.TRANSFER),
             listOf(row.cause, row.from, row.to, row.qty, row.kind),
         )
+        assertEquals(WorldBlock(world, 4, 70, -8), row.spot)
         // The row is itself the birth of the entity, so the spawn funnel has to stay quiet about it or
         // the same three diamonds are born twice.
         val spot = Spot(UUID.randomUUID(), 0.0, 0.0, 0.0)

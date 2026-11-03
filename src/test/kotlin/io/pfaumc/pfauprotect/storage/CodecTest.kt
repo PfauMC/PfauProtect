@@ -192,11 +192,30 @@ class CodecTest {
     @Test
     fun `records of another version are skipped rather than decoded`() {
         val key = drainedKey()
-        for (version in 1..7) {
+        for (version in 2..7) {
             val value = drainedValue()
             value[0] = ((value[0].toInt() and 0xF8) or version).toByte()
             assertNull(EntryCodec.decodeOrNull(key, value, registries)) { "version $version was decoded" }
         }
+    }
+
+    // The spot rides in version 1 between the actor and the damage; a row without one is still version 0
+    // and reads as before.
+    @Test
+    fun `a spot round-trips and a row without one stays version 0 with no spot`() {
+        val plain = ledgerEntry(drained, Void).copy(actor = alice, damage = 231)
+        val spot = WorldBlock(worldB, -1345, -61, 700)
+        val withSpot = plain.copy(spot = spot)
+        val key = EntryCodec.key(drained, withSpot.timestamp, withSpot.txId, withSpot.ordinal, registries)
+
+        val plainValue = EntryCodec.value(plain, registries)
+        assertEquals(0, plainValue[0].toInt() and 0x07)
+        assertNull(EntryCodec.decodeOrNull(key, plainValue, registries)?.spot)
+
+        val value = EntryCodec.value(withSpot, registries)
+        assertEquals(EntryCodec.SPOT_VERSION, value[0].toInt() and 0x07)
+        assertEquals(withSpot, EntryCodec.decodeOrNull(key, value, registries))
+        assertEquals(withSpot.copy(damage = null), EntryCodec.decodeOrNull(key, EntryCodec.value(withSpot.copy(damage = null), registries), registries))
     }
 
     @Test

@@ -407,7 +407,9 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         }
         if (!page.complete) return tooMuch(History.ITEM, if (itemSteps.ranOut) "item walk budget" else "item rows cap $MAX_ROLLBACK_ROWS")
         read.unreadable += page.unreadable
-        val (slots, positions) = page.entries.partition { it.holder is Container }
+        // A player's drop or pickup comes with the box too, through its spot; it has no slot or block to restore.
+        val (slots, positions) = page.entries.filter { it.holder is Container || it.holder is WorldBlock }
+            .partition { it.holder is Container }
         return planOf(log, world, read, slots, positions.filter { it.qty < 0 }, fromTs, toTs, keeps)
     }
 
