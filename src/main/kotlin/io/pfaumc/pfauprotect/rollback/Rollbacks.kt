@@ -1030,7 +1030,7 @@ class Rollbacks(
                     release()
                     return@offThread
                 }
-                val keeps = lookups.rowFilter(query, users, rollback = true)
+                val keeps = lookups.rowFilter(query, rollback = true)
                 val now = System.currentTimeMillis()
                 val event = query.event
                 // One event: a second either side of it, around where it happened. A window that ends in the

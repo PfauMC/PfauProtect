@@ -13,6 +13,7 @@ import io.pfaumc.pfauprotect.storage.ChatLine
 import io.pfaumc.pfauprotect.storage.Hit
 import net.kyori.adventure.text.Component
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -36,7 +37,7 @@ class LookupTest {
         assertTrue(rollback.containsAll(listOf("user:", "time:", "radius:", "action:", "include:", "exclude:")), "$rollback")
         assertTrue(rollback.none { it in answerOnly || it.startsWith("#") }, "$rollback")
         // The chat log has no place, no items and no rows of the planes to count.
-        assertEquals(setOf("user:", "time:", "filter:", "action:", "page:", "#all"), offered(LookupArgument(chat = true)).toSet())
+        assertEquals(setOf("user:", "time:", "filter:", "action:", "exclude:", "page:", "#all"), offered(LookupArgument(chat = true)).toSet())
     }
 
     // As CoreProtect's list does: a key once said, under any spelling, leaves the list; a list of names stays,
@@ -70,6 +71,64 @@ class LookupTest {
         assertEquals(listOf("Steve"), parseLookupQuery("player:Steve").players)
         assertEquals(listOf("Steve", "Alex"), parseLookupQuery("p:Steve,Alex").players)
         assertEquals(listOf("diamond", "emerald"), parseLookupQuery("b:diamond,emerald").included)
+    }
+
+    @Test
+    fun `an ampersand joins values into one group and every action of it is checked`() {
+        assertEquals(listOf("Steve&Alex", "Bob"), parseLookupQuery("u:Steve&&Alex,Bob&").users)
+        assertEquals(listOf("Steve&Alex"), parseLookupQuery("Steve&Alex").users)
+        val query = parseLookupQuery("a:-entity&explosion")
+        assertEquals(listOf("-entity&explosion"), query.actions)
+        assertTrue(query.causes!!.containsAll(Action.EXPLOSION.causes))
+        val bad = assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("a:pvp&bogus") }
+        assertEquals("a:pvp&".length, bad.cursor)
+        // Separators alone are no value, or a rollback would read `u:&` as nobody named.
+        for (words in listOf("u:&", "a:,&", "e:&,", "f:&", "t:1h &")) {
+            assertThrows(CommandSyntaxException::class.java, { parseLookupQuery(words) }, words)
+        }
+        assertEquals(",", parseLookupQuery("f:,").filter)
+    }
+
+    @Test
+    fun `chat with both players joined is the fight between them, either way round`() {
+        val carol = UUID.randomUUID()
+        val names = mapOf("Alice" to alice, "Bob" to bob)
+        fun hit(by: UUID, on: UUID) = ChatLine(0, ChatKind.HIT, by, "minecraft:iron_sword", hit = Hit(on, 2f, Confidence.FACT))
+        val keeps = chatFilter(parseLookupQuery("u:Alice&Bob a:pvp"), names::get)
+
+        assertTrue(keeps(hit(alice, bob)) && keeps(hit(bob, alice)))
+        assertFalse(keeps(hit(alice, carol)) || keeps(hit(carol, bob)) || keeps(ChatLine(0, ChatKind.CHAT, alice, "hi Bob")))
+        val text = chatFilter(parseLookupQuery("f:sell&diamond"), names::get)
+        assertTrue(text(ChatLine(0, ChatKind.CHAT, alice, "Sell you a diamond")))
+        assertFalse(text(ChatLine(0, ChatKind.CHAT, alice, "sell")))
+    }
+
+    @Test
+    fun `chat leaves out an excluded player and with pvp the hits`() {
+        val carol = UUID.randomUUID()
+        val names = mapOf("Alice" to alice, "Bob" to bob, "Carol" to carol)
+        fun hit(by: UUID, on: UUID) = ChatLine(0, ChatKind.HIT, by, "minecraft:iron_sword", hit = Hit(on, 2f, Confidence.FACT))
+        val notBob = chatFilter(parseLookupQuery("u:Alice e:Bob a:pvp"), names::get)
+        assertTrue(notBob(hit(alice, carol)))
+        assertFalse(notBob(hit(alice, bob)) || notBob(hit(bob, alice)))
+        val talk = chatFilter(parseLookupQuery("u:Alice e:pvp"), names::get)
+        assertTrue(talk(ChatLine(0, ChatKind.CHAT, alice, "hi")))
+        assertFalse(talk(hit(alice, bob)))
+        assertEquals(listOf("Alice", "Bob"), chatPlayers(parseLookupQuery("u:Alice e:pvp&Bob")))
+        // A player called Hit is the player, not every hit.
+        val notHit = chatFilter(parseLookupQuery("e:Hit"), (names + ("Hit" to carol))::get)
+        assertTrue(notHit(hit(alice, bob)))
+        assertFalse(notHit(hit(carol, bob)))
+        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("e:dirt,steal") }
+    }
+
+    @Test
+    fun `another name is offered after an ampersand`() {
+        val offered = LookupArgument(names = { listOf("SPY_me", "Test1") }).listSuggestions(
+            CommandContext<Any>(Any(), "", emptyMap(), null, null, emptyList(), StringRange.at(0), null, null, false),
+            SuggestionsBuilder("u:SPY_me&te", 0),
+        ).get().list.map { it.text }
+        assertEquals(listOf("Test1"), offered)
     }
 
     // What CoreProtect users type: the name with no u: in front of it.

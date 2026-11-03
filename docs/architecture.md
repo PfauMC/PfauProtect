@@ -91,4 +91,14 @@ them.
   with `radius:global` it reads every position the player touched, through `by_actor`. `time:` takes a span
   (`2h-1h`), `page:` pages through the answer, `at:x,y,z` pins the place (the page buttons add it). Runs of
   the same thing within a minute fold into one `×N` line; `#all` shows each. `action:steal`, `amount:`,
-  `rolledback:`, `#count`/`#sum` narrow it. `/pp purge` works per plane: the item ledger (`Storage.purgeBefore`) deletes every posting older than the cutoff and, in the same write, records what each holder held then as `Cause.PURGE_OPENING` openings, so balances hold; the block log (`BlockStore.purgeBefore`) deletes old rows except the newest of each position no later row covers, their index entries, and entity rows older than the cutoff.
+  `rolledback:`, `#count`/`#sum` narrow it.
+- In the list parameters (`user:`, `player:`, `action:`, `include:`, `exclude:`) `,` is either and `&` is all of
+  them in one row, binding tighter: `u:A&B,C`. `filter:` in `/pp chat` takes only `&`; a comma is text there. The groups stay strings in
+  `LookupQuery` and `RowFilter` splits them (`allOf`). A block row names its two states and one actor; an entity
+  row names its actor, and the entity itself only within a group that holds the actor (`u:A&B` is what A did to
+  B, `u:B` alone stays what B did); a chat line names the speaker or both ends of a hit. `action:` groups are
+  checked per row against each action's causes and kinds; `causes`/`kinds` stay the union for everything else.
+  An `exclude:` word is a player if one goes by it, an item, block or entity either way, and an action only when
+  it names none of those (`THING_NAMES`): `e:tnt` must not drop every explosion from a rollback, `e:explosion`
+  does. `steal` is refused there, being worked out per withdrawal. In `/pp chat` it takes players and `pvp`.
+- `/pp purge` works per plane: the item ledger (`Storage.purgeBefore`) deletes every posting older than the cutoff and, in the same write, records what each holder held then as `Cause.PURGE_OPENING` openings, so balances hold; the block log (`BlockStore.purgeBefore`) deletes old rows except the newest of each position no later row covers, their index entries, and entity rows older than the cutoff.

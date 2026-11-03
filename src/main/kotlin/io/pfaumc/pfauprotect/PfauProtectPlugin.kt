@@ -25,7 +25,6 @@ import io.pfaumc.pfauprotect.capture.entity.EntityCapture
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.ChatKind
-import io.pfaumc.pfauprotect.storage.ChatLine
 import io.pfaumc.pfauprotect.storage.ChatLog
 import io.pfaumc.pfauprotect.storage.WorldChange
 import net.kyori.adventure.text.Component
@@ -42,6 +41,7 @@ import io.pfaumc.pfauprotect.attribution.EntityOrigins
 import io.pfaumc.pfauprotect.capture.item.HolderListener
 import io.pfaumc.pfauprotect.command.ChatRun
 import io.pfaumc.pfauprotect.command.Inspector
+import io.pfaumc.pfauprotect.command.chatPlayers
 import io.pfaumc.pfauprotect.command.chatRuns
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.capture.item.ItemUseListener
@@ -834,14 +834,9 @@ class PfauProtectPlugin : JavaPlugin() {
         // Read here: the lines are drawn off the region threads, where the Bukkit API is not asked.
         val asked = query.askedBy(sender)
         offThread(sender, "the chat lookup failed", "The chat lookup failed; the server log has the details.") {
-            val users = running.lookups.resolveAll(sender, asked.users) ?: return@offThread
-            val text = asked.filter?.lowercase()
-            // `wanted` reads past this page, which is how it knows there is a next one. A hit is the victim's
-            // line as much as the attacker's: who hit Bob is asked as `user:Bob`.
-            val keeps = { line: ChatLine ->
-                (users.isEmpty() || line.player in users || line.hit?.victim in users) &&
-                    (!asked.pvp || line.kind.struck) && (text == null || text in line.text.lowercase())
-            }
+            running.lookups.resolveAll(sender, chatPlayers(asked)) ?: return@offThread
+            // `wanted` reads past this page, which is how it knows there is a next one.
+            val keeps = running.lookups.chatFilter(asked)
             // A one-sided fight folds a whole read into a line or two, so the read goes on until the runs fill
             // this page and start the next, or the log runs out. Past the cap a run that long is the last page.
             var reading = asked.wanted
