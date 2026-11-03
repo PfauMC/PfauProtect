@@ -491,6 +491,10 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
         // A bare word is a player, as CoreProtect reads `/co rollback Notch t:1d`; a misspelt
         // parameter then fails as an unknown player rather than passing as a filter.
         if (colon < 0) {
+            if (values(token).isEmpty()) {
+                reader.cursor = tokenStart
+                throw EMPTY_VALUE.createWithContext(reader, token)
+            }
             query = query.copy(users = query.users + values(token))
             continue
         }
@@ -502,7 +506,10 @@ fun parseLookupQuery(reader: StringReader): LookupQuery {
             throw UNKNOWN_PARAMETER.createWithContext(reader, key)
         }
         val valueStart = tokenStart + colon + 1
-        if (value.isEmpty()) {
+        // Separators alone are no value: `u:&` read as no list at all would leave a rollback every row of its radius.
+        // In `filter:` a comma is text.
+        val terms = if (param == Param.FILTER) allOf(value) else value.split(',', '&').filter { it.isNotBlank() }
+        if (terms.isEmpty()) {
             reader.cursor = valueStart
             throw EMPTY_VALUE.createWithContext(reader, key)
         }

@@ -82,6 +82,11 @@ class LookupTest {
         assertTrue(query.causes!!.containsAll(Action.EXPLOSION.causes))
         val bad = assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("a:pvp&bogus") }
         assertEquals("a:pvp&".length, bad.cursor)
+        // Separators alone are no value, or a rollback would read `u:&` as nobody named.
+        for (words in listOf("u:&", "a:,&", "e:&,", "f:&", "t:1h &")) {
+            assertThrows(CommandSyntaxException::class.java, { parseLookupQuery(words) }, words)
+        }
+        assertEquals(",", parseLookupQuery("f:,").filter)
     }
 
     @Test
