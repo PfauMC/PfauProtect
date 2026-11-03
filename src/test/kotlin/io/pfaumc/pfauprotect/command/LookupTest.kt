@@ -304,16 +304,19 @@ class LookupTest {
         assertEquals(TimeSpan(fromMillis = ms(3, 11, 0, 0), untilMillis = ms(4, 11, 0, 0) - 1), span("03.11"))
         assertEquals(TimeSpan(fromMillis = ms(3, 11, 0, 0), untilMillis = ms(5, 11, 0, 0) - 1), span("03.11-04.11"))
         assertEquals(TimeSpan(fromMillis = ms(3, 11, 0, 0), untilMillis = ms(5, 11, 0, 0) - 1), span("04.11-03.11"))
-        assertEquals(TimeSpan(fromMillis = ms(3, 11, 14, 0), untilMillis = ms(3, 11, 18, 0)), span("03.11_14:00-03.11_18:00"))
+        // A time without seconds as the near end takes its whole minute.
+        val minute = 59_999L
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 14, 0), untilMillis = ms(3, 11, 18, 0) + minute), span("03.11_14:00-03.11_18:00"))
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 14, 0), untilMillis = ms(3, 11, 18, 0, 30)), span("03.11_14:00-03.11_18:00:30"))
         // A date still ahead is last year's.
         assertEquals(ms(5, 12, 0, 0, y = 2025), span("05.12")?.fromMillis)
         assertEquals(ms(5, 12, 0, 0, y = 2024), span("05.12.2024")?.fromMillis)
         assertEquals(TimeSpan(fromMillis = ms(4, 11, 13, 0), secondsUntil = 3600), span("13:00-1h"))
-        assertEquals(TimeSpan(secondsBack = 7200, untilMillis = ms(4, 11, 14, 30)), span("2h-14:30"))
+        assertEquals(TimeSpan(secondsBack = 7200, untilMillis = ms(4, 11, 14, 30) + minute), span("2h-14:30"))
         assertEquals(TimeSpan(secondsBack = 7200, secondsUntil = 3600), span("2h-1h"))
         // An end still ahead stays today after a start behind now; a start ahead of now is still yesterday's.
-        assertEquals(TimeSpan(fromMillis = ms(4, 11, 14, 0), untilMillis = ms(4, 11, 15, 30)), span("14:00-15:30"))
-        assertEquals(TimeSpan(fromMillis = ms(3, 11, 23, 0), untilMillis = ms(4, 11, 1, 0)), span("23:00-01:00"))
+        assertEquals(TimeSpan(fromMillis = ms(4, 11, 14, 0), untilMillis = ms(4, 11, 15, 30) + minute), span("14:00-15:30"))
+        assertEquals(TimeSpan(fromMillis = ms(3, 11, 23, 0), untilMillis = ms(4, 11, 1, 0) + minute), span("23:00-01:00"))
         for (bad in listOf("25:00", "30.02", "03.11_", "14:00_03.11", "03.11-03.11", "14:00-14:00", "1.2.3")) assertNull(span(bad), bad)
     }
 
@@ -322,7 +325,9 @@ class LookupTest {
     fun `an absolute time window does not move with asOf`() {
         val q = parseLookupQuery("t:03.11-04.11")
         assertEquals(q.fromTs(1L), q.fromTs(Long.MAX_VALUE / 2))
-        assertEquals(q.toTs(1L), q.copy(asOf = 5L).toTs())
+        assertEquals(q.toTs(1L), q.copy(asOf = Long.MAX_VALUE).toTs())
+        // A pin inside the window caps its end.
+        assertEquals(4L, q.copy(asOf = 5L).toTs())
         assertTrue(q.hasFrom && q.hasUntil)
     }
 

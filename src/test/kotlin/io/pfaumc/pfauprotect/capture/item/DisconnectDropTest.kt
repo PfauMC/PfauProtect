@@ -44,11 +44,13 @@ class DisconnectDropTest {
         val listener = captureListener(codec, origins, written::add)
 
         val world = UUID.fromString("00000000-0000-4000-8000-0000000000d3")
+        // Held here: a Location keeps its world only weakly.
+        val ground = stub(World::class.java, mapOf("getUID" to world))
         val quitter = stub(
             Player::class.java,
             mapOf(
                 "getUniqueId" to player,
-                "getLocation" to Location(stub(World::class.java, mapOf("getUID" to world)), 4.5, 70.0, -7.5),
+                "getLocation" to Location(ground, 4.5, 70.0, -7.5),
                 // What the pass reads to tell a drop out of a window from one out of the hand.
                 "getOpenInventory" to stub(InventoryView::class.java, mapOf("getType" to InventoryType.CRAFTING)),
             ),

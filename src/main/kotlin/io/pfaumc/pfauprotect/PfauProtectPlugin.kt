@@ -788,8 +788,9 @@ class PfauProtectPlugin : JavaPlugin() {
         // Above the hotbar rather than in chat: it is a state, not a message, and chat is where the answers go.
         player.sendActionBar(
             if (now) Ui.text(tr(
-                "Inspector on: left click – the block, right click – the place in front, on a container its contents; in spectator right click – the block and its contents; click an entity – the entity",
-                "Инспектор включён: ЛКМ – блок, ПКМ – место перед гранью, у контейнера его содержимое; в наблюдателе ПКМ – блок и содержимое; клик по сущности – сущность",
+                // One line of the action bar; README tells the rest (a spectator's right click takes both).
+                "Inspector on: left – the block, right – contents or the place in front",
+                "Инспектор включён: ЛКМ – блок, ПКМ – содержимое или место перед гранью",
             ), Ui.GAINED)
             else Ui.text(tr("Inspector off", "Инспектор выключен"), Ui.MUTED)
         )

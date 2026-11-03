@@ -439,7 +439,9 @@ data class LookupQuery(
 
     // Pinned, the moment itself is left out: a row of that millisecond may land after the first page was read.
     fun toTs(now: Long = asOf ?: System.currentTimeMillis()): Long =
-        untilMillis ?: secondsUntil?.let { now - it * 1000 } ?: asOf?.minus(1) ?: Long.MAX_VALUE
+        // A typed end still ahead (`t:03.11` on that day) stops at the pin too, or later pages would shift.
+        untilMillis?.let { until -> asOf?.let { minOf(until, it - 1) } ?: until }
+            ?: secondsUntil?.let { now - it * 1000 } ?: asOf?.minus(1) ?: Long.MAX_VALUE
 
     // Rows a page needs read: every page before it as well, since a read is newest first. Runs folded
     // into one line each eat rows, so a folded page reads further.
@@ -707,7 +709,7 @@ internal data class TimeSpan(
 
 // One end as typed: where it falls (a date alone: its start), and what it stands for as the near end.
 // [today] is the same clock time taken today, kept when it was ahead of now and so taken as yesterday.
-private class End(val at: Long, val relative: Long?, val nearAt: Long, val today: End? = null)
+private class End(val at: Long, val relative: Long?, val nearAt: Long, val today: End? = null, val wholeDay: Boolean = false)
 
 private val DATE = Regex("""(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?""")
 private val CLOCK = Regex("""(\d{1,2}):(\d{2})(?::(\d{2}))?""")
@@ -734,10 +736,16 @@ private fun endOrNull(text: String, now: ZonedDateTime): End? {
         val ahead = date == null && at(day).isAfter(now)
         val moment = at(if (ahead) day.minusDays(1) else day)
         val start = moment.toInstant().toEpochMilli()
-        // A date without a time is the whole day: as the near end it stops at the day's last millisecond.
-        val nearAt = if (time == null) moment.plusDays(1).toInstant().toEpochMilli() - 1 else start
-        val today = at(day).toInstant().toEpochMilli().takeIf { ahead }?.let { End(it, null, it) }
-        return End(start, null, nearAt, today)
+        // A date without a time is the whole day, a time without seconds its whole minute: as the near end it
+        // stops at their last millisecond, so `t:14:00-14:05` takes what happened at 14:05:30.
+        val whole = when {
+            time == null -> 24 * 3600_000L
+            CLOCK.matchEntire(clock!!)!!.groupValues[3].isEmpty() -> 60_000L
+            else -> 1L
+        }
+        val nearAt = start + whole - 1
+        val today = at(day).toInstant().toEpochMilli().takeIf { ahead }?.let { End(it, null, it + whole - 1) }
+        return End(start, null, nearAt, today, wholeDay = time == null)
     } catch (_: DateTimeException) {
         return null
     }
@@ -753,7 +761,8 @@ internal fun timeSpanOrNull(value: String, now: ZonedDateTime = ZonedDateTime.no
     val ends = value.split('-').map { endOrNull(it, now) ?: return null }
     if (ends.size == 1) {
         val end = ends[0]
-        return TimeSpan(fromMillis = end.at, untilMillis = end.nearAt.takeIf { it > end.at })
+        // A lone date is its day; a lone time runs up to now.
+        return TimeSpan(fromMillis = end.at, untilMillis = end.nearAt.takeIf { end.wholeDay })
     }
     if (ends.size != 2) return null
     // `t:00:24-00:29` at 00:27 runs to a minute still ahead, not from yesterday's 00:29: an end typed second that
