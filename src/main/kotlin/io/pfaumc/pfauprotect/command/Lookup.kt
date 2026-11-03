@@ -1482,7 +1482,12 @@ class Lookups(
         val toTs = query.toTs()
         val keeps = rowFilter(query)
         var complete = page.complete
-        val deaths = blocks.worlds.flatMap { world ->
+        // Walking a player's whole index per world for `a:pickup` would find nothing and could only mark the
+        // answer cut short. A kill is filed under its culprit's cause, an explosion or a fire too, so any cause
+        // of the entity or block plane may name a death; `a:-entity` names deaths by kind with no cause.
+        val wantsDeaths = query.causes?.any { it in ENTITY_PLANE_CAUSES || it in BLOCK_CAUSES } ?: true ||
+            query.kinds.any { it == EntityKind.PLAYER_DIED || it == EntityKind.TOTEM_POPPED }
+        val deaths = if (!wantsDeaths) emptyList() else blocks.worlds.flatMap { world ->
             val log = blocks.get(world) ?: return@flatMap emptyList()
             players.flatMap { victim ->
                 val found = log.byActor(victim, fromTs, toTs, query.wanted + 1, GLOBAL_WALK, { false }) {

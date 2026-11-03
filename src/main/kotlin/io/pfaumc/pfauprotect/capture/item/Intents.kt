@@ -198,8 +198,8 @@ object Intents {
                 used(outgoing)
                 used(incoming)
                 val key = ItemKey(form, null)
-                moves += Move(holder, to, key, qty, outgoing.cause, Confidence.FACT, outgoing.actor)
-                moves += Move(from, holder, key, qty, incoming.cause, Confidence.FACT, incoming.actor)
+                moves += Move(holder, to, key, qty, outgoing.cause, Confidence.FACT, outgoing.actor, outgoing.spot)
+                moves += Move(from, holder, key, qty, incoming.cause, Confidence.FACT, incoming.actor, incoming.spot)
             }
         }
         // An intent that asked for a number the pass never found is the one case where the event knew
