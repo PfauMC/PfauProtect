@@ -213,7 +213,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
 
     // The entity plane: what died, what a player brought into the world, and everything done to an entity.
     KILL(
-        setOf(Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.PLAYER_KILLED, Cause.MOB_TRANSFORM, Cause.BUCKET_CAPTURE_MOB),
+        setOf(Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.PLAYER_KILLED, Cause.PLAYER_DIED, Cause.MOB_TRANSFORM, Cause.BUCKET_CAPTURE_MOB),
         "kill", "kills", "killed", "death", "deaths",
     ),
     // A fight between players: the kill and the totem it cost in a lookup, and in /pp chat every hit that led to it.
@@ -1348,9 +1348,24 @@ class Lookups(
         val between = page.entries.filter { entry ->
             groups.any { group -> group.all { it == owner(entry.holder) || it == owner(entry.counterparty) } }
         }
-        val items = itemLines(between, query)
+        // Their deaths are no slot's business: each world's log files them under the victim.
+        val fromTs = query.fromTs()
+        val toTs = query.toTs()
+        val keeps = rowFilter(query)
+        var complete = page.complete
+        val deaths = blocks.worlds.flatMap { world ->
+            val log = blocks.get(world) ?: return@flatMap emptyList()
+            players.flatMap { victim ->
+                val found = log.byActor(victim, fromTs, toTs, query.wanted + 1, GLOBAL_WALK, { false }) {
+                    (it.kind == EntityKind.PLAYER_DIED || it.kind == EntityKind.TOTEM_POPPED) && it.uuid == victim && keeps.keeps(it)
+                }
+                complete = complete && found.complete
+                planeLines(world, emptyList(), found.entities, keeps)
+            }
+        }
+        val items = itemLines(between, query) + deaths
         val who = query.players.joinToString(", ")
-        answer(sender, items, page.complete, Ui.text(tr("what $who carried", "вещи $who")), query, target)
+        answer(sender, items, complete, Ui.text(tr("what $who carried", "вещи $who")), query, target)
     }
 
     // Every name has to be known: dropping the one that was misspelt would answer about the rest as

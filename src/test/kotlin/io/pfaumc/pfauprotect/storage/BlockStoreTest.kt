@@ -6,6 +6,8 @@ import io.pfaumc.pfauprotect.BothPlanes
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
+import io.pfaumc.pfauprotect.command.LookupQuery
+import io.pfaumc.pfauprotect.command.RowFilter
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
@@ -292,6 +294,20 @@ class BlockStoreTest : BothPlanes() {
         assertEquals(setOf(listOf(5, 64, 6)), log.touchedBy(alice, 0, Long.MAX_VALUE, 100).positions)
     }
 
+    // `p:` finds a death by its victim, while `u:victim` stays what the victim did.
+    @Test
+    fun `a death is found by its victim but is not the victim's own doing`() {
+        log.submit(listOf(EntityChange(5, 64, 6, EntityKind.PLAYER_DIED, Cause.PLAYER_DIED, "minecraft:player", alice, T0)))
+        log.submit(listOf(EntityChange(5, 64, 7, EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED, "minecraft:player", alice, T0 + 1, actor = bob)))
+        log.drain()
+
+        val found = log.byActor(alice, 0, Long.MAX_VALUE, 10, 100, { true }, { true })
+        assertEquals(setOf(Cause.PLAYER_DIED, Cause.PLAYER_KILLED), found.entities.map { it.cause }.toSet())
+        assertEquals(1, log.byActor(bob, 0, Long.MAX_VALUE, 10, 100, { true }, { true }).entities.size)
+        val filter = RowFilter(shared, LookupQuery(), listOf(setOf(alice)))
+        assertTrue(found.entities.none(filter::keeps))
+    }
+
     @Test
     fun `a base from before the entity plane opens and gains it`() {
         log.submit(listOf(placed(8, 64, 8, ts = T0)))
@@ -317,7 +333,7 @@ class BlockStoreTest : BothPlanes() {
     @Test
     fun `a fresh base is stamped with the version that matches its families`() {
         whileClosed { base ->
-            assertEquals(4L, storedSchemaOf(base))
+            assertEquals(5L, storedSchemaOf(base))
             assertEquals(everyBlockFamily, familiesOf(base).sorted())
         }
     }

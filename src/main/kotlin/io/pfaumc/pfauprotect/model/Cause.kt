@@ -79,6 +79,8 @@ enum class Cause(val id: Int) {
     BRUSHABLE_REVEAL(0xA7),
     // A container item given the name its contents are filed under.
     CONTAINER_NAMED(0xA8),
+    // A player died with no player behind it: a fall, lava, a mob, `/kill`.
+    PLAYER_DIED(0xA9),
 
     ITEM_SPAWN(0x20),
     ITEM_MERGE(0x21),
@@ -293,4 +295,5 @@ val ENTITY_PLANE_CAUSES: Set<Cause> = setOf(
     Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.ENTITY_CHANGED, Cause.ENTITY_LED, Cause.MOB_BRED,
     Cause.PLAYER_KILLED, Cause.MOB_TRANSFORM, Cause.SPAWN_EGG_USE, Cause.BUCKET_CAPTURE_MOB,
     Cause.BUCKET_RELEASE_MOB, Cause.PLACE_ENTITY_ITEM, Cause.TOTEM_CONSUME,
+    Cause.PLAYER_DIED,
 )

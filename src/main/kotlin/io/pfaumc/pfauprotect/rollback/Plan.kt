@@ -565,7 +565,8 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
         for (row in marks) {
             when (row.kind) {
                 EntityKind.DROPPED -> dropped.getOrPut(WorldBlock(world, row.x, row.y, row.z)) { ArrayList() } += row.drops
-                EntityKind.PLAYER_DIED, EntityKind.TOTEM_POPPED -> deaths += row
+                // A death with nobody behind it is no one's to take back.
+                EntityKind.PLAYER_DIED, EntityKind.TOTEM_POPPED -> if (row.actor != null) deaths += row
                 else -> Unit
             }
         }

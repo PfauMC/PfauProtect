@@ -572,24 +572,26 @@ class EntityCapture(
     }
 
     /**
-     * A player killed by another: where, by whom, and what fell out of them. The drops are
-     * the item plane's, slot by slot; this row is how a rollback of the killer finds the victim. A death
-     * nobody stands behind — a fall, a zombie — is no grief between players and is left to the item plane.
+     * Every player's death: where, by whom, and what fell out of them. The drops are the item plane's, slot
+     * by slot; this row is how a rollback of the killer finds the victim. A death nobody stands behind – a
+     * fall, a zombie – is written too, without an actor, so a lookup shows it; a rollback leaves it alone.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onPlayerDeath(event: PlayerDeathEvent) {
         val victim = event.entity
         val culprit = culpritOf(victim, Cause.PLAYER_KILLED, alight.remove(victim.uniqueId))
-        val killer = culprit.by.culprit() ?: return
-        if (killer == victim.uniqueId) return
+        val killer = culprit.by.culprit()?.takeIf { it != victim.uniqueId }
         val log = logs.get(victim.world.uid) ?: return
         val block = victim.location.block
         val now = System.currentTimeMillis()
+        val death = deathOf(event.damageSource)
         later(victim.location) {
             log.submit(
                 EntityChange(
-                    block.x, block.y, block.z, EntityKind.PLAYER_DIED, culprit.cause, "minecraft:player", victim.uniqueId,
-                    now, culprit.by?.confidence ?: Confidence.FACT, killer, drops = origins.droppedFor(victim.uniqueId),
+                    block.x, block.y, block.z, EntityKind.PLAYER_DIED,
+                    if (killer == null) Cause.PLAYER_DIED else culprit.cause, "minecraft:player", victim.uniqueId,
+                    now, if (killer == null) Confidence.FACT else culprit.by?.confidence ?: Confidence.FACT, killer,
+                    drops = origins.droppedFor(victim.uniqueId), death = death.first, via = death.second,
                 )
             )
         }

@@ -72,6 +72,7 @@ class StoredNumbersTest {
                 "BEEHIVE_HARVEST" to 0xA6,
                 "BRUSHABLE_REVEAL" to 0xA7,
                 "CONTAINER_NAMED" to 0xA8,
+                "PLAYER_DIED" to 0xA9,
                 "ITEM_SPAWN" to 0x20,
                 "ITEM_MERGE" to 0x21,
                 "ITEM_DESPAWN" to 0x22,

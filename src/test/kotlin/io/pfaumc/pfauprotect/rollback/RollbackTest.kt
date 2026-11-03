@@ -592,6 +592,17 @@ class RollbackTest : BothPlanes() {
         assertEquals(listOf(1), undo.slots.map { it.qty })
     }
 
+    // A fall or a zombie killed the victim: nobody carried the drops off, so there is nobody to take them from.
+    @Test
+    fun `a death with no player behind it is not planned for give-back`() {
+        val victim = UUID.randomUUID()
+        log.submit(listOf(EntityChange(1, 64, 1, EntityKind.PLAYER_DIED, Cause.PLAYER_DIED, "minecraft:player", victim, T0)))
+        log.submit(listOf(EntityChange(2, 64, 2, EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED, "minecraft:player", victim, T0 + 1, actor = alice)))
+        log.drain()
+
+        assertEquals(listOf(alice), around(rollbackFilter()).deaths.map { it.actor })
+    }
+
     // The widest radius the config allows has to stay inside what the region read takes, wherever in
     // its chunk the centre falls.
     @Test

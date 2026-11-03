@@ -310,6 +310,9 @@ class LookupReadTest : BothPlanes() {
         assertFalse(filter("e:-inventory").on(T0, PlayerInv(alice, 0)))
         assertTrue(filter("e:-inventory").on(T0 + 5, PlayerInv(bob, 1)))
 
+        // Every player death is a kill; a fight between players is not a fall.
+        assertTrue(Cause.PLAYER_DIED in parseLookupQuery("a:kill").causes.orEmpty())
+        assertFalse(Cause.PLAYER_DIED in parseLookupQuery("a:pvp").causes.orEmpty())
         assertTrue(parseLookupQuery("a:-inv").crosses)
         assertTrue(parseLookupQuery("a:+inventory").crosses)
         assertFalse(parseLookupQuery("a:drop").crosses)

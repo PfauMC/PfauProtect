@@ -82,7 +82,9 @@ online player through an `Intent`, from an offline one at their next join, from 
 `radius:global` with `user:` finds a player's positions through `by_actor` and their own item rows. Entities go
 back to what their oldest row in the window says they were (brought back from NBT with the same UUID, taken away,
 changed back, returned to where they stood), and a player killed by the one rolled back gets back what fell out of
-them.
+them. Every player death is an entity row; one with no player behind it (fall, lava, mob) has cause `player_died`
+and no actor, and is never rolled back. A death and a popped totem are also indexed in `by_actor` under the
+victim, so `p:` finds them, while `u:` still names only what the victim did.
 
 ## `/pp lookup` and `/pp purge` semantics
 
