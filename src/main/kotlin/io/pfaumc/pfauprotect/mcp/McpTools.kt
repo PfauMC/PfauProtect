@@ -40,8 +40,17 @@ internal class McpTools(private val api: Api, private val version: String, priva
 
     val howto: String = resource("/mcp-howto.md")
 
+    // The arguments each tool's schema names: one it does not, a typo of `radius` say, must not pass as unasked.
+    private val takes: Map<String, Set<String>> = list.associate { tool ->
+        val schema = tool.asJsonObject
+        schema.get("name").asString to schema.getAsJsonObject("inputSchema").getAsJsonObject("properties").keySet().toSet()
+    }
+
     /** [token]: made with a player's own token, which is theirs to use only while they still hold `pfauprotect.mcp`. */
     fun call(name: String, args: JsonObject, access: Access?, token: Boolean = false): ToolResult = try {
+        val known = takes[name] ?: throw BadArguments("unknown tool: $name")
+        val unknown = args.keySet() - known
+        if (unknown.isNotEmpty()) throw BadArguments("$name takes no ${unknown.sorted().joinToString(", ")}")
         if (token && access != null) api.check(access, MCP_PERMISSION)
         ToolResult(GSON.toJsonTree(run(name, args, access)), false)
     } catch (refused: PfauProtectException) {

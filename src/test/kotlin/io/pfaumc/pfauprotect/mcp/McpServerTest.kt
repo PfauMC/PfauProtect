@@ -35,6 +35,7 @@ class McpServerTest : BothPlanes() {
     private lateinit var chat: ChatLog
     private lateinit var tokens: Tokens
     private lateinit var server: McpServer
+    private var tokenHoldsMcp = true
     private val client = HttpClient.newHttpClient()
 
     @BeforeEach
@@ -42,9 +43,12 @@ class McpServerTest : BothPlanes() {
         chat = ChatLog(dir.resolve("chat"))
         tokens = Tokens(dir.resolve("mcp-tokens.yml"))
         val lookups = Lookups(stub(Plugin::class.java), shared, logs, ItemFormCodec(shared.registries, ServerRegistries.access), { null }, { null })
-        // Nobody is online and nothing else on the server knows anyone: only what the gateway vouches for counts.
-        val api = Api(stub(Plugin::class.java), lookups, chat, logs, { _, _, _, _ -> }, { null }, { null }, { access, permission -> allowed(access, permission) { null } })
-        server = McpServer("127.0.0.1", 0, McpTools(api, "test", worlds = { listOf(stub(World::class.java, mapOf("getUID" to world, "getName" to "world"))) }), tokens, SECRET, "test", dir.resolve("audit.log"), Logger.getAnonymousLogger())
+        // Nobody is online: what the gateway vouches for counts, and for a token's owner the server says they
+        // hold everything but pfauprotect.mcp unless the test grants that too.
+        val api = Api(stub(Plugin::class.java), lookups, chat, logs, { _, _, _, _ -> }, { null }, { null }) { access, permission ->
+            if (access.granted != null) allowed(access, permission) { null } else permission != "pfauprotect.mcp" || tokenHoldsMcp
+        }
+        server = McpServer("127.0.0.1", 0, McpTools(api, "test", worlds = { listOf(stub(World::class.java, mapOf("getUID" to world, "getName" to "world", "getEnvironment" to World.Environment.NORMAL))) }), tokens, SECRET, "test", dir.resolve("audit.log"), Logger.getAnonymousLogger())
     }
 
     @AfterEach
@@ -132,6 +136,28 @@ class McpServerTest : BothPlanes() {
         assertEquals("req-1", audit.first().get("request_id").asString)
         assertEquals("lookup", audit.first().get("tool").asString)
         assertFalse(Files.readString(dir.resolve("audit.log")).contains(SECRET))
+    }
+
+    // A token is its owner's only while they still hold pfauprotect.mcp; losing it refuses every tool.
+    @Test
+    fun `a token whose owner lost the mcp permission is refused`() {
+        val token = tokens.create(alice)
+        assertFalse(call("server_info", "{}", "Authorization" to "Bearer $token").get("isError").asBoolean)
+        tokenHoldsMcp = false
+        val refused = call("server_info", "{}", "Authorization" to "Bearer $token").getAsJsonObject("structuredContent").getAsJsonObject("error")
+        assertEquals("forbidden", refused.get("code").asString)
+        assertTrue("pfauprotect.mcp" in refused.get("message").asString)
+    }
+
+    @Test
+    fun `an argument the tool does not take is refused`() {
+        val response = post(
+            """{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"lookup","arguments":{"world":"world","x":0,"y":64,"z":0,"raduis":5}}}""",
+            *gateway("X-PfauProtect-Permissions" to "pfauprotect.lookup"),
+        )
+        val error = JsonParser.parseString(response.body()).asJsonObject.getAsJsonObject("error")
+        assertEquals(-32602, error.get("code").asInt)
+        assertTrue("raduis" in error.get("message").asString)
     }
 
     // Unknown world: an argument the tool cannot take, which the protocol answers as invalid params.

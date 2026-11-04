@@ -1467,9 +1467,12 @@ class Lookups(
     internal fun findAllWorlds(query: LookupQuery): Found {
         val users = idsOf(query.users)
         if (users.isEmpty()) refuse("A world-wide lookup needs a player, user:<name>, or a radius.")
-        val found = blocks.worlds.mapNotNull { findEverywhere(it, query, users) }
+        // A world closed between the list and its read is a world not read, which a whole answer cannot claim.
+        val worlds = blocks.worlds.toList()
+        val found = worlds.mapNotNull { findEverywhere(it, query, users) }
         val lines = found.flatMap { it.lines }.distinctBy { line -> (line.source as? LedgerEntry)?.ref ?: line }
-        return Found(lines, found.all { it.complete }, Ui.text(tr("everything by ${query.users.joinToString(", ")}", "всё от ${query.users.joinToString(", ")}")))
+        val complete = found.isNotEmpty() && found.size == worlds.size && found.all { it.complete }
+        return Found(lines, complete, Ui.text(tr("everything by ${query.users.joinToString(", ")}", "всё от ${query.users.joinToString(", ")}")))
     }
 
     /**

@@ -39,9 +39,14 @@ internal class McpServer(
     private val logger: Logger,
     private val nameOf: (UUID) -> String? = { null },
 ) : AutoCloseable {
-    // The port first: one already taken leaves nothing open behind it.
-    private val server: HttpServer = HttpServer.create(InetSocketAddress(address, port), 0)
     private val audit: BufferedWriter = Files.newBufferedWriter(auditFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+    // Bound after the log is open, and a port already taken closes the log again: neither is left behind.
+    private val server: HttpServer = try {
+        HttpServer.create(InetSocketAddress(address, port), 0)
+    } catch (failure: Exception) {
+        audit.close()
+        throw failure
+    }
     private val threads: ExecutorService = Executors.newFixedThreadPool(THREADS) { Thread(it, "pfauprotect-mcp").apply { isDaemon = true } }
 
     init {

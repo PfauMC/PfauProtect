@@ -64,7 +64,7 @@ object Settings {
         mcpAddress = config.getString("mcp.address", mcpAddress)!!
         mcpPort = config.getInt("mcp.port", mcpPort).coerceIn(1, 65_535)
         // The environment wins: a secret in a file is one more place for it to leak from.
-        mcpGatewaySecret = System.getenv("PFAUPROTECT_MCP_SECRET")?.takeIf { it.isNotBlank() } ?: config.getString("mcp.gateway-secret", "")!!
+        mcpGatewaySecret = (System.getenv("PFAUPROTECT_MCP_SECRET")?.takeIf { it.isNotBlank() } ?: config.getString("mcp.gateway-secret", "")!!).trim()
         metricsPort = config.getInt("metrics.port", metricsPort).coerceIn(0, 65_535)
         metricsAddress = config.getString("metrics.address", metricsAddress)!!
     }

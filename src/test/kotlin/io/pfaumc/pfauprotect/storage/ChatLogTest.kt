@@ -86,9 +86,9 @@ class ChatLogTest {
             log.submit(ChatLine(3_000, ChatKind.CHAT, bob, "new"))
         }
         ChatLog(dir).use { log ->
-            assertEquals(1, log.purgeBefore(2_000, dryRun = true))
+            assertEquals(1L, log.purgeBefore(2_000, dryRun = true))
             assertEquals(3, log.read(0, Long.MAX_VALUE, 10) { true }.size)
-            assertEquals(1, log.purgeBefore(2_000, dryRun = false))
+            assertEquals(1L, log.purgeBefore(2_000, dryRun = false))
             assertEquals(listOf("new", "edge"), log.read(0, Long.MAX_VALUE, 10) { true }.map { it.text })
         }
     }

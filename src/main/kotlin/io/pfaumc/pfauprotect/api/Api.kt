@@ -147,8 +147,12 @@ internal class Api(
                 ?: throw PfauProtectException(PfauProtectException.OFFLINE, "A preview is shown in the game, and the player is not online.")
             val asked = System.currentTimeMillis()
             previews[access.player] = asked to PreviewResult("running")
+            // Only this preview's own entry: a newer one asked meanwhile is not this one's to drop or overwrite.
+            fun settle(to: PreviewResult?) = previews.computeIfPresent(access.player) { _, current ->
+                if (current.first != asked) current else to?.let { asked to it }
+            }
             val left = {
-                previews.remove(access.player)
+                settle(null)
                 result.completeExceptionally(PfauProtectException(PfauProtectException.OFFLINE, LEFT))
             }
             // Where the player stands is theirs to read, on their own thread; the preview reads off it from there.
@@ -156,7 +160,7 @@ internal class Api(
                 val target = if (request.world == null) query.targetOr(lookupTargetAt(player.location))
                 else query.targetOr(LookupTarget(request.world, request.x, request.y, request.z, "${request.x} ${request.y} ${request.z}"))
                 startPreview(player, target, query) { done ->
-                    previews[access.player] = asked to done
+                    settle(done)
                     result.complete(done)
                 }
             }, { left() })
