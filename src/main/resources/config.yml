@@ -60,6 +60,6 @@ mcp:
   address: 127.0.0.1
   port: 25590
   # The secret of a trusted gateway, which then names the player in X-PfauProtect-Player. Empty turns the
-  # gateway mode off. The environment variable PFAUPROTECT_MCP_SECRET wins over this, and keeps the secret out
+  # gateway mode off, and so does one shorter than 32 characters. The environment variable PFAUPROTECT_MCP_SECRET wins over this, and keeps the secret out
   # of the file. Players with pfauprotect.mcp make their own tokens with /pp mcp token either way.
   gateway-secret: ""

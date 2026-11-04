@@ -291,7 +291,7 @@ JSON, без SSE и без сессий, поэтому `tools/call` работ�
   отзывает прежний, `/pp mcp revoke` отзывает совсем. Агент передаёт его как `Authorization: Bearer ppt_…`. Если
   игрок не в сети, его права спрашиваются по той же цепочке, что в API.
 - **Доверенный шлюз.** Для сети со своим MCP-шлюзом. `Authorization: Bearer <секрет>`, где секрет – из
-  `PFAUPROTECT_MCP_SECRET` или `mcp.gateway-secret`; без секрета режим выключен. Заголовок
+  `PFAUPROTECT_MCP_SECRET` или `mcp.gateway-secret`, не короче 32 символов; без секрета или с более коротким режим выключен. Заголовок
   `X-PfauProtect-Player: <uuid>` называет игрока. Для игрока не в сети шлюз может прислать
   `X-PfauProtect-Permissions: pfauprotect.lookup,pfauprotect.rollback`; присланный пустым значит «прав нет», и
   больше никого не спрашивают. Игрока в сети проверяет Bukkit.

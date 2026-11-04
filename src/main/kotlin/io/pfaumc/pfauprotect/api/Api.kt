@@ -5,6 +5,7 @@ import io.pfaumc.pfauprotect.LOOKUP_PERMISSION
 import io.pfaumc.pfauprotect.ROLLBACK_PERMISSION
 import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.Ui
+import io.pfaumc.pfauprotect.command.ChatRead
 import io.pfaumc.pfauprotect.command.ChatRun
 import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.LookupTarget
@@ -35,6 +36,7 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
 /** The API's calls; the MCP add-on makes the same ones with what a gateway vouched for in [Access]. */
@@ -49,8 +51,11 @@ internal class Api(
     private val playerOf: (UUID) -> Player? = Bukkit::getPlayer,
     private val ask: (Access, String) -> Boolean? = { access, permission -> allowed(access, permission) },
 ) : PfauProtectApi {
-    // The newest preview asked through the API, per player, with when it was asked.
-    private val previews = ConcurrentHashMap<UUID, Pair<Long, PreviewResult>>()
+    // The newest preview asked through the API, per player. Two asked within one millisecond share a time, so each
+    // gets its own id to tell whose entry it is.
+    private class Asked(val id: Long, val at: Long, val result: PreviewResult)
+    private val previews = ConcurrentHashMap<UUID, Asked>()
+    private val asks = AtomicLong()
 
     // Its own threads: a wide read or an offline player's LuckPerms answer blocks, and the common pool is everyone's.
     // ponytail: a fixed pool, the calls past it wait in its queue; a cap on that queue if callers pile up.
@@ -117,13 +122,14 @@ internal class Api(
         val kinds = request.kinds.map { it.lowercase() }.toSet()
         val unknown = kinds - CHAT_KINDS
         if (unknown.isNotEmpty()) refuse("Unknown kind: ${unknown.joinToString(", ")}; expected ${CHAT_KINDS.joinToString(", ")}.")
+        if (request.radius != null && request.world == null) refuse("A radius needs a world and x/y/z.")
         val worldName = request.world?.let { Ui.worldName(it) }
         fun near(world: String, x: Int, y: Int, z: Int): Boolean {
             val radius = request.radius ?: return worldName == null || world == worldName
             return world == worldName && maxOf(abs(x - request.x), abs(y - request.y), abs(z - request.z)) <= radius
         }
         val said = lookups.chatFilter(query)
-        val read = readChat(chatLog, query) { line ->
+        val read = if (kinds == setOf("death")) ChatRead(emptyList(), false) else readChat(chatLog, query) { line ->
             (kinds.isEmpty() || line.kind.name.lowercase() in kinds) && said(line) && (request.world == null || near(line.world, line.x, line.y, line.z))
         }
         // A death has no text to filter on, is no chat line to exclude a player's from, and is no hit for `pvp`.
@@ -145,11 +151,11 @@ internal class Api(
             val query = queryOf(request.words, request.since, request.until)
             val player = playerOf(access.player)
                 ?: throw PfauProtectException(PfauProtectException.OFFLINE, "A preview is shown in the game, and the player is not online.")
-            val asked = System.currentTimeMillis()
-            previews[access.player] = asked to PreviewResult("running")
+            val id = asks.incrementAndGet()
+            previews[access.player] = Asked(id, System.currentTimeMillis(), PreviewResult("running"))
             // Only this preview's own entry: a newer one asked meanwhile is not this one's to drop or overwrite.
             fun settle(to: PreviewResult?) = previews.computeIfPresent(access.player) { _, current ->
-                if (current.first != asked) current else to?.let { asked to it }
+                if (current.id != id) current else to?.let { Asked(id, current.at, it) }
             }
             val left = {
                 settle(null)
@@ -177,8 +183,9 @@ internal class Api(
     // A ready preview stops being one once it is applied, dropped, replaced or lapses; one still running past the
     // time it would have lapsed has failed somewhere that could not say so.
     override fun previewStatus(player: UUID): PreviewResult {
-        val (asked, last) = previews[player] ?: return NONE
-        if (last.status == "running") return if (System.currentTimeMillis() - asked > PENDING_MILLIS) NONE else last
+        val asked = previews[player] ?: return NONE
+        val last = asked.result
+        if (last.status == "running") return if (System.currentTimeMillis() - asked.at > PENDING_MILLIS) NONE else last
         val expires = last.expiresAt ?: return last
         val pending = pendingSince(player)
         return if (pending != null && pending + PENDING_MILLIS == expires) last else NONE

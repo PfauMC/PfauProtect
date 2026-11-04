@@ -29,17 +29,31 @@ internal class Tokens(private val file: Path) {
     /** A new token for [player], which replaces the one they had. Shown once: it cannot be read back. */
     fun create(player: UUID): String {
         val raw = PREFIX + Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32).also(SecureRandom()::nextBytes))
-        synchronized(this) {
+        changing {
             players.values.removeIf { it == player }
             players[hashOf(raw)] = player
-            save()
+            true
         }
         return raw
     }
 
     /** Whether [player] had a token to revoke. */
-    fun revoke(player: UUID): Boolean = synchronized(this) {
-        players.values.removeIf { it == player }.also { if (it) save() }
+    fun revoke(player: UUID): Boolean = changing { players.values.removeIf { it == player } }
+
+    // A change the file could not keep is undone, so what is checked stays what a restart would load.
+    private fun changing(change: () -> Boolean): Boolean = synchronized(this) {
+        val before = HashMap(players)
+        val changed = change()
+        if (changed) {
+            try {
+                save()
+            } catch (failure: Exception) {
+                players.clear()
+                players.putAll(before)
+                throw failure
+            }
+        }
+        changed
     }
 
     fun playerOf(raw: String): UUID? = players[hashOf(raw)]

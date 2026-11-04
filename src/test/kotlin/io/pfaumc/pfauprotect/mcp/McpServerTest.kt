@@ -73,6 +73,19 @@ class McpServerTest : BothPlanes() {
     }
 
     @Test
+    fun `a gateway secret anyone could guess turns the gateway mode off`() {
+        fun loaded(secret: String) = YamlConfiguration().apply { set("mcp.gateway-secret", secret) }
+            .let { Settings.load(it, Logger.getAnonymousLogger()); Settings.mcpGatewaySecret }
+        try {
+            assertEquals("", loaded("short"))
+            assertEquals("", loaded("ppt_" + "x".repeat(40)))
+            assertEquals("s".repeat(32), loaded("s".repeat(32)))
+        } finally {
+            Settings.mcpGatewaySecret = ""
+        }
+    }
+
+    @Test
     fun `the add-on is off unless the config turns it on`() {
         val shipped = YamlConfiguration.loadConfiguration(javaClass.getResourceAsStream("/config.yml")!!.reader())
         assertFalse(shipped.getBoolean("mcp.enabled", true))

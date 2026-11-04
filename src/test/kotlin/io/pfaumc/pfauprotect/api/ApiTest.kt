@@ -164,6 +164,7 @@ class ApiTest : BothPlanes() {
         assertEquals(listOf(bob, alice), listOf(back.hit?.attacker?.uuid, back.hit?.victim?.uuid))
         assertEquals(listOf(alice, bob, "minecraft:iron_sword"), listOf(first.hit?.attacker?.uuid, first.hit?.victim?.uuid, first.hit?.weapon))
         assertEquals(listOf("death"), api().chat(ChatRequest(words = "u:Alice&Bob", kinds = setOf("death")), null).answer().lines.map { it.kind })
+        assertEquals(PfauProtectException.REFUSED, api().chat(ChatRequest(radius = 5), null).refusal().code)
     }
 
     @Test

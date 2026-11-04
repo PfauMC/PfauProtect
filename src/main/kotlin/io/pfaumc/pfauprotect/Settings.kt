@@ -40,6 +40,8 @@ object Settings {
     @Volatile var metricsPort = 0
     @Volatile var metricsAddress = "127.0.0.1"
 
+    const val MIN_GATEWAY_SECRET = 32
+
     fun load(config: FileConfiguration, log: Logger) {
         language = config.getString("language", language)!!.lowercase().takeIf { it in LANGUAGES } ?: run {
             log.warning("config.yml: language must be one of $LANGUAGES; using en")
@@ -64,7 +66,12 @@ object Settings {
         mcpAddress = config.getString("mcp.address", mcpAddress)!!
         mcpPort = config.getInt("mcp.port", mcpPort).coerceIn(1, 65_535)
         // The environment wins: a secret in a file is one more place for it to leak from.
-        mcpGatewaySecret = (System.getenv("PFAUPROTECT_MCP_SECRET")?.takeIf { it.isNotBlank() } ?: config.getString("mcp.gateway-secret", "")!!).trim()
+        val secret = (System.getenv("PFAUPROTECT_MCP_SECRET")?.takeIf { it.isNotBlank() } ?: config.getString("mcp.gateway-secret", "")!!).trim()
+        // A short secret is one a caller can guess; one that looks like a token would be read as a token.
+        mcpGatewaySecret = if (secret.isEmpty() || secret.length >= MIN_GATEWAY_SECRET && !secret.startsWith("ppt_")) secret else {
+            log.warning("MCP gateway secret ignored: it needs at least $MIN_GATEWAY_SECRET characters and must not start with ppt_")
+            ""
+        }
         metricsPort = config.getInt("metrics.port", metricsPort).coerceIn(0, 65_535)
         metricsAddress = config.getString("metrics.address", metricsAddress)!!
     }

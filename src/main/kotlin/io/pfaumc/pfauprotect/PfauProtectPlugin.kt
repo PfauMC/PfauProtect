@@ -462,7 +462,8 @@ class PfauProtectPlugin : JavaPlugin() {
 
     // A player's own token, shown once with a click that copies it; making one revokes the one before.
     private fun mcpToken(source: CommandSourceStack, revoke: Boolean): Int = withRunning(source) { running, sender ->
-        val player = source.executor as? Player ?: return@withRunning sender.say("Only a player can have an MCP token.")
+        // The sender's own: `execute as` another player must not hand out a token that acts for them.
+        val player = sender as? Player ?: return@withRunning sender.say("Only a player can have an MCP token.")
         val tokens = running.tokens ?: return@withRunning sender.say("The MCP add-on is off; config.yml turns it on.")
         if (revoke) {
             sender.say(if (tokens.revoke(player.uniqueId)) "Your MCP token is revoked." else "You have no MCP token to revoke.")

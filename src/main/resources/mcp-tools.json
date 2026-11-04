@@ -2,7 +2,7 @@
   {
     "name": "server_info",
     "title": "Server info",
-    "description": "Which server this is (server_name from its config), the PfauProtect version, its worlds (name, uuid, environment) and the limits every other tool keeps: max_radius (blocks around a point), max_rows (lines per page), preview_minutes (how long a preview waits for the moderator's [apply]), max_rollback_positions. Call it first; the world names it returns are what the other tools take.",
+    "description": "Which server this is (`server`, the server-name from its config), the PfauProtect version, its worlds (name, uuid, environment) and the limits every other tool keeps: max_radius (blocks around a point), max_rows (lines per page), preview_minutes (how long a preview waits for the moderator's [apply]), max_rollback_positions. Call it first; the world names it returns are what the other tools take.",
     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
   },
   {

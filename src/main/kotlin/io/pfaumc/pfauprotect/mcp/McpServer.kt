@@ -19,6 +19,8 @@ import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.logging.Level
 import java.util.logging.Logger
 
@@ -82,6 +84,7 @@ internal class McpServer(
         val caller = when (val who = callerOf(exchange)) {
             is Int -> {
                 if (who == 401) exchange.responseHeaders.add("WWW-Authenticate", "Bearer")
+                rejected(who)
                 return send(exchange, who, null)
             }
             else -> who as Caller
@@ -196,12 +199,38 @@ internal class McpServer(
             addProperty("mode", caller.mode)
             addProperty("player", caller.access.player.toString())
             nameOf(caller.access.player)?.let { addProperty("name", it) }
-            addProperty("method", method)
-            tool?.let { addProperty("tool", it) }
-            arguments?.let { add("arguments", it) }
-            requestId?.let { addProperty("request_id", it.take(MAX_REQUEST_ID)) }
+            addProperty("method", method.take(MAX_AUDIT_FIELD))
+            tool?.let { addProperty("tool", it.take(MAX_AUDIT_FIELD)) }
+            // A caller's arguments are as long as it likes; past the cap they are kept as cut text.
+            arguments?.let {
+                val text = GSON.toJson(it)
+                if (text.length <= MAX_AUDIT_ARGUMENTS) add("arguments", it) else addProperty("arguments", text.take(MAX_AUDIT_ARGUMENTS) + "...")
+            }
+            requestId?.let { addProperty("request_id", it.take(MAX_AUDIT_FIELD)) }
             addProperty("outcome", outcome)
         }
+        write(line)
+    }
+
+    private val turnedAway = AtomicInteger()
+    private val turnedAwayAt = AtomicLong()
+
+    // Requests without a good credential, at most one line a second with how many came since the last: someone
+    // guessing tokens shows up without filling the disk.
+    // ponytail: the tail of a burst waits for the next rejection to be counted.
+    private fun rejected(status: Int) {
+        turnedAway.incrementAndGet()
+        val now = System.currentTimeMillis()
+        val last = turnedAwayAt.get()
+        if (now - last < REJECTED_EVERY_MILLIS || !turnedAwayAt.compareAndSet(last, now)) return
+        write(JsonObject().apply {
+            addProperty("time", Instant.now().toString())
+            addProperty("outcome", if (status == 401) "unauthorized" else "bad_request")
+            addProperty("rejected", turnedAway.getAndSet(0))
+        })
+    }
+
+    private fun write(line: JsonObject) {
         runCatching {
             synchronized(audit) {
                 audit.write(GSON.toJson(line))
@@ -257,7 +286,9 @@ private val PROTOCOL_VERSIONS = listOf("2025-06-18", "2025-03-26")
 
 private const val THREADS = 4
 private const val MAX_BODY = 1 shl 20
-private const val MAX_REQUEST_ID = 128
+private const val MAX_AUDIT_FIELD = 128
+private const val MAX_AUDIT_ARGUMENTS = 4096
+private const val REJECTED_EVERY_MILLIS = 1000L
 private const val PARSE_ERROR = -32700
 private const val INVALID_REQUEST = -32600
 private const val METHOD_NOT_FOUND = -32601
