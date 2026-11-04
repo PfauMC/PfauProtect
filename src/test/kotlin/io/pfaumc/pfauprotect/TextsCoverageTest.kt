@@ -137,7 +137,7 @@ class TextsCoverageTest {
             .replace(Regex("""\b[a-z0-9]+(_[a-z0-9]+)+\b"""), " ")
             .replace(Regex("""#[a-z]+"""), " ")
             .replace(Regex("""\b[a-z]+:\S*"""), " ")
-            .replace(Regex("""\b(PfauProtect|MB|KB|GB|UUID|RocksDB|NBT|ru|en)\b"""), " ")
+            .replace(Regex("""\b(PfauProtect|MB|KB|GB|UUID|RocksDB|NBT|MCP|ru|en)\b"""), " ")
             .replace(Regex("""'[^']*'"""), " ")
         return Regex("[A-Za-z]{3,}").containsMatchIn(rest)
     }

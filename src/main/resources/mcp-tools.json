@@ -1,0 +1,137 @@
+[
+  {
+    "name": "server_info",
+    "title": "Server info",
+    "description": "Which server this is (server_name from its config), the PfauProtect version, its worlds (name, uuid, environment) and the limits every other tool keeps: max_radius (blocks around a point), max_rows (lines per page), preview_minutes (how long a preview waits for the moderator's [apply]), max_rollback_positions. Call it first; the world names it returns are what the other tools take.",
+    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+  },
+  {
+    "name": "lookup",
+    "title": "Lookup at a place",
+    "description": "What happened at a block, or within `radius` blocks of it (a cube, at most max_radius): blocks placed and broken, items moved in and out of containers, dropped and picked up, entities killed, changed or led away, players killed. The same reading as `/pp lookup` in the game. Rows are newest first; runs of the same thing within a minute fold into one row with `repeats` > 1 (set `all` to see each). Each row: time (epoch ms), actor {uuid, name} and actor_kind (player, lightning, none), action (added, removed, changed; an item row is seen from its first holder, so a withdrawal read at the chest is removed and read in the taker's inventory, as actor_actions does, is added), cause (the cause code, e.g. blk_player_break, container_remove, blk_creeper, entity_killed), confidence, world and x/y/z, thing (block, item or entity type), thing_after (a block turned into another), name (an item's custom name), amount, from/to (both ends of an item's movement: inventory, container, ground, ...), container and slot, via (what struck or pressed for the actor), rolled_back (a rollback has since put it back), event (the token `event:` takes to roll back just that row). Confidence: fact (seen), inferred (worked out from what happened just before, marked `?` in the game), nearby (the actor only stood near; never proof), aggro (a creeper went off at that player; they did not light it, marked `*`). `more` true: a next page exists. `complete` false: the read stopped early, so an empty or short page clears nobody; narrow the radius or the time. `users` with no radius here still reads only this place; use actor_actions for everything a player did. Paging with `time` reads against a new now each call, so rows written meanwhile shift the pages: for stable pages give `until` (or since/until).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "world": {"type": "string", "description": "World name or uuid."},
+        "x": {"type": "integer"}, "y": {"type": "integer"}, "z": {"type": "integer"},
+        "radius": {"type": "integer", "minimum": 0, "description": "Blocks around the point; omitted, only that block."},
+        "users": {"type": "array", "items": {"type": "string"}, "description": "Only rows by these players: names or uuids. An element `A&B` keeps rows that name both (A did it to B)."},
+        "time": {"type": "string", "description": "How far back, as `/pp` takes it: 1h, 2d, 2h-1h (from two hours ago to one), 14:00, 03.11, 03.11_14:00-03.11_18:00 (the server's time zone). Not with since/until."},
+        "since": {"type": ["integer", "string"], "description": "Start of an absolute window: epoch ms or ISO-8601 with offset."},
+        "until": {"type": ["integer", "string"], "description": "End of an absolute window: epoch ms or ISO-8601 with offset."},
+        "actions": {"type": "array", "items": {"type": "string"}, "description": "Kinds of rows: block, +block, -block, container, +container (deposit), -container (withdraw), steal, explosion, entity, kill, item, +item, -item, inventory, pickup, drop, use, projectile, transform, rollback, ... An element `X&Y` needs both."},
+        "include": {"type": "array", "items": {"type": "string"}, "description": "Only these blocks, items or entities, e.g. diamond, chest, creeper."},
+        "exclude": {"type": "array", "items": {"type": "string"}, "description": "Leave out these players, blocks, items, entities or actions."},
+        "amount": {"type": "string", "description": "Item rows of this many: 5, >=5, <10, 5-10."},
+        "rolledback": {"type": "boolean", "description": "true: only rows a rollback has put back; false: only those it has not."},
+        "steal": {"type": "boolean", "description": "Only withdrawals from a container somebody else placed (or the world generated): who took what was not theirs."},
+        "page": {"type": "integer", "minimum": 1},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Rows per page, 10 by default."},
+        "all": {"type": "boolean", "description": "Do not fold repeated rows."},
+        "words": {"type": "string", "description": "Further `/pp lookup` words, appended as they are."}
+      },
+      "required": ["world", "x", "y", "z"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "container_history",
+    "title": "Container history",
+    "description": "Who put what into a container and who took it out. Without a radius it reads the container at x/y/z itself (both halves of a double chest are two positions); with a radius, every container row around the point. `steal` keeps only withdrawals by somebody other than whoever placed the container: the likely thieves. Rows are those of lookup: action added (put in) or removed (taken out), actor, thing, amount, slot.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "world": {"type": "string"},
+        "x": {"type": "integer"}, "y": {"type": "integer"}, "z": {"type": "integer"},
+        "radius": {"type": "integer", "minimum": 0},
+        "users": {"type": "array", "items": {"type": "string"}},
+        "time": {"type": "string"},
+        "since": {"type": ["integer", "string"]},
+        "until": {"type": ["integer", "string"]},
+        "steal": {"type": "boolean"},
+        "page": {"type": "integer", "minimum": 1},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        "all": {"type": "boolean"}
+      },
+      "required": ["world", "x", "y", "z"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "actor_actions",
+    "title": "Everything a player did",
+    "description": "Everything the named players did in every world, newest first: the blocks and entities their own rows name, the containers they traded with, what fell out of what they broke, and their drops and pickups. Rows as in lookup. This is how a griefing chain is followed: find the participants around the damage with lookup, then read each one here for the other places they hit.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "users": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "Players: names or uuids."},
+        "time": {"type": "string"},
+        "since": {"type": ["integer", "string"]},
+        "until": {"type": ["integer", "string"]},
+        "actions": {"type": "array", "items": {"type": "string"}},
+        "include": {"type": "array", "items": {"type": "string"}},
+        "exclude": {"type": "array", "items": {"type": "string"}},
+        "amount": {"type": "string"},
+        "rolledback": {"type": "boolean"},
+        "page": {"type": "integer", "minimum": 1},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        "all": {"type": "boolean"}
+      },
+      "required": ["users"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "chat_pvp_log",
+    "title": "Chat and PvP log",
+    "description": "What players said and ran, their joins and quits, every hit of a player on another, totems popped, and players' deaths, newest first. kind: chat, command, join, quit, hit, totem, death. A hit: hit.attacker, hit.victim, hit.damage (after armour, summed over `repeats` folded blows), hit.weapon (the item in hand, or the arrow, the dog, the TNT that struck), hit.confidence (fact, or inferred when the striker was worked out). A death: player is the victim, hit.attacker the killer (none for a fall, lava or a mob), hit.weapon what killed, text how. `users: [\"A&B\"]` is the fight between the two: lines of either that name the other, whoever struck. Deaths are read only when users are named and no text or exclude is given. Chat lines have no place, so a radius leaves them out. Logins' passwords are never kept; no IP address is kept at all. To find who struck first, read with `all` so no blows fold, and take the oldest hit.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "users": {"type": "array", "items": {"type": "string"}},
+        "time": {"type": "string"},
+        "since": {"type": ["integer", "string"]},
+        "until": {"type": ["integer", "string"]},
+        "kinds": {"type": "array", "items": {"type": "string", "enum": ["chat", "command", "join", "quit", "hit", "totem", "death"]}},
+        "pvp": {"type": "boolean", "description": "Only hits and totems."},
+        "text": {"type": "string", "description": "Lines holding this text; `a&b` holds both. No spaces."},
+        "exclude": {"type": "array", "items": {"type": "string"}, "description": "Players, or `pvp` for hits."},
+        "world": {"type": "string"},
+        "x": {"type": "integer"}, "y": {"type": "integer"}, "z": {"type": "integer"},
+        "radius": {"type": "integer", "minimum": 0, "description": "Only lines within this many blocks of x/y/z in world."},
+        "page": {"type": "integer", "minimum": 1},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        "all": {"type": "boolean", "description": "Do not fold blow after blow into one line."}
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "start_preview",
+    "title": "Start a rollback preview",
+    "description": "Shows the moderator you act for a rollback preview in the game: the blocks as they would stand, drawn only for them, and the counts with [apply] and [cancel] in their chat. Nothing in the world changes; only the moderator applies it, by clicking [apply]. They must be online, and should stand at the place first: tell them to run `/pp tp <x> <y> <z> <world>` and wait until they say they are there. A rollback needs time (or since) and either a radius around the place, or users for everything those players did (radius global is implied by users without a radius). Without world/x/y/z it is centred where the moderator stands. One preview per moderator: a new one replaces the last; it lapses after preview_minutes. steal, amount and rolledback are lookup-only and are refused. Returns status ready with the counts (blocks.change, blocks.unchanged, blocks.conflicts = stopped by a later change by somebody else, slots, entities back/taken/reverted/already, expires_at), refused with the reason, or running when a large area takes longer than the call waits: then ask preview_status.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "world": {"type": "string"},
+        "x": {"type": "integer"}, "y": {"type": "integer"}, "z": {"type": "integer"},
+        "radius": {"type": "integer", "minimum": 0},
+        "users": {"type": "array", "items": {"type": "string"}},
+        "time": {"type": "string"},
+        "since": {"type": ["integer", "string"]},
+        "until": {"type": ["integer", "string"]},
+        "actions": {"type": "array", "items": {"type": "string"}},
+        "include": {"type": "array", "items": {"type": "string"}},
+        "exclude": {"type": "array", "items": {"type": "string"}},
+        "words": {"type": "string", "description": "Further `/pp rollback` words, appended as they are, e.g. an event: token."}
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "preview_status",
+    "title": "Preview status",
+    "description": "The newest preview started for the moderator you act for: none (none started, or it was applied, cancelled, replaced or lapsed), running, ready with its counts and expires_at, or refused with the reason.",
+    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+  }
+]

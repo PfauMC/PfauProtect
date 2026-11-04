@@ -10,7 +10,11 @@ import io.papermc.paper.command.brigadier.argument.ArgumentTypes
 import io.papermc.paper.command.brigadier.argument.resolvers.BlockPositionResolver
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents
+import io.pfaumc.pfauprotect.api.Api
 import io.pfaumc.pfauprotect.api.PfauProtectApi
+import io.pfaumc.pfauprotect.mcp.McpServer
+import io.pfaumc.pfauprotect.mcp.McpTools
+import io.pfaumc.pfauprotect.mcp.Tokens
 import io.pfaumc.pfauprotect.api.PfauProtectPreLogEvent
 import io.pfaumc.pfauprotect.attribution.Attributed
 import io.pfaumc.pfauprotect.attribution.Attribution
@@ -42,7 +46,7 @@ import io.pfaumc.pfauprotect.capture.item.HolderListener
 import io.pfaumc.pfauprotect.command.ChatRun
 import io.pfaumc.pfauprotect.command.Inspector
 import io.pfaumc.pfauprotect.command.chatPlayers
-import io.pfaumc.pfauprotect.command.chatRuns
+import io.pfaumc.pfauprotect.command.readChat
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.capture.item.ItemUseListener
 import io.pfaumc.pfauprotect.command.LookupArgument
@@ -135,10 +139,7 @@ private const val PLANE_POSTINGS = 2000
 private const val PLANE_MINUTES = 10L
 private const val RECONCILE_MINUTES = 30L
 
-// How far /pp chat reads for one page at most: a run of hits longer than that ends the pages.
-private const val MAX_CHAT_READ = 4096
-
-private const val LOOKUP_PERMISSION = "pfauprotect.lookup"
+internal const val LOOKUP_PERMISSION = "pfauprotect.lookup"
 private const val INSPECT_PERMISSION = "pfauprotect.inspect"
 private const val RECONCILE_PERMISSION = "pfauprotect.reconcile"
 private const val VERIFY_PERMISSION = "pfauprotect.verify"
@@ -148,6 +149,7 @@ private const val PURGE_PERMISSION = "pfauprotect.purge"
 private const val DEBUG_PERMISSION = "pfauprotect.debug"
 internal const val TELEPORT_PERMISSION = "pfauprotect.teleport"
 internal const val TELEPORT_SPECTATOR_PERMISSION = "pfauprotect.teleport.spectator"
+private const val MCP_PERMISSION = "pfauprotect.mcp"
 
 private class Help(val permission: String, val usage: String, val typed: String, val en: String, val ru: String)
 
@@ -164,6 +166,7 @@ private val HELP = listOf(
     Help(VERIFY_PERMISSION, "/pp verify [recent]", "/pp verify", "run the self-checks now", "самопроверки сейчас"),
     Help(RECONCILE_PERMISSION, "/pp reconcile <player>", "/pp reconcile ", "a player's inventory against the ledger", "сверка инвентаря игрока с журналом"),
     Help(PURGE_PERMISSION, "/pp purge <age> [confirm]", "/pp purge ", "delete history older than an age", "удалить историю старше возраста"),
+    Help(MCP_PERMISSION, "/pp mcp token · /pp mcp revoke", "/pp mcp token", "your own token for the MCP add-on, or revoke it", "свой токен для MCP-аддона или его отзыв"),
     Help(DEBUG_PERMISSION, "/pp debug [on|off]", "/pp debug ", "write what lookups and rollbacks read into the server log", "писать в лог сервера, что читают lookup и откат"),
 )
 
@@ -245,6 +248,9 @@ private class Running(
     val chat: ChatLog,
     // Set once the rest stands, closed before the bases.
     var metrics: MetricsEndpoint? = null,
+    var mcp: McpServer? = null,
+    var tokens: Tokens? = null,
+    var api: Api? = null,
 ) {
     fun drainAll() {
         ledger.drain()
@@ -370,7 +376,9 @@ class PfauProtectPlugin : JavaPlugin() {
             rollbacks.ghosts,
             ChatCapture(chat),
         )
-        server.servicesManager.register(PfauProtectApi::class.java, Api(running), this, ServicePriority.Normal)
+        val api = Api(this, lookups, chat, blocks, rollbacks::preview, rollbacks::pendingSince)
+        running.api = api
+        server.servicesManager.register(PfauProtectApi::class.java, api, this, ServicePriority.Normal)
         server.globalRegionScheduler.runAtFixedRate(this, {
             origins.sweep()
             attribution.sweepRemovals()
@@ -389,6 +397,8 @@ class PfauProtectPlugin : JavaPlugin() {
         every(PLANE_MINUTES) { if (isEnabled) Metrics.checks.labelValues("planes").startTimer().use { logPass { checkPlanes(running.planes, 1, false, it) } } }
         every(RECONCILE_MINUTES) { reconcileEveryone() }
         every(1, TimeUnit.DAYS) { reportUncovered(uncovered) }
+        // A minute in rather than a day, so a server restarted daily still forgets what it was told to.
+        server.asyncScheduler.runAtFixedRate(this, { forgetChat(chat) }, 1, 24 * 60, TimeUnit.MINUTES)
         warnAboutSilencedHoppers()
         registerCommand(CommandBrackets(this, blocks, codec, ledger, uncovered::submit))
         if (Settings.metricsPort > 0) {
@@ -397,6 +407,7 @@ class PfauProtectPlugin : JavaPlugin() {
                 .onFailure { logger.log(Level.SEVERE, "metrics could not listen on ${Settings.metricsAddress}:${Settings.metricsPort}", it) }
                 .getOrNull()
         }
+        if (Settings.mcpEnabled) startMcp(running, api)
         logger.info(
             "ledger open, ${blocks.worlds.size} world bases, registry sizes: " +
                 RegistryNamespace.entries.joinToString { "${it.name.lowercase()}=${ledger.registries.size(it)}" }
@@ -424,11 +435,45 @@ class PfauProtectPlugin : JavaPlugin() {
             // base that fails to close must not take the ledger down with it, or a held lock file keeps
             // the plugin from being enabled again without a server restart.
             closeReporting("the metrics endpoint") { running.metrics?.close() }
+            closeReporting("the MCP add-on") { running.mcp?.close() }
+            closeReporting("the API's threads") { running.api?.close() }
             closeReporting("the world block bases") { running.blocks.close() }
             closeReporting("the ledger") { running.ledger.close() }
             closeReporting("the chat log") { running.chat.close() }
             this.running = null
         }
+    }
+
+    // Off unless config.yml turns it on; a port already taken costs the add-on, not the history.
+    private fun startMcp(running: Running, api: Api) {
+        val tokens = Tokens(dataFolder.toPath().resolve("mcp-tokens.yml"))
+        running.tokens = tokens
+        if (Settings.mcpGatewaySecret.isEmpty()) logger.info("MCP gateway mode is off: no PFAUPROTECT_MCP_SECRET or mcp.gateway-secret")
+        val version = pluginMeta.version
+        running.mcp = runCatching {
+            McpServer(
+                Settings.mcpAddress, Settings.mcpPort, McpTools(api, version), tokens, Settings.mcpGatewaySecret, version,
+                dataFolder.toPath().resolve("mcp-audit.log"), logger, ::nameOrId,
+            )
+        }.onSuccess { logger.info("MCP add-on listening on ${Settings.mcpAddress}:${it.port}/mcp") }
+            .onFailure { logger.log(Level.SEVERE, "the MCP add-on could not listen on ${Settings.mcpAddress}:${Settings.mcpPort}", it) }
+            .getOrNull()
+    }
+
+    // A player's own token, shown once with a click that copies it; making one revokes the one before.
+    private fun mcpToken(source: CommandSourceStack, revoke: Boolean): Int = withRunning(source) { running, sender ->
+        val player = source.executor as? Player ?: return@withRunning sender.say("Only a player can have an MCP token.")
+        val tokens = running.tokens ?: return@withRunning sender.say("The MCP add-on is off; config.yml turns it on.")
+        if (revoke) {
+            sender.say(if (tokens.revoke(player.uniqueId)) "Your MCP token is revoked." else "You have no MCP token to revoke.")
+            return@withRunning
+        }
+        val token = tokens.create(player.uniqueId)
+        sender.sendMessage(
+            Component.text().append(Ui.text(tr("Your MCP token, shown once; any older one is revoked: ", "Твой MCP-токен, показывается один раз; старый отозван: "), Ui.MUTED))
+                .append(Ui.hover(Ui.text(tr("[copy]", "[копировать]"), Ui.GAINED), tr("Copy it to the clipboard", "Скопировать в буфер обмена")).clickEvent(ClickEvent.copyToClipboard(token)))
+                .build()
+        )
     }
 
     // Each base by name: the ledger, the chat log and every world whose history is open.
@@ -572,6 +617,11 @@ class PfauProtectPlugin : JavaPlugin() {
                     )
             )
             root.then(gated("status", STATUS_PERMISSION).executes { status(it.source) })
+            root.then(
+                gated("mcp", MCP_PERMISSION)
+                    .then(Commands.literal("token").executes { mcpToken(it.source, revoke = false) })
+                    .then(Commands.literal("revoke").executes { mcpToken(it.source, revoke = true) })
+            )
             root.then(
                 gated("debug", DEBUG_PERMISSION)
                     .executes { debug(it.source, null) }
@@ -819,10 +869,17 @@ class PfauProtectPlugin : JavaPlugin() {
                 rows += r
                 entities += e
             }
-            val counts = "$entries item rows, $rows block rows, $entities entity rows; $openings opening balances"
+            val lines = running.chat.purgeBefore(cutoff, dryRun = !confirm)
+            val counts = "$entries item rows, $rows block rows, $entities entity rows, $lines chat lines; $openings opening balances"
             if (confirm) sender.say("Purged $counts written.")
             else sender.say("A purge would delete $counts to write. /pp purge $age confirm runs it.")
         }
+    }
+
+    private fun forgetChat(chat: ChatLog) {
+        val days = Settings.chatKeepDays.takeIf { it > 0 } ?: return
+        val lines = chat.purgeBefore(System.currentTimeMillis() - days * 86_400_000L, dryRun = false)
+        if (lines > 0) logger.info("the chat log forgot $lines lines older than $days days")
     }
 
     // A clock's moves held back are filed on the region that owns the piston, and a reader waits for them a
@@ -863,18 +920,8 @@ class PfauProtectPlugin : JavaPlugin() {
         val asked = query.askedBy(sender)
         offThread(sender, "the chat lookup failed", "The chat lookup failed; the server log has the details.") {
             running.lookups.resolveAll(sender, chatPlayers(asked)) ?: return@offThread
-            // `wanted` reads past this page, which is how it knows there is a next one.
-            val keeps = running.lookups.chatFilter(asked)
-            // A one-sided fight folds a whole read into a line or two, so the read goes on until the runs fill
-            // this page and start the next, or the log runs out. Past the cap a run that long is the last page.
-            var reading = asked.wanted
-            var read = running.chat.read(asked.fromTs(), asked.toTs(), reading, keeps)
-            var runs = chatRuns(read, asked.all)
-            while (runs.size <= asked.limit * asked.page && read.size == reading && reading < MAX_CHAT_READ) {
-                reading = minOf(reading * 4, MAX_CHAT_READ)
-                read = running.chat.read(asked.fromTs(), asked.toTs(), reading, keeps)
-                runs = chatRuns(read, asked.all)
-            }
+            val read = readChat(running.chat, asked, running.lookups.chatFilter(asked))
+            val runs = read.runs
             val lines = runs.drop(asked.limit * (asked.page - 1)).take(asked.limit)
             if (lines.isEmpty()) return@offThread sender.say("Nothing said or run matches.")
             val drawn = lines.map { run ->
@@ -905,7 +952,7 @@ class PfauProtectPlugin : JavaPlugin() {
                 back = asked.pageCommand("chat", asked.page - 1).takeIf { asked.page > 1 },
                 forward = asked.pageCommand("chat", asked.page + 1).takeIf { runs.size > asked.limit * asked.page },
                 // A read that stopped at its cap may have left older lines behind it, so the page is not called the last.
-                more = runs.size > asked.limit * asked.page || read.size == reading,
+                more = runs.size > asked.limit * asked.page || read.cut,
             )
         }
     }
@@ -1051,24 +1098,4 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     private fun listen(vararg listeners: Listener) = listeners.forEach { server.pluginManager.registerEvents(it, this) }
-}
-
-private class Api(private val running: Running) : PfauProtectApi {
-    override fun lookup(at: Location, words: String): CompletableFuture<List<String>> {
-        val lines = Collections.synchronizedList(ArrayList<String>())
-        val sender = Bukkit.createCommandSender { lines += PlainTextComponentSerializer.plainText().serialize(it) }
-        return CompletableFuture.supplyAsync {
-            val query = parseLookupQuery(words)
-            running.lookups.report(sender, lookupTargetAt(at), query)
-            lines.toList()
-        }
-    }
-
-    override fun previewRollback(sender: CommandSender, at: Location, words: String) =
-        running.rollbacks.preview(sender, lookupTargetAt(at), parseLookupQuery(words))
-
-    override fun logChange(actor: UUID?, block: Block, before: BlockData, after: BlockData) {
-        val log = running.blocks.get(block.world.uid) ?: return
-        log.submit(listOf(BlockChange(block.x, block.y, block.z, before.asString, after.asString, Cause.BLK_PLUGIN, actor = actor)))
-    }
 }

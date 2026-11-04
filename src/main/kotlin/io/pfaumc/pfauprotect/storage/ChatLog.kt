@@ -92,6 +92,30 @@ class ChatLog(dir: Path) : AutoCloseable {
         out
     }
 
+    /**
+     * Deletes every line older than [cutoff] and says how many there were; [dryRun] only counts them. Nothing
+     * else hangs on a line, so unlike the planes nothing is kept back.
+     */
+    fun purgeBefore(cutoff: Long, dryRun: Boolean): Int = dbLock.read {
+        if (closed) return 0
+        // Sequences are kept positive, so the first key of the cutoff's millisecond is at sequence zero.
+        val end = keyOf(cutoff, 0)
+        var lines = 0
+        db.newIterator().use { iter ->
+            iter.seekToFirst()
+            while (iter.isValid && ByteReader(iter.key()).longBE() < cutoff) {
+                lines++
+                iter.next()
+            }
+            iter.status()
+        }
+        if (!dryRun && lines > 0) {
+            db.deleteRange(ByteArray(0), end)
+            db.compactRange(ByteArray(0), end)
+        }
+        lines
+    }
+
     // The lines already queued get their chance to be written. A line the writer took up just as the wait
     // ran out finds the base closed and is dropped, rather than reaching a freed handle.
     override fun close() {

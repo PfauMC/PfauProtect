@@ -1,5 +1,9 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.api.PfauProtectException
+import io.pfaumc.pfauprotect.api.PreviewBlocks
+import io.pfaumc.pfauprotect.api.PreviewEntities
+import io.pfaumc.pfauprotect.api.PreviewResult
 import io.pfaumc.pfauprotect.say
 import io.pfaumc.pfauprotect.sayNamed
 import ca.spottedleaf.concurrentutil.util.Priority
@@ -92,6 +96,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.logging.Level
 import kotlin.math.abs
@@ -964,6 +969,8 @@ internal fun refusalOf(query: LookupQuery): String? = when {
     else -> null
 }
 
+private fun refused(reason: String) = PreviewResult("refused", reason)
+
 /**
  * `/pp rollback`, `apply` and `cancel`. A rollback is previewed first and applied on a second word; the
  * preview is the same reading run against the world without touching it, and apply reads it all again.
@@ -984,14 +991,26 @@ class Rollbacks(
     private val reader = RollbackReader(ledger, blocks)
     val ghosts = Ghosts(plugin)
 
-    fun preview(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+    /**
+     * [done] hears what the preview would do once it has read it, or why it was refused; a preview waiting for
+     * apply is said to lapse [PENDING_MILLIS] after it was asked.
+     */
+    fun preview(sender: CommandSender, target: LookupTarget, query: LookupQuery, done: (PreviewResult) -> Unit = {}) {
         refusalOf(query)?.let {
             sender.say(it)
+            done(refused(it))
             return
         }
-        slot.preview(keyOf(sender), target, query)
-        run(sender, target, query, apply = false)
+        val at = slot.preview(keyOf(sender), target, query)
+        // Once: a failure after the counts were told must not take them back.
+        val told = AtomicBoolean()
+        run(sender, target, query, apply = false) { result ->
+            if (told.compareAndSet(false, true)) done(if (result.blocks != null) result.copy(expiresAt = at + PENDING_MILLIS) else result)
+        }
     }
+
+    /** When the preview of [player] waiting for apply was asked, or null when none waits. */
+    fun pendingSince(player: UUID): Long? = slot.pendingAt(player.toString())
 
     fun applyPreview(sender: CommandSender) {
         when (val taken = slot.take(keyOf(sender))) {
@@ -1019,15 +1038,25 @@ class Rollbacks(
 
     private fun keyOf(sender: CommandSender) = (sender as? Player)?.uniqueId?.toString() ?: sender.name
 
-    private fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, apply: Boolean, startedAt: Long = 0) {
+    private fun run(
+        sender: CommandSender,
+        target: LookupTarget,
+        query: LookupQuery,
+        apply: Boolean,
+        startedAt: Long = 0,
+        done: (PreviewResult) -> Unit = {},
+    ) {
         val release = { if (apply) slot.release(startedAt) }
         plugin.offThread(sender, "the rollback at ${target.label} failed", "The rollback failed; the server log has the details.") {
             // From before the read, which on a long window is most of the time a rollback takes.
             val began = System.nanoTime()
             Debug.log { "rollback ${if (apply) "apply" else "preview"} by ${sender.name} at ${target.label}: $query" }
             try {
-                val users = lookups.resolveAll(sender, query.users)
-                if (users == null) {
+                val users = try {
+                    lookups.idsOf(query.users)
+                } catch (unknown: PfauProtectException) {
+                    sender.say(unknown.message!!)
+                    done(refused(unknown.message!!))
                     release()
                     return@offThread
                 }
@@ -1049,7 +1078,10 @@ class Rollbacks(
                     if (!holdStill()) {
                         // A plan read a move behind a running clock takes the clock's own move for somebody's
                         // later change, and leaves its blocks where they stand.
-                        sender.say("Rollback refused: a running clock could not file the moves it held back in time, and the journal would be read a move behind; try again.")
+                        "Rollback refused: a running clock could not file the moves it held back in time, and the journal would be read a move behind; try again.".let {
+                            sender.say(it)
+                            done(refused(it))
+                        }
                         release()
                         return@offThread
                     }
@@ -1078,7 +1110,10 @@ class Rollbacks(
                 }
                 when {
                     refused != null || positions > limit -> {
-                        sender.say("Rollback refused: ${(refused ?: reader.tooMany(positions)).reason}.")
+                        "Rollback refused: ${(refused ?: reader.tooMany(positions)).reason}.".let {
+                            sender.say(it)
+                            done(refused(it))
+                        }
                         val over = refused?.positions ?: positions.takeIf { it > limit }
                         if (over != null && event == null && !query.global && radius != null) {
                             val pieces = ceil(sqrt(over.toDouble() / limit)).toInt()
@@ -1089,10 +1124,11 @@ class Rollbacks(
                     }
                     else -> {
                         val leftBefore = if (apply || users.isEmpty()) 0 else reader.leftByThemBefore(plans, users, from)
-                        dispatch(sender, plans, where, apply, release, rows = rowsOf(query, target), leftBefore = leftBefore, since = from, began = began)
+                        dispatch(sender, plans, where, apply, release, rows = rowsOf(query, target), leftBefore = leftBefore, since = from, began = began, done = done)
                     }
                 }
             } catch (failure: Throwable) {
+                done(refused("The rollback failed; the server log has the details."))
                 release()
                 throw failure
             }
@@ -1117,6 +1153,7 @@ class Rollbacks(
         leftBefore: Int,
         since: Long,
         began: Long,
+        done: (PreviewResult) -> Unit,
     ) {
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
@@ -1126,18 +1163,22 @@ class Rollbacks(
         val read = tr("rows read: blocks $blockRows, slots $slotRows", "прочитано строк: блоков $blockRows, слотов $slotRows")
         if (work.isEmpty() && plans.all { it.deaths.isEmpty() }) {
             sender.say("Nothing to roll back: $where.")
+            done(PreviewResult("ready", "Nothing to roll back: $where.", PreviewBlocks(0, 0, 0), 0, PreviewEntities(0, 0, 0, 0)))
             release()
             return
         }
         val total = Tally()
         total.since = since
         total.deaths += plans.flatMap { it.deaths }
-        val run = Run(sender, total, read, where, apply, rows, leftBefore, began)
+        val run = Run(sender, total, read, where, apply, rows, leftBefore, began, done)
         // Only deaths to give back for, and no place to touch: straight on to them.
         if (work.isEmpty()) return run.finishing(release)
         val hold = ChunkHold(work)
         if (!hold.take()) {
-            sender.say("Rollback refused: the chunks it works in did not load within ${LOAD_MILLIS / 1000} s.")
+            "Rollback refused: the chunks it works in did not load within ${LOAD_MILLIS / 1000} s.".let {
+                sender.say(it)
+                done(refused(it))
+            }
             release()
             return
         }
@@ -1202,6 +1243,7 @@ class Rollbacks(
         val leftBefore: Int,
         // When its read began, for the time the whole of it took.
         val began: Long,
+        val done: (PreviewResult) -> Unit,
     ) {
         val actor = (sender as? Player)?.uniqueId
 
@@ -1262,6 +1304,9 @@ class Rollbacks(
             ) {
                 try {
                     finish()
+                } catch (failure: Throwable) {
+                    done(refused("The rollback failed; the server log has the details."))
+                    throw failure
                 } finally {
                     Metrics.rollbacks.labelValues(if (apply) "apply" else "preview").observe((System.nanoTime() - began) / 1e9)
                     release()
@@ -1323,6 +1368,12 @@ class Rollbacks(
                 if (counts.isNotEmpty()) sender.sendMessage(Component.text().append(Ui.text("  $label: ", Ui.MUTED)).append(Ui.text(counts)).build())
             }
             if (!apply) {
+                done(
+                    PreviewResult(
+                        "ready", null, PreviewBlocks(total.changed, total.unchanged, total.conflicts), total.slots,
+                        PreviewEntities(total.entitiesBack, total.entitiesTaken, total.entitiesReverted, total.entitiesAlready),
+                    )
+                )
                 sender.sendMessage(Ui.text("  " + read, Ui.FAINT))
                 if (leftBefore > 0) sender.say(
                     "  the window may be shorter than a full rollback needs: $leftBefore of these positions stood " +

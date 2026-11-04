@@ -107,10 +107,10 @@ object Texts {
         r("Purge refused: a rollback is running\\.") to "Очистка отклонена: идёт откат.",
         r("Purging everything older than (\\S+); this walks the whole journal\\.") to "Удаляю всё старше $1; это проход по всему журналу.",
         r("Counting what a purge of everything older than (\\S+) would delete\\.") to "Считаю, что удалит очистка всего старше $1.",
-        r("Purged (\\d+) item rows, (\\d+) block rows, (\\d+) entity rows; (\\d+) opening balances written\\.") to
-            "Удалено строк: предметов $1, блоков $2, сущностей $3; записано начальных остатков: $4.",
-        r("A purge would delete (\\d+) item rows, (\\d+) block rows, (\\d+) entity rows; (\\d+) opening balances to write\\. /pp purge (\\S+) confirm runs it\\.") to
-            "Очистка удалит строк: предметов $1, блоков $2, сущностей $3; запишет начальных остатков: $4. /pp purge $5 confirm запустит её.",
+        r("Purged (\\d+) item rows, (\\d+) block rows, (\\d+) entity rows, (\\d+) chat lines; (\\d+) opening balances written\\.") to
+            "Удалено строк: предметов $1, блоков $2, сущностей $3, чата $4; записано начальных остатков: $5.",
+        r("A purge would delete (\\d+) item rows, (\\d+) block rows, (\\d+) entity rows, (\\d+) chat lines; (\\d+) opening balances to write\\. /pp purge (\\S+) confirm runs it\\.") to
+            "Очистка удалит строк: предметов $1, блоков $2, сущностей $3, чата $4; запишет начальных остатков: $5. /pp purge $6 confirm запустит её.",
         r("The purge failed; the server log has the details\\.") to "Очистка не удалась; подробности в логе сервера.",
         r("The chat lookup failed; the server log has the details\\.") to "Поиск по чату не удался; подробности в логе сервера.",
         r("The status failed; the server log has the details\\.") to "Состояние не удалось получить; подробности в логе сервера.",
@@ -154,6 +154,11 @@ object Texts {
         r("The ledger is not open\\.") to "Журнал не открыт.",
         r("Nothing said or run matches\\.") to "Ничего сказанного или выполненного не найдено.",
         r("Nothing was inside\\.") to "Внутри ничего не было.",
+        // MCP
+        r("Only a player can have an MCP token\\.") to "MCP-токен может быть только у игрока.",
+        r("The MCP add-on is off; config\\.yml turns it on\\.") to "MCP-аддон выключен; его включают в config.yml.",
+        r("Your MCP token is revoked\\.") to "Твой MCP-токен отозван.",
+        r("You have no MCP token to revoke\\.") to "У тебя нет MCP-токена для отзыва.",
     )
 
     private val WORDS: List<Pair<Regex, String>> = listOf(
