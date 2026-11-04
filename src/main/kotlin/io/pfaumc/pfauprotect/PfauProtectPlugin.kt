@@ -776,7 +776,9 @@ class PfauProtectPlugin : JavaPlugin() {
         // there: two hops later the player may have left spectator.
         val scheduled = target.scheduler.run(this, {
             val at = target.location
-            player.scheduler.run(this, { if (!teleportRefused(sender, player)) player.teleportAsync(at) }, null)
+            player.scheduler.run(this, {
+                if (teleportRefused(sender, player)) sender.say("Teleport only works in spectator mode.") else player.teleportAsync(at)
+            }, null)
         }, null)
         if (scheduled == null) {
             sender.say("${target.name} is not online.")
