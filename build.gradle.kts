@@ -36,6 +36,13 @@ repositories {
 
 val canvasServer = configurations.create("canvasServer")
 
+// Goes into plugin.yml so a jar names the commit it was built from; -dirty marks uncommitted edits,
+// "unknown" a tree outside git.
+val commit = providers.exec {
+    commandLine("git", "describe", "--always", "--dirty", "--abbrev=7", "--exclude=*")
+    isIgnoreExitValue = true
+}.standardOutput.asText.map { it.trim().ifEmpty { "unknown" } }
+
 dependencies {
     paperweight.foliaDevBundle(
         version = "$canvasMinecraftVersion.build.$canvasBuild-$canvasChannel",
@@ -64,6 +71,8 @@ dependencies {
 
 bukkit {
     name = "PfauProtect"
+    // No git binary at all throws instead of exiting non-zero.
+    version = "${project.version}+${runCatching { commit.get() }.getOrDefault("unknown")}"
     main = "io.pfaumc.pfauprotect.PfauProtectPlugin"
     apiVersion = canvasMinecraftVersion
     // Canvas is a Folia fork and refuses to enable plugins that don't claim region-thread safety.
