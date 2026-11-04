@@ -40,6 +40,7 @@ import org.junit.jupiter.api.extension.ExtendWith
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.function.Consumer
 
@@ -203,6 +204,24 @@ class ApiTest : BothPlanes() {
         pending = null
         assertEquals("none", api.previewStatus(alice).status)
         assertEquals("none", api.previewStatus(bob).status)
+    }
+
+    // The status is the newest preview's, even when an older one asked just before finishes after it.
+    @Test
+    fun `an older preview finishing late leaves the newer one's status`() {
+        val ready = PreviewResult("ready", null, PreviewBlocks(1, 0, 0), 0, PreviewEntities(0, 0, 0, 0), 1_000 + 300_000)
+        val started = LinkedBlockingQueue<(PreviewResult) -> Unit>()
+        val api = api(playerOf = { online() }, preview = { _, _, _, done -> started.put(done) }, pendingSince = { 1_000 })
+
+        val older = api.preview(alice, at("r:5", since = T0))
+        val finishOlder = started.poll(30, TimeUnit.SECONDS)!!
+        val newer = api.preview(alice, at("r:5", since = T0))
+        started.poll(30, TimeUnit.SECONDS)!!(ready)
+        finishOlder(PreviewResult("refused", "late"))
+
+        assertEquals("refused", older.answer().status)
+        assertEquals(ready, newer.answer())
+        assertEquals(ready, api.previewStatus(alice))
     }
 
     // An online player whose own thread runs what is given to it at once.
