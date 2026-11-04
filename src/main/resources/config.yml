@@ -4,6 +4,9 @@
 # Language of what the plugin says: ru or en.
 language: ru
 
+# This server's name in a network of several, which the API and the MCP add-on give with their answers.
+server-name: ""
+
 worlds:
   # Worlds where no block or entity rows are written. Items are booked wherever they go.
   disabled: []
@@ -37,6 +40,8 @@ mobs:
 chat:
   # Commands the chat log keeps by name only, without their arguments: they carry passwords.
   hidden-commands: [login, l, log, register, reg, changepassword, changepass, unregister]
+  # Days a chat, command, join, quit or hit line is kept; 0 keeps them until /pp purge, which removes them too.
+  keep-days: 0
 
 metrics:
   # The port Prometheus scrapes /metrics on: how long lookups, writes, rollbacks and self-checks take, how big
@@ -45,3 +50,16 @@ metrics:
   # Where it listens. The default is this machine only; 0.0.0.0 opens it to every network the server is on,
   # and nothing asks a scraper who it is.
   address: 127.0.0.1
+
+mcp:
+  # The MCP add-on: AI agents of moderators read the history and start rollback previews over MCP Streamable
+  # HTTP at /mcp. Off, no port is opened. Every call is checked against the permissions of the player it is
+  # made for, and written to mcp-audit.log.
+  enabled: false
+  # Where it listens. The default is this machine only; 0.0.0.0 opens it to every network the server is on.
+  address: 127.0.0.1
+  port: 25590
+  # The secret of a trusted gateway, which then names the player in X-PfauProtect-Player. Empty turns the
+  # gateway mode off, and so does one shorter than 32 characters. The environment variable PFAUPROTECT_MCP_SECRET wins over this, and keeps the secret out
+  # of the file. Players with pfauprotect.mcp make their own tokens with /pp mcp token either way.
+  gateway-secret: ""

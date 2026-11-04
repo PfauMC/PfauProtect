@@ -3,6 +3,11 @@ import io.pfaumc.pfauprotect.attribution.AIRS
 import io.pfaumc.pfauprotect.attribution.blockNameOf
 import io.pfaumc.pfauprotect.say
 import io.pfaumc.pfauprotect.Debug
+import io.pfaumc.pfauprotect.api.HolderRef
+import io.pfaumc.pfauprotect.api.LookupPage
+import io.pfaumc.pfauprotect.api.LookupRow
+import io.pfaumc.pfauprotect.api.PfauProtectException
+import io.pfaumc.pfauprotect.api.PlayerRef
 import com.mojang.brigadier.LiteralMessage
 import com.mojang.brigadier.StringReader
 import com.mojang.brigadier.arguments.ArgumentType
@@ -21,6 +26,7 @@ import io.papermc.paper.registry.data.dialog.body.DialogBody
 import io.papermc.paper.registry.data.dialog.type.DialogType
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.ChatLine
+import io.pfaumc.pfauprotect.storage.ChatLog
 import io.pfaumc.pfauprotect.storage.Box
 import io.pfaumc.pfauprotect.storage.Steps
 import io.pfaumc.pfauprotect.storage.EntityRow
@@ -1052,6 +1058,8 @@ internal class Line(
     val undone: Boolean,
     val event: EventRef?,
     val places: List<WorldBlock> = emptyList(),
+    // The row it was drawn from, a LedgerEntry, BlockRow or EntityRow, for the API's rows.
+    val source: Any? = null,
     val draw: (amount: Int, rows: Int) -> Component,
 )
 
@@ -1074,6 +1082,25 @@ internal fun folded(lines: List<Line>, all: Boolean): List<Folded> {
         }
     }
     return out
+}
+
+/** What a lookup found, before it is drawn: its lines, whether the read saw them all, its heading, a word aside. */
+internal class Found(val lines: List<Line>, val complete: Boolean, val where: Component, val note: String? = null)
+
+internal fun refuse(reason: String): Nothing = throw PfauProtectException(PfauProtectException.REFUSED, reason)
+
+internal fun uuidOrNull(word: String): UUID? = if (word.length == 36) runCatching { UUID.fromString(word) }.getOrNull() else null
+
+/** The runs of a page and whether there is a next one, of the lines `rolledback:` keeps. */
+internal class Paged(val runs: List<Folded>, val more: Boolean)
+
+internal fun paged(found: List<Line>, query: LookupQuery): Paged {
+    val shown = query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found
+    val matched = shown.sortedByDescending { it.timestamp }
+    val runs = folded(matched, query.all)
+    // The read stops before the filter runs, so a cut-short page must say so even when few rows matched.
+    val more = runs.size > query.limit * query.page || matched.size > query.wanted
+    return Paged(runs.drop(query.limit * (query.page - 1)).take(query.limit), more)
 }
 
 internal class ChatRun(val first: ChatLine, var rows: Int, var damage: Float, var oldest: Long)
@@ -1130,6 +1157,27 @@ internal fun chatRuns(lines: List<ChatLine>, all: Boolean): List<ChatRun> {
         }
     }
     return out
+}
+
+private const val MAX_CHAT_READ = 4096
+
+/** The runs `/pp chat` read for a page and the ones before it; [cut] when the read stopped at its size, not the log's end. */
+internal class ChatRead(val runs: List<ChatRun>, val cut: Boolean)
+
+// A one-sided fight folds a whole read into a line or two, so the read goes on until the runs fill this page
+// and start the next, or the log runs out. Past the cap a run that long is the last page. `wanted` reads past
+// this page, which is how it knows there is a next one.
+internal fun readChat(chat: ChatLog, query: LookupQuery, keeps: (ChatLine) -> Boolean): ChatRead {
+    // The first read is held to the cap as well: a far page would otherwise read the whole log in one go.
+    var reading = query.wanted.coerceIn(1, MAX_CHAT_READ)
+    var read = chat.read(query.fromTs(), query.toTs(), reading, keeps)
+    var runs = chatRuns(read, query.all)
+    while (runs.size <= query.limit * query.page && read.size == reading && reading < MAX_CHAT_READ) {
+        reading = minOf(reading * 4, MAX_CHAT_READ)
+        read = chat.read(query.fromTs(), query.toTs(), reading, keeps)
+        runs = chatRuns(read, query.all)
+    }
+    return ChatRead(runs, read.size == reading)
 }
 
 // Where a movement went to or came from, without the slot: forty stacks out of one chest are one act.
@@ -1322,11 +1370,14 @@ class Lookups(
     private val ledger: RocksItemLog,
     private val blocks: BlockLogs,
     private val codec: ItemFormCodec,
-    private val idOf: (String) -> UUID? = { name ->
+    idOfName: (String) -> UUID? = { name ->
         Bukkit.getPlayerExact(name)?.uniqueId ?: Bukkit.getOfflinePlayerIfCached(name)?.uniqueId
     },
     private val nameOf: (UUID) -> String? = ::offlineName,
 ) {
+    // A player is named by their uuid as well, which is how the API's callers know them.
+    // Only a uuid this server knows a player by, as a name has to be: a mistyped one must not read as "nothing recorded".
+    private val idOf: (String) -> UUID? = { word -> uuidOrNull(word)?.takeIf { knownName(it) != null } ?: idOfName(word) }
 
     /** [dialog] false keeps the answer in chat whatever the reader chose: the inspector's, which a window on every click would get in the way of. */
     fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, dialog: Boolean = true) {
@@ -1367,14 +1418,22 @@ class Lookups(
 
     internal fun report(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
         Debug.log { "lookup by ${sender.name} at ${target.label}: $query, window ${query.fromTs()}..${query.toTs()}" }
-        if (query.players.isNotEmpty()) return reportPlayers(sender, target, query)
-        val users = resolveAll(sender, query.users) ?: return
+        val found = try {
+            find(target, query)
+        } catch (refused: PfauProtectException) {
+            return sender.say(refused.message!!)
+        }
+        found.note?.let(sender::say)
+        answer(sender, found.lines, found.complete, found.where, query, target)
+    }
+
+    /** What a lookup finds, before it is drawn; a question it cannot answer throws [PfauProtectException]. */
+    internal fun find(target: LookupTarget, query: LookupQuery): Found {
+        if (query.players.isNotEmpty()) return findPlayers(query)
+        val users = idsOf(query.users)
         if (query.global) {
-            if (users.isEmpty()) {
-                sender.say("A world-wide lookup needs a player, user:<name>, or a radius.")
-                return
-            }
-            return reportEverywhere(sender, target, query, users)
+            if (users.isEmpty()) refuse("A world-wide lookup needs a player, user:<name>, or a radius.")
+            return findEverywhere(target.world, query, users) ?: refuse("This world's block log is not open.")
         }
         val steps = Steps(BOX_STEPS)
         val page = read(target, query, steps)
@@ -1397,8 +1456,23 @@ class Lookups(
         } else {
             place
         }
-        if (blocks.get(target.world) == null) sender.say("This world's block log is not open.")
-        answer(sender, items + changes, page.complete && planesComplete && !steps.ranOut, where, query, target)
+        val note = "This world's block log is not open.".takeIf { blocks.get(target.world) == null }
+        return Found(items + changes, page.complete && planesComplete && !steps.ranOut, where, note)
+    }
+
+    /**
+     * What the named players did in every world whose log is open, as [findEverywhere] reads one. An item row with
+     * no position is in each world's answer, and kept once.
+     */
+    internal fun findAllWorlds(query: LookupQuery): Found {
+        val users = idsOf(query.users)
+        if (users.isEmpty()) refuse("A world-wide lookup needs a player, user:<name>, or a radius.")
+        // A world closed between the list and its read is a world not read, which a whole answer cannot claim.
+        val worlds = blocks.worlds.toList()
+        val found = worlds.mapNotNull { findEverywhere(it, query, users) }
+        val lines = found.flatMap { it.lines }.distinctBy { line -> (line.source as? LedgerEntry)?.ref ?: line }
+        val complete = found.isNotEmpty() && found.size == worlds.size && found.all { it.complete }
+        return Found(lines, complete, Ui.text(tr("everything by ${query.users.joinToString(", ")}", "всё от ${query.users.joinToString(", ")}")))
     }
 
     /**
@@ -1408,8 +1482,8 @@ class Lookups(
      * has since given back. Item rows with no position (eating, crafting, rows from before drops had a spot)
      * have no world, so they show in the answer of each world.
      */
-    private fun reportEverywhere(sender: CommandSender, target: LookupTarget, query: LookupQuery, users: Set<UUID>) {
-        val log = blocks.get(target.world) ?: return sender.say("This world's block log is not open.")
+    private fun findEverywhere(world: UUID, query: LookupQuery, users: Set<UUID>): Found? {
+        val log = blocks.get(world) ?: return null
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val keeps = rowFilter(query)
@@ -1442,17 +1516,17 @@ class Lookups(
         val traded = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query).entries.filter {
             // A drop or pickup from this version on says where it happened; the world decides, as for a block.
             val at = it.spot ?: it.counterparty.block
-            if (at != null) at.world == target.world else own(it.counterparty).let { mine -> mine == null || mine != own(it.holder) }
+            if (at != null) at.world == world else own(it.counterparty).let { mine -> mine == null || mine != own(it.holder) }
         }
         // A block put down drops nothing, so only the places they changed otherwise are read for what fell out.
         val broken = placesOf(rows, { Triple(it.x, it.y, it.z) }, { it.timestamp }) { it.cause != Cause.BLK_PLAYER_PLACE }
         val dropped = broken.flatMap { (at, ts) ->
-            holdersAt(target.world, at.first, at.second, at.third).flatMap { ledger.holderPage(it, ts, toTs, reverse = true, limit = LATER_READ).entries }
+            holdersAt(world, at.first, at.second, at.third).flatMap { ledger.holderPage(it, ts, toTs, reverse = true, limit = LATER_READ).entries }
         }
         val lines = itemLines((traded + dropped).distinctBy { it.ref }, query) +
-            planeLines(target.world, (rows + undoes).distinct(), (entities + entityUndoes).distinct(), keeps)
+            planeLines(world, (rows + undoes).distinct(), (entities + entityUndoes).distinct(), keeps)
         val who = query.users.joinToString(", ")
-        answer(sender, lines, own.all { it.complete }, Ui.text(tr("everything by $who", "всё от $who")), query, target)
+        return Found(lines, own.all { it.complete }, Ui.text(tr("everything by $who", "всё от $who")))
     }
 
     /**
@@ -1460,14 +1534,11 @@ class Lookups(
      * crafting grid, which the server books to the player as an entity. None of it has a position, so
      * no radius reaches it, and the block plane has nothing to say about it.
      */
-    private fun reportPlayers(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+    private fun findPlayers(query: LookupQuery): Found {
         // Answering anyway would read as narrowed to the area while nothing was narrowed.
-        if (query.radius != null) {
-            sender.say("player: reads what went through a player's hands, which has no position; drop the radius.")
-            return
-        }
-        val players = resolveAll(sender, query.players) ?: return
-        resolveAll(sender, query.users) ?: return
+        if (query.radius != null) refuse("player: reads what went through a player's hands, which has no position; drop the radius.")
+        val players = idsOf(query.players)
+        idsOf(query.users)
         val holders = players.flatMap { ownHolders(it) }
         val page = holderRows(holders, query.fromTs(), query.toTs(), query)
         // `p:A&B` is what went between the two of them, the one's slots at one end and the other's at the other.
@@ -1499,18 +1570,22 @@ class Lookups(
         }
         val items = itemLines(between, query) + deaths
         val who = query.players.joinToString(", ")
-        answer(sender, items, complete, Ui.text(tr("what $who carried", "вещи $who")), query, target)
+        return Found(items, complete, Ui.text(tr("what $who carried", "вещи $who")))
+    }
+
+    internal fun resolveAll(sender: CommandSender, names: List<String>): Set<UUID>? = try {
+        idsOf(names)
+    } catch (refused: PfauProtectException) {
+        sender.say(refused.message!!)
+        null
     }
 
     // Every name has to be known: dropping the one that was misspelt would answer about the rest as
     // if it were the whole question.
-    internal fun resolveAll(sender: CommandSender, names: List<String>): Set<UUID>? {
+    internal fun idsOf(names: List<String>): Set<UUID> {
         val named = names.flatMap(::allOf).associateWith { idOf(it) }
         val unknown = named.filterValues { it == null }.keys
-        if (unknown.isNotEmpty()) {
-            sender.say("Unknown player: ${unknown.joinToString(", ")}")
-            return null
-        }
+        if (unknown.isNotEmpty()) refuse("Unknown player: ${unknown.joinToString(", ")}")
         return named.values.filterNotNull().toSet()
     }
 
@@ -1531,7 +1606,7 @@ class Lookups(
             val who = entry.actor ?: playerOf(entry.holder) ?: playerOf(entry.counterparty)
             val same = "i ${entry.cause} $who ${entry.itemFormId} ${entry.qty > 0} ${slotless(entry.holder)} ${slotless(entry.counterparty)}"
             val places = listOfNotNull(entry.holder.block, entry.counterparty.block, entry.spot)
-            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, places) { amount, _ ->
+            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, places, entry) { amount, _ ->
                 draw(entry, who, amount)
             }
         }
@@ -1540,14 +1615,14 @@ class Lookups(
     private fun lineOf(world: UUID, row: BlockRow, back: Boolean): Line {
         val change = blockChange(row)
         val same = "b ${row.cause} ${row.actor} ${row.confidence} ${change.sign} ${change.from} ${change.to}"
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), listOf(WorldBlock(world, row.x, row.y, row.z))) { _, rows ->
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), listOf(WorldBlock(world, row.x, row.y, row.z)), row) { _, rows ->
             draw(row, change, rows)
         }
     }
 
     private fun lineOf(world: UUID, row: EntityRow, back: Boolean): Line {
         val same = "e ${row.cause} ${row.actor} ${row.confidence} ${row.kind} ${row.type}"
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), listOf(WorldBlock(world, row.x, row.y, row.z))) { _, rows ->
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), listOf(WorldBlock(world, row.x, row.y, row.z)), row) { _, rows ->
             draw(row, rows)
         }
     }
@@ -1561,7 +1636,6 @@ class Lookups(
         target: LookupTarget,
         pages: Boolean = true,
     ) {
-        val shown = query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found
         // A page about a place gives its coordinates in the heading, apart, in their own colour and the way there.
         // One read world-wide, or an entity's story around where it stands, only names its world; a player's hands
         // are read in every world and name none.
@@ -1569,10 +1643,9 @@ class Lookups(
         else Ui.coordinates(target.world, target.x, target.y, target.z, query.teleports)
         val title = if (place != null || query.players.isNotEmpty()) where else where.append(Ui.text(" · ${Ui.worldName(target.world)}", Ui.MUTED))
         val placed = place?.let { title.append(Ui.text(" ")).append(it) } ?: title
-        if (query.count) return summary(sender, shown, complete, placed)
-        val matched = shown.sortedByDescending { it.timestamp }
-        val runs = folded(matched, query.all)
-        val lines = runs.drop(query.limit * (query.page - 1)).take(query.limit)
+        if (query.count) return summary(sender, query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found, complete, placed)
+        val page = paged(found, query)
+        val lines = page.runs
         // Only a limit the parser takes is worth suggesting; at the top already, only a smaller area helps.
         val wider = minOf(query.limit * 4, MAX_LIMIT)
         val stopped = tr(
@@ -1616,8 +1689,7 @@ class Lookups(
             if (spot != null) start.append(spot).append(Ui.text(" "))
             start.append(out).build()
         }
-        // The read stops before the filter runs, so a cut-short page must say so even when few rows matched.
-        val more = runs.size > query.limit * query.page || matched.size > query.wanted
+        val more = page.more
         val notes = when {
             // An entity's own story has no command to ask for its next page by; it can only say there is more.
             !pages -> if (more || !complete) listOf(Ui.text(tr("  … older rows are cut off", "  … старые строки обрезаны"), Ui.MUTED)) else emptyList()
@@ -1768,6 +1840,30 @@ class Lookups(
     )
 
     internal fun chatFilter(query: LookupQuery): (ChatLine) -> Boolean = chatFilter(query, idOf)
+
+    /**
+     * Players' deaths in every world, with their world, newest first, for the groups of `user:`: a death names its
+     * victim and whoever killed them, and `A&B` is a death of the one at the hands of the other. A death is filed
+     * under both, so each player's index finds it.
+     */
+    internal fun deaths(query: LookupQuery): Pair<List<Pair<UUID, EntityRow>>, Boolean> {
+        val groups = groupsOf(query.users)
+        val players = groups.flatten().toSet()
+        var complete = true
+        val found = blocks.worlds.flatMap { world ->
+            val log = blocks.get(world) ?: return@flatMap emptyList()
+            players.flatMap { player ->
+                val read = log.byActor(player, query.fromTs(), query.toTs(), query.wanted + 1, GLOBAL_WALK, { false }) { row ->
+                    row.kind == EntityKind.PLAYER_DIED && groups.any { group -> group.all { it == row.uuid || it == row.actor } }
+                }
+                complete = complete && read.complete
+                read.entities.map { world to it }
+            }
+        }
+        return found.distinctBy { (_, row) -> row.eventId to row.uuid }.sortedByDescending { it.second.timestamp } to complete
+    }
+
+    internal fun nameOfPlayer(uuid: UUID): String? = knownName(uuid)
 
     // The players of each `&` group; resolveAll has made sure by now that every name is known.
     private fun groupsOf(names: List<String>): List<Set<UUID>> = names.map { group -> allOf(group).mapNotNullTo(HashSet(), idOf) }
@@ -1977,6 +2073,85 @@ class Lookups(
         is ItemEntityRef -> Ui.hover(Ui.text(tr("on the ground", "на земле"), Ui.MUTED), "${holder.uuid}")
         is Nested -> Ui.hover(Ui.text(tr("inside", "внутри"), Ui.MUTED), "${holder.ownerId} #${holder.index}")
         Void -> Ui.hover(Ui.text("∅", Ui.FAINT), tr("nowhere: made or used up here", "нигде: появилось или израсходовано"))
+    }
+
+    /** A page of [found] as the API's rows, folded and cut as a player's page is. */
+    internal fun pageOf(found: Found, query: LookupQuery): LookupPage {
+        val page = paged(found.lines, query)
+        return LookupPage(page.runs.map(::rowOf), query.page, page.more, found.complete, listOfNotNull(found.note))
+    }
+
+    private fun rowOf(run: Folded): LookupRow {
+        val line = run.first
+        val actor = line.who?.takeIf { it != LIGHTNING }?.let(::playerRef)
+        val actorKind = when (line.who) {
+            null -> "none"
+            LIGHTNING -> "lightning"
+            else -> "player"
+        }
+        val place = line.places.firstOrNull()
+        val row = LookupRow(
+            time = line.timestamp, actor = actor, actorKind = actorKind, action = "changed", cause = line.cause.name.lowercase(),
+            confidence = "fact", world = place?.let { Ui.worldName(it.world) }, x = place?.x, y = place?.y, z = place?.z,
+            thing = null, thingAfter = null, name = null, amount = run.amount, from = null, to = null, container = null, slot = null,
+            via = null, rolledBack = line.undone, repeats = run.rows, event = line.event?.takeIf { run.rows == 1 }?.toString(),
+        )
+        return when (val source = line.source) {
+            is LedgerEntry -> {
+                val (from, to) = if (source.qty > 0) source.counterparty to source.holder else source.holder to source.counterparty
+                val container = (from as? Container) ?: (to as? Container)
+                row.copy(
+                    action = if (source.kind == Kind.MUTATE) "changed" else if (source.qty > 0) "added" else "removed",
+                    confidence = source.confidence.name.lowercase(), thing = itemKey(ledger, source.itemFormId),
+                    name = customName(source.itemFormId), from = holderRef(from), to = holderRef(to),
+                    container = container?.let(::holderRef), slot = container?.slot,
+                )
+            }
+            is BlockRow -> {
+                val change = blockChange(source)
+                val pressed = if (source.cause == Cause.BLK_ENTITY_SWITCH) source.payloadAfter?.let(::pressedBy) else null
+                row.copy(action = actionOf(change.sign), confidence = source.confidence.name.lowercase(), thing = change.from, thingAfter = change.to, via = pressed?.first)
+            }
+            is EntityRow -> {
+                val sign = when (source.kind) {
+                    EntityKind.CREATED -> "+"
+                    EntityKind.CHANGED, EntityKind.MOVED -> "~"
+                    else -> "-"
+                }
+                row.copy(
+                    action = actionOf(sign), confidence = source.confidence.name.lowercase(), thing = source.type,
+                    // Only a player's uuid is asked for a name: a mob's is looked up on disk and never found.
+                    to = HolderRef("entity", if (source.type == PLAYER_TYPE) playerRef(source.uuid) else PlayerRef(source.uuid, null)),
+                    via = source.via ?: source.death,
+                )
+            }
+            else -> row
+        }
+    }
+
+    private val PLAYER_TYPE = "minecraft:player"
+
+    private fun actionOf(sign: String) = when (sign) {
+        "+" -> "added"
+        "-" -> "removed"
+        else -> "changed"
+    }
+
+    private fun playerRef(uuid: UUID) = PlayerRef(uuid, knownName(uuid))
+
+    private fun holderRef(holder: Holder): HolderRef = when (holder) {
+        is PlayerInv -> HolderRef("inventory", playerRef(holder.uuid), slot = holder.slot)
+        is PlayerEquip -> HolderRef("equipment", playerRef(holder.uuid), slot = holder.slot)
+        is PlayerCursor -> HolderRef("cursor", playerRef(holder.uuid))
+        is PlayerEnder -> HolderRef("ender_chest", playerRef(holder.uuid), slot = holder.slot)
+        is MenuSlot -> HolderRef("menu", slot = holder.slot)
+        is Container -> HolderRef("container", null, Ui.worldName(holder.world), holder.x, holder.y, holder.z, holder.slot)
+        is WorldBlock -> HolderRef("block", null, Ui.worldName(holder.world), holder.x, holder.y, holder.z)
+        // A crafting grid is the player's own entity slot.
+        is EntitySlot -> HolderRef(if (knownName(holder.uuid) != null) "crafting" else "entity", playerRef(holder.uuid), slot = holder.slot)
+        is ItemEntityRef -> HolderRef("ground", PlayerRef(holder.uuid, null))
+        is Nested -> HolderRef("nested", slot = holder.index)
+        Void -> HolderRef("void")
     }
 
     // An offline player's name can come off disk, once per printed row and holder otherwise.

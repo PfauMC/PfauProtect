@@ -57,6 +57,8 @@ dependencies {
     library("io.prometheus:prometheus-metrics-exporter-httpserver:$prometheusVersion")
 
     compileOnly("org.rocksdb:rocksdbjni:$rocksdbVersion")
+    // Asked for an offline player's permissions only on a server that runs it.
+    compileOnly("net.luckperms:api:5.4")
 
     testImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.0")
     testImplementation("io.prometheus:prometheus-metrics-core:$prometheusVersion")
@@ -81,6 +83,7 @@ bukkit {
     apiVersion = canvasMinecraftVersion
     // Canvas is a Folia fork and refuses to enable plugins that don't claim region-thread safety.
     foliaSupported = true
+    softDepend = listOf("LuckPerms")
     author = "pfaumc"
     // RocksDB natives only ship in classifier artifacts, and a Gradle dependency notation cannot
     // carry a classifier through plugin-yml: it renders resolved deps as group:name:version.
@@ -103,6 +106,7 @@ bukkit {
             "teleport" to "Teleport to where a lookup line happened by clicking its mark",
             "rollback" to "Preview and apply rollbacks of what the ledger recorded",
             "debug" to "Write what lookups and rollbacks read into the server log",
+            "mcp" to "Make and revoke one's own token for the MCP add-on",
         ).forEach { (name, text) ->
             register("pfauprotect.$name") {
                 description = text

@@ -30,9 +30,14 @@ internal class RollbackSlot(private val clock: () -> Long = System::currentTimeM
 
     fun runningSince(): Long? = running.get().takeIf { it != 0L }
 
-    fun preview(key: String, target: LookupTarget, query: LookupQuery) {
-        pending[key] = Asked(target, query, clock())
+    /** When it was asked. */
+    fun preview(key: String, target: LookupTarget, query: LookupQuery): Long {
+        val at = clock()
+        pending[key] = Asked(target, query, at)
+        return at
     }
+
+    fun pendingAt(key: String): Long? = pending[key]?.at?.takeIf { clock() - it <= PENDING_MILLIS }
 
     fun take(key: String): Taking {
         val asked = pending.remove(key)?.takeIf { clock() - it.at <= PENDING_MILLIS } ?: return Taking.NothingPending

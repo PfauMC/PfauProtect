@@ -15,6 +15,8 @@ Packages under `io.pfaumc.pfauprotect`; tests sit in the package of the code the
 | `check` | plane sync and reconciliation |
 | `command` | `/pp lookup` and inspect |
 | `rollback` | `/pp rollback`: the per-position rule, the reading of both planes, the per-chunk application |
+| `api` | `PfauProtectApi` and its rows, `Api` (its calls), `Access` (whose permissions a call is checked against) |
+| `mcp` | the MCP add-on: `McpServer` (HTTP, auth, audit log), `McpTools` (tools over `Api`), `Tokens` |
 
 **Item plane (`Storage.kt`, `RocksItemLog`).** Single RocksDB at `ledger/`, with column families entries,
 item_forms, registry, meta, nested_owners, tx, placed_forms, block_payloads, compensated (which postings a
@@ -78,6 +80,14 @@ words of every `Cause`, and the cause's code waits on the hover. `PPT_LANG=ru sc
 test server in Russian for a live check. `ChatLog` is a base of its own (`chat/`): chat, commands, joins and quits, and every hit of a player on another (`action:pvp` shows only those; no rollback reads them), no IP addresses.
 `api/PfauProtectApi` is registered in the ServicesManager; `PfauProtectPreLogEvent` can veto a block-plane or
 entity-plane row before it is written (item-plane transfers are not vetoed) and is raised only while someone listens.
+The API reads what the commands read: `Lookups.find` returns a lookup's lines (`Found`) before `answer` draws them, and
+`pageOf` folds and cuts them into the API's rows from each `Line.source`; `findAllWorlds` is `user: r:global` over
+every open world; `readChat` is `/pp chat`'s read; `deaths` adds the players' deaths to it. A preview through the API
+gets its counts or refusal from the callback `Rollbacks.preview` takes. A call made for a player checks their
+permission through `Access`: Bukkit when they are online, else what a gateway vouched for, a registered
+`PfauProtectPermissions`, LuckPerms; nobody to ask refuses as `offline`. The MCP add-on (`mcp.enabled`, off by
+default) is the JDK's `HttpServer` with Gson, one JSON answer per POST and no sessions, its tools described in
+`mcp-tools.json` and `mcp-howto.md`.
 
 **Rollback (`rollback/`).** `/pp rollback` takes the lookup's words and previews; `/pp apply` reads everything
 again and runs it, a chunk per region task, eight at a time; `/pp cancel` stops the chunks not begun yet.
@@ -117,4 +127,5 @@ victim, so `p:` finds them, while `u:` still names only what the victim did.
   row from both ends (`crosses`, `Action.crossing`) rather than by cause, so they work in `p:`, `r:`, the inspector and `u:`
   (which also keeps a player's rows that left their own slots with no position: drops, pickups, eating). `item`
   leaves containers out. Block placement and purge openings are never crossings. A rollback refuses them (`refusalOf`).
-- `/pp purge` works per plane: the item ledger (`Storage.purgeBefore`) deletes every posting older than the cutoff and, in the same write, records what each holder held then as `Cause.PURGE_OPENING` openings, so balances hold; the block log (`BlockStore.purgeBefore`) deletes old rows except the newest of each position no later row covers, their index entries, and entity rows older than the cutoff.
+- `/pp purge` works per plane: the item ledger (`Storage.purgeBefore`) deletes every posting older than the cutoff and, in the same write, records what each holder held then as `Cause.PURGE_OPENING` openings, so balances hold; the block log (`BlockStore.purgeBefore`) deletes old rows except the newest of each position no later row covers, their index entries, and entity rows older than the cutoff. The chat log (`ChatLog.purgeBefore`) deletes every line older than it; `chat.keep-days`
+runs the same once a day.

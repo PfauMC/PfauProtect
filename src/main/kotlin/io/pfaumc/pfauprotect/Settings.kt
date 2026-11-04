@@ -11,6 +11,9 @@ import java.util.logging.Logger
 object Settings {
     @Volatile var language = "en"
 
+    // Which server of a network the API's and MCP's answers come from; empty names none.
+    @Volatile var serverName = ""
+
     @Volatile var disabledWorlds: Set<String> = emptySet()
 
     @Volatile var disabledCauses: Set<Cause> = emptySet()
@@ -24,9 +27,20 @@ object Settings {
 
     @Volatile var hiddenCommands = setOf("login", "l", "log", "register", "reg", "changepassword", "changepass", "unregister")
 
+    // Days the chat log keeps a line; 0 keeps every line until /pp purge.
+    @Volatile var chatKeepDays = 0
+
+    // The MCP add-on: closed unless enabled, and the gateway mode off without a secret.
+    @Volatile var mcpEnabled = false
+    @Volatile var mcpAddress = "127.0.0.1"
+    @Volatile var mcpPort = 25590
+    @Volatile var mcpGatewaySecret = ""
+
     // 0 keeps /metrics closed.
     @Volatile var metricsPort = 0
     @Volatile var metricsAddress = "127.0.0.1"
+
+    const val MIN_GATEWAY_SECRET = 32
 
     fun load(config: FileConfiguration, log: Logger) {
         language = config.getString("language", language)!!.lowercase().takeIf { it in LANGUAGES } ?: run {
@@ -46,6 +60,18 @@ object Settings {
         freshMillis = config.getLong("mobs.fresh-minutes", freshMillis / 60_000).coerceIn(0, 24 * 60) * 60_000
         crowd = config.getInt("mobs.crowd", crowd).coerceIn(2, 1_000)
         if (config.contains("chat.hidden-commands")) hiddenCommands = config.getStringList("chat.hidden-commands").map { it.lowercase() }.toSet()
+        chatKeepDays = config.getInt("chat.keep-days", chatKeepDays).coerceIn(0, 100_000)
+        serverName = config.getString("server-name", serverName)!!.trim()
+        mcpEnabled = config.getBoolean("mcp.enabled", mcpEnabled)
+        mcpAddress = config.getString("mcp.address", mcpAddress)!!
+        mcpPort = config.getInt("mcp.port", mcpPort).coerceIn(1, 65_535)
+        // The environment wins: a secret in a file is one more place for it to leak from.
+        val secret = (System.getenv("PFAUPROTECT_MCP_SECRET")?.takeIf { it.isNotBlank() } ?: config.getString("mcp.gateway-secret", "")!!).trim()
+        // A short secret is one a caller can guess; one that looks like a token would be read as a token.
+        mcpGatewaySecret = if (secret.isEmpty() || secret.length >= MIN_GATEWAY_SECRET && !secret.startsWith("ppt_")) secret else {
+            log.warning("MCP gateway secret ignored: it needs at least $MIN_GATEWAY_SECRET characters and must not start with ppt_")
+            ""
+        }
         metricsPort = config.getInt("metrics.port", metricsPort).coerceIn(0, 65_535)
         metricsAddress = config.getString("metrics.address", metricsAddress)!!
     }

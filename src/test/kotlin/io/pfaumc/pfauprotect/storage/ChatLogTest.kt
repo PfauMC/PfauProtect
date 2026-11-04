@@ -76,4 +76,20 @@ class ChatLogTest {
             assertEquals(listOf("before"), reopened.read(0, Long.MAX_VALUE, 10) { true }.map { it.text })
         }
     }
+
+    // A purge takes every line older than its cutoff and only those; a count first changes nothing.
+    @Test
+    fun `a purge forgets the lines before its cutoff`(@TempDir dir: Path) {
+        ChatLog(dir).use { log ->
+            log.submit(ChatLine(1_000, ChatKind.CHAT, alice, "old"))
+            log.submit(ChatLine(2_000, ChatKind.CHAT, alice, "edge"))
+            log.submit(ChatLine(3_000, ChatKind.CHAT, bob, "new"))
+        }
+        ChatLog(dir).use { log ->
+            assertEquals(1L, log.purgeBefore(2_000, dryRun = true))
+            assertEquals(3, log.read(0, Long.MAX_VALUE, 10) { true }.size)
+            assertEquals(1L, log.purgeBefore(2_000, dryRun = false))
+            assertEquals(listOf("new", "edge"), log.read(0, Long.MAX_VALUE, 10) { true }.map { it.text })
+        }
+    }
 }
