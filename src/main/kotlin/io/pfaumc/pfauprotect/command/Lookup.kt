@@ -80,7 +80,6 @@ import io.pfaumc.pfauprotect.Settings
 import kotlin.math.abs
 import io.pfaumc.pfauprotect.ROLLBACK_PERMISSION
 import io.pfaumc.pfauprotect.TELEPORT_PERMISSION
-import io.pfaumc.pfauprotect.TELEPORT_SPECTATOR_PERMISSION
 import io.pfaumc.pfauprotect.Texts
 import io.pfaumc.pfauprotect.Ui
 import io.pfaumc.pfauprotect.tr
@@ -1249,10 +1248,9 @@ internal fun chunksAround(x: Int, z: Int, radius: Int): List<Pair<Int, Int>> =
 /** The cube of `radius` around where a lookup stands, as both planes read it. */
 internal fun LookupTarget.box(radius: Int) = Box(x - radius, x + radius, y - radius, y + radius, z - radius, z + radius)
 
-// A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it. The spectator
-// node lets ⌖ stay clickable in any mode: /pp tp itself refuses outside spectator, with its own message.
-internal fun mayTeleport(sender: CommandSender) =
-    sender.hasPermission(TELEPORT_PERMISSION) || sender.hasPermission(TELEPORT_SPECTATOR_PERMISSION)
+// A permission is the Bukkit API's, read on the thread that asked rather than in the lookup off it. ⌖ stays
+// clickable in any mode: /pp tp itself refuses outside spectator, with its own message.
+internal fun mayTeleport(sender: CommandSender) = sender.hasPermission(TELEPORT_PERMISSION)
 
 internal fun canTeleport(sender: CommandSender) = sender is Player && mayTeleport(sender)
 
