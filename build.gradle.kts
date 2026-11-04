@@ -36,12 +36,16 @@ repositories {
 
 val canvasServer = configurations.create("canvasServer")
 
-// Goes into plugin.yml so a jar names the commit it was built from; -dirty marks uncommitted edits,
-// "unknown" a tree outside git.
-val commit = providers.exec {
-    commandLine("git", "describe", "--always", "--dirty", "--abbrev=7", "--exclude=*")
+fun git(vararg args: String) = providers.exec {
+    commandLine("git", *args)
     isIgnoreExitValue = true
-}.standardOutput.asText.map { it.trim().ifEmpty { "unknown" } }
+}.standardOutput.asText.map { it.trim() }
+
+// Goes into plugin.yml so a jar names the commit it was built from; -dirty marks a tree that differs
+// from it, untracked files included (describe --dirty misses those), "unknown" a tree outside git.
+val commit = git("rev-parse", "--short=7", "HEAD").zip(git("status", "--porcelain")) { hash, changes ->
+    if (hash.isEmpty()) "unknown" else if (changes.isEmpty()) hash else "$hash-dirty"
+}
 
 dependencies {
     paperweight.foliaDevBundle(

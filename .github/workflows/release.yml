@@ -12,8 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # No ref: on a release event the default is refs/tags/<tag>, which a branch of the same name
+        # cannot shadow.
         with:
-          ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
