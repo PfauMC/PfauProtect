@@ -1,0 +1,30 @@
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  jar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # No ref: on a release event the default is refs/tags/<tag>, which a branch of the same name
+        # cannot shadow.
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - run: ./gradlew build
+      # The jar name carries the version from build.gradle.kts, so a tag that doesn't match it fails here
+      # instead of shipping a jar with another version inside.
+      - run: gh release upload "$TAG" "build/libs/pfauprotect-${TAG#v}.jar" --clobber
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}

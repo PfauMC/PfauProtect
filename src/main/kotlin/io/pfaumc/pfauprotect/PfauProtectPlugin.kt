@@ -957,7 +957,7 @@ class PfauProtectPlugin : JavaPlugin() {
     private fun status(source: CommandSourceStack): Int = withRunning(source) { running, sender ->
         offThread(sender, "the status failed", "The status failed; the server log has the details.") {
             val folder = dataFolder.toPath()
-            sender.sendMessage(Ui.text(tr("PfauProtect · status", "PfauProtect · состояние"), Ui.FAINT))
+            sender.sendMessage(Ui.text("PfauProtect ${pluginMeta.version} · " + tr("status", "состояние"), Ui.FAINT))
             sender.say("  ledger ${megabytes(folder.resolve("ledger"))}, ${running.ledger.backlog} transactions waiting to be written")
             for (world in server.worlds) {
                 val log = running.blocks.get(world.uid)
