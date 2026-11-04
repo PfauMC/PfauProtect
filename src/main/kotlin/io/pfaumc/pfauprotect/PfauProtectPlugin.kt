@@ -148,8 +148,14 @@ private const val STATUS_PERMISSION = "pfauprotect.status"
 private const val PURGE_PERMISSION = "pfauprotect.purge"
 private const val DEBUG_PERMISSION = "pfauprotect.debug"
 internal const val TELEPORT_PERMISSION = "pfauprotect.teleport"
-internal const val TELEPORT_SPECTATOR_PERMISSION = "pfauprotect.teleport.spectator"
+private const val TELEPORT_BYPASS_PERMISSION = "pfauprotect.teleport.bypass"
 private const val MCP_PERMISSION = "pfauprotect.mcp"
+
+// /pp tp works only in spectator unless the bypass node is held: on PfauMC another plugin brings a moderator
+// back to where they entered spectator when they leave it, so a jump made there moves them nowhere for real.
+// The node is the sender's, not the executor's.
+internal fun teleportRefused(sender: CommandSender, player: Player) =
+    !sender.hasPermission(TELEPORT_BYPASS_PERMISSION) && player.gameMode != GameMode.SPECTATOR
 
 private class Help(val permission: String, val usage: String, val typed: String, val en: String, val ru: String)
 
@@ -749,14 +755,12 @@ class PfauProtectPlugin : JavaPlugin() {
         // A name is no position, so the two never compete for one word.
         .then(Commands.argument("player", ArgumentTypes.player()).executes(::teleportToPlayer))
 
-    // The spectator node outranks the plain one, so an op or a group that also holds the plain one stays
-    // limited. The mode is checked here, not in `requires`: the client keeps the command tree across a
-    // game mode change, and the refusal deserves its own words rather than "unknown command". The node is
-    // the asker's: a console running `execute as` a limited player is not limited by it.
+    // The mode is checked here, not in `requires`: the client keeps the command tree across a game mode
+    // change, and the refusal deserves its own words rather than "unknown command".
     private fun teleporting(context: CommandContext<CommandSourceStack>): Player? {
         val player = context.source.executor as? Player ?: return null
         val sender = context.source.sender
-        if (sender.hasPermission(TELEPORT_SPECTATOR_PERMISSION) && player.gameMode != GameMode.SPECTATOR) {
+        if (teleportRefused(sender, player)) {
             sender.say("Teleport only works in spectator mode.")
             return null
         }
@@ -768,10 +772,13 @@ class PfauProtectPlugin : JavaPlugin() {
         val target = context.getArgument("player", PlayerSelectorArgumentResolver::class.java).resolve(context.source).first()
         val sender = context.source.sender
         // Folia: the target's place is read on its own region's thread, and the teleport starts on the
-        // teleported player's, as the coordinate teleport does from the command.
+        // teleported player's, as the coordinate teleport does from the command. The mode is asked again
+        // there: two hops later the player may have left spectator.
         val scheduled = target.scheduler.run(this, {
             val at = target.location
-            player.scheduler.run(this, { player.teleportAsync(at) }, null)
+            player.scheduler.run(this, {
+                if (teleportRefused(sender, player)) sender.say("Teleport only works in spectator mode.") else player.teleportAsync(at)
+            }, null)
         }, null)
         if (scheduled == null) {
             sender.say("${target.name} is not online.")

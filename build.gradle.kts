@@ -103,7 +103,8 @@ bukkit {
             "reconcile" to "Compare what a player is carrying against the ledger",
             "purge" to "Delete history older than an age, keeping what every balance needs",
             "status" to "See how big the bases are and what waits to be written",
-            "teleport" to "Teleport to where a lookup line happened by clicking its mark",
+            "teleport" to "Teleport to where a lookup line happened by clicking its mark, in spectator mode",
+            "teleport.bypass" to "Teleport with pfauprotect.teleport in any game mode, not only in spectator",
             "rollback" to "Preview and apply rollbacks of what the ledger recorded",
             "debug" to "Write what lookups and rollbacks read into the server log",
             "mcp" to "Make and revoke one's own token for the MCP add-on",
@@ -112,11 +113,6 @@ bukkit {
                 description = text
                 default = BukkitPluginDescription.Permission.Default.OP
             }
-        }
-        // Held by no one by default, and it outranks pfauprotect.teleport: a holder of both is still limited.
-        register("pfauprotect.teleport.spectator") {
-            description = "Teleport by a lookup line's mark only while in spectator mode, even with pfauprotect.teleport"
-            default = BukkitPluginDescription.Permission.Default.FALSE
         }
     }
 }
