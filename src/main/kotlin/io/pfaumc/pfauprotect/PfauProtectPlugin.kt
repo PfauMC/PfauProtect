@@ -28,6 +28,7 @@ import io.pfaumc.pfauprotect.capture.block.CommandBrackets
 import io.pfaumc.pfauprotect.capture.entity.EntityCapture
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.BookEdit
 import io.pfaumc.pfauprotect.storage.ChatKind
 import io.pfaumc.pfauprotect.storage.ChatLog
 import io.pfaumc.pfauprotect.storage.WorldChange
@@ -165,7 +166,7 @@ private val HELP = listOf(
     Help(INSPECT_PERMISSION, "/pp i", "/pp i", "inspector: click a block or an entity", "инспектор: клик по блоку или сущности"),
     Help(ROLLBACK_PERMISSION, "/pp rb time: [radius:] [user:]", "/pp rb ", "preview a rollback", "предпросмотр отката"),
     Help(ROLLBACK_PERMISSION, "/pp apply · /pp cancel", "/pp apply", "run or drop the preview", "выполнить или сбросить предпросмотр"),
-    Help(LOOKUP_PERMISSION, "/pp chat [user: time: f: a:pvp]", "/pp chat ", "chat, commands, joins, quits and hits between players", "чат, команды, входы, выходы и удары между игроками"),
+    Help(LOOKUP_PERMISSION, "/pp chat [user: time: f: a:pvp|book]", "/pp chat ", "chat, commands, joins, quits, hits between players and books written", "чат, команды, входы, выходы, удары между игроками и правки книг"),
     Help(LOOKUP_PERMISSION, "/pp view [chat|dialog]", "/pp view ", "where the pages open: chat or a window", "где открываются страницы: чат или окно"),
     Help(LOOKUP_PERMISSION, "/pp view rows [N]", "/pp view rows ", "lines on a page, to fit your screen", "строк на странице, под свой экран"),
     Help(STATUS_PERMISSION, "/pp status", "/pp status", "bases, queues, what went unexplained", "базы, очереди, необъяснённое"),
@@ -302,6 +303,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val origins = SpawnOrigins(mechanisms)
         val capture = ContainerCaptureListener(
             this, uncovered::submit, codec, ledger.registries, origins, ledger, ledger::slotBalances,
+            filed = { holder, at -> ledger.holderPage(holder, 0, at, limit = 1).entries.isNotEmpty() },
         ) { intent, qty ->
             unspentDrop(mechanisms, intent, qty) { server.getPlayer(it)?.gameMode == GameMode.CREATIVE }
         }
@@ -327,7 +329,7 @@ class PfauProtectPlugin : JavaPlugin() {
             this, codec, blocks, ledger, uncovered::submit, formOf = ledger::form, forget = entityCapture::forget,
         )
         val rollbacks = Rollbacks(
-            this, ledger, blocks, lookups, chunkRollback, confiscations,
+            this, ledger, blocks, lookups, chunkRollback, confiscations, codec,
             holdStill = { fileHeld(pistons) }, letGo = pistons::resume,
         )
         val running = Running(
@@ -948,6 +950,7 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.JOIN -> Ui.text(tr(" joined", " · вход"), Ui.GAINED)
                     ChatKind.QUIT -> Ui.text(tr(" left", " · выход"), Ui.MUTED)
                     ChatKind.HIT, ChatKind.TOTEM -> hitOf(run)
+                    ChatKind.BOOK -> bookOf(line.text)
                 }
                 // A run reads at its first hit: who started is what it is looked up for. The place goes first, as on
                 // a lookup's lines.
@@ -963,6 +966,24 @@ class PfauProtectPlugin : JavaPlugin() {
                 more = runs.size > asked.limit * asked.page || read.cut,
             )
         }
+    }
+
+    // " ✎ #3f2a1c signed «Title» p. 2, 5": the book, the title it was signed under, the pages changed, and on the
+    // hover each of them as it was and as it became.
+    private fun bookOf(text: String): Component {
+        val edit = BookEdit.of(text) ?: return Ui.text(" ✎", Ui.CHANGED)
+        val out = Component.text().append(Ui.text(" ✎ ", Ui.CHANGED)).append(Ui.text(edit.book.ifEmpty { tr("book", "книга") }, Ui.MUTED))
+        edit.title?.let { out.append(Ui.text(tr(" signed «$it»", " подписал «$it»"), Ui.GAINED)) }
+        if (edit.pages.isNotEmpty()) {
+            // The hover goes out in the page's packet: a rewritten hundred-page book is cut short there, kept whole in the log.
+            fun short(text: String) = if (text.length <= HOVER_PAGE_CHARS) text.ifEmpty { "∅" } else text.take(HOVER_PAGE_CHARS) + "…"
+            val pages = edit.pages.take(HOVER_PAGES).flatMap { page ->
+                listOf(tr("page ${page.number}:", "стр. ${page.number}:"), "− " + short(page.before), "+ " + short(page.after))
+            } + listOfNotNull(tr("and ${edit.pages.size - HOVER_PAGES} more pages", "и ещё страниц: ${edit.pages.size - HOVER_PAGES}").takeIf { edit.pages.size > HOVER_PAGES })
+            val numbers = tr(" p. ", " стр. ") + edit.pages.joinToString(", ") { it.number.toString() }
+            out.append(Ui.hover(Ui.text(numbers, Ui.CHANGED), *pages.toTypedArray()))
+        }
+        return out.build()
     }
 
     // " ⚔ Bob  netherite sword  7.0 ×3": whom, with what, how much after armour all told.
@@ -1107,3 +1128,6 @@ class PfauProtectPlugin : JavaPlugin() {
 
     private fun listen(vararg listeners: Listener) = listeners.forEach { server.pluginManager.registerEvents(it, this) }
 }
+
+private const val HOVER_PAGES = 5
+private const val HOVER_PAGE_CHARS = 300

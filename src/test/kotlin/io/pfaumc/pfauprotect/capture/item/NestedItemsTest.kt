@@ -10,6 +10,9 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Nested
+import io.pfaumc.pfauprotect.model.Transfer
+import io.pfaumc.pfauprotect.model.Void
+import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.stub
 import org.bukkit.block.ShulkerBox
 import org.bukkit.craftbukkit.inventory.CraftItemStack
@@ -144,6 +147,65 @@ class NestedItemsTest {
             assertTrue(rows.all { it.actor == breaker }, "$rows")
             assertNull(log.ownerAt(world, 4, 70, -2))
             assertEquals(owner, NestedItems.ownerOf(CraftItemStack.asNMSCopy(droppedStack)))
+        }
+    }
+
+    // A form never carries what a container holds, so a box or a bundle given back from its form has to be
+    // filled from the rows under its name, as they stood at the moment it is given back as of.
+    @Test
+    fun `a container item made from its form holds what its rows booked at the moment`(@TempDir dir: Path) {
+        val bundle = bundleOf(ItemStack(Items.ARROW, 7))
+        val bundleOwner = NestedItems.own(bundle)
+        val box = shulker()
+        val boxOwner = NestedItems.own(box)
+        val sword = ItemStack(Items.DIAMOND_SWORD).apply { damageValue = 30 }
+        RocksItemLog(dir).use { log ->
+            fun put(to: Nested, stack: ItemStack) {
+                val encoded = codec.encode(stack)
+                log.submit(Transfer(Cause.BUNDLE_INSERT, Void, to, encoded.form, encoded.damage, encoded.count, T0))
+            }
+            put(Nested(boxOwner, 0), bundle)
+            put(Nested(boxOwner, 3), ItemStack(Items.DIAMOND, 5))
+            put(Nested(boxOwner, 7), sword)
+            put(Nested(bundleOwner, 0), ItemStack(Items.ARROW, 7))
+            log.submit(Transfer(Cause.BUNDLE_EXTRACT, Nested(boxOwner, 3), Void, form(ItemStack(Items.DIAMOND)), null, 2, T0 + 1000))
+            log.drain()
+
+            val made = withContents(log, codec, form(box), 1, null, T0)
+            val then = NestedItems.contents(made.stack).toMap()
+            assertEquals(setOf(0, 3, 7), then.keys)
+            assertEquals(5, then.getValue(3).count)
+            assertEquals(30, then.getValue(7).damageValue)
+            assertEquals(7, NestedItems.contents(then.getValue(0)).single().second.count)
+            // The two taken out since are booked back under the name, so the rows hold what the box holds.
+            assertEquals(listOf(Nested(boxOwner, 3) to 2), made.restock.map { it.at to it.qty })
+            val now = withContents(log, codec, form(box), 1, null, Long.MAX_VALUE)
+            assertEquals(3, NestedItems.contents(now.stack).toMap().getValue(3).count)
+            assertTrue(now.restock.isEmpty())
+        }
+    }
+
+    // Two forms left standing in one slot is a gap in the rows: the box holds what arrived there last, and the
+    // other is booked out, so the rows agree with what is given back.
+    @Test
+    fun `a slot the rows left two forms in holds the one that arrived last`(@TempDir dir: Path) {
+        val box = shulker()
+        val owner = NestedItems.own(box)
+        RocksItemLog(dir).use { log ->
+            fun put(stack: ItemStack, at: Long) {
+                val encoded = codec.encode(stack)
+                log.submit(Transfer(Cause.BUNDLE_INSERT, Void, Nested(owner, 3), encoded.form, encoded.damage, encoded.count, at))
+            }
+            put(ItemStack(Items.DIAMOND, 5), T0)
+            put(ItemStack(Items.EMERALD, 2), T0 + 10)
+            log.drain()
+
+            val made = withContents(log, codec, form(box), 1, null, T0 + 10)
+            val held = NestedItems.contents(made.stack).single()
+            assertEquals(3, held.first)
+            assertTrue(held.second.`is`(Items.EMERALD) && held.second.count == 2)
+            assertEquals(listOf(-5), made.restock.map { it.qty })
+            assertTrue(made.restock.single().form.contentEquals(form(ItemStack(Items.DIAMOND))))
         }
     }
 }

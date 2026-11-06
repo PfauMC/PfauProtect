@@ -4,13 +4,17 @@ import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
 import io.pfaumc.pfauprotect.model.Nested
+import io.pfaumc.pfauprotect.model.Transfer
+import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.storage.RocksItemLog
 import io.pfaumc.pfauprotect.capture.block.TickCoalescer
 import net.minecraft.core.UUIDUtil
 import net.minecraft.core.component.DataComponentType
 import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.component.BundleContents
 import net.minecraft.world.item.component.CustomData
+import net.minecraft.world.item.component.ItemContainerContents
 import net.minecraft.world.level.block.ShulkerBoxBlock
 import org.bukkit.Tag
 import org.bukkit.block.Block
@@ -24,6 +28,7 @@ import org.bukkit.event.block.BlockDropItemEvent
 import org.bukkit.event.block.BlockPlaceEvent
 import java.util.UUID
 import kotlin.jvm.optionals.getOrNull
+import kotlin.math.abs
 import net.minecraft.world.level.block.Block as NmsBlock
 
 private const val OWNER_TAG = "pfauprotect_owner"
@@ -92,9 +97,88 @@ internal fun unpackShulker(
     box: ItemStack,
     unpack: (from: Holder, to: Holder, item: ItemStack) -> Unit,
 ) {
-    val owner = NestedItems.ownerOf(box) ?: UUID.randomUUID()
+    val named = NestedItems.ownerOf(box)
+    val owner = named ?: UUID.randomUUID()
     owners.setOwnerAt(block.world.uid, block.x, block.y, block.z, owner)
-    for ((index, child) in NestedItems.contents(box)) unpack(Nested(owner, index), containerAt(block, index), child)
+    // A box nobody named was never filed: what it held comes into the position from nowhere.
+    for ((index, child) in NestedItems.contents(box)) unpack(if (named == null) Void else Nested(owner, index), containerAt(block, index), child)
+}
+
+// ponytail: one read per container item, oldest rows first; a box or bundle with more rows than this under
+// its name comes back with what the first of them booked. Page by time if one ever gets there.
+private const val NESTED_ROWS = 100_000
+
+/**
+ * A row a rollback writes under a container item's name, so the rows hold what the item it gives back
+ * holds: `qty` above zero comes in from nowhere, below zero goes out to nowhere.
+ */
+class Restock(val at: Nested, val form: ByteArray, val damage: Int?, val qty: Int) {
+    fun row(timestamp: Long, actor: UUID?) =
+        Transfer(Cause.ROLLBACK, if (qty > 0) Void else at, if (qty > 0) at else Void, form, damage, abs(qty), timestamp, actor = actor)
+}
+
+/** An item made to be given back, and what its rows need once it is given: see [withContents]. */
+class Made(val stack: ItemStack, val restock: List<Restock> = emptyList())
+
+/**
+ * The item a form stands for, with what it held at [upTo] put back inside it. A form never carries the
+ * contents (they are rows filed under the item's own name), so an item made from the form alone is a box
+ * or a bundle emptied of everything. Each slot gets what the rows under the name booked there, with the
+ * wear of the newest arrival; an item inside that holds items itself is filled the same way. What the
+ * rows booked there since is set back to that by [Made.restock], to be written once the item is given.
+ * Reads the ledger: off the region threads.
+ */
+internal fun withContents(
+    ledger: RocksItemLog,
+    codec: ItemFormCodec,
+    form: ByteArray,
+    count: Int,
+    damage: Int?,
+    upTo: Long,
+    seen: Set<UUID> = emptySet(),
+): Made {
+    val stack = codec.decode(form, count, damage)
+    // A name already being filled further out would be a loop in the rows, not an item inside itself.
+    val owner = NestedItems.ownerOf(stack)?.takeIf { it !in seen } ?: return Made(stack)
+    class Booked(var then: Int = 0, var now: Int = 0, var damage: Int? = null, var lastIn: Long = Long.MIN_VALUE)
+    val slots = sortedMapOf<Int, LinkedHashMap<Long, Booked>>()
+    for (row in ledger.holderEntries(Nested(owner, 0), 0, Long.MAX_VALUE, limit = NESTED_ROWS)) {
+        val booked = slots.getOrPut((row.holder as Nested).index) { LinkedHashMap() }.getOrPut(row.itemFormId) { Booked() }
+        booked.now += row.qty
+        if (row.timestamp > upTo) continue
+        booked.then += row.qty
+        if (row.qty > 0) {
+            booked.damage = row.damage
+            booked.lastIn = row.timestamp
+        }
+    }
+    val inside = ArrayList<Pair<Int, ItemStack>>()
+    val restock = ArrayList<Restock>()
+    for ((index, forms) in slots) {
+        // One item a slot, and only a slot the item has. Two forms left standing in one slot is a gap in the rows:
+        // what arrived there last is what it held, and the other is booked out of it below.
+        val held = forms.entries.filter { it.value.then > 0 }.maxByOrNull { it.value.lastIn }?.key?.takeIf { index < ItemContainerContents.MAX_SIZE }
+        for ((formId, booked) in forms) {
+            val child = ledger.form(formId) ?: continue
+            val kept = formId == held
+            if (kept) {
+                val made = withContents(ledger, codec, child, booked.then, booked.damage, upTo, seen + owner)
+                inside += index to made.stack
+                restock += made.restock
+            }
+            val gap = (if (kept) booked.then else 0) - booked.now
+            if (gap != 0) restock += Restock(Nested(owner, index), child, booked.damage, gap)
+        }
+    }
+    if (inside.isEmpty()) return Made(stack, restock)
+    if (stack.has(DataComponents.BUNDLE_CONTENTS)) {
+        stack.set(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY.copyWithContents(inside.stream().map { it.second }))
+    } else {
+        val items = MutableList(inside.last().first + 1) { ItemStack.EMPTY }
+        for ((index, child) in inside) items[index] = child
+        stack.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(items))
+    }
+    return Made(stack, restock)
 }
 
 // While a shulker box stands as a block its contents are addressed by the block, and as an item they
