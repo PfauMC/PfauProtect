@@ -18,6 +18,9 @@ class HandlersTest {
         "BlockDestructionListener.onTouch",
     )
 
+    // The chat plugin rewrites a message before the capture can read it: this one only notes what it was.
+    private val early = setOf("ChatCapture.onChatPrefix")
+
     // Attribution hears the same player actions the capture writes, and a refused one names nobody.
     private fun listeners(): List<Class<*>> = listOf("capture", "attribution").flatMap { listeners("io/pfaumc/pfauprotect/$it") }
 
@@ -44,7 +47,7 @@ class HandlersTest {
         val uncovered = ArrayList<String>()
         for ((type, method, handler) in found) {
             val name = "${type.simpleName}.${method.name}"
-            assertEquals(EventPriority.MONITOR, handler.priority, name)
+            if (name !in early) assertEquals(EventPriority.MONITOR, handler.priority, name)
             if (Cancellable::class.java.isAssignableFrom(method.parameterTypes.single()) && !handler.ignoreCancelled && name !in allowed) {
                 uncovered += name
             }

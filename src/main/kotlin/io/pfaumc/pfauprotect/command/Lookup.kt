@@ -222,6 +222,9 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
     SIGN(setOf(Cause.BLK_SIGN_EDIT), "sign", "signs", "edit"),
     // A book written in or signed: its item rows in a lookup, and in /pp chat what was written.
     BOOK(setOf(Cause.BOOK_EDIT, Cause.BOOK_SIGN), "book", "books"),
+    // The two halves of chat, for /pp chat alone: no plane has rows of them.
+    GLOBAL(emptySet(), "global"),
+    LOCAL(emptySet(), "local"),
     SHAPE(setOf(Cause.BLK_SHAPE), "shape", "shapes", "joined"),
     SWITCH(setOf(Cause.BLK_PLAYER_SWITCH, Cause.BLK_ENTITY_SWITCH), "switch", "switches", "pressed"),
     INTERACT(setOf(Cause.BLK_PLAYER_USE), "interact", "clicked", "toggled"),
@@ -408,9 +411,6 @@ data class LookupQuery(
     val rolledBack: Boolean? = null,
     val amount: IntRange? = null,
     val steal: Boolean = false,
-    // Only the hits, or the books, for /pp chat; both together are either.
-    val pvp: Boolean = false,
-    val book: Boolean = false,
     val count: Boolean = false,
     // One event and nothing else: a click on a lookup line fills it in.
     val event: EventRef? = null,
@@ -619,8 +619,6 @@ fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.no
                     causes = (query.causes ?: emptySet()) + named.flatMap { it.causes },
                     kinds = query.kinds + named.flatMap { it.kinds },
                     steal = query.steal || Action.STEAL in named,
-                    pvp = query.pvp || Action.PVP in named,
-                    book = query.book || Action.BOOK in named,
                     actions = query.actions + values(value),
                 )
             }
@@ -1000,10 +998,10 @@ class LookupArgument(
     private fun valuesFor(param: Param?): List<String> = when (param) {
         Param.USER, Param.PLAYER -> names()
         // Takes players, actions and items in one list; the chat log has only players and hits.
-        Param.EXCLUDE -> if (chat) names() + Action.PVP.keys.first() + Action.BOOK.keys.first() else names() + EXCLUDABLE + ITEM_NAMES + BLOCK_NAMES
+        Param.EXCLUDE -> if (chat) names() + CHAT_ACTIONS.keys.map { it.keys.first() } else names() + EXCLUDABLE + ITEM_NAMES + BLOCK_NAMES
         Param.TIME -> TIME_EXAMPLES
         Param.RADIUS -> RADIUS_EXAMPLES
-        Param.ACTION -> if (chat) listOf(Action.PVP.keys.first(), Action.BOOK.keys.first()) else Action.names
+        Param.ACTION -> if (chat) CHAT_ACTIONS.keys.map { it.keys.first() } else Action.names.filter { Action.of(it) !in CHAT_ONLY }
         Param.INCLUDE -> ITEM_NAMES + BLOCK_NAMES
         Param.LIMIT -> LIMIT_EXAMPLES
         Param.PAGE -> listOf("2", "3")
@@ -1109,30 +1107,48 @@ internal fun paged(found: List<Line>, query: LookupQuery): Paged {
 
 internal class ChatRun(val first: ChatLine, var rows: Int, var damage: Float, var oldest: Long)
 
+// The actions /pp chat reads, each as the lines it is.
+internal val CHAT_ACTIONS: Map<Action, (ChatLine) -> Boolean> = linkedMapOf(
+    Action.PVP to { line -> line.kind.struck },
+    Action.BOOK to { line -> line.kind == ChatKind.BOOK },
+    Action.GLOBAL to { line -> line.kind == ChatKind.CHAT_GLOBAL },
+    Action.LOCAL to { line -> line.kind == ChatKind.CHAT_LOCAL },
+)
+
+// The halves of chat, which no plane has rows of: a lookup is not offered them.
+private val CHAT_ONLY = setOf(Action.GLOBAL, Action.LOCAL)
+
+/**
+ * The groups of `action:` as /pp chat reads them, `,` either and `&` all of a group; empty when it names none.
+ * Any other action names nothing in the chat log, and a group holding one never holds.
+ */
+internal fun chatActionsOf(query: LookupQuery): List<List<(ChatLine) -> Boolean>> =
+    query.actions.map { group -> allOf(group).map { CHAT_ACTIONS[Action.of(it.lowercase())] ?: { _: ChatLine -> false } } }
+
 /**
  * What `/pp chat` keeps of the lines it reads. A hit is the victim's line as much as the attacker's: who hit Bob
  * is asked as `user:Bob`, and `user:A&B` is the fight between the two, whoever struck.
  */
+
 internal fun chatFilter(query: LookupQuery, idOf: (String) -> UUID?): (ChatLine) -> Boolean {
     fun named(player: UUID?): (ChatLine) -> Boolean = { player != null && (player == it.player || player == it.hit?.victim) }
     val users = query.users.map { group -> allOf(group).map { named(idOf(it)) } }
     val texts = query.filter?.lowercase()?.let(::allOf)
-    // `exclude:` takes players here, `pvp` for the hits and `book` for the books; any other action names nothing in the chat log,
+    // `exclude:` takes players here, and the actions of CHAT_ACTIONS; any other action names nothing in the chat log,
     // as in `action:`, and a group holding one never holds. A player called `Hit` is still the player.
     val excluded = query.excluded.map { group ->
         allOf(group).map { word ->
             val player = idOf(word)
             when {
                 player != null -> named(player)
-                Action.of(word.lowercase()) == Action.PVP -> { line: ChatLine -> line.kind.struck }
-                Action.of(word.lowercase()) == Action.BOOK -> { line: ChatLine -> line.kind == ChatKind.BOOK }
-                else -> { _: ChatLine -> false }
+                else -> CHAT_ACTIONS[Action.of(word.lowercase())] ?: { _: ChatLine -> false }
             }
         }
     }
+    val kinds = chatActionsOf(query)
     return { line ->
         (users.isEmpty() || users.any { group -> group.all { it(line) } }) &&
-            (!(query.pvp || query.book) || query.pvp && line.kind.struck || query.book && line.kind == ChatKind.BOOK) &&
+            (kinds.isEmpty() || kinds.any { group -> group.all { it(line) } }) &&
             (texts == null || line.text.lowercase().let { text -> texts.all { it in text } }) &&
             excluded.none { group -> group.all { it(line) } }
     }

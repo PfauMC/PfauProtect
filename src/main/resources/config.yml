@@ -42,6 +42,10 @@ chat:
   hidden-commands: [login, l, log, register, reg, changepassword, changepass, unregister]
   # Days a chat, command, join, quit or hit line is kept; 0 keeps them until /pp purge, which removes them too.
   keep-days: 0
+  # What starts a message to the whole server where chat is local otherwise. /pp chat marks a line global or
+  # local by it and keeps it without the prefix. Empty where chat has no local half (a hub, duels): every line
+  # is then plain chat.
+  global-prefix: "!"
 
 metrics:
   # The port Prometheus scrapes /metrics on: how long lookups, writes, rollbacks and self-checks take, how big

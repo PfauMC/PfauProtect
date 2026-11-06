@@ -21,8 +21,11 @@ import kotlin.concurrent.write
  */
 enum class ChatKind(val id: Int) {
     // TOTEM is the hit a totem took instead of a death: the same fields as a hit. BOOK is a book written in or
-    // signed, its `text` a [BookEdit].
-    CHAT(0), COMMAND(1), JOIN(2), QUIT(3), HIT(4), TOTEM(5), BOOK(6);
+    // signed, its `text` a [BookEdit]. CHAT_LOCAL and CHAT_GLOBAL are chat where it has the two halves; CHAT is
+    // chat with no half known, as everything was before them.
+    CHAT(0), COMMAND(1), JOIN(2), QUIT(3), HIT(4), TOTEM(5), BOOK(6), CHAT_LOCAL(7), CHAT_GLOBAL(8);
+
+    val said: Boolean get() = this == CHAT || this == CHAT_LOCAL || this == CHAT_GLOBAL
 
     val struck: Boolean get() = this == HIT || this == TOTEM
 

@@ -89,7 +89,7 @@
     "name": "chat_pvp_log",
     "title": "Chat and PvP log",
     "annotations": {"readOnlyHint": true, "openWorldHint": false},
-    "description": "What players said and ran, their joins and quits, every hit of a player on another, totems popped, and players' deaths, newest first. kind: chat, command, join, quit, hit, totem, book, death. A book line's text is the book's mark, the title it was signed under and each changed page as it was and became, split by \\u001F between fields and \\u001E before each page. A hit: hit.attacker, hit.victim, hit.damage (after armour, summed over `repeats` folded blows), hit.weapon (the item in hand, or the arrow, the dog, the TNT that struck), hit.confidence (fact, or inferred when the striker was worked out). A death: player is the victim, hit.attacker the killer (none for a fall, lava or a mob), hit.weapon what killed, text how. `users: [\"A&B\"]` is the fight between the two: lines of either that name the other, whoever struck. Deaths are read only when users are named and no text or exclude is given. Chat lines have no place, so a radius leaves them out. Logins' passwords are never kept; no IP address is kept at all. To find who struck first, read with `all` so no blows fold, and take the oldest hit.",
+    "description": "What players said and ran, their joins and quits, every hit of a player on another, totems popped, and players' deaths, newest first. kind: chat (no half known), chat_local, chat_global (where chat has a global prefix; text without it), command, join, quit, hit, totem, book, death. A book line's text is the book's mark, the title it was signed under and each changed page as it was and became, split by \\u001F between fields and \\u001E before each page. A hit: hit.attacker, hit.victim, hit.damage (after armour, summed over `repeats` folded blows), hit.weapon (the item in hand, or the arrow, the dog, the TNT that struck), hit.confidence (fact, or inferred when the striker was worked out). A death: player is the victim, hit.attacker the killer (none for a fall, lava or a mob), hit.weapon what killed, text how. `users: [\"A&B\"]` is the fight between the two: lines of either that name the other, whoever struck. Deaths are read only when users are named and no text or exclude is given. Chat lines have no place, so a radius leaves them out. Logins' passwords are never kept; no IP address is kept at all. To find who struck first, read with `all` so no blows fold, and take the oldest hit.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -97,10 +97,12 @@
         "time": {"type": "string"},
         "since": {"type": ["integer", "string"]},
         "until": {"type": ["integer", "string"]},
-        "kinds": {"type": "array", "items": {"type": "string", "enum": ["chat", "command", "join", "quit", "hit", "totem", "book", "death"]}},
+        "kinds": {"type": "array", "items": {"type": "string", "enum": ["chat", "chat_local", "chat_global", "command", "join", "quit", "hit", "totem", "book", "death"]}},
         "pvp": {"type": "boolean", "description": "Only hits and totems."},
+        "global": {"type": "boolean", "description": "Only chat said to the whole server (with the global prefix)."},
+        "local": {"type": "boolean", "description": "Only chat said to those near (without the global prefix)."},
         "text": {"type": "string", "description": "Lines holding this text; `a&b` holds both. No spaces."},
-        "exclude": {"type": "array", "items": {"type": "string"}, "description": "Players, or `pvp` for hits."},
+        "exclude": {"type": "array", "items": {"type": "string"}, "description": "Players, or `pvp` for hits, `book` for books, `global` or `local` for that half of chat."},
         "world": {"type": "string"},
         "x": {"type": "integer"}, "y": {"type": "integer"}, "z": {"type": "integer"},
         "radius": {"type": "integer", "minimum": 0, "description": "Only lines within this many blocks of x/y/z in world."},

@@ -63,8 +63,8 @@ class LookupTest {
             CommandContext<Any>(Any(), "", emptyMap(), null, null, emptyList(), StringRange.at(0), null, null, false),
             SuggestionsBuilder(typed, 0),
         ).get().list.map { it.text }
-        assertEquals(setOf("pvp", "book"), offered("a:").toSet())
-        assertTrue(offered("e:").containsAll(listOf("pvp", "book", "Test1")), offered("e:").toString())
+        assertEquals(setOf("pvp", "book", "global", "local"), offered("a:").toSet())
+        assertTrue(offered("e:").containsAll(listOf("pvp", "book", "global", "local", "Test1")), offered("e:").toString())
     }
 
     // Brigadier hands the typed part over lowercased, and a name with a capital in it used to drop out
@@ -151,6 +151,24 @@ class LookupTest {
         assertFalse(either(said))
         assertTrue(chatFilter(parseLookupQuery("f:#3f2a1c0d"), names::get)(edit))
         assertFalse(chatFilter(parseLookupQuery("e:book"), names::get)(edit))
+        // `&` is all of them in one line, and no line is a hit and a book at once.
+        assertFalse(chatFilter(parseLookupQuery("a:pvp&book"), names::get).let { it(edit) || it(hit) })
+    }
+
+    // Where chat has a global prefix a line is one half or the other; a line from before that knows neither.
+    @Test
+    fun `chat with global or local is that half of chat`() {
+        val global = ChatLine(0, ChatKind.CHAT_GLOBAL, alice, "selling diamonds")
+        val local = ChatLine(0, ChatKind.CHAT_LOCAL, alice, "hi")
+        val old = ChatLine(0, ChatKind.CHAT, alice, "hello")
+        fun keeps(words: String) = chatFilter(parseLookupQuery(words), mapOf("Alice" to alice)::get).let { f -> listOf(global, local, old).filter(f) }
+        assertEquals(listOf(global), keeps("a:global"))
+        assertEquals(listOf(local), keeps("a:local"))
+        assertEquals(listOf(global, local), keeps("a:global,local"))
+        assertEquals(listOf(local, old), keeps("e:global"))
+        assertEquals(listOf(global, local, old), keeps("u:Alice"))
+        // An action the chat log has no lines of, in a group, leaves the group holding nothing.
+        assertEquals(emptyList<ChatLine>(), keeps("a:local&block"))
     }
 
     @Test
