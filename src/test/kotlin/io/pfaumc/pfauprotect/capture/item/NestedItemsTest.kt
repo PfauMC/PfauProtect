@@ -184,4 +184,28 @@ class NestedItemsTest {
             assertTrue(now.restock.isEmpty())
         }
     }
+
+    // Two forms left standing in one slot is a gap in the rows: the box holds what arrived there last, and the
+    // other is booked out, so the rows agree with what is given back.
+    @Test
+    fun `a slot the rows left two forms in holds the one that arrived last`(@TempDir dir: Path) {
+        val box = shulker()
+        val owner = NestedItems.own(box)
+        RocksItemLog(dir).use { log ->
+            fun put(stack: ItemStack, at: Long) {
+                val encoded = codec.encode(stack)
+                log.submit(Transfer(Cause.BUNDLE_INSERT, Void, Nested(owner, 3), encoded.form, encoded.damage, encoded.count, at))
+            }
+            put(ItemStack(Items.DIAMOND, 5), T0)
+            put(ItemStack(Items.EMERALD, 2), T0 + 10)
+            log.drain()
+
+            val made = withContents(log, codec, form(box), 1, null, T0 + 10)
+            val held = NestedItems.contents(made.stack).single()
+            assertEquals(3, held.first)
+            assertTrue(held.second.`is`(Items.EMERALD) && held.second.count == 2)
+            assertEquals(listOf(-5), made.restock.map { it.qty })
+            assertTrue(made.restock.single().form.contentEquals(form(ItemStack(Items.DIAMOND))))
+        }
+    }
 }
