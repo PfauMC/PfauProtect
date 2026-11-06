@@ -135,6 +135,23 @@ internal fun namingRows(after: Snapshot, timestamp: Long): List<List<Transfer>> 
         listOf(row(holder, Void, naming.unnamed), row(Void, holder, stack.key))
     }
 
+// What a container held when it got its name without having been in view empty: a new line of reference
+// (no `before`), or a box that came into the slot already full (given, picked up, filled before anything
+// watched). A container nobody named was never filed, so its contents are written here as arriving under
+// the name, or a rollback has nothing to fill it with. They are kept out of the pass's own pairing: what a
+// box brings with it is no movement of anything else the pass saw. One seen empty in its slot before is
+// the pass's to compare, and what turns up in it there is what it is.
+internal fun firstSightRows(before: Snapshot?, after: Snapshot, timestamp: Long): List<Transfer> {
+    val owners = after.named.mapNotNullTo(HashSet()) { (holder, naming) ->
+        naming.owner.takeIf { before?.stacks?.get(holder)?.key != naming.unnamed }
+    }
+    if (owners.isEmpty()) return emptyList()
+    return after.stacks.mapNotNull { (holder, stack) ->
+        if (holder !is Nested || holder.ownerId !in owners || stack.count <= 0) return@mapNotNull null
+        Transfer(Cause.CONTAINER_NAMED, Void, holder, stack.key, stack.count, timestamp, confidence = Confidence.INFERRED)
+    }
+}
+
 data class Edge(
     val from: Holder,
     val to: Holder,
@@ -1106,6 +1123,7 @@ class ContainerCaptureListener(
         }
         // After the movements, so a bundle picked up unnamed arrives under the form it was carried in.
         for (rows in namingRows(after, timestamp)) sink(rows)
+        written(firstSightRows(baseline.seen, after, timestamp))
         // Only a command leaves a reason that can wait, so most passes have nothing to ask the tick for.
         val waiting = taken.filter { it.untilTick != null && it !in spent }
         val lingering = if (waiting.isEmpty()) waiting else currentTick().let { tick -> waiting.filter { it.lingers(tick) } }
@@ -1116,7 +1134,10 @@ class ContainerCaptureListener(
     }
 
     private fun rebaseline(player: Player, view: InventoryView = player.openInventory) {
-        baselines[player.uniqueId] = Baseline(view, snapshot(player, view))
+        val seen = snapshot(player, view)
+        baselines[player.uniqueId] = Baseline(view, seen)
+        // The slot's own change of form is left to the reconciliations that follow a join and a container's close.
+        written(firstSightRows(null, seen, System.currentTimeMillis()))
     }
 
     // Only while a transformation is in flight, and only the station's own slots: everywhere else the

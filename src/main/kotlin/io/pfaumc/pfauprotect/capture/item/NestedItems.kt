@@ -97,9 +97,11 @@ internal fun unpackShulker(
     box: ItemStack,
     unpack: (from: Holder, to: Holder, item: ItemStack) -> Unit,
 ) {
-    val owner = NestedItems.ownerOf(box) ?: UUID.randomUUID()
+    val named = NestedItems.ownerOf(box)
+    val owner = named ?: UUID.randomUUID()
     owners.setOwnerAt(block.world.uid, block.x, block.y, block.z, owner)
-    for ((index, child) in NestedItems.contents(box)) unpack(Nested(owner, index), containerAt(block, index), child)
+    // A box nobody named was never filed: what it held comes into the position from nowhere.
+    for ((index, child) in NestedItems.contents(box)) unpack(if (named == null) Void else Nested(owner, index), containerAt(block, index), child)
 }
 
 // ponytail: one read per container item, oldest rows first; a box or bundle with more rows than this under
