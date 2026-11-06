@@ -92,4 +92,23 @@ class ChatLogTest {
             assertEquals(listOf("new", "edge"), log.read(0, Long.MAX_VALUE, 10) { true }.map { it.text })
         }
     }
+
+    // A book line keeps its pages however they are written, newlines and all, and only the pages that changed.
+    @Test
+    fun `a book edit comes back page by page`(@TempDir dir: Path) {
+        val pages = BookEdit.changed(listOf("same", "old\ntext", "gone"), listOf("same", "new\ntext"))
+        assertEquals(listOf(BookEdit.Page(2, "old\ntext", "new\ntext"), BookEdit.Page(3, "gone", "")), pages)
+        val edit = BookEdit("#3f2a1c0d", "Deeds", pages)
+        val line = ChatLine(2_000, ChatKind.BOOK, bob, edit.text(), "world", 1, 64, 2)
+        ChatLog(dir).use { it.submit(line) }
+        ChatLog(dir).use { log ->
+            val read = log.read(0, Long.MAX_VALUE, 10) { true }.single()
+            assertEquals(line, read)
+            assertEquals(edit, BookEdit.of(read.text))
+        }
+        assertEquals(BookEdit("#00000000", null, emptyList()), BookEdit.of(BookEdit("#00000000", null, emptyList()).text()))
+        // A page holding the separators reads back as that one page, not as pages nobody wrote.
+        val forged = BookEdit("#00000000", null, listOf(BookEdit.Page(1, "", "x\u001E2\u001Fa\u001Fb"))).text()
+        assertEquals(listOf(1), BookEdit.of(forged)!!.pages.map { it.number })
+    }
 }

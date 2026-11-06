@@ -132,9 +132,9 @@ internal class Api(
         val read = if (kinds == setOf("death")) ChatRead(emptyList(), false) else readChat(chatLog, query) { line ->
             (kinds.isEmpty() || line.kind.name.lowercase() in kinds) && said(line) && (request.world == null || near(line.world, line.x, line.y, line.z))
         }
-        // A death has no text to filter on, is no chat line to exclude a player's from, and is no hit for `pvp`.
+        // A death has no text to filter on, is no chat line to exclude a player's from, and is no hit for `pvp` nor a book.
         val wantsDeaths = (kinds.isEmpty() || "death" in kinds) && query.users.isNotEmpty() && query.filter == null &&
-            query.excluded.isEmpty() && !query.pvp
+            query.excluded.isEmpty() && !query.pvp && !query.book
         val (found, deathsComplete) = if (wantsDeaths) lookups.deaths(query) else emptyList<Pair<UUID, EntityRow>>() to true
         val deaths = found.filter { (world, row) -> request.world == null || near(Ui.worldName(world), row.x, row.y, row.z) }
             .map { (world, row) -> deathOf(world, row) }

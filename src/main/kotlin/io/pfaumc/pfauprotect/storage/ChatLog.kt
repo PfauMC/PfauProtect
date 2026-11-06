@@ -20,8 +20,9 @@ import kotlin.concurrent.write
  * the planes. A build that has no name for a kind skips the line.
  */
 enum class ChatKind(val id: Int) {
-    // TOTEM is the hit a totem took instead of a death: the same fields as a hit.
-    CHAT(0), COMMAND(1), JOIN(2), QUIT(3), HIT(4), TOTEM(5);
+    // TOTEM is the hit a totem took instead of a death: the same fields as a hit. BOOK is a book written in or
+    // signed, its `text` a [BookEdit].
+    CHAT(0), COMMAND(1), JOIN(2), QUIT(3), HIT(4), TOTEM(5), BOOK(6);
 
     val struck: Boolean get() = this == HIT || this == TOTEM
 
@@ -32,6 +33,46 @@ enum class ChatKind(val id: Int) {
 
 /** Who was hit, how hard after armour, and whether the one striking was seen or worked out. */
 data class Hit(val victim: UUID, val damage: Float, val confidence: Confidence)
+
+/**
+ * What one edit of a book changed, kept as a book line's `text`: the book's own mark (`#` and eight hex digits,
+ * the same on every edit of it and on its copies), the title it was signed under if this edit signed it, and
+ * each page that changed, as it was and as it became. The fields are split by two control characters taken out of
+ * what was written, so `filter:` still finds the mark or a word of a page in the text.
+ */
+data class BookEdit(val book: String, val title: String?, val pages: List<Page>) {
+    data class Page(val number: Int, val before: String, val after: String)
+
+    // A page is whatever the client sent, so the two separators are taken out of it: a page holding them would
+    // otherwise read back as pages nobody wrote.
+    fun text(): String =
+        "$book$FIELD${clean(title.orEmpty())}" + pages.joinToString("") { "$PAGE${it.number}$FIELD${clean(it.before)}$FIELD${clean(it.after)}" }
+
+    companion object {
+        private const val FIELD = '\u001F'
+        private const val PAGE = '\u001E'
+
+        private fun clean(text: String) = text.replace(FIELD, '\uFFFD').replace(PAGE, '\uFFFD')
+
+        fun of(text: String): BookEdit? = runCatching {
+            val parts = text.split(PAGE)
+            val head = parts.first().split(FIELD, limit = 2)
+            val pages = parts.drop(1).map { page ->
+                val (number, before, after) = page.split(FIELD, limit = 3)
+                Page(number.toInt(), before, after)
+            }
+            BookEdit(head[0], head.getOrNull(1)?.takeIf { it.isNotEmpty() }, pages)
+        }.getOrNull()
+
+        /** The pages that differ between two versions of a book, counted from one; a page added or taken away is one of them. */
+        fun changed(before: List<String>, after: List<String>): List<Page> =
+            (0 until maxOf(before.size, after.size)).mapNotNull { i ->
+                val was = before.getOrElse(i) { "" }
+                val now = after.getOrElse(i) { "" }
+                if (was == now) null else Page(i + 1, was, now)
+            }
+    }
+}
 
 // A hit's `text` is what struck: the item in the hand, empty for a bare one, or the arrow, the dog, the TNT.
 data class ChatLine(

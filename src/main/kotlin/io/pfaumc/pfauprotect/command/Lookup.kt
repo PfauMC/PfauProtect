@@ -25,6 +25,7 @@ import io.papermc.paper.registry.data.dialog.action.DialogAction
 import io.papermc.paper.registry.data.dialog.body.DialogBody
 import io.papermc.paper.registry.data.dialog.type.DialogType
 import io.pfaumc.pfauprotect.storage.BlockLogs
+import io.pfaumc.pfauprotect.storage.ChatKind
 import io.pfaumc.pfauprotect.storage.ChatLine
 import io.pfaumc.pfauprotect.storage.ChatLog
 import io.pfaumc.pfauprotect.storage.Box
@@ -219,6 +220,8 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
     DISPENSER(setOf(Cause.BLK_DISPENSER), "dispenser", "dispensers"),
     PORTAL(setOf(Cause.BLK_PORTAL_CREATE, Cause.BLK_PORTAL_DESTROY), "portal", "portals"),
     SIGN(setOf(Cause.BLK_SIGN_EDIT), "sign", "signs", "edit"),
+    // A book written in or signed: its item rows in a lookup, and in /pp chat what was written.
+    BOOK(setOf(Cause.BOOK_EDIT, Cause.BOOK_SIGN), "book", "books"),
     SHAPE(setOf(Cause.BLK_SHAPE), "shape", "shapes", "joined"),
     SWITCH(setOf(Cause.BLK_PLAYER_SWITCH, Cause.BLK_ENTITY_SWITCH), "switch", "switches", "pressed"),
     INTERACT(setOf(Cause.BLK_PLAYER_USE), "interact", "clicked", "toggled"),
@@ -405,8 +408,9 @@ data class LookupQuery(
     val rolledBack: Boolean? = null,
     val amount: IntRange? = null,
     val steal: Boolean = false,
-    // Only the hits, for /pp chat.
+    // Only the hits, or the books, for /pp chat; both together are either.
     val pvp: Boolean = false,
+    val book: Boolean = false,
     val count: Boolean = false,
     // One event and nothing else: a click on a lookup line fills it in.
     val event: EventRef? = null,
@@ -616,6 +620,7 @@ fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.no
                     kinds = query.kinds + named.flatMap { it.kinds },
                     steal = query.steal || Action.STEAL in named,
                     pvp = query.pvp || Action.PVP in named,
+                    book = query.book || Action.BOOK in named,
                     actions = query.actions + values(value),
                 )
             }
@@ -995,10 +1000,10 @@ class LookupArgument(
     private fun valuesFor(param: Param?): List<String> = when (param) {
         Param.USER, Param.PLAYER -> names()
         // Takes players, actions and items in one list; the chat log has only players and hits.
-        Param.EXCLUDE -> if (chat) names() + Action.PVP.keys.first() else names() + EXCLUDABLE + ITEM_NAMES + BLOCK_NAMES
+        Param.EXCLUDE -> if (chat) names() + Action.PVP.keys.first() + Action.BOOK.keys.first() else names() + EXCLUDABLE + ITEM_NAMES + BLOCK_NAMES
         Param.TIME -> TIME_EXAMPLES
         Param.RADIUS -> RADIUS_EXAMPLES
-        Param.ACTION -> if (chat) listOf(Action.PVP.keys.first()) else Action.names
+        Param.ACTION -> if (chat) listOf(Action.PVP.keys.first(), Action.BOOK.keys.first()) else Action.names
         Param.INCLUDE -> ITEM_NAMES + BLOCK_NAMES
         Param.LIMIT -> LIMIT_EXAMPLES
         Param.PAGE -> listOf("2", "3")
@@ -1112,7 +1117,7 @@ internal fun chatFilter(query: LookupQuery, idOf: (String) -> UUID?): (ChatLine)
     fun named(player: UUID?): (ChatLine) -> Boolean = { player != null && (player == it.player || player == it.hit?.victim) }
     val users = query.users.map { group -> allOf(group).map { named(idOf(it)) } }
     val texts = query.filter?.lowercase()?.let(::allOf)
-    // `exclude:` takes players here, and `pvp` for the hits; any other action names nothing in the chat log,
+    // `exclude:` takes players here, `pvp` for the hits and `book` for the books; any other action names nothing in the chat log,
     // as in `action:`, and a group holding one never holds. A player called `Hit` is still the player.
     val excluded = query.excluded.map { group ->
         allOf(group).map { word ->
@@ -1120,13 +1125,14 @@ internal fun chatFilter(query: LookupQuery, idOf: (String) -> UUID?): (ChatLine)
             when {
                 player != null -> named(player)
                 Action.of(word.lowercase()) == Action.PVP -> { line: ChatLine -> line.kind.struck }
+                Action.of(word.lowercase()) == Action.BOOK -> { line: ChatLine -> line.kind == ChatKind.BOOK }
                 else -> { _: ChatLine -> false }
             }
         }
     }
     return { line ->
         (users.isEmpty() || users.any { group -> group.all { it(line) } }) &&
-            (!query.pvp || line.kind.struck) &&
+            (!(query.pvp || query.book) || query.pvp && line.kind.struck || query.book && line.kind == ChatKind.BOOK) &&
             (texts == null || line.text.lowercase().let { text -> texts.all { it in text } }) &&
             excluded.none { group -> group.all { it(line) } }
     }

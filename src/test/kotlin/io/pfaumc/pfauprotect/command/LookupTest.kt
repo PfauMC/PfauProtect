@@ -8,6 +8,7 @@ import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Confidence
+import io.pfaumc.pfauprotect.storage.BookEdit
 import io.pfaumc.pfauprotect.storage.ChatKind
 import io.pfaumc.pfauprotect.storage.ChatLine
 import io.pfaumc.pfauprotect.storage.Hit
@@ -122,6 +123,23 @@ class LookupTest {
         assertTrue(notHit(hit(alice, bob)))
         assertFalse(notHit(hit(carol, bob)))
         assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("e:dirt,steal") }
+    }
+
+    // `a:book` is the books alone, `a:pvp,book` either, and `f:` finds one book by its mark.
+    @Test
+    fun `chat with book is what was written in books`() {
+        val names = mapOf("Alice" to alice)
+        val edit = ChatLine(0, ChatKind.BOOK, alice, BookEdit("#3f2a1c0d", null, listOf(BookEdit.Page(2, "", "my base at 100 64"))).text())
+        val hit = ChatLine(0, ChatKind.HIT, alice, "", hit = Hit(bob, 2f, Confidence.FACT))
+        val said = ChatLine(0, ChatKind.CHAT, alice, "book")
+        val books = chatFilter(parseLookupQuery("a:book"), names::get)
+        assertTrue(books(edit))
+        assertFalse(books(hit) || books(said))
+        val either = chatFilter(parseLookupQuery("a:pvp,book"), names::get)
+        assertTrue(either(edit) && either(hit))
+        assertFalse(either(said))
+        assertTrue(chatFilter(parseLookupQuery("f:#3f2a1c0d"), names::get)(edit))
+        assertFalse(chatFilter(parseLookupQuery("e:book"), names::get)(edit))
     }
 
     @Test
