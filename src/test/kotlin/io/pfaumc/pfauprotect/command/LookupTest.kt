@@ -56,6 +56,17 @@ class LookupTest {
         assertTrue(offered.containsAll(listOf("user:", "include:", "radius:", "#all")), "$offered")
     }
 
+    // In /pp chat only the actions it reads are offered, and `exclude:` takes them beside the players.
+    @Test
+    fun `chat offers its own actions`() {
+        fun offered(typed: String) = LookupArgument(chat = true, names = { listOf("Test1") }).listSuggestions(
+            CommandContext<Any>(Any(), "", emptyMap(), null, null, emptyList(), StringRange.at(0), null, null, false),
+            SuggestionsBuilder(typed, 0),
+        ).get().list.map { it.text }
+        assertEquals(setOf("pvp", "book"), offered("a:").toSet())
+        assertTrue(offered("e:").containsAll(listOf("pvp", "book", "Test1")), offered("e:").toString())
+    }
+
     // Brigadier hands the typed part over lowercased, and a name with a capital in it used to drop out
     // of the list at its first letter.
     @Test

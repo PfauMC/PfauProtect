@@ -140,22 +140,27 @@ internal fun withContents(
     val stack = codec.decode(form, count, damage)
     // A name already being filled further out would be a loop in the rows, not an item inside itself.
     val owner = NestedItems.ownerOf(stack)?.takeIf { it !in seen } ?: return Made(stack)
-    class Booked(var then: Int = 0, var now: Int = 0, var damage: Int? = null)
+    class Booked(var then: Int = 0, var now: Int = 0, var damage: Int? = null, var lastIn: Long = Long.MIN_VALUE)
     val slots = sortedMapOf<Int, LinkedHashMap<Long, Booked>>()
     for (row in ledger.holderEntries(Nested(owner, 0), 0, Long.MAX_VALUE, limit = NESTED_ROWS)) {
         val booked = slots.getOrPut((row.holder as Nested).index) { LinkedHashMap() }.getOrPut(row.itemFormId) { Booked() }
         booked.now += row.qty
         if (row.timestamp > upTo) continue
         booked.then += row.qty
-        if (row.qty > 0) booked.damage = row.damage
+        if (row.qty > 0) {
+            booked.damage = row.damage
+            booked.lastIn = row.timestamp
+        }
     }
     val inside = ArrayList<Pair<Int, ItemStack>>()
     val restock = ArrayList<Restock>()
     for ((index, forms) in slots) {
+        // One item a slot, and only a slot the item has. Two forms left standing in one slot is a gap in the rows:
+        // what arrived there last is what it held, and the other is booked out of it below.
+        val held = forms.entries.filter { it.value.then > 0 }.maxByOrNull { it.value.lastIn }?.key?.takeIf { index < ItemContainerContents.MAX_SIZE }
         for ((formId, booked) in forms) {
             val child = ledger.form(formId) ?: continue
-            // One item a slot, and only a slot the item has.
-            val kept = booked.then > 0 && inside.lastOrNull()?.first != index && index < ItemContainerContents.MAX_SIZE
+            val kept = formId == held
             if (kept) {
                 val made = withContents(ledger, codec, child, booked.then, booked.damage, upTo, seen + owner)
                 inside += index to made.stack

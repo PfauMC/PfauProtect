@@ -535,17 +535,10 @@ class Confiscations(
         }
     }
 
-    // Off the region threads. A debt is forgiven once given, so a failed read gives the form alone rather than nothing.
+    // Off the region threads.
     private fun madeOwed(item: OwedItem): Made? {
         val form = ledger.form(item.formId) ?: return null
-        if (item.since > 0) {
-            try {
-                return withContents(ledger, codec, form, 1, null, item.since)
-            } catch (failure: Exception) {
-                plugin.logger.log(Level.WARNING, "reading what ${name(item.formId)} held failed; given as it is", failure)
-            }
-        }
-        return Made(codec.decode(form, 1, null))
+        return if (item.since > 0) withContents(ledger, codec, form, 1, null, item.since) else Made(codec.decode(form, 1, null))
     }
 
     // On the player's own thread. `made` is one of the form, made off it.
@@ -814,7 +807,17 @@ class Confiscations(
             if (owedItems.isEmpty()) return@runNow
             // Read here, off the player's thread.
             val trails = trailsOf(ledger, player.uniqueId, owedItems)
-            val madeFor = owedItems.filter { it.qty < 0 }.associateWith(::madeOwed)
+            // A debt whose contents could not be read stays owed for the next join rather than given empty.
+            val failed = HashSet<OwedItem>()
+            val madeFor = owedItems.filter { it.qty < 0 }.associateWith { item ->
+                try {
+                    madeOwed(item)
+                } catch (failure: Exception) {
+                    plugin.logger.log(Level.WARNING, "reading what ${name(item.formId)} held failed; still owed", failure)
+                    failed += item
+                    null
+                }
+            }
             player.scheduler.runDelayed(plugin, {
                 try {
                     for ((actor, group) in owedItems.groupBy { it.actor }) {
@@ -827,7 +830,7 @@ class Confiscations(
                             toPlayer(player, item.formId, made, -item.qty, actor, null, item.slots, item.since)
                         }
                     }
-                    Bukkit.getAsyncScheduler().runNow(plugin) { ledger.forgive(owedItems) }
+                    Bukkit.getAsyncScheduler().runNow(plugin) { ledger.forgive(owedItems - failed) }
                 } catch (failure: Exception) {
                     plugin.logger.log(Level.SEVERE, "taking back what ${player.name} owed a rollback failed", failure)
                 }

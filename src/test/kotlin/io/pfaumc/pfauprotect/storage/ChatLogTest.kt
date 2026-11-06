@@ -108,7 +108,10 @@ class ChatLogTest {
         }
         assertEquals(BookEdit("#00000000", null, emptyList()), BookEdit.of(BookEdit("#00000000", null, emptyList()).text()))
         // A page holding the separators reads back as that one page, not as pages nobody wrote.
-        val forged = BookEdit("#00000000", null, listOf(BookEdit.Page(1, "", "x\u001E2\u001Fa\u001Fb"))).text()
-        assertEquals(listOf(1), BookEdit.of(forged)!!.pages.map { it.number })
+        val forged = BookEdit("#00000000", "T\u001Fx", listOf(BookEdit.Page(1, "a\u001Eb", "x\u001E2\u001Fa\u001Fb"))).text()
+        assertEquals(
+            BookEdit("#00000000", "T\uFFFDx", listOf(BookEdit.Page(1, "a\uFFFDb", "x\uFFFD2\uFFFDa\uFFFDb"))),
+            BookEdit.of(forged),
+        )
     }
 }
