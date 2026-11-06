@@ -303,6 +303,7 @@ class PfauProtectPlugin : JavaPlugin() {
         val origins = SpawnOrigins(mechanisms)
         val capture = ContainerCaptureListener(
             this, uncovered::submit, codec, ledger.registries, origins, ledger, ledger::slotBalances,
+            filed = { holder, at -> ledger.holderPage(holder, 0, at, limit = 1).entries.isNotEmpty() },
         ) { intent, qty ->
             unspentDrop(mechanisms, intent, qty) { server.getPlayer(it)?.gameMode == GameMode.CREATIVE }
         }

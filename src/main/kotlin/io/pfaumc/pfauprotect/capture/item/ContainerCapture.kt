@@ -145,8 +145,13 @@ internal fun firstSightRows(before: Snapshot?, after: Snapshot, timestamp: Long)
     val owners = after.named.mapNotNullTo(HashSet()) { (holder, naming) ->
         naming.owner.takeIf { before?.stacks?.get(holder)?.key != naming.unnamed }
     }
+    return contentsRows(after, owners, timestamp)
+}
+
+/** What the containers under these names hold in a snapshot, written as arriving under their names. */
+internal fun contentsRows(seen: Snapshot, owners: Set<UUID>, timestamp: Long): List<Transfer> {
     if (owners.isEmpty()) return emptyList()
-    return after.stacks.mapNotNull { (holder, stack) ->
+    return seen.stacks.mapNotNull { (holder, stack) ->
         if (holder !is Nested || holder.ownerId !in owners || stack.count <= 0) return@mapNotNull null
         Transfer(Cause.CONTAINER_NAMED, Void, holder, stack.key, stack.count, timestamp, confidence = Confidence.INFERRED)
     }
@@ -516,6 +521,8 @@ class ContainerCaptureListener(
     private val placed: PlacedForms,
     // What the ledger books to every slot under these holders, from rows up to a moment.
     private val booked: (List<Holder>, Long) -> Map<Holder, Map<FormKey, Int>> = { _, _ -> emptyMap() },
+    // Whether any row was filed under a holder up to a moment.
+    private val filed: (Holder, Long) -> Boolean = { _, _ -> true },
     private val currentTick: () -> Int = Bukkit::getCurrentTick,
     // What an intent asked for and the pass never found.
     private val unspent: (Intent, Int) -> Unit = { _, _ -> },
@@ -523,6 +530,8 @@ class ContainerCaptureListener(
     private class Baseline(val view: InventoryView, val seen: Snapshot)
 
     private val baselines = ConcurrentHashMap<UUID, Baseline>()
+    // Names asked this run whether any row was ever filed under them; see `backfill`.
+    private val asked = ConcurrentHashMap.newKeySet<UUID>()
     private val intents = PlayerIntents()
 
     /** The only way an event may speak: it says why, the pass that follows says how much. */
@@ -1124,6 +1133,9 @@ class ContainerCaptureListener(
         // After the movements, so a bundle picked up unnamed arrives under the form it was carried in.
         for (rows in namingRows(after, timestamp)) sink(rows)
         written(firstSightRows(baseline.seen, after, timestamp))
+        // What was in view before the pass is asked as it stood just before its rows; what came into view with it, as it is.
+        backfill(baseline.seen, timestamp - 1)
+        backfill(after, timestamp)
         // Only a command leaves a reason that can wait, so most passes have nothing to ask the tick for.
         val waiting = taken.filter { it.untilTick != null && it !in spent }
         val lingering = if (waiting.isEmpty()) waiting else currentTick().let { tick -> waiting.filter { it.lingers(tick) } }
@@ -1138,6 +1150,35 @@ class ContainerCaptureListener(
         baselines[player.uniqueId] = Baseline(view, seen)
         // The slot's own change of form is left to the reconciliations that follow a join and a container's close.
         written(firstSightRows(null, seen, System.currentTimeMillis()))
+        backfill(seen, System.currentTimeMillis())
+    }
+
+    /**
+     * A container named by a build that wrote nothing of what it held when it named it has a name and no rows,
+     * and a rollback would give it back empty. Each name in view is asked once a run, off the region thread,
+     * whether anything was ever filed under it; one with nothing gets what it holds now as its first sight.
+     */
+    // The ledger is asked as of `at`, the moment `seen` stood, so what moved in or out of the box since does not
+    // hide that nothing was filed before it.
+    // ponytail: rows of a pass just before `at` may still sit in the writer's queue when the ledger is asked, and a
+    // box changed in that pass and seen for the first time this run is then filed twice.
+    private fun backfill(seen: Snapshot, at: Long) {
+        // Named in this very snapshot: its first sight is written already.
+        val named = seen.named.values.mapTo(HashSet()) { it.owner }
+        asked.addAll(named)
+        val owners = seen.containers.filterTo(HashSet()) { it !in named && asked.add(it) }
+        if (owners.isEmpty() || !plugin.isEnabled) return
+        plugin.server.asyncScheduler.runNow(plugin) {
+            // A closed ledger answers nothing was filed, which is no answer.
+            if (!plugin.isEnabled) return@runNow
+            try {
+                written(contentsRows(seen, owners.filterTo(HashSet()) { !filed(Nested(it, 0), at) }, at))
+            } catch (failure: Exception) {
+                // Asked again at the next sight rather than never.
+                asked.removeAll(owners)
+                plugin.logger.log(Level.WARNING, "asking the ledger what containers it holds failed", failure)
+            }
+        }
     }
 
     // Only while a transformation is in flight, and only the station's own slots: everywhere else the
