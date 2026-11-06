@@ -39,6 +39,8 @@ import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManage
 import net.minecraft.util.ProblemReporter
 import net.minecraft.world.Clearable
 import io.pfaumc.pfauprotect.capture.entity.VOLATILE
+import io.pfaumc.pfauprotect.capture.item.Restock
+import io.pfaumc.pfauprotect.capture.item.withContents
 import io.pfaumc.pfauprotect.capture.entity.keepingOthersMarks
 import io.pfaumc.pfauprotect.capture.entity.nbtOf
 import io.pfaumc.pfauprotect.capture.entity.seatsOf
@@ -589,6 +591,8 @@ class ChunkRollback(
         val doused = if (!apply) emptyList() else douse(level, spots)
         // After the blocks, so a chest that came back is there to take its contents.
         val givenBack = GivenBack()
+        // ponytail: a box given back twice in one run (out, in and out again) restocks its name twice.
+        val restock = ArrayList<Restock>()
         positions.forEachIndexed { i, plan ->
             for (refill in plan.refills) {
                 tally.slots++
@@ -598,9 +602,9 @@ class ChunkRollback(
                 }
                 val container = slotsOf(level.getBlockEntity(BlockPos(refill.at.x, refill.at.y, refill.at.z)))
                 tally.giveBack(refill, container, removedHere = touched[i], givenBack) {
-                    putBack(it, refill.at.slot, codec.decode(refill.form, 1, refill.damage), refill.qty) { stack ->
+                    putBack(it, refill.at.slot, refill.made?.stack ?: codec.decode(refill.form, 1, refill.damage), refill.qty) { stack ->
                         codec.encode(stack).form.contentEquals(refill.form)
-                    }
+                    }.also { moved -> if (moved > 0) refill.made?.let { made -> restock += made.restock } }
                 }
             }
         }
@@ -630,6 +634,7 @@ class ChunkRollback(
         for ((pos, was) in besides) difference.add(pos.x, pos.y, pos.z, was, standingAt(level, pos, codec), blockRow = true)
         if (difference.rows.isNotEmpty()) logs.get(world)?.submit(difference.rows)
         givenBackRows(difference, givenBack, actor).takeIf { it.isNotEmpty() }?.let(sink)
+        if (restock.isNotEmpty()) sink(restock.map { it.row(difference.timestamp, actor) })
         difference.writeOff(plugin, placed, sink)
         // Last, and after the rows: what the neighbours do now is theirs, and the capture files it.
         for (i in positions.indices) if (touched[i]) level.updateNeighboursOnBlockSet(spots[i], before[i].state)
@@ -896,7 +901,7 @@ class ChunkRollback(
         val kept = target == null || decision.settled.back?.payloadBefore == null && standing.block == state.block
         if (now != null && kept) for (i in 0 until minOf(now.size, copy.size)) copy.set(i, now.get(i).copy())
         for (refill in plan.refills) {
-            putBack(copy, refill.at.slot, codec.decode(refill.form, 1, refill.damage), refill.qty) { codec.encode(it).form.contentEquals(refill.form) }
+            putBack(copy, refill.at.slot, refill.made?.stack ?: codec.decode(refill.form, 1, refill.damage), refill.qty) { codec.encode(it).form.contentEquals(refill.form) }
         }
         return Contents((shown ?: state).asBlockData(), (0 until copy.size).map { CraftItemStack.asBukkitCopy(copy.get(it)) })
     }
@@ -982,13 +987,14 @@ class Rollbacks(
     private val lookups: Lookups,
     private val chunks: ChunkRollback,
     private val confiscations: Confiscations,
+    private val codec: ItemFormCodec,
     // Around every reading: what the captures hold back from the journal is filed first, and nothing more
     // is held back until the reading is done. False when some of it could not be filed in time.
     private val holdStill: () -> Boolean = { true },
     private val letGo: () -> Unit = {},
 ) {
     private val slot = RollbackSlot()
-    private val reader = RollbackReader(ledger, blocks)
+    private val reader = RollbackReader(ledger, blocks) { form, damage, at -> withContents(ledger, codec, form, 1, damage, at) }
     val ghosts = Ghosts(plugin)
 
     /**
@@ -1325,7 +1331,7 @@ class Rollbacks(
                 if (back.isEmpty()) continue
                 val victim = nameOrId(death.uuid)
                 sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
-                if (apply) confiscations.restore(death.uuid, back, actor, sender, fallen.births().values.flatten(), fallen.slots())
+                if (apply) confiscations.restore(death.uuid, back, actor, sender, fallen.births().values.flatten(), fallen.slots(), death.timestamp)
             }
             // A mob let out of a bucket is no longer in it: the bucket with the mob for the one it was before.
             for (bucket in total.buckets) {

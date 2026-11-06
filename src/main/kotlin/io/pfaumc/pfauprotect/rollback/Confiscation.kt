@@ -5,6 +5,8 @@ import io.pfaumc.pfauprotect.capture.item.ContainerCaptureListener
 import io.pfaumc.pfauprotect.capture.item.Intent
 import io.pfaumc.pfauprotect.capture.item.WorldItemListener
 import io.pfaumc.pfauprotect.capture.item.namedContents
+import io.pfaumc.pfauprotect.capture.item.Made
+import io.pfaumc.pfauprotect.capture.item.withContents
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.PlayerInv
 import kotlin.jvm.optionals.getOrNull
@@ -428,11 +430,12 @@ class Confiscations(
         sender: CommandSender,
         births: List<PostingRef>,
         slots: Map<Long, List<Int>>,
+        diedAt: Long,
     ) {
         // What went between the read and the take — a pile no longer there, what its taker used up and put
         // nowhere to be found — is gone for good like a burned pile, and given out of nothing the same way,
         // so every birth marked below was given back one way or the other.
-        val back = { formId: Long, n: Int -> give(victim, formId, n, actor, sender, slots[formId].orEmpty()) }
+        val back = { formId: Long, n: Int -> give(victim, formId, n, actor, sender, slots[formId].orEmpty(), diedAt) }
         take(owed.filter { it.taker !is Vanished }, actor, sender, gone = back, taken = back)
         for (gone in owed.filter { it.taker is Vanished }) back(gone.formId, gone.qty)
         // The piles' births marked as given back. Nothing moves, so no posting is written: only the mark.
@@ -502,19 +505,53 @@ class Confiscations(
     }
 
     // Out of nothing into a player's hands: what fits goes in now, through the pass as a reason for the
-    // gain; what does not, at their next join.
-    private fun give(player: UUID, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList()) {
-        val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor, slots = slots) } }
+    // gain; what does not, at their next join. A box or a bundle among them comes back as it was at `asOf`;
+    // at 0, which is also what a debt from before that moment was kept says, as its form alone.
+    private fun give(
+        player: UUID, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList(), asOf: Long = 0,
+    ) {
+        val owe = { Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player, formId, -qty, actor, since = asOf, slots = slots) } }
         val online = Bukkit.getPlayer(player)
-        if (online == null) {
+        val form = ledger.form(formId)
+        if (online == null || form == null) {
             owe()
             return
         }
-        online.scheduler.run(plugin, { toPlayer(online, formId, qty, actor, sender, slots) }) { owe() } ?: owe()
+        val toThem = { made: Made -> online.scheduler.run(plugin, { toPlayer(online, formId, made, qty, actor, sender, slots, asOf) }) { owe() } ?: owe() }
+        val plain = codec.decode(form, 1, null)
+        if (asOf <= 0 || NestedItems.ownerOf(plain) == null) {
+            toThem(Made(plain))
+            return
+        }
+        // Only a container item waits for the ledger read; a failed one leaves it owed rather than lost.
+        Bukkit.getAsyncScheduler().runNow(plugin) {
+            val made = try {
+                withContents(ledger, codec, form, 1, null, asOf)
+            } catch (failure: Exception) {
+                plugin.logger.log(Level.WARNING, "reading what ${name(formId)} held failed; owed instead", failure)
+                null
+            }
+            if (made == null) ledger.owe(player, formId, -qty, actor, since = asOf, slots = slots) else toThem(made)
+        }
     }
 
-    // On the player's own thread.
-    private fun toPlayer(player: Player, formId: Long, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int> = emptyList()) {
+    // Off the region threads. A debt is forgiven once given, so a failed read gives the form alone rather than nothing.
+    private fun madeOwed(item: OwedItem): Made? {
+        val form = ledger.form(item.formId) ?: return null
+        if (item.since > 0) {
+            try {
+                return withContents(ledger, codec, form, 1, null, item.since)
+            } catch (failure: Exception) {
+                plugin.logger.log(Level.WARNING, "reading what ${name(item.formId)} held failed; given as it is", failure)
+            }
+        }
+        return Made(codec.decode(form, 1, null))
+    }
+
+    // On the player's own thread. `made` is one of the form, made off it.
+    private fun toPlayer(
+        player: Player, formId: Long, made: Made, qty: Int, actor: UUID?, sender: CommandSender?, slots: List<Int>, asOf: Long,
+    ) {
         val form = ledger.form(formId) ?: return
         val inventory = player.inventory
         var rest = qty
@@ -522,15 +559,15 @@ class Confiscations(
         for (slot in slots.distinct()) {
             if (rest == 0) break
             if (slot !in 0 until inventory.size || inventory.getItem(slot)?.type?.isAir == false) continue
-            val stack = CraftItemStack.asBukkitCopy(codec.decode(form, 1, null))
-            val n = minOf(rest, stack.maxStackSize)
-            inventory.setItem(slot, stack.apply { amount = n })
+            val n = minOf(rest, made.stack.maxStackSize)
+            inventory.setItem(slot, CraftItemStack.asBukkitCopy(made.stack.copyWithCount(n)))
             rest -= n
         }
-        val left = if (rest == 0) 0 else inventory.addItem(CraftItemStack.asBukkitCopy(codec.decode(form, rest, null))).values.sumOf { it.amount }
+        val left = if (rest == 0) 0 else inventory.addItem(CraftItemStack.asBukkitCopy(made.stack.copyWithCount(rest))).values.sumOf { it.amount }
         val added = qty - left
         if (added > 0) capture.intend(player, Intent(Cause.ROLLBACK, from = Void, form = form, qty = added, actor = actor))
-        if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor, slots = slots) }
+        if (added > 0 && made.restock.isNotEmpty()) sink(made.restock.map { it.row(System.currentTimeMillis(), actor) })
+        if (left > 0) Bukkit.getAsyncScheduler().runNow(plugin) { ledger.owe(player.uniqueId, formId, -left, actor, since = asOf, slots = slots) }
         val message = "  gave back $added ${name(formId)} to ${player.name}" + if (left > 0) "; $left more at their next join." else "."
         tell(sender, message)
     }
@@ -777,6 +814,7 @@ class Confiscations(
             if (owedItems.isEmpty()) return@runNow
             // Read here, off the player's thread.
             val trails = trailsOf(ledger, player.uniqueId, owedItems)
+            val madeFor = owedItems.filter { it.qty < 0 }.associateWith(::madeOwed)
             player.scheduler.runDelayed(plugin, {
                 try {
                     for ((actor, group) in owedItems.groupBy { it.actor }) {
@@ -784,7 +822,10 @@ class Confiscations(
                         fromPlayer(player, taking.map { trails.getValue(it) }, actor, null) { item, left ->
                             fromStashes(item, left, actor, null, { _, _ -> }, { _, _ -> })
                         }
-                        for (item in giving) toPlayer(player, item.formId, -item.qty, actor, null, item.slots)
+                        for (item in giving) {
+                            val made = madeFor[item] ?: continue
+                            toPlayer(player, item.formId, made, -item.qty, actor, null, item.slots, item.since)
+                        }
                     }
                     Bukkit.getAsyncScheduler().runNow(plugin) { ledger.forgive(owedItems) }
                 } catch (failure: Exception) {

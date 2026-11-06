@@ -327,7 +327,7 @@ class PfauProtectPlugin : JavaPlugin() {
             this, codec, blocks, ledger, uncovered::submit, formOf = ledger::form, forget = entityCapture::forget,
         )
         val rollbacks = Rollbacks(
-            this, ledger, blocks, lookups, chunkRollback, confiscations,
+            this, ledger, blocks, lookups, chunkRollback, confiscations, codec,
             holdStill = { fileHeld(pistons) }, letGo = pistons::resume,
         )
         val running = Running(

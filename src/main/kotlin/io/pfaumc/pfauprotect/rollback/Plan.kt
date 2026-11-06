@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.Debug
 import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.capture.item.Made
 import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.Holder
@@ -197,7 +198,8 @@ private fun same(a: String, b: String): Boolean = blockOf(a) == blockOf(b) || fl
 /**
  * One slot posting given back: `qty` above zero is what left the slot and goes back in, below zero is
  * what arrived and is taken out again. `lead` is where it went or came from, which is where a rollback
- * that put it back goes looking for it.
+ * that put it back goes looking for it. `made` is one of it as it was then, made with the plan where it is
+ * made at all: a box or a bundle gets its contents from the ledger, which the region threads must not read.
  */
 class Refill(
     val at: Container,
@@ -207,6 +209,7 @@ class Refill(
     val qty: Int,
     val posting: PostingRef,
     val lead: Holder,
+    val made: Made? = null,
 )
 
 /**
@@ -357,7 +360,12 @@ private const val CARRIED_LAG_MILLIS = 1_000L
  * decode, a walk that ran out of budget, a state or a payload the ledger cannot name — refuses the whole
  * rollback, because going ahead over part of the history puts back part of the place and calls it done.
  */
-class RollbackReader(private val ledger: RocksItemLog, private val blocks: BlockLogs) {
+class RollbackReader(
+    private val ledger: RocksItemLog,
+    private val blocks: BlockLogs,
+    // One of a slot posting's item as it was at the posting's moment: form, damage, timestamp.
+    private val itemOf: (ByteArray, Int?, Long) -> Made? = { _, _, _ -> null },
+) {
     private fun turf(row: BlockRow): Boolean =
         stateName(ledger, row.stateBefore) in TURFS
 
@@ -560,7 +568,9 @@ class RollbackReader(private val ledger: RocksItemLog, private val blocks: Block
                 continue
             }
             refills.getOrPut(WorldBlock(world, slot.x, slot.y, slot.z)) { ArrayList() } +=
-                Refill(slot, form, entry.itemFormId, entry.damage, -entry.qty, entry.ref, entry.counterparty)
+                Refill(slot, form, entry.itemFormId, entry.damage, -entry.qty, entry.ref, entry.counterparty,
+                    // Only what goes back in is made; what is taken out is found by its form.
+                    if (entry.qty < 0) itemOf(form, entry.damage, entry.timestamp) else null)
         }
         val entities = HashMap<WorldBlock, MutableList<EntityPlan>>()
         val dropped = HashMap<WorldBlock, MutableList<UUID>>()
