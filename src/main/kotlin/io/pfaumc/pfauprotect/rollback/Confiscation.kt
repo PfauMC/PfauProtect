@@ -228,8 +228,9 @@ internal fun conversionsOf(ledger: RocksItemLog, player: UUID, formId: Long, sin
     val made = gains.flatMap { gain ->
         when {
             gain.cause in MAKING -> listOf(gain)
-            // Taken out of the result slot afterwards: the making is that slot's row.
-            gain.counterparty !is PlayerHolder && gain.counterparty != Void ->
+            // Taken out of the result slot afterwards: the making is that slot's row. A menu nobody owns
+            // (a plugin's window) and the void keep no rows of their own to look in.
+            gain.counterparty !is PlayerHolder && gain.counterparty.addressable ->
                 ledger.holderEntries(gain.counterparty, since, gain.timestamp, limit = 100)
                     .filter { it.cause in MAKING && it.qty > 0 && it.itemFormId == gain.itemFormId }
             else -> emptyList()

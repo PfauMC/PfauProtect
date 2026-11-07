@@ -12,6 +12,7 @@ import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerEquip
 import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.model.ItemEntityRef
+import io.pfaumc.pfauprotect.model.MenuSlot
 import io.pfaumc.pfauprotect.model.PlayerInv
 import io.pfaumc.pfauprotect.model.Transfer
 import io.pfaumc.pfauprotect.model.Void
@@ -120,6 +121,18 @@ class ConfiscationTest : OneLedger() {
         val conversion = owedFor(log, tally).single().conversions.single()
         assertEquals(log.forms.lookup(block), conversion.made)
         assertEquals(9, conversion.inputsEach)
+    }
+
+    // Bob took something out of a plugin's window, which keeps no rows of its own: following him reads past
+    // it rather than failing the whole rollback.
+    @Test
+    fun `what a carrier took out of a menu nobody owns does not stop the following`() {
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 4), diamond, null, 9, T0))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, MenuSlot(3, 0), PlayerInv(bob, 6), stone, null, 1, T0 + 1))
+        log.drain()
+
+        val tally = returned(PlayerInv(bob, 4), 9).apply { since = T0 }
+        assertTrue(owedFor(log, tally).single().conversions.isEmpty())
     }
 
     // Bob built steps of the loot that the same rollback takes away: those are back already, and only what he
