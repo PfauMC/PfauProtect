@@ -97,7 +97,7 @@
         "time": {"type": "string"},
         "since": {"type": ["integer", "string"]},
         "until": {"type": ["integer", "string"]},
-        "kinds": {"type": "array", "items": {"type": "string", "enum": ["chat", "chat_local", "chat_global", "command", "join", "quit", "hit", "totem", "book", "death"]}},
+        "kinds": {"type": "array", "items": {"type": "string", "enum": ["chat", "chat_local", "chat_global", "command", "join", "quit", "hit", "totem", "book", "death"]}, "description": "Kinds to keep. As a filter `chat` keeps all chat, local, global and lines with no half known alike; `chat_local` or `chat_global` keeps that half only. A line's own kind is `chat` only when no half is known."},
         "pvp": {"type": "boolean", "description": "Only hits and totems."},
         "global": {"type": "boolean", "description": "Only chat said to the whole server (with the global prefix)."},
         "local": {"type": "boolean", "description": "Only chat said to those near (without the global prefix)."},
