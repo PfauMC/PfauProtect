@@ -1040,7 +1040,7 @@ private val CHAT_PARAMS = listOf(Param.USER, Param.TIME, Param.FILTER, Param.ACT
 // An `exclude:` word that is also an item, block or entity is read as the thing, so each action is offered under
 // the first of its names no thing has: `burn`, `pistons`, `hoppers`.
 private val EXCLUDABLE: List<String> by lazy {
-    Action.entries.filter { it != Action.STEAL }.mapNotNull { action -> action.keys.firstOrNull { it !in THING_NAMES } }
+    Action.entries.filter { it != Action.STEAL && it !in CHAT_ONLY }.mapNotNull { action -> action.keys.firstOrNull { it !in THING_NAMES } }
 }
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
