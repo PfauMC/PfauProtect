@@ -10,6 +10,7 @@ import io.pfaumc.pfauprotect.command.ChatRun
 import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.LookupTarget
 import io.pfaumc.pfauprotect.command.Lookups
+import io.pfaumc.pfauprotect.command.chatActionsOf
 import io.pfaumc.pfauprotect.command.chatPlayers
 import io.pfaumc.pfauprotect.command.lookupTargetAt
 import io.pfaumc.pfauprotect.command.parseLookupQuery
@@ -117,7 +118,7 @@ internal class Api(
 
     fun chatAs(request: ChatRequest, access: Access?): CompletableFuture<ChatPage> = off {
         require(access, LOOKUP_PERMISSION, ask)
-        val query = queryOf(request.words, request.since, request.until)
+        val query = queryOf(request.words, request.since, request.until, chat = true)
         lookups.idsOf(chatPlayers(query))
         val kinds = request.kinds.map { it.lowercase() }.toSet()
         val unknown = kinds - CHAT_KINDS
@@ -130,11 +131,12 @@ internal class Api(
         }
         val said = lookups.chatFilter(query)
         val read = if (kinds == setOf("death")) ChatRead(emptyList(), false) else readChat(chatLog, query) { line ->
-            (kinds.isEmpty() || line.kind.name.lowercase() in kinds) && said(line) && (request.world == null || near(line.world, line.x, line.y, line.z))
+            // `chat` is chat whichever half, or none known.
+            (kinds.isEmpty() || line.kind.name.lowercase() in kinds || "chat" in kinds && line.kind.said) && said(line) && (request.world == null || near(line.world, line.x, line.y, line.z))
         }
-        // A death has no text to filter on, is no chat line to exclude a player's from, and is no hit for `pvp` nor a book.
+        // A death has no text to filter on, is no chat line to exclude a player's from, and is none of the chat's actions.
         val wantsDeaths = (kinds.isEmpty() || "death" in kinds) && query.users.isNotEmpty() && query.filter == null &&
-            query.excluded.isEmpty() && !query.pvp && !query.book
+            query.excluded.isEmpty() && chatActionsOf(query).isEmpty()
         val (found, deathsComplete) = if (wantsDeaths) lookups.deaths(query) else emptyList<Pair<UUID, EntityRow>>() to true
         val deaths = found.filter { (world, row) -> request.world == null || near(Ui.worldName(world), row.x, row.y, row.z) }
             .map { (world, row) -> deathOf(world, row) }
@@ -229,9 +231,9 @@ private val CHAT_KINDS = ChatKind.entries.map { it.name.lowercase() }.toSet() + 
  * The words as `/pp lookup` reads them, with an absolute window in place of `time:` when one is given: what an
  * investigation is handed is a moment, not how long ago it was.
  */
-internal fun queryOf(words: String, since: Long?, until: Long?): LookupQuery {
+internal fun queryOf(words: String, since: Long?, until: Long?, chat: Boolean = false): LookupQuery {
     val parsed = try {
-        parseLookupQuery(words)
+        parseLookupQuery(words, chat = chat)
     } catch (bad: CommandSyntaxException) {
         refuse(bad.rawMessage.string)
     }

@@ -27,6 +27,9 @@ object Settings {
 
     @Volatile var hiddenCommands = setOf("login", "l", "log", "register", "reg", "changepassword", "changepass", "unregister")
 
+    // What starts a message to the whole server where chat is local otherwise; empty where there is no local chat.
+    @Volatile var globalPrefix = "!"
+
     // Days the chat log keeps a line; 0 keeps every line until /pp purge.
     @Volatile var chatKeepDays = 0
 
@@ -61,6 +64,7 @@ object Settings {
         crowd = config.getInt("mobs.crowd", crowd).coerceIn(2, 1_000)
         if (config.contains("chat.hidden-commands")) hiddenCommands = config.getStringList("chat.hidden-commands").map { it.lowercase() }.toSet()
         chatKeepDays = config.getInt("chat.keep-days", chatKeepDays).coerceIn(0, 100_000)
+        globalPrefix = config.getString("chat.global-prefix", globalPrefix).orEmpty()
         serverName = config.getString("server-name", serverName)!!.trim()
         mcpEnabled = config.getBoolean("mcp.enabled", mcpEnabled)
         mcpAddress = config.getString("mcp.address", mcpAddress)!!

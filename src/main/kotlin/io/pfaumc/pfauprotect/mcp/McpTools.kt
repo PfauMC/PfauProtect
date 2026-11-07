@@ -143,6 +143,8 @@ internal class McpTools(private val api: Api, private val version: String, priva
             "steal" -> if (args.bool("steal") == true) out += "a:steal"
             "text" -> args.string("text")?.let { out += "f:" + word(it) }
             "pvp" -> if (args.bool("pvp") == true) out += "a:pvp"
+            "global" -> if (args.bool("global") == true) out += "a:global"
+            "local" -> if (args.bool("local") == true) out += "a:local"
             "page" -> args.int("page")?.let { out += "page:$it" }
             "limit" -> args.int("limit")?.let { out += "limit:$it" }
             "all" -> if (args.bool("all") == true) out += "#all"
@@ -205,5 +207,5 @@ private const val PREVIEW_SECONDS = 15L
 private val LOOKUP_WORDS = setOf("users", "time", "radius", "actions", "include", "exclude", "amount", "rolledback", "steal", "page", "limit", "all", "words")
 private val CONTAINER_WORDS = setOf("users", "time", "page", "limit", "all")
 private val ACTOR_WORDS = setOf("users", "time", "actions", "include", "exclude", "amount", "rolledback", "page", "limit", "all")
-private val CHAT_WORDS = setOf("users", "time", "text", "pvp", "exclude", "page", "limit", "all")
+private val CHAT_WORDS = setOf("users", "time", "text", "pvp", "global", "local", "exclude", "page", "limit", "all")
 private val PREVIEW_WORDS = setOf("users", "time", "radius", "actions", "include", "exclude", "words")

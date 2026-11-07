@@ -147,8 +147,8 @@ data class LookupPage(val rows: List<LookupRow>, val page: Int, val more: Boolea
 
 /**
  * What `/pp chat` takes: `words` as it takes them (`user:A&B` is the two of them, `filter:`, `action:pvp`,
- * `exclude:`, `page:`, `limit:`), the window as for a lookup. [kinds] keeps only chat, command, join, quit, hit,
- * totem, book and death; empty keeps all. A place keeps only lines within [radius] of it, which a chat line, having no
+ * `exclude:`, `page:`, `limit:`), the window as for a lookup. [kinds] keeps only chat, chat_local, chat_global,
+ * command, join, quit, hit, totem, book and death; empty keeps all. A place keeps only lines within [radius] of it, which a chat line, having no
  * place, never is. Deaths are read only for the players `user:` names.
  */
 data class ChatRequest(

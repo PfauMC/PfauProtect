@@ -19,7 +19,10 @@ import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.inventory.meta.BookMeta
 import org.bukkit.persistence.PersistentDataType
+import net.kyori.adventure.text.Component
+import java.util.Collections
 import java.util.UUID
+import java.util.WeakHashMap
 
 internal val BOOK_MARK = NamespacedKey("pfauprotect", "book")
 
@@ -28,10 +31,36 @@ internal val BOOK_MARK = NamespacedKey("pfauprotect", "book")
  * it is kept without one; the rest are kept where they happened.
  */
 class ChatCapture(private val log: ChatLog) : Listener {
+    // The chat plugin takes the global prefix off the message before anyone after it reads the message, so
+    // whether it was there is noted first, and only noted: the line is written last and behind every
+    // cancellation, like the rest. Weak, so a message cancelled in between leaves nothing behind.
+    // The prefix is kept with the message, so a reload in between cannot read it with another one.
+    private class Noted(val raw: String, val prefix: String)
+
+    private val noted: MutableMap<AsyncChatEvent, Noted> = Collections.synchronizedMap(WeakHashMap())
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    fun onChatPrefix(event: AsyncChatEvent) {
+        val prefix = Settings.globalPrefix
+        if (prefix.isNotEmpty()) noted[event] = Noted(plain(event.message()), prefix)
+    }
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onChat(event: AsyncChatEvent) {
-        log.submit(ChatLine(System.currentTimeMillis(), ChatKind.CHAT, event.player.uniqueId, PlainTextComponentSerializer.plainText().serialize(event.message())))
+        val note = noted.remove(event)
+        val kind = when {
+            note == null -> ChatKind.CHAT
+            note.raw.startsWith(note.prefix) -> ChatKind.CHAT_GLOBAL
+            else -> ChatKind.CHAT_LOCAL
+        }
+        // As the players saw it: as the chat plugin left it, or, where nobody touched it, without the prefix the way
+        // the chat plugin takes it off.
+        val now = plain(event.message())
+        val text = if (kind == ChatKind.CHAT_GLOBAL && now == note!!.raw) now.removePrefix(note.prefix).trimStart() else now
+        log.submit(ChatLine(System.currentTimeMillis(), kind, event.player.uniqueId, text))
     }
+
+    private fun plain(message: Component) = PlainTextComponentSerializer.plainText().serialize(message)
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onCommand(event: PlayerCommandPreprocessEvent) =

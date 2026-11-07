@@ -33,6 +33,7 @@ import io.pfaumc.pfauprotect.storage.ChatKind
 import io.pfaumc.pfauprotect.storage.ChatLog
 import io.pfaumc.pfauprotect.storage.WorldChange
 import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.format.TextColor
 import net.kyori.adventure.text.event.ClickEvent
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import io.pfaumc.pfauprotect.capture.block.BlockMechanismListener
@@ -166,7 +167,7 @@ private val HELP = listOf(
     Help(INSPECT_PERMISSION, "/pp i", "/pp i", "inspector: click a block or an entity", "инспектор: клик по блоку или сущности"),
     Help(ROLLBACK_PERMISSION, "/pp rb time: [radius:] [user:]", "/pp rb ", "preview a rollback", "предпросмотр отката"),
     Help(ROLLBACK_PERMISSION, "/pp apply · /pp cancel", "/pp apply", "run or drop the preview", "выполнить или сбросить предпросмотр"),
-    Help(LOOKUP_PERMISSION, "/pp chat [user: time: f: a:pvp|book]", "/pp chat ", "chat, commands, joins, quits, hits between players and books written", "чат, команды, входы, выходы, удары между игроками и правки книг"),
+    Help(LOOKUP_PERMISSION, "/pp chat [user: time: f: a:pvp|book|global|local]", "/pp chat ", "chat (global G, local L), commands, joins, quits, hits between players and books written", "чат (глобальный G, локальный L), команды, входы, выходы, удары между игроками и правки книг"),
     Help(LOOKUP_PERMISSION, "/pp view [chat|dialog]", "/pp view ", "where the pages open: chat or a window", "где открываются страницы: чат или окно"),
     Help(LOOKUP_PERMISSION, "/pp view rows [N]", "/pp view rows ", "lines on a page, to fit your screen", "строк на странице, под свой экран"),
     Help(STATUS_PERMISSION, "/pp status", "/pp status", "bases, queues, what went unexplained", "базы, очереди, необъяснённое"),
@@ -946,6 +947,8 @@ class PfauProtectPlugin : JavaPlugin() {
                 }
                 val what = when (line.kind) {
                     ChatKind.CHAT -> Ui.text(": " + line.text)
+                    ChatKind.CHAT_GLOBAL -> half(" G", Ui.CHANGED, tr("global chat", "глобальный чат"), line.text)
+                    ChatKind.CHAT_LOCAL -> half(" L", Ui.MUTED, tr("local chat", "локальный чат"), line.text)
                     ChatKind.COMMAND -> Ui.text(" " + line.text, Ui.CHANGED)
                     ChatKind.JOIN -> Ui.text(tr(" joined", " · вход"), Ui.GAINED)
                     ChatKind.QUIT -> Ui.text(tr(" left", " · выход"), Ui.MUTED)
@@ -967,6 +970,10 @@ class PfauProtectPlugin : JavaPlugin() {
             )
         }
     }
+
+    // " G: text": the half of chat a line was said in, named on the hover.
+    private fun half(mark: String, color: TextColor, name: String, text: String): Component =
+        Component.text().append(Ui.hover(Ui.text(mark, color), name)).append(Ui.text(": $text")).build()
 
     // " ✎ #3f2a1c signed «Title» p. 2, 5": the book, the title it was signed under, the pages changed, and on the
     // hover each of them as it was and as it became.
