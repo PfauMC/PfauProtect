@@ -94,7 +94,8 @@ again and runs it, a chunk per region task, eight at a time; `/pp cancel` stops 
 The previewing player is shown the blocks as they would stand (client-side only, `Ghosts.kt`: the nearest first, sent again when the client gets their chunk or clicks one) until apply, cancel or expiry.
 `event:<token>` from a lookup line rolls back that one event: it reads a window around the event (default radius 8
 blocks, ±1 second) and keeps the event's own rows. It writes compensating rows (`Cause.ROLLBACK`) in both planes and never
-edits old ones. A rollback's own rows are only rolled back when `action:rollback` names them, which is also how a
+edits old ones. Dynamite a blast or a fire took is not put back (`primed`, `Plan.kt`): it went off, and set again beside
+what lit it, it would go off a second time; the crater around it is. A rollback's own rows are only rolled back when `action:rollback` names them, which is also how a
 rollback is undone. What it put back is then taken back from whoever carried it off (`Confiscation.kt`): from an
 online player through an `Intent`, from an offline one at their next join, from a pile still lying where it lies.
 `radius:global` with `user:` finds a player's positions through `by_actor` and their own item rows. Entities go

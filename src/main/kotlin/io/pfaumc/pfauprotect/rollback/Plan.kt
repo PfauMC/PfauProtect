@@ -4,7 +4,9 @@ import io.pfaumc.pfauprotect.attribution.AIRS
 import io.pfaumc.pfauprotect.attribution.LIQUIDS
 import io.pfaumc.pfauprotect.attribution.blockNameOf
 import io.pfaumc.pfauprotect.attribution.flowing
+import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.FIRES
+import io.pfaumc.pfauprotect.command.Action
 import io.pfaumc.pfauprotect.capture.block.reshaped
 import io.pfaumc.pfauprotect.command.RowFilter
 import io.pfaumc.pfauprotect.command.stateName
@@ -88,6 +90,15 @@ private val ROW_ORDER = compareBy<BlockRow> { it.eventId }.thenBy { it.ordinal }
 private val ENTITY_ROW_ORDER = compareBy<EntityRow> { it.eventId }.thenBy { it.ordinal }
 
 internal val BlockRow.spot get() = Triple(x, y, z)
+
+// What sets dynamite off rather than breaking it: a blast or a fire.
+private val PRIMING = Action.EXPLOSION.causes + Action.FIRE.causes
+
+/**
+ * Dynamite a blast or a fire took was lit and went off; set again where it stood, beside the fire or the
+ * trap that lit it, it goes off a second time. That row is not undone, and the crater around it is.
+ */
+internal fun primed(row: BlockRow, before: String): Boolean = row.cause in PRIMING && nameOf(before) == BlockDestructionListener.TNT
 
 // What dies to dirt under a block put on it.
 private val TURFS = setOf("minecraft:grass_block", "minecraft:dirt_path", "minecraft:mycelium", "minecraft:podzol", "minecraft:farmland")
@@ -557,6 +568,7 @@ class RollbackReader(
                 unnamed++
                 continue
             }
+            if (primed(row, before)) continue
             steps.getOrPut(WorldBlock(world, row.x, row.y, row.z)) { ArrayList() } += Step(before, after, payload)
         }
         val refills = HashMap<WorldBlock, MutableList<Refill>>()
