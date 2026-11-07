@@ -431,9 +431,6 @@ data class LookupQuery(
     // Of a single place: its block, its contents, or both. A radius or a player ignores it.
     val part: Part = Part.ALL,
 ) {
-    // Names a half of chat, which only /pp chat reads.
-    internal val chatOnly: Boolean get() = actions.flatMap(::allOf).any { Action.of(it.lowercase()) in CHAT_ONLY }
-
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
     // Whether any action asked for is a direction across a player's hands, which has no block to roll back.
@@ -549,12 +546,14 @@ private val BAD_LIMIT = DynamicCommandExceptionType {
     said("'$it' is not a row count between 1 and $MAX_LIMIT")
 }
 
-fun parseLookupQuery(input: String, now: ZonedDateTime = ZonedDateTime.now(ZoneId.systemDefault())): LookupQuery =
-    parseLookupQuery(StringReader(input), now)
+fun parseLookupQuery(input: String, now: ZonedDateTime = ZonedDateTime.now(ZoneId.systemDefault()), chat: Boolean = false): LookupQuery =
+    parseLookupQuery(StringReader(input), now, chat)
 
 // Parsing walks the caller's reader instead of a copied string so that every exception carries the
 // real cursor: the client underlines the offending token rather than the whole argument.
-fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.now(ZoneId.systemDefault())): LookupQuery {
+// `chat` for /pp chat, the one reader of the halves of chat: anywhere else they are refused, since neither plane has
+// rows of them, and a lookup would find nothing while a rollback, reading past them, undid more.
+fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.now(ZoneId.systemDefault()), chat: Boolean = false): LookupQuery {
     var query = LookupQuery(words = reader.remaining)
     // The `time:` value as typed: `asof:` may come after it, and the moment it names is resolved against that.
     var rawTime: String? = null
@@ -620,7 +619,7 @@ fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.no
             } ?: fail(reader, BAD_TIME, value)
             Param.RADIUS -> query.copy(radius = radiusOrNull(value) ?: fail(reader, BAD_RADIUS, value))
             Param.ACTION -> {
-                val named = actions(reader, valueStart, value)
+                val named = actions(reader, valueStart, value, chat)
                 query.copy(
                     causes = (query.causes ?: emptySet()) + named.flatMap { it.causes },
                     kinds = query.kinds + named.flatMap { it.kinds },
@@ -666,15 +665,17 @@ private fun values(value: String): List<String> =
 
 internal fun allOf(group: String): List<String> = group.split('&').filter { it.isNotBlank() }
 
-private fun actions(reader: StringReader, valueStart: Int, value: String): List<Action> {
+private fun actions(reader: StringReader, valueStart: Int, value: String, chat: Boolean): List<Action> {
     val found = mutableListOf<Action>()
     var offset = valueStart
     for (name in value.split(',', '&')) {
         if (name.isNotBlank()) {
-            found += Action.of(name.lowercase()) ?: run {
+            val action = Action.of(name.lowercase())
+            if (action == null || !chat && action in CHAT_ONLY) {
                 reader.cursor = offset
-                throw BAD_ACTION.createWithContext(reader, name)
+                throw (if (action == null) BAD_ACTION else CHAT_ONLY_ACTION).createWithContext(reader, name)
             }
+            found += action
         }
         offset += name.length + 1
     }
@@ -954,17 +955,7 @@ class LookupArgument(
 ) : CustomArgumentType<LookupQuery, String> {
     override fun getNativeType(): ArgumentType<String> = StringArgumentType.greedyString()
 
-    // A half of chat has no rows in either plane: a lookup would find nothing, and a rollback, reading past it, more.
-    override fun parse(reader: StringReader): LookupQuery {
-        val start = reader.cursor
-        val query = parseLookupQuery(reader)
-        val half = query.actions.flatMap(::allOf).firstOrNull { Action.of(it.lowercase()) in CHAT_ONLY }
-        if (!chat && half != null) {
-            reader.cursor = start
-            throw CHAT_ONLY_ACTION.createWithContext(reader, half)
-        }
-        return query
-    }
+    override fun parse(reader: StringReader): LookupQuery = parseLookupQuery(reader, chat = chat)
 
     private val starts: List<String> = when {
         chat -> CHAT_PARAMS.map { "${it.canonical}:" } + "#all"

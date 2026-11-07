@@ -118,7 +118,7 @@ internal class Api(
 
     fun chatAs(request: ChatRequest, access: Access?): CompletableFuture<ChatPage> = off {
         require(access, LOOKUP_PERMISSION, ask)
-        val query = queryOf(request.words, request.since, request.until)
+        val query = queryOf(request.words, request.since, request.until, chat = true)
         lookups.idsOf(chatPlayers(query))
         val kinds = request.kinds.map { it.lowercase() }.toSet()
         val unknown = kinds - CHAT_KINDS
@@ -231,9 +231,9 @@ private val CHAT_KINDS = ChatKind.entries.map { it.name.lowercase() }.toSet() + 
  * The words as `/pp lookup` reads them, with an absolute window in place of `time:` when one is given: what an
  * investigation is handed is a moment, not how long ago it was.
  */
-internal fun queryOf(words: String, since: Long?, until: Long?): LookupQuery {
+internal fun queryOf(words: String, since: Long?, until: Long?, chat: Boolean = false): LookupQuery {
     val parsed = try {
-        parseLookupQuery(words)
+        parseLookupQuery(words, chat = chat)
     } catch (bad: CommandSyntaxException) {
         refuse(bad.rawMessage.string)
     }

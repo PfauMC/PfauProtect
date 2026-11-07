@@ -34,7 +34,6 @@ object Texts {
         r("amount: narrows a lookup to item rows; a rollback does not take it\\.") to "amount: сужает поиск до строк предметов; откат его не принимает.",
         r("rolledback: narrows what a lookup shows; a rollback does not take it\\.") to "rolledback: сужает только то, что показывает поиск; откат его не принимает.",
         r("action:steal is worked out for a lookup only; roll back action:withdraw instead\\.") to "action:steal вычисляется только для поиска; для отката укажи action:withdraw.",
-        r("action:global and action:local are halves of chat, which only /pp chat reads; a rollback does not take them\\.") to "action:global и action:local – половины чата, их читает только /pp chat; откат их не принимает.",
         r("action:inventory and action:item read a player's hands, which have no place to roll back; roll back action:\\+container or action:-container instead\\.") to "action:inventory и action:item читают руки игрока, их негде откатывать; для отката укажи action:+container или action:-container.",
         r("Rollback preview dropped\\.") to "Предпросмотр отката сброшен.",
         r("  you see the blocks as they would stand; nothing changes before /pp apply\\.") to "  вы видите блоки такими, какими они станут; до /pp apply в мире ничего не меняется.",

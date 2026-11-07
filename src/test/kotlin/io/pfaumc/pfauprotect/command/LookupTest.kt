@@ -68,8 +68,11 @@ class LookupTest {
         // A half of chat has no rows in either plane: a lookup or a rollback refuses it, /pp chat takes it.
         assertEquals("local", LookupArgument(chat = true).parse(StringReader("a:local t:1h")).actions.single())
         for (argument in listOf(LookupArgument(), LookupArgument(rollback = true))) {
-            assertThrows(CommandSyntaxException::class.java) { argument.parse(StringReader("r:5 t:1h a:block,local")) }
+            val refused = assertThrows(CommandSyntaxException::class.java) { argument.parse(StringReader("r:5 t:1h a:block,local")) }
+            // At the action itself, as an unknown one is.
+            assertEquals("r:5 t:1h a:block,".length, refused.cursor)
         }
+        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("a:global") }
         assertTrue(offered("e:").containsAll(listOf("pvp", "book", "global", "local", "Test1")), offered("e:").toString())
     }
 
@@ -167,7 +170,7 @@ class LookupTest {
         val global = ChatLine(0, ChatKind.CHAT_GLOBAL, alice, "selling diamonds")
         val local = ChatLine(0, ChatKind.CHAT_LOCAL, alice, "hi")
         val old = ChatLine(0, ChatKind.CHAT, alice, "hello")
-        fun keeps(words: String) = chatFilter(parseLookupQuery(words), mapOf("Alice" to alice)::get).let { f -> listOf(global, local, old).filter(f) }
+        fun keeps(words: String) = chatFilter(parseLookupQuery(words, chat = true), mapOf("Alice" to alice)::get).let { f -> listOf(global, local, old).filter(f) }
         assertEquals(listOf(global), keeps("a:global"))
         assertEquals(listOf(local), keeps("a:local"))
         assertEquals(listOf(global, local), keeps("a:global,local"))
