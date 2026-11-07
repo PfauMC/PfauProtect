@@ -195,20 +195,47 @@ class RollbackTest : BothPlanes() {
         assertEquals(2, RollbackReader(shared, logs).leftByThemBefore(listOf(planned), setOf(alice), T0 + 50))
     }
 
-    // Alice put dynamite down before the window and blew it up inside; an earlier rollback had already put the
-    // air back. From the window's start the position would get her dynamite again; it stands as before
+    // Alice put stone down before the window and blew it up inside; an earlier rollback had already put the
+    // air back. From the window's start the position would get her stone again; it stands as before
     // her, so there is nothing to do. Where it does not, the window's start is still what it goes back to.
     @Test
     fun `a position standing as before the player first touched it is left alone`() {
-        val tnt = "minecraft:tnt[unstable=false]"
-        log.submit(listOf(BlockChange(1, 64, 1, AIR, tnt, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
-        log.submit(listOf(BlockChange(1, 64, 1, tnt, AIR, Cause.BLK_TNT, T0 + 100, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, STONE, AIR, Cause.BLK_TNT, T0 + 100, actor = alice)))
         log.drain()
 
         val planned = around(rollbackFilter(alice), from = T0 + 50)
         val position = positions(planned).single()
         assertEquals(AIR, position.origin)
         assertNull(settle(AIR, position.steps, position.origin).back)
+    }
+
+    // Bob's dynamite stood before the window, and Alice's blast set it off inside. A rollback of the place puts
+    // the crater back, but not the dynamite: set again beside the fire or the trap that lit it, it goes off a
+    // second time. Dynamite somebody broke by hand is only a block, and comes back.
+    @Test
+    fun `dynamite a blast or a fire set off is not put back`() {
+        val tnt = "minecraft:tnt[unstable=false]"
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, tnt, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.submit(listOf(BlockChange(3, 64, 1, AIR, tnt, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.submit(listOf(BlockChange(4, 64, 1, AIR, tnt, Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.submit(
+            listOf(
+                BlockChange(1, 64, 1, tnt, AIR, Cause.BLK_TNT, T0 + 100, actor = alice),
+                BlockChange(2, 64, 1, STONE, AIR, Cause.BLK_TNT, T0 + 100, actor = alice),
+            )
+        )
+        log.submit(listOf(BlockChange(3, 64, 1, tnt, AIR, Cause.BLK_FIRE_BURN, T0 + 100)))
+        log.submit(listOf(BlockChange(4, 64, 1, tnt, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
+        // Alice broke the stone, put her dynamite in its place and set it off: the stone still comes back.
+        log.submit(listOf(BlockChange(5, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 60, actor = alice)))
+        log.submit(listOf(BlockChange(5, 64, 1, AIR, tnt, Cause.BLK_PLAYER_PLACE, T0 + 70, actor = alice)))
+        log.submit(listOf(BlockChange(5, 64, 1, tnt, AIR, Cause.BLK_TNT, T0 + 100, actor = alice)))
+        log.drain()
+
+        val planned = positions(around(RowFilter(shared, LookupQuery(), emptyList(), emptyMap(), rollback = true), from = T0 + 50))
+        val back = planned.mapNotNull { p -> settle(AIR, p.steps, p.origin).back?.let { p.at.x to it.before } }.toMap()
+        assertEquals(mapOf(2 to STONE, 4 to tnt, 5 to STONE), back)
     }
 
     // Alice built a chest long ago and a creeper blew it up inside the window. A rollback of the place names
