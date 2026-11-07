@@ -227,11 +227,15 @@ class RollbackTest : BothPlanes() {
         )
         log.submit(listOf(BlockChange(3, 64, 1, tnt, AIR, Cause.BLK_FIRE_BURN, T0 + 100)))
         log.submit(listOf(BlockChange(4, 64, 1, tnt, AIR, Cause.BLK_PLAYER_BREAK, T0 + 100, actor = alice)))
+        // Alice broke the stone, put her dynamite in its place and set it off: the stone still comes back.
+        log.submit(listOf(BlockChange(5, 64, 1, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 60, actor = alice)))
+        log.submit(listOf(BlockChange(5, 64, 1, AIR, tnt, Cause.BLK_PLAYER_PLACE, T0 + 70, actor = alice)))
+        log.submit(listOf(BlockChange(5, 64, 1, tnt, AIR, Cause.BLK_TNT, T0 + 100, actor = alice)))
         log.drain()
 
         val planned = positions(around(RowFilter(shared, LookupQuery(), emptyList(), emptyMap(), rollback = true), from = T0 + 50))
         val back = planned.mapNotNull { p -> settle(AIR, p.steps, p.origin).back?.let { p.at.x to it.before } }.toMap()
-        assertEquals(mapOf(2 to STONE, 4 to tnt), back)
+        assertEquals(mapOf(2 to STONE, 4 to tnt, 5 to STONE), back)
     }
 
     // Alice built a chest long ago and a creeper blew it up inside the window. A rollback of the place names
