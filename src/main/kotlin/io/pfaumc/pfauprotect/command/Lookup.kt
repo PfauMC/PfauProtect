@@ -431,6 +431,9 @@ data class LookupQuery(
     // Of a single place: its block, its contents, or both. A radius or a player ignores it.
     val part: Part = Part.ALL,
 ) {
+    // Names a half of chat, which only /pp chat reads.
+    internal val chatOnly: Boolean get() = actions.flatMap(::allOf).any { Action.of(it.lowercase()) in CHAT_ONLY }
+
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
     // Whether any action asked for is a direction across a player's hands, which has no block to roll back.
@@ -538,6 +541,9 @@ private val BAD_MOMENT = DynamicCommandExceptionType { said("'$it' is not a mome
 private val BAD_PART = DynamicCommandExceptionType { said("'$it' is not a part, expected part:block or part:contents") }
 private val STEAL_EXCLUDED = DynamicCommandExceptionType {
     said("'$it': a theft is worked out for each withdrawal, so exclude:steal is not taken; use exclude:withdraw instead")
+}
+private val CHAT_ONLY_ACTION = DynamicCommandExceptionType {
+    said("'$it' is a half of chat, which only /pp chat reads")
 }
 private val BAD_LIMIT = DynamicCommandExceptionType {
     said("'$it' is not a row count between 1 and $MAX_LIMIT")
@@ -948,7 +954,17 @@ class LookupArgument(
 ) : CustomArgumentType<LookupQuery, String> {
     override fun getNativeType(): ArgumentType<String> = StringArgumentType.greedyString()
 
-    override fun parse(reader: StringReader): LookupQuery = parseLookupQuery(reader)
+    // A half of chat has no rows in either plane: a lookup would find nothing, and a rollback, reading past it, more.
+    override fun parse(reader: StringReader): LookupQuery {
+        val start = reader.cursor
+        val query = parseLookupQuery(reader)
+        val half = query.actions.flatMap(::allOf).firstOrNull { Action.of(it.lowercase()) in CHAT_ONLY }
+        if (!chat && half != null) {
+            reader.cursor = start
+            throw CHAT_ONLY_ACTION.createWithContext(reader, half)
+        }
+        return query
+    }
 
     private val starts: List<String> = when {
         chat -> CHAT_PARAMS.map { "${it.canonical}:" } + "#all"

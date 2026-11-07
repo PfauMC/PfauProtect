@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.command
 import com.mojang.brigadier.context.CommandContext
 import com.mojang.brigadier.context.StringRange
+import com.mojang.brigadier.StringReader
 import com.mojang.brigadier.exceptions.CommandSyntaxException
 import com.mojang.brigadier.suggestion.SuggestionsBuilder
 import io.pfaumc.pfauprotect.Settings
@@ -64,6 +65,11 @@ class LookupTest {
             SuggestionsBuilder(typed, 0),
         ).get().list.map { it.text }
         assertEquals(setOf("pvp", "book", "global", "local"), offered("a:").toSet())
+        // A half of chat has no rows in either plane: a lookup or a rollback refuses it, /pp chat takes it.
+        assertEquals("local", LookupArgument(chat = true).parse(StringReader("a:local t:1h")).actions.single())
+        for (argument in listOf(LookupArgument(), LookupArgument(rollback = true))) {
+            assertThrows(CommandSyntaxException::class.java) { argument.parse(StringReader("r:5 t:1h a:block,local")) }
+        }
         assertTrue(offered("e:").containsAll(listOf("pvp", "book", "global", "local", "Test1")), offered("e:").toString())
     }
 
