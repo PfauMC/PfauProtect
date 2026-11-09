@@ -53,6 +53,11 @@ internal class RollbackSlot(private val clock: () -> Long = System::currentTimeM
         return now.takeIf { marked }
     }
 
+    /** [asked] was refused or failed while it read: nothing waits for apply, unless a newer one took its place. */
+    fun failed(key: String, asked: Asked) {
+        pending.computeIfPresent(key) { _, current -> if (current === asked) null else current }
+    }
+
     fun pendingAt(key: String): Long? = pending[key]?.takeIf { it.shown }?.at?.takeIf { clock() - it <= PENDING_MILLIS }
 
     fun take(key: String): Taking {

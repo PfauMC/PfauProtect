@@ -53,6 +53,17 @@ class RollbackSlotTest {
     }
 
     @Test
+    fun `a preview refused while it read leaves nothing to apply, but not a newer one's`() {
+        slot.failed("alice", slot.preview("alice", here, LookupQuery()))
+        assertSame(Taking.NothingPending, slot.take("alice"))
+
+        val older = slot.preview("bob", here, LookupQuery())
+        slot.preview("bob", here, LookupQuery())
+        slot.failed("bob", older)
+        assertSame(Taking.Reading, slot.take("bob"))
+    }
+
+    @Test
     fun `a preview dropped or replaced while it read does not come back when ready`() {
         val dropped = slot.preview("alice", here, LookupQuery())
         slot.drop("alice")

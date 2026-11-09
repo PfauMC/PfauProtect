@@ -1013,7 +1013,10 @@ class Rollbacks(
         val told = AtomicBoolean()
         run(sender, target, query, apply = false) { result ->
             if (!told.compareAndSet(false, true)) return@run
-            if (result.blocks == null) return@run done(result)
+            if (result.blocks == null) {
+                slot.failed(key, asked)
+                return@run done(result)
+            }
             done(result.copy(expiresAt = (slot.ready(key, asked) ?: asked.at) + PENDING_MILLIS))
         }
     }
