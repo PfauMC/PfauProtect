@@ -130,6 +130,24 @@ class ApiTest : BothPlanes() {
         assertEquals("inventory", taken.to?.type)
     }
 
+    // A player's actions read a withdrawal from their own slots; beside other actions `steal` is one more of a list.
+    @Test
+    fun `a player's actions find a theft, and steal in a list leaves the others' rows`() {
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, "minecraft:chest", Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.drain()
+        val chest = Container(world, 1, 64, 1, 4)
+        // No actor: the taker is then whoever's slots the withdrawal went to.
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), form, null, 2, T0 + 1_000))
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 0), form, null, 1, T0 + 2_000))
+        shared.drain()
+        fun taken(words: String) = api().actorActions(LookupRequest(words = words), null).answer().rows.map { it.amount }
+
+        assertEquals(listOf(2), taken("u:Bob a:steal"))
+        assertEquals(emptyList<Int>(), taken("u:Alice a:steal"))
+        assertEquals(listOf(1), taken("u:Alice a:-container,steal"))
+        assertEquals(emptyList<Int>(), taken("u:Alice a:-block,steal"))
+    }
+
     @Test
     fun `a player's actions come from every world, and a uuid names them as a name does`() {
         val other = UUID.fromString("00000000-0000-4000-8000-000000000002")
