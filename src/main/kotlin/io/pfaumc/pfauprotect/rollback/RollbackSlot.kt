@@ -10,10 +10,12 @@ import java.util.concurrent.atomic.AtomicLong
 // good. Past this a running rollback is taken as lost and the slot handed on.
 internal const val STALE_MILLIS = 10 * 60_000L
 
-internal class Asked(val target: LookupTarget, val query: LookupQuery, val at: Long)
+// [at] is when it was asked until it is [shown], then when it was shown.
+internal class Asked(val target: LookupTarget, val query: LookupQuery, val at: Long, val shown: Boolean = false)
 
 internal sealed interface Taking {
     data object NothingPending : Taking
+    data object Reading : Taking
     data object Busy : Taking
     class Started(val asked: Asked, val at: Long) : Taking
 }
@@ -30,17 +32,40 @@ internal class RollbackSlot(private val clock: () -> Long = System::currentTimeM
 
     fun runningSince(): Long? = running.get().takeIf { it != 0L }
 
-    /** When it was asked. */
-    fun preview(key: String, target: LookupTarget, query: LookupQuery): Long {
-        val at = clock()
-        pending[key] = Asked(target, query, at)
-        return at
+    fun preview(key: String, target: LookupTarget, query: LookupQuery): Asked {
+        val asked = Asked(target, query, clock())
+        pending[key] = asked
+        return asked
     }
 
-    fun pendingAt(key: String): Long? = pending[key]?.at?.takeIf { clock() - it <= PENDING_MILLIS }
+    /**
+     * [asked] is read and shown now: its time for apply starts here, not when it was asked, as a long read
+     * would use it up. Null when it was dropped or replaced while it read.
+     */
+    fun ready(key: String, asked: Asked): Long? {
+        val now = clock()
+        var marked = false
+        pending.computeIfPresent(key) { _, current ->
+            if (current !== asked) return@computeIfPresent current
+            marked = true
+            Asked(asked.target, asked.query, now, shown = true)
+        }
+        return now.takeIf { marked }
+    }
+
+    /** [asked] was refused or failed while it read: nothing waits for apply, unless a newer one took its place. */
+    fun failed(key: String, asked: Asked) {
+        pending.computeIfPresent(key) { _, current -> if (current === asked) null else current }
+    }
+
+    fun pendingAt(key: String): Long? = pending[key]?.takeIf { it.shown }?.at?.takeIf { clock() - it <= PENDING_MILLIS }
 
     fun take(key: String): Taking {
-        val asked = pending.remove(key)?.takeIf { clock() - it.at <= PENDING_MILLIS } ?: return Taking.NothingPending
+        // One still reading is not taken: its player has not seen what it would do.
+        var taken: Asked? = null
+        pending.computeIfPresent(key) { _, current -> if (current.shown) null.also { taken = current } else current }
+        val asked = taken ?: return if (pending.containsKey(key)) Taking.Reading else Taking.NothingPending
+        if (clock() - asked.at > PENDING_MILLIS) return Taking.NothingPending
         // Two rollbacks over one place would each read the other's work as not done yet.
         val started = running.get()
         val now = clock()

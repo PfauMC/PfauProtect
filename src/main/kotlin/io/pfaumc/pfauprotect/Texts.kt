@@ -44,6 +44,7 @@ object Texts {
         r("Stopping the rollback that runs now: the chunks it has not reached yet stay as they are\\.") to
             "Останавливаю идущий откат: чанки, до которых он не дошёл, останутся как есть.",
         r("Nothing to apply: preview a rollback with /pp rollback first\\.") to "Нечего применять: сначала предпросмотр через /pp rollback.",
+        r("The preview is still being read; apply once it has reported\\.") to "Предпросмотр ещё читается; примени, когда он отчитается.",
         r("Another rollback is still running; apply again once it has reported\\.") to "Другой откат ещё идёт; примени снова, когда он отчитается.",
         r("Rollback refused: (\\d+) positions changed in that window, more than the (\\d+) one rollback may write; narrow the radius or the time\\.") to
             "Откат отклонён: за это окно изменилось позиций: $1, а один откат записывает не больше $2; сузь радиус или время.",

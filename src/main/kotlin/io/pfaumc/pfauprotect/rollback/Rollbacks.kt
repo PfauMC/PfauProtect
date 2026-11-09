@@ -999,7 +999,7 @@ class Rollbacks(
 
     /**
      * [done] hears what the preview would do once it has read it, or why it was refused; a preview waiting for
-     * apply is said to lapse [PENDING_MILLIS] after it was asked.
+     * apply is said to lapse [PENDING_MILLIS] after it was read.
      */
     fun preview(sender: CommandSender, target: LookupTarget, query: LookupQuery, done: (PreviewResult) -> Unit = {}) {
         refusalOf(query)?.let {
@@ -1007,11 +1007,17 @@ class Rollbacks(
             done(refused(it))
             return
         }
-        val at = slot.preview(keyOf(sender), target, query)
+        val key = keyOf(sender)
+        val asked = slot.preview(key, target, query)
         // Once: a failure after the counts were told must not take them back.
         val told = AtomicBoolean()
         run(sender, target, query, apply = false) { result ->
-            if (told.compareAndSet(false, true)) done(if (result.blocks != null) result.copy(expiresAt = at + PENDING_MILLIS) else result)
+            if (!told.compareAndSet(false, true)) return@run
+            if (result.blocks == null) {
+                slot.failed(key, asked)
+                return@run done(result)
+            }
+            done(result.copy(expiresAt = (slot.ready(key, asked) ?: asked.at) + PENDING_MILLIS))
         }
     }
 
@@ -1021,6 +1027,7 @@ class Rollbacks(
     fun applyPreview(sender: CommandSender) {
         when (val taken = slot.take(keyOf(sender))) {
             Taking.NothingPending -> sender.say("Nothing to apply: preview a rollback with /pp rollback first.")
+            Taking.Reading -> sender.say("The preview is still being read; apply once it has reported.")
             Taking.Busy -> sender.say("Another rollback is still running; apply again once it has reported.")
             is Taking.Started -> {
                 hide(sender)

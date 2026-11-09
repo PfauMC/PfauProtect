@@ -182,12 +182,12 @@ internal class Api(
         return previewStatus(access.player)
     }
 
-    // A ready preview stops being one once it is applied, dropped, replaced or lapses; one still running past the
-    // time it would have lapsed has failed somewhere that could not say so.
+    // A ready preview stops being one once it is applied, dropped, replaced or lapses; one still running past what
+    // a read takes has failed somewhere that could not say so. A long window reads for minutes.
     override fun previewStatus(player: UUID): PreviewResult {
         val asked = previews[player] ?: return NONE
         val last = asked.result
-        if (last.status == "running") return if (System.currentTimeMillis() - asked.at > PENDING_MILLIS) NONE else last
+        if (last.status == "running") return if (System.currentTimeMillis() - asked.at > READ_MILLIS) NONE else last
         val expires = last.expiresAt ?: return last
         val pending = pendingSince(player)
         return if (pending != null && pending + PENDING_MILLIS == expires) last else NONE
@@ -220,6 +220,9 @@ internal class Api(
 private val NONE = PreviewResult("none")
 
 private const val THREADS = 4
+
+// Longer than any read the walk budgets let through: a three-day window over a warehouse reads for minutes.
+private const val READ_MILLIS = 30 * 60_000L
 
 private const val LEFT = "The player left before the preview could start."
 
