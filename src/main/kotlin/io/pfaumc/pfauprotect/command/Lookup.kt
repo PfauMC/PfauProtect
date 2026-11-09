@@ -1834,8 +1834,21 @@ class Lookups(
 
     private fun filter(entries: List<LedgerEntry>, query: LookupQuery): List<LedgerEntry> {
         val keeps = rowFilter(query)
+        // `steal` is one element of the list like any other: a row another element takes stays, stolen or not.
+        // It takes withdrawals only, so any other row `keeps` let through came from another element.
+        val rest = if (query.steal) withoutSteal(query)?.let(::rowFilter) else null
         val placers = HashMap<Container, Placer>()
-        return entries.filter { keeps.keeps(it) && (!query.steal || stolen(it, placers)) }
+        return entries.filter {
+            keeps.keeps(it) && (!query.steal || it.cause != Cause.CONTAINER_REMOVE || rest?.keeps(it) == true || stolen(it, placers))
+        }
+    }
+
+    // The question without its `steal` elements, or null when nothing else was asked for.
+    private fun withoutSteal(query: LookupQuery): LookupQuery? {
+        val groups = query.actions.filter { group -> allOf(group).none { Action.of(it.lowercase()) == Action.STEAL } }
+        if (groups.isEmpty()) return null
+        val named = groups.flatMap(::allOf).mapNotNull { Action.of(it.lowercase()) }
+        return query.copy(causes = named.flatMap { it.causes }.toSet(), kinds = named.flatMap { it.kinds }.toSet(), actions = groups, steal = false)
     }
 
     // Who put a container down; `known` false when the read stopped before it reached the placement.
@@ -1845,8 +1858,9 @@ class Lookups(
     // position whose placement lies past the read says nothing either way, and its withdrawals are not
     // counted as theft: the owner's own would be.
     private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, Placer>): Boolean {
-        if (entry.cause != Cause.CONTAINER_REMOVE || entry.qty >= 0) return false
-        val chest = (entry.holder as? Container)?.copy(slot = 0) ?: return false
+        if (entry.cause != Cause.CONTAINER_REMOVE) return false
+        // Either half of the withdrawal: a place reads the container's, a player's actions their own slots'.
+        val chest = ((entry.holder as? Container) ?: (entry.counterparty as? Container))?.copy(slot = 0) ?: return false
         val placer = placers.getOrPut(chest) {
             val rows = blocks.get(chest.world)?.at(chest.x, chest.y, chest.z, 0, Long.MAX_VALUE, limit = PLACER_READ, reverse = true).orEmpty()
             val placed = rows.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE }
@@ -1854,7 +1868,7 @@ class Lookups(
         }
         if (!placer.known) return false
         // A withdrawal names whoever took it as where it went rather than as its actor.
-        val taker = entry.actor ?: playerOf(entry.counterparty) ?: return false
+        val taker = entry.actor ?: playerOf(entry.counterparty) ?: playerOf(entry.holder) ?: return false
         return taker != placer.player
     }
 
