@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
 
@@ -64,6 +65,23 @@ class BlockStoreTest : BothPlanes() {
 
         val grown = shared.blockCache.usage - before
         assertTrue(grown >= 2L * 1024 * 1024, "${shared.blockCache.usage} after, $before before")
+    }
+
+    // Every open world adds its memtables to the one budget the ledger shares. A row per world is far
+    // below what any memtable holds, so a flush here means the budget is spent before anything is
+    // written, and a live server then flushes a file of a few rows on every write.
+    @Test
+    fun `a row in each of several worlds flushes nothing`() {
+        val worlds = List(4) { logs.open(UUID.randomUUID()) } + log
+        worlds.forEach { it.submit(placed(0, 64, 0)) }
+        worlds.forEach { it.drain() }
+        shared.drain()
+        // Closing waits for every flush already scheduled and, with the log on, starts none of its own.
+        logs.close()
+        shared.close()
+
+        val tables = Files.walk(dir).use { paths -> paths.filter { it.toString().endsWith(".sst") }.count() }
+        assertEquals(0L, tables)
     }
 
     // Written out by hand rather than taken from the encoder: a round trip cannot notice a layout

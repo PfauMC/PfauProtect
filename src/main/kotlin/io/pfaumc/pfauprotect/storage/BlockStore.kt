@@ -139,10 +139,9 @@ class BlockLog(
     private val rowsOptions = compressed()
         .setTableFormatConfig(filteredTable)
         // A chunk is the first CHUNK_PREFIX_SIZE bytes of every row key, so this is what lets a walk
-        // of one chunk skip the files and memtables that hold none of it, and a walk of one position
-        // is a longer prefix under the same extractor.
+        // of one chunk skip the files that hold none of it, and a walk of one position is a longer
+        // prefix under the same extractor. No memtable prefix bloom: see MEMTABLE_BYTES.
         .useFixedLengthPrefixExtractor(Zcode.CHUNK_PREFIX_SIZE)
-        .setMemtablePrefixBloomSizeRatio(0.1)
 
     // Two counters and a schema stamp, read by key and never walked.
     private val metaOptions = compressed()

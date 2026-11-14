@@ -120,7 +120,10 @@ internal const val BLOCK_CACHE_BYTES = 256L * 1024 * 1024
 // half their time stalled behind compaction: here memtables are bigger and compaction has every core.
 private val BULK = java.lang.Boolean.getBoolean("pfauprotect.bulk")
 
-// Of that, what memtables of all the bases together may hold before the fullest is flushed.
+// Of that, what memtables of all the bases together may hold before the fullest is flushed. A memtable
+// prefix bloom is allocated whole when its memtable is created, a tenth of the write buffer, and counts
+// against this budget even while the memtable is empty. With the ledger and a few worlds open those
+// blooms alone filled it, so every write flushed a file of a few rows, and the files never merged.
 internal val MEMTABLE_BYTES = if (BULK) 2048L * 1024 * 1024 else 64L * 1024 * 1024
 internal const val BLOOM_BITS_PER_KEY = 10.0
 
@@ -164,6 +167,9 @@ internal fun openingOptions(writeBuffers: WriteBufferManager): DBOptions = DBOpt
     .setCreateIfMissing(true)
     .setCreateMissingColumnFamilies(true)
     .setWriteBufferManager(writeBuffers)
+    // The default keeps every table file open for the life of the database, so descriptors grow with
+    // the file count until the whole server cannot open a socket or a region file.
+    .setMaxOpenFiles(MAX_OPEN_FILES)
     .also { if (BULK) it.setMaxBackgroundJobs(Runtime.getRuntime().availableProcessors()) }
 
 // The handles before the database that issued them; the options are the caller's to free after both.
@@ -180,6 +186,7 @@ internal fun compressed() = ColumnFamilyOptions()
     .also { if (BULK) it.setWriteBufferSize(BULK_WRITE_BUFFER_BYTES) }
 
 private const val BULK_WRITE_BUFFER_BYTES = 256L * 1024 * 1024
+private const val MAX_OPEN_FILES = 1024
 
 // The smallest key that sorts after everything under `prefix`. A prefix of nothing but 0xFF bytes has
 // none, and an item key cannot produce one: it opens with a holder type, which is never 0xFF.
@@ -235,7 +242,7 @@ internal fun storedSchema(path: String, metaCf: ByteArray, key: ByteArray): Long
     if (metaIndex < 0) return null
     val handles = ArrayList<ColumnFamilyHandle>()
     ColumnFamilyOptions().use { cfOptions ->
-        DBOptions().use { options ->
+        DBOptions().setMaxOpenFiles(MAX_OPEN_FILES).use { options ->
             RocksDB.openReadOnly(options, path, existing.map { ColumnFamilyDescriptor(it, cfOptions) }, handles)
                 .let { probed ->
                     try {
@@ -615,9 +622,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     private val entriesOptions = compressed()
         .setTableFormatConfig(filteredTable)
         // A chunk is the first CHUNK_PREFIX_SIZE bytes of every key that addresses a position, so
-        // this is what lets a lookup of one chunk skip the files and memtables that hold none of it.
+        // this is what lets a lookup of one chunk skip the files that hold none of it. No memtable
+        // prefix bloom: see MEMTABLE_BYTES.
         .useFixedLengthPrefixExtractor(EntryCodec.CHUNK_PREFIX_SIZE)
-        .setMemtablePrefixBloomSizeRatio(0.1)
     private val pointReadOptions = compressed()
         .setTableFormatConfig(filteredTable)
         .setWriteBufferSize(COLD_WRITE_BUFFER_BYTES)
