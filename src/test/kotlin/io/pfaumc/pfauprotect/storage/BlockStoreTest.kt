@@ -76,6 +76,9 @@ class BlockStoreTest : BothPlanes() {
         worlds.forEach { it.submit(placed(0, 64, 0)) }
         worlds.forEach { it.drain() }
         shared.drain()
+        // Closing waits for every flush already scheduled and, with the log on, starts none of its own.
+        logs.close()
+        shared.close()
 
         val tables = Files.walk(dir).use { paths -> paths.filter { it.toString().endsWith(".sst") }.count() }
         assertEquals(0L, tables)

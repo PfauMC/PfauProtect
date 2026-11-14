@@ -242,7 +242,7 @@ internal fun storedSchema(path: String, metaCf: ByteArray, key: ByteArray): Long
     if (metaIndex < 0) return null
     val handles = ArrayList<ColumnFamilyHandle>()
     ColumnFamilyOptions().use { cfOptions ->
-        DBOptions().use { options ->
+        DBOptions().setMaxOpenFiles(MAX_OPEN_FILES).use { options ->
             RocksDB.openReadOnly(options, path, existing.map { ColumnFamilyDescriptor(it, cfOptions) }, handles)
                 .let { probed ->
                     try {
