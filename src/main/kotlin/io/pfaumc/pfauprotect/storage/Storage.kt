@@ -79,9 +79,9 @@ class OwedItem(val key: ByteArray, val formId: Long, val qty: Int, val actor: UU
 // touching the layout; an ordinary entry's header byte is pinned to 0x00, so only this number can refuse
 // such a database. WIDENS_FROM differ only by families this build adds on open, and an older build then
 // refuses the result by the stamp. Version 7 added the chunk-time index, built from the rows on the first
-// open of an older base.
-private const val SCHEMA_VERSION = 8L
-private val WIDENS_FROM = setOf(4L, 5L, 6L, 7L)
+// open of an older base. Version 9 added the actor index, empty for older rows: none of them has a cause it holds.
+private const val SCHEMA_VERSION = 9L
+private val WIDENS_FROM = setOf(4L, 5L, 6L, 7L, 8L)
 
 // How many times a giving back is followed to the giving back of itself: a rollback, its undo, the
 // undo of that. Past this a posting is taken as given back, which is the side that cannot mint items.
@@ -142,6 +142,17 @@ private val BLOCK_PAYLOADS_CF = "block_payloads".toByteArray()
 private val COMPENSATED_CF = "compensated".toByteArray()
 private val CONFISCATIONS_CF = "confiscations".toByteArray()
 private val BY_CHUNK_CF = "by_chunk".toByteArray()
+private val BY_ACTOR_CF = "by_actor".toByteArray()
+
+// Rows that name their player only as the actor, with none of the player's own slots at either end, so the player's
+// holders never lead to them: a throw straight out of somebody's container.
+private val ACTOR_INDEXED = setOf(Cause.CONTAINER_THROW)
+
+// An actor-time entry: the player's number, the time, then the posting's `entries` key.
+private const val ACTOR_HEAD_SIZE = 12
+
+private fun actorIndexKey(player: Int, ts: Long, key: ByteArray = ByteArray(0)): ByteArray =
+    ByteWriter(ACTOR_HEAD_SIZE + key.size).intBE(player).longBE(ts).bytes(key).toByteArray()
 
 // What a positional holder's key holds before its position: its type, then its world.
 private const val POSITIONAL_HEAD_SIZE = 3
@@ -664,6 +675,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     // Every posting of a container or a block position again, by world, chunk and time: see [ChunkTime].
     private val byChunkCf: ColumnFamilyHandle
+    private val byActorCf: ColumnFamilyHandle
     private val nextOwed = AtomicLong(System.currentTimeMillis() * 1000)
 
     private val queue = LinkedBlockingQueue<List<Transfer>>()
@@ -739,6 +751,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             COMPENSATED_CF to pointReadOptions,
             CONFISCATIONS_CF to unfilteredOptions,
             BY_CHUNK_CF to unfilteredOptions,
+            BY_ACTOR_CF to unfilteredOptions,
         ).map { (name, options) -> ColumnFamilyDescriptor(name, options) }
         db = cleaningUpOnFailure({ closeOptions() }) { RocksDB.open(dbOptions, path, descriptors, cfHandles) }
         entriesCf = cfHandles[1]
@@ -752,6 +765,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         compensatedCf = cfHandles[9]
         confiscationsCf = cfHandles[10]
         byChunkCf = cfHandles[11]
+        byActorCf = cfHandles[12]
 
         storedAtOpen = stored
         failClosed {
@@ -779,8 +793,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             payloads.load()
             // After the registries: a spot entry names its world by number. The stamp follows the index, so a
             // crash between them starts the rebuild again.
-            // A 7 base already has the chunk-time index and no spot rows, so only 4..6 rebuild it.
-            if (storedAtOpen != null && storedAtOpen != SCHEMA_VERSION && storedAtOpen != 7L) indexChunks()
+            // A 7 or 8 base already has the chunk-time index, so only 4..6 rebuild it.
+            if (storedAtOpen != null && storedAtOpen in 4L..6L) indexChunks()
             if (storedAtOpen != SCHEMA_VERSION) db.put(metaCf, META_SCHEMA, longBytes(SCHEMA_VERSION))
             writerThread.start()
         }
@@ -813,9 +827,15 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         toTs: Long,
         reverse: Boolean = false,
         limit: Int = 100,
+        // Applied as the rows are read, so `limit` counts only rows the caller wants: filtered afterwards,
+        // a busy holder's newest rows fill the limit and an older one asked for is never reached.
+        keep: (LedgerEntry) -> Boolean = { true },
+        // How many rows a filtered read may step over in all before it stops and says it was cut short: a
+        // filter that rarely matches would otherwise walk a holder's whole history under the read lock.
+        steps: Int = Int.MAX_VALUE,
     ): EntryPage = dbLock.read {
         if (closed) return EntryPage(emptyList(), false)
-        scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit)
+        scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit, keep, steps)
     }
 
     /**
@@ -853,6 +873,44 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         val scope = ByteWriter(EntryCodec.WORLD_NO_SIZE).shortBE(ids.id(RegistryNamespace.WORLD, spot.world)).toByteArray()
         val position = Zcode.encode(spot.x, spot.y, spot.z) + key.copyOfRange(key.size - ROW_TAIL_SIZE, key.size)
         return ChunkTime.key(scope, HolderType.SPOT_TAG, position, 0)
+    }
+
+    // The actor-time entry of a row [ACTOR_INDEXED] holds, on the side it left, so each movement has one.
+    private fun actorKey(key: ByteArray, entry: LedgerEntry, ids: IdResolver): ByteArray? {
+        val actor = entry.actor ?: return null
+        if (entry.cause !in ACTOR_INDEXED || entry.qty >= 0) return null
+        return actorIndexKey(ids.id(RegistryNamespace.PLAYER, actor), entry.timestamp, key)
+    }
+
+    /**
+     * The rows [ACTOR_INDEXED] holds that name [actor], newest first, as many as [keep] keeps up to [limit], stepping
+     * over at most [steps] of them before the page says it was cut short.
+     */
+    fun actorPage(
+        actor: UUID,
+        fromTs: Long,
+        toTs: Long,
+        limit: Int,
+        keep: (LedgerEntry) -> Boolean = { true },
+        steps: Int = Int.MAX_VALUE,
+    ): EntryPage = dbLock.read {
+        if (closed) return EntryPage(emptyList(), false)
+        val number = registries.lookupUuid(RegistryNamespace.PLAYER, actor) ?: return EntryPage(emptyList(), true)
+        val prefix = ByteWriter(4).intBE(number).toByteArray()
+        val found = ArrayList<LedgerEntry>()
+        var walked = 0
+        var unreadable = 0
+        val from = lastUnder(actorIndexKey(number, toTs))
+        db.forEachUnder(byActorCf, prefix, reverse = true, from = from) { index, _ ->
+            if (timeAt(index, prefix.size) < fromTs || found.size > limit) return@forEachUnder false
+            if (walked++ >= steps) return@forEachUnder false
+            val key = index.copyOfRange(ACTOR_HEAD_SIZE, index.size)
+            // An entry whose posting is gone cannot be shown, and is counted as a row that could not be read.
+            val entry = db.get(entriesCf, key)?.let { EntryCodec.decodeOrNull(key, it, registries) }
+            if (entry == null) unreadable++ else if (keep(entry)) found += entry
+            true
+        }
+        EntryPage(found.take(limit), found.size <= limit && walked <= steps, unreadable)
     }
 
     // Once, on the first open of a base written before the index existed, and before the schema says it has
@@ -957,6 +1015,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                             batch.delete(entriesCf, key)
                             chunkKey(key)?.let { batch.delete(byChunkCf, it) }
                             spotKey(key, entry, knownIds)?.let { batch.delete(byChunkCf, it) }
+                            actorKey(key, entry, knownIds)?.let { batch.delete(byActorCf, it) }
                             batch.delete(txCf, longBytes(entry.txId))
                         }
                     }
@@ -1401,6 +1460,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                 batch.put(entriesCf, key, EntryCodec.value(entry, registries))
                 chunkKey(key)?.let { batch.put(byChunkCf, it, NOTHING) }
                 spotKey(key, entry, registries)?.let { batch.put(byChunkCf, it, key) }
+                actorKey(key, entry, registries)?.let { batch.put(byActorCf, it, NOTHING) }
                 keys += key
             }
         }
@@ -1504,10 +1564,13 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         toTs: Long,
         reverse: Boolean,
         limit: Int,
+        keep: (LedgerEntry) -> Boolean = { true },
+        steps: Int = Int.MAX_VALUE,
     ): EntryPage {
         val found = ArrayList<LedgerEntry>()
         if (limit <= 0) return EntryPage(found, false)
         var unreadable = 0
+        var walked = 0
         // One row past the limit is what separates a scan that ended from one that was cut off, and
         // it costs a single decode. Guessing from the size instead is wrong both ways: a range that
         // ends exactly on the limit reads as cut off, and rows dropped by the time window read as
@@ -1516,11 +1579,12 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
             // A chunk prefix stops three position bytes short of the timestamp, so no byte range
             // under it can express a time window; the window is applied to the decoded entry instead.
             // A row that does not decode cannot say when it was written, so it counts whatever the window.
+            if (walked++ >= steps) return@forEachUnder false
             val entry = EntryCodec.decodeOrNull(key, value, registries)
-            if (entry == null) unreadable++ else if (entry.timestamp in fromTs..toTs) found += entry
+            if (entry == null) unreadable++ else if (entry.timestamp in fromTs..toTs && keep(entry)) found += entry
             found.size <= limit
         }
-        return EntryPage(found.take(limit), found.size <= limit, unreadable)
+        return EntryPage(found.take(limit), found.size <= limit && walked <= steps, unreadable)
     }
 
     // An interned row must land in the same batch as the counter that named it, or a crash in between

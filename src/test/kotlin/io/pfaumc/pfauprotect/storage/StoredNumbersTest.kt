@@ -104,6 +104,7 @@ class StoredNumbersTest {
                 "DIRECT_NEW_ITEM" to 0xB2,
                 "BOOK_EDIT" to 0xB3,
                 "RECIPE_BOOK_FILL" to 0xB4,
+                "CONTAINER_THROW" to 0xB5,
                 "CRAFT_CONSUME" to 0x40,
                 "CRAFT_RESULT" to 0x41,
                 "CRAFT_REMAINDER" to 0x42,

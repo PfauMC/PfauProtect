@@ -568,6 +568,21 @@ class RollbackTest : BothPlanes() {
         assertEquals(3, positions.getValue(WorldBlock(world, 5000, 64, -5000)).refills.single().qty)
     }
 
+    // A throw out of somebody's chest touches no block and none of the thrower's slots: only the ledger's actor index
+    // leads a rollback without a radius to that chest, and the chest gets its items back.
+    @Test
+    fun `a player's rollback without a radius finds the chest they threw out of`() {
+        val far = Container(world, 5000, 64, -5000, 2)
+        shared.submit(Transfer(Cause.CONTAINER_THROW, far, ItemEntityRef(UUID.randomUUID()), diamond, null, 3, T0, actor = alice, spot = WorldBlock(world, 5000, 64, -5000)))
+        shared.drain()
+
+        val reader = RollbackReader(shared, logs)
+        val touched = reader.touchedBy(setOf(alice), 0, Long.MAX_VALUE)!!
+        assertEquals(setOf(WorldBlock(world, 5000, 64, -5000)), touched.getValue(world))
+        val planned = reader.at(world, touched.getValue(world), 0, Long.MAX_VALUE, rollbackFilter(alice)) as Planned
+        assertEquals(3, positions(planned).single().refills.single().qty)
+    }
+
     // Alice renamed Bob's horse and then killed it, and its saddle fell out. Rolled back, the horse goes
     // back to what it was before she touched it at all, its saddle's way out is undone with it whoever's
     // row that was, and what fell out of it is followed.

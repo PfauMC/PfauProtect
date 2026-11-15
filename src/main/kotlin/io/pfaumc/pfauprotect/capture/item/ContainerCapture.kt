@@ -533,6 +533,9 @@ class ContainerCaptureListener(
     // Names asked this run whether any row was ever filed under them; see `backfill`.
     private val asked = ConcurrentHashMap.newKeySet<UUID>()
     private val intents = PlayerIntents()
+    // The container slot a drop key was just pressed over: the drop event the same click fires next no
+    // longer knows where its item came from. Kept for that one event, and never past the next pass.
+    private val droppingFrom = ConcurrentHashMap<UUID, Holder>()
 
     /** The only way an event may speak: it says why, the pass that follows says how much. */
     fun intend(player: Player, intent: Intent) {
@@ -611,6 +614,7 @@ class ContainerCaptureListener(
         recompute(event.player)
         baselines.remove(event.player.uniqueId)
         intents.forget(event.player.uniqueId)
+        droppingFrom.remove(event.player.uniqueId)
     }
 
     // At shutdown, one player's pass that fails must not cost everybody else theirs, nor the rest of
@@ -754,6 +758,15 @@ class ContainerCaptureListener(
         val top = event.view.topInventory
         val shift = if (event.rawSlot == previewSlot(top)) shiftOf(top) else null
         if (shift != null) intend(player, Intent(shift.consume, shift = shift))
+        // Q over a chest's slot throws straight out of the chest. Left to the player's own slots, the
+        // drop would explain nothing, and the chest's loss would be dropped as the chest's own business.
+        // Their ender chest and their crafting grid are their own slots and stay an ordinary drop.
+        val dropped = event.action == InventoryAction.DROP_ALL_SLOT || event.action == InventoryAction.DROP_ONE_SLOT
+        val clicked = event.clickedInventory
+        val from = if (dropped && clicked != null && clicked !is PlayerInventory) {
+            topHolders(player, clicked)?.invoke(event.slot)?.takeIf { it is Container || it is EntitySlot && it.uuid != player.uniqueId }
+        } else null
+        if (from != null) droppingFrom[player.uniqueId] = from else droppingFrom.remove(player.uniqueId)
         val cause = clickCause(event)
         if (cause == null) scheduleRecompute(player) else intend(player, Intent(cause))
     }
@@ -813,6 +826,8 @@ class ContainerCaptureListener(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onDropItem(event: PlayerDropItemEvent) {
         val player = event.player
+        // Taken whatever happens next: it belongs to this one drop.
+        val slot = droppingFrom.remove(player.uniqueId)
         val drop = event.itemDrop
         val encoded = codec.encodeOrNull(drop.itemStack) ?: return
         // Every branch writes this birth, as a row here or from the slot the pass sees it leave.
@@ -849,13 +864,14 @@ class ContainerCaptureListener(
         intend(
             player,
             Intent(
-                cause = if (inMenu) Cause.DROP_FROM_MENU else Cause.DROP_FROM_HAND,
+                cause = if (slot != null) Cause.CONTAINER_THROW else if (inMenu) Cause.DROP_FROM_MENU else Cause.DROP_FROM_HAND,
                 to = ItemEntityRef(drop.uniqueId),
                 form = encoded.form,
                 qty = encoded.count,
                 // Also what tells a drop the pass could not find apart: one conjured by creative.
                 actor = player.uniqueId,
                 spot = at,
+                holder = slot,
             )
         )
     }
@@ -1098,6 +1114,8 @@ class ContainerCaptureListener(
         Metrics.recomputes.startTimer().use { pass(player, cursor) }
 
     private fun pass(player: Player, cursor: BukkitItemStack?) {
+        // A drop the click promised and nothing delivered, cancelled by another plugin, names no later drop.
+        droppingFrom.remove(player.uniqueId)
         // Drained before anything can cut the pass short: a player who was already online when the
         // plugin came up has no baseline yet, and intents left behind would pile up until the first
         // one appeared and then explain a delta they had nothing to do with.

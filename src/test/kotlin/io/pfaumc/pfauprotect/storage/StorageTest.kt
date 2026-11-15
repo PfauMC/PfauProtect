@@ -181,15 +181,17 @@ class StorageTest : OneLedger() {
     // Versions 5, 6 and 7 only add families, so an older ledger is opened, given them and stamped anew, with
     // every row it had still there; 6 also indexes the rows it had by chunk and time. Version 8 adds the spot
     // to a value and its entries to the index, but a 7 has the index and no spot rows, so it only gets the stamp.
+    // Version 9 adds the actor index, which no older row belongs in.
     @Test
-    fun `a version 4, 5, 6 or 7 ledger is widened in place`(@TempDir older: Path) {
+    fun `a version 4 to 8 ledger is widened in place`(@TempDir older: Path) {
         var current = 0L
         reopen { current = storedSchemaOf(dir) }
         val widensFrom = mapOf(
-            4L to everyColumnFamily - "compensated" - "confiscations" - "by_chunk",
-            5L to everyColumnFamily - "confiscations" - "by_chunk",
-            6L to everyColumnFamily - "by_chunk",
-            7L to everyColumnFamily,
+            4L to everyColumnFamily - "compensated" - "confiscations" - "by_chunk" - "by_actor",
+            5L to everyColumnFamily - "confiscations" - "by_chunk" - "by_actor",
+            6L to everyColumnFamily - "by_chunk" - "by_actor",
+            7L to everyColumnFamily - "by_actor",
+            8L to everyColumnFamily - "by_actor",
         )
         for ((version, earlier) in widensFrom) {
             val base = older.resolve("v$version")
@@ -348,14 +350,14 @@ class StorageTest : OneLedger() {
 
     private val everyColumnFamily = listOf(
         "default", "entries", "item_forms", "registry", "meta", "nested_owners", "tx", "placed_forms",
-        "block_payloads", "compensated", "confiscations", "by_chunk",
+        "block_payloads", "compensated", "confiscations", "by_chunk", "by_actor",
     )
 
     // Fails when the families change: bump the schema version, don't just edit the list.
     @Test
     fun `a fresh ledger is stamped with the version that matches its families`() {
         reopen {
-            assertEquals(8L, storedSchemaOf(dir))
+            assertEquals(9L, storedSchemaOf(dir))
             assertEquals(everyColumnFamily.sorted(), familiesOf(dir).sorted())
         }
     }
@@ -822,6 +824,23 @@ class StorageTest : OneLedger() {
     private fun dropTransfer(ts: Long) = Transfer(
         Cause.DROP_FROM_HAND, aliceInv, ItemEntityRef(UUID.randomUUID()), torch, null, 2, ts, actor = alice, spot = dropAt,
     )
+
+    // A throw out of a chest touches none of the thrower's slots, so only the actor index leads from them to it:
+    // once per movement, on the chest's side, and a purge takes the entry with the posting.
+    @Test
+    fun `a throw out of a chest is found by its actor and its index entry goes with a purge`() {
+        log.submit(Transfer(Cause.CONTAINER_THROW, chest, ItemEntityRef(UUID.randomUUID()), torch, null, 3, T0 + 40, actor = alice, spot = dropAt))
+        log.submit(dropTransfer(T0 + 50))
+        log.drain()
+
+        assertEquals(listOf(chest to -3), log.actorPage(alice, 0, Long.MAX_VALUE, 10).entries.map { it.holder to it.qty })
+        assertTrue(log.actorPage(alice, T0 + 41, Long.MAX_VALUE, 10).entries.isEmpty())
+        assertTrue(log.actorPage(bob, 0, Long.MAX_VALUE, 10).entries.isEmpty())
+
+        log.purgeBefore(T0 + 100, dryRun = false)
+        assertTrue(log.actorPage(alice, 0, Long.MAX_VALUE, 10).entries.isEmpty())
+        reopen { assertEquals(emptyMap<String, String>(), rawRowsOf(dir, "by_actor")) }
+    }
 
     // Zcode holds y in -32768..32767; a drop from above that is still booked, without a spot.
     @Test

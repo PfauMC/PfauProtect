@@ -436,7 +436,8 @@ class RollbackReader(
 
     /**
      * Where the players' rows in the window stand, world by world: the block plane's index of rows by
-     * actor, and the positions they traded items with — the far ends of the rows under their own slots.
+     * actor, the positions they traded items with — the far ends of the rows under their own slots — and
+     * the containers they threw out of, which only the ledger's actor index leads to.
      * Only worlds whose history is open are seen; a world that is not loaded cannot be rolled back.
      */
     fun touchedBy(users: Set<UUID>, fromTs: Long, toTs: Long): Map<UUID, Set<WorldBlock>>? {
@@ -457,6 +458,12 @@ class RollbackReader(
                     val at = entry.counterparty.block ?: continue
                     if (blocks.get(at.world) != null) touched.getOrPut(at.world) { HashSet() } += at
                 }
+            }
+            val thrown = ledger.actorPage(user, fromTs, toTs, MAX_ROLLBACK_ROWS)
+            if (!thrown.complete || thrown.unreadable > 0) return null
+            for (entry in thrown.entries) {
+                val at = entry.holder.block ?: continue
+                if (blocks.get(at.world) != null) touched.getOrPut(at.world) { HashSet() } += at
             }
         }
         return touched

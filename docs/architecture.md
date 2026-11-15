@@ -20,7 +20,7 @@ Packages under `io.pfaumc.pfauprotect`; tests sit in the package of the code the
 
 **Item plane (`Storage.kt`, `RocksItemLog`).** Single RocksDB at `ledger/`, with column families entries,
 item_forms, registry, meta, nested_owners, tx, placed_forms, block_payloads, compensated (which postings a
-rollback gave back), confiscations (what offline players owe a rollback) and by_chunk. Capture transactions are
+rollback gave back), confiscations (what offline players owe a rollback), by_chunk and by_actor. Capture transactions are
 serialized by one writer thread (`pfauprotect-ledger-writer`); `purgeBefore` and registry persistence write directly
 (`db.write`, `writeSynced`) under the shared database lock. Logically, every change is a `Transfer` of `qty > 0`
 from one `Holder` to another (`Model.kt`); `entries` stores it as two `LedgerEntry` postings, a negative one on the
@@ -35,6 +35,11 @@ the damage; rows without a spot stay version 0). The player's own posting also g
 layout under `HolderType.SPOT_TAG` (0xF0), whose value is that posting's `entries` key, so `boxPage` finds it by radius;
 the item entity's half is not indexed, which keeps one movement from showing twice. Schema 8; rows written before it
 have no spot and stay unindexed.
+
+`by_actor` (schema 9) leads from a player to rows that name them only as the actor, with none of their slots at either
+end, which `u:` without a radius would otherwise never reach: today only `CONTAINER_THROW` (`ACTOR_INDEXED`). Key:
+player number, time, the source posting's `entries` key; `actorPage` reads it newest first. Older rows have no such
+cause, so a widened base needs no rebuild.
 
 **Block plane (`BlockStore.kt`, `BlockLogs`).** One RocksDB per world (`blocks/<uuid>`), opened and closed on
 world load and unload, with column families rows, meta, by_actor (every row that names an actor, keyed by the
@@ -128,5 +133,12 @@ victim, so `p:` finds them, while `u:` still names only what the victim did.
   row from both ends (`crosses`, `Action.crossing`) rather than by cause, so they work in `p:`, `r:`, the inspector and `u:`
   (which also keeps a player's rows that left their own slots with no position: drops, pickups, eating). `item`
   leaves containers out. Block placement and purge openings are never crossings. A rollback refuses them (`refusalOf`).
+- A withdrawal (`container`, `-container`, `steal`) is a `CONTAINER_REMOVE` or a `CONTAINER_THROW`: Q or Ctrl+Q over
+  a slot of a block's or another entity's container throws straight out of it. The click pins that slot to the drop's
+  intent (`droppingFrom`, cleared by the next pass), since an intent otherwise explains only the player's own slots.
+  Their own ender chest and crafting grid stay `DROP_FROM_MENU`.
+- A holder read (`Storage.holderPage`) takes the lookup's `RowFilter` as it reads, as a radius does, so its count
+  is of rows asked for: filtered afterwards, a busy player's newest rows used the read up and an older match behind
+  them was answered as nothing. `HOLDER_STEPS` bounds the walk and a cut read says so.
 - `/pp purge` works per plane: the item ledger (`Storage.purgeBefore`) deletes every posting older than the cutoff and, in the same write, records what each holder held then as `Cause.PURGE_OPENING` openings, so balances hold; the block log (`BlockStore.purgeBefore`) deletes old rows except the newest of each position no later row covers, their index entries, and entity rows older than the cutoff. The chat log (`ChatLog.purgeBefore`) deletes every line older than it; `chat.keep-days`
 runs the same once a day.
