@@ -414,6 +414,55 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.any { it.contains("13 64 -3") }, "$lines")
     }
 
+    // Ctrl+Q over somebody else's chest empties it onto the ground as surely as a click into the inventory, and a
+    // griefer who throws and picks up must not slip past `steal`. A throw out of one's own slots is no container's.
+    @Test
+    fun `a throw out of somebody else's chest is a withdrawal and a theft, one out of the hands is not`() {
+        log.submit(listOf(BlockChange(12, 64, -3, AIR, "minecraft:chest", Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.drain()
+        val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
+        val spot = WorldBlock(world, 12, 64, -3)
+        shared.submit(Transfer(Cause.CONTAINER_THROW, Container(world, 12, 64, -3, 1), ItemEntityRef(UUID.randomUUID()), diamond, null, 5, T0 + 10, actor = alice, spot = spot))
+        shared.submit(Transfer(Cause.DROP_FROM_MENU, PlayerInv(alice, 0), ItemEntityRef(UUID.randomUUID()), diamond, null, 7, T0 + 20, actor = alice, spot = spot))
+        shared.drain()
+
+        for (asked in listOf("action:steal", "action:-container", "action:container")) {
+            val lines = said(parseLookupQuery("$asked radius:3"))
+            assertTrue(lines.any { "×5" in it }, "$asked: $lines")
+            assertTrue(lines.none { "×7" in it }, "$asked: $lines")
+        }
+        val dropped = said(parseLookupQuery("action:drop radius:3"))
+        assertTrue(dropped.any { "×5" in it } && dropped.any { "×7" in it }, "$dropped")
+    }
+
+    // A throw out of somebody's chest names the thrower only as its actor, and a player's lookup without a radius
+    // reads their own slots and the places of their blocks: the actor index is what leads it to the throw.
+    @Test
+    fun `a player's lookup without a radius finds their throw out of a chest`() {
+        val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
+        shared.submit(Transfer(Cause.CONTAINER_THROW, Container(world, 12, 64, -3, 1), ItemEntityRef(UUID.randomUUID()), diamond, null, 5, T0, actor = alice, spot = WorldBlock(world, 12, 64, -3)))
+        shared.drain()
+        val players = mapOf("Alice" to alice, "Bob" to bob)
+
+        val lines = said(parseLookupQuery("user:Alice radius:global action:-container"), players = players)
+        assertTrue(lines.any { "item.minecraft.diamond" in it && "×5" in it }, "$lines")
+        assertTrue(said(parseLookupQuery("user:Bob radius:global"), players = players).none { "×5" in it })
+    }
+
+    // A player's slots were read to a count and filtered after: a busy afternoon filled the count with what was not
+    // asked for, and the one withdrawal of a diamond behind it was answered as nothing, with the read called whole.
+    @Test
+    fun `a player's lookup for one item finds it behind many newer rows of others`() {
+        val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, Container(world, 11, 64, -3, 0), PlayerInv(alice, 0), diamond, null, 3, T0))
+        repeat(200) { shared.submit(Transfer(Cause.PICKUP, ItemEntityRef(UUID.randomUUID()), PlayerInv(alice, 1), stone, null, 1, T0 + 10 + it)) }
+        shared.drain()
+
+        val lines = said(LookupQuery(users = listOf("Alice"), radius = -1, included = listOf("diamond"), rows = 1, all = true), players = mapOf("Alice" to alice))
+
+        assertTrue(lines.any { "item.minecraft.diamond" in it && "×3" in it }, "$lines")
+    }
+
     @Test
     fun `a span leaves out what came after its near end`() {
         val now = System.currentTimeMillis()
@@ -498,27 +547,30 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.any { it.contains("event:") }, "the block plane lost it: $lines")
     }
 
-    // A read cut short must say so rather than answer "no entries", which would clear somebody of the
-    // rows behind the cut, and it offers no page 2: that page starts past every matched row and is empty.
+    // One place asks its filter of each row as it reads, as a radius does, so forty rows of another kind newer
+    // than the one asked for no longer use the read up and leave it behind a cut.
     @Test
-    fun `a read that stopped early says so and offers no next page`() {
+    fun `one place reads past the rows its filter drops`() {
         val here = WorldBlock(world, 10, 64, -3)
-        repeat(40) { i -> shared.submit(Transfer(Cause.BLK_TNT, here, Void, stone, null, 1, T0 + i)) }
-        shared.drain()
-        // Forty rows of the position, more than one row's worth of read, and none of them the kind asked for.
-        val query = LookupQuery(rows = 1, causes = setOf(Cause.BLOCK_PLACE))
-
-        val empty = said(query)
-        assertTrue(empty.single().contains("limit:4"), "$empty")
-
-        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, here, stone, null, 1, T0 + 100))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, here, stone, null, 1, T0))
+        repeat(40) { i -> shared.submit(Transfer(Cause.BLK_TNT, here, Void, stone, null, 1, T0 + 1 + i)) }
         shared.drain()
 
-        val lines = said(query)
+        val lines = said(LookupQuery(rows = 1, causes = setOf(Cause.BLOCK_PLACE)))
         assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
-        assertTrue(lines.none { it.contains("page:2") }, "$lines")
-        // Said inside the page, above its closing rule.
-        assertTrue(lines.dropLast(1).last().contains("limit:4"), "$lines")
+        assertTrue(lines.none { it.contains("limit:4") || it.contains("page:2") }, "$lines")
+    }
+
+    // Rows the filter keeps past what one read takes still stop it, and that has to be said rather than read as
+    // the whole history of the place.
+    @Test
+    fun `one place read cut short by the rows it keeps says so`() {
+        val here = WorldBlock(world, 10, 64, -3)
+        repeat(40) { i -> shared.submit(Transfer(Cause.BLOCK_PLACE, Void, here, stone, null, 1, T0 + i)) }
+        shared.drain()
+
+        val lines = said(LookupQuery(rows = 1, causes = setOf(Cause.BLOCK_PLACE), count = true))
+        assertTrue(lines.any { it.contains("the read stopped early") }, "$lines")
     }
 
     // A radius asks its filter of each row as it walks the index, so the rows it drops do not use up the read

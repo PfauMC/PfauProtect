@@ -117,6 +117,9 @@ enum class Cause(val id: Int) {
     BOOK_EDIT(0xB3),
     // The recipe book laying a recipe's ingredients into the grid out of the inventory.
     RECIPE_BOOK_FILL(0xB4),
+    // Q or Ctrl+Q over a slot of a block's or another entity's container in its window: thrown straight out of
+    // the container, a withdrawal that never passed through the player's hands.
+    CONTAINER_THROW(0xB5),
 
     CRAFT_CONSUME(0x40),
     CRAFT_RESULT(0x41),

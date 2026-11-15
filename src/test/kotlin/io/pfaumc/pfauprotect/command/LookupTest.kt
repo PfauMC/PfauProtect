@@ -225,13 +225,14 @@ class LookupTest {
 
     @Test
     fun `actions map onto the causes the capture emits`() {
-        assertEquals(setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE), parseLookupQuery("a:container").causes)
+        // A throw out of a chest's window is a withdrawal too.
+        assertEquals(setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW), parseLookupQuery("a:container").causes)
         assertEquals(setOf(Cause.CONTAINER_ADD), parseLookupQuery("a:+container").causes)
-        assertEquals(setOf(Cause.CONTAINER_REMOVE), parseLookupQuery("a:-container").causes)
+        assertEquals(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW), parseLookupQuery("a:-container").causes)
         assertEquals(setOf(Cause.CONTAINER_ADD), parseLookupQuery("a:deposit").causes)
-        assertEquals(setOf(Cause.CONTAINER_REMOVE), parseLookupQuery("a:withdraw").causes)
+        assertEquals(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW), parseLookupQuery("a:withdraw").causes)
         assertEquals(
-            setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
+            setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW),
             parseLookupQuery("a:+container,-container").causes,
         )
         val explosion = parseLookupQuery("a:explosion").causes!!

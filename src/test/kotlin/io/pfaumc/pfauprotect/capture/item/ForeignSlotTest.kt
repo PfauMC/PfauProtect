@@ -8,6 +8,7 @@ import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.Kind
 import io.pfaumc.pfauprotect.model.PlayerCursor
+import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.stub
 import io.pfaumc.pfauprotect.Spawns
@@ -28,7 +29,9 @@ import io.pfaumc.pfauprotect.testCodec
 import io.pfaumc.pfauprotect.Vanilla
 import org.junit.jupiter.api.extension.ExtendWith
 import org.bukkit.Material
+import org.bukkit.entity.Item
 import org.bukkit.entity.Player
+import org.bukkit.event.player.PlayerDropItemEvent
 import org.bukkit.event.inventory.ClickType
 import org.bukkit.event.inventory.InventoryAction
 import org.bukkit.event.inventory.InventoryClickEvent
@@ -148,6 +151,55 @@ class ForeignSlotTest {
 
         assertEquals(listOf(drop to 5), unspent)
         assertEquals(emptyList<List<Transfer>>(), written)
+    }
+
+    // Ctrl+Q over a chest's slot throws straight out of the chest. The row names that slot and the one who
+    // threw, rather than nothing at all and a chest the reconcile later finds short by an unnamed amount.
+    @Test
+    fun `a drop key over a chest's slot throws out of that slot`() {
+        val chest = arrayOfNulls<BukkitItemStack>(27)
+        chest[4] = BukkitItemStack(Material.IRON_BLOCK, 64)
+        val (clicker, view) = seated(inventoryStub(chest, InventoryType.CHEST, Inventory::class.java), InventoryType.CHEST)
+        listener.onOpen(InventoryOpenEvent(view))
+
+        listener.onClick(
+            InventoryClickEvent(view, InventoryType.SlotType.CONTAINER, 4, ClickType.CONTROL_DROP, InventoryAction.DROP_ALL_SLOT),
+        )
+        // The slot is already empty when the drop event fires.
+        chest[4] = null
+        val thrown = UUID.randomUUID()
+        val item = stub(Item::class.java, mapOf("getUniqueId" to thrown, "getItemStack" to BukkitItemStack(Material.IRON_BLOCK, 64)))
+        listener.onDropItem(PlayerDropItemEvent(clicker, item))
+        listener.recompute(clicker)
+
+        assertEquals(
+            listOf(listOf(Container(world, 1, 2, 3, 4), ItemEntityRef(thrown), 64, Cause.CONTAINER_THROW, player)),
+            written.flatten().map { listOf(it.from, it.to, it.qty, it.cause, it.actor) },
+        )
+        assertEquals(emptyList<Pair<Intent, Int>>(), unspent)
+    }
+
+    // The ender chest's slots are the player's own, so a drop key there stays an ordinary drop out of them.
+    @Test
+    fun `a drop key over the ender chest is a drop out of the player's own slot`() {
+        val ender = arrayOfNulls<BukkitItemStack>(27)
+        ender[4] = BukkitItemStack(Material.IRON_BLOCK, 64)
+        val (clicker, view) = seated(inventoryStub(ender, InventoryType.ENDER_CHEST, Inventory::class.java), InventoryType.ENDER_CHEST)
+        listener.onOpen(InventoryOpenEvent(view))
+
+        listener.onClick(
+            InventoryClickEvent(view, InventoryType.SlotType.CONTAINER, 4, ClickType.CONTROL_DROP, InventoryAction.DROP_ALL_SLOT),
+        )
+        ender[4] = null
+        val thrown = UUID.randomUUID()
+        val item = stub(Item::class.java, mapOf("getUniqueId" to thrown, "getItemStack" to BukkitItemStack(Material.IRON_BLOCK, 64)))
+        listener.onDropItem(PlayerDropItemEvent(clicker, item))
+        listener.recompute(clicker)
+
+        assertEquals(
+            listOf(listOf(PlayerEnder(player, 4), ItemEntityRef(thrown), 64, Cause.DROP_FROM_MENU, player)),
+            written.flatten().map { listOf(it.from, it.to, it.qty, it.cause, it.actor) },
+        )
     }
 
     private fun furnaceOpen(): Player {

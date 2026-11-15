@@ -171,11 +171,11 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
     ITEM_REMOVE(INVENTORY_CAUSES, "-item", "-items", "item-", "items-", crossing = Crossing(inward = false, outward = true, containers = false)),
 
     CONTAINER(
-        setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE),
+        setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW),
         "container", "chest", "transaction", "transactions",
     ),
     ADD(setOf(Cause.CONTAINER_ADD), "+container", "deposit", "deposits", "deposited"),
-    REMOVE(setOf(Cause.CONTAINER_REMOVE), "-container", "withdraw", "withdraws", "withdrew"),
+    REMOVE(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW), "-container", "withdraw", "withdraws", "withdrew"),
     LOOT(setOf(Cause.LOOT_GENERATE), "loot", "loot_generate"),
 
     // One filter over every station rather than one per station: an investigator asks what became of
@@ -247,14 +247,14 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
     ENTITY_REMOVE(emptySet(), "-entity", "-entities"),
     DROP(
         setOf(
-            Cause.DROP_FROM_HAND, Cause.DROP_FROM_MENU, Cause.DROP_MENU_CLOSE, Cause.DROP_ON_DISCONNECT,
+            Cause.DROP_FROM_HAND, Cause.DROP_FROM_MENU, Cause.DROP_MENU_CLOSE, Cause.DROP_ON_DISCONNECT, Cause.CONTAINER_THROW,
             Cause.INVENTORY_OVERFLOW_DROP, Cause.DEATH_DROP,
         ),
         "drop", "drops", "dropped", "thrown",
     ),
     PICKUP(setOf(Cause.PICKUP, Cause.PROJ_PICKUP, Cause.ITEM_PICKUP_BY_MOB, Cause.ITEM_PICKUP_BY_MOB_INV), "pickup", "picked", "pickups"),
     // What a player took out of a container somebody else put down.
-    STEAL(setOf(Cause.CONTAINER_REMOVE), "steal", "stolen", "theft"),
+    STEAL(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW), "steal", "stolen", "theft"),
     HOPPER(
         setOf(
             Cause.HOPPER_PULL_CONTAINER, Cause.HOPPER_PULL_GROUND, Cause.HOPPER_PUSH, Cause.HOPPER_MINECART_PULL,
@@ -372,6 +372,10 @@ private val DURATION = Regex("(\\d+)(mo|[ymwdhs])")
 // How far a world-wide lookup of a player walks their index, past the rows a filter dropped, before it
 // answers with what it found and says the read stopped.
 private const val GLOBAL_WALK = 4096
+
+// How many rows of one holder a lookup steps over looking for the ones its filter keeps, before it answers with
+// what it has and says the read stopped. A player's lookup reads a handful of holders, a box has BOX_STEPS.
+private const val HOLDER_STEPS = 50_000
 
 // How many positions and rows a radius lookup steps over in all, every chunk and plane together, before it
 // answers with what it has and says the read stopped; a box full of history costs a seek per position.
@@ -1540,7 +1544,13 @@ class Lookups(
         // Drops, pickups and eating have no position at all, so they are kept when they left a player's own
         // slots, as CoreProtect shows them; a click between two of one player's own slots is not that.
         fun own(holder: Holder) = (holder as? PlayerHolder)?.uuid ?: (holder as? EntitySlot)?.uuid?.takeIf { it in users }
-        val traded = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query).entries.filter {
+        val slots = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query)
+        // A throw straight out of somebody's container touches none of their slots and names them only as its actor.
+        // This world's only, as the read goes: another world's throws would use the read up.
+        val thrown = users.map { user ->
+            ledger.actorPage(user, fromTs, toTs, query.fetch, { (it.spot ?: it.holder.block)?.world == world && keeps.keeps(it) }, HOLDER_STEPS)
+        }
+        val traded = (slots.entries + thrown.flatMap { it.entries }).filter {
             // A drop or pickup from this version on says where it happened; the world decides, as for a block.
             val at = it.spot ?: it.counterparty.block
             if (at != null) at.world == world else own(it.counterparty).let { mine -> mine == null || mine != own(it.holder) }
@@ -1553,7 +1563,7 @@ class Lookups(
         val lines = itemLines((traded + dropped).distinctBy { it.ref }, query) +
             planeLines(world, (rows + undoes).distinct(), (entities + entityUndoes).distinct(), keeps)
         val who = query.users.joinToString(", ")
-        return Found(lines, own.all { it.complete }, Ui.text(tr("everything by $who", "всё от $who")))
+        return Found(lines, own.all { it.complete } && slots.complete && thrown.all { it.complete }, Ui.text(tr("everything by $who", "всё от $who")))
     }
 
     /**
@@ -1828,7 +1838,8 @@ class Lookups(
     )
 
     private fun holderRows(holders: List<Holder>, fromTs: Long, toTs: Long, query: LookupQuery): EntryPage {
-        val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = query.fetch) }
+        val keeps = rowFilter(query)
+        val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = query.fetch, keep = keeps::keeps, steps = HOLDER_STEPS) }
         return EntryPage(pages.flatMap { it.entries }, pages.all { it.complete })
     }
 
@@ -1839,7 +1850,7 @@ class Lookups(
         val rest = if (query.steal) withoutSteal(query)?.let(::rowFilter) else null
         val placers = HashMap<Container, Placer>()
         return entries.filter {
-            keeps.keeps(it) && (!query.steal || it.cause != Cause.CONTAINER_REMOVE || rest?.keeps(it) == true || stolen(it, placers))
+            keeps.keeps(it) && (!query.steal || it.cause !in Action.REMOVE.causes || rest?.keeps(it) == true || stolen(it, placers))
         }
     }
 
@@ -1858,7 +1869,7 @@ class Lookups(
     // position whose placement lies past the read says nothing either way, and its withdrawals are not
     // counted as theft: the owner's own would be.
     private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, Placer>): Boolean {
-        if (entry.cause != Cause.CONTAINER_REMOVE) return false
+        if (entry.cause !in Action.REMOVE.causes) return false
         // Either half of the withdrawal: a place reads the container's, a player's actions their own slots'.
         val chest = ((entry.holder as? Container) ?: (entry.counterparty as? Container))?.copy(slot = 0) ?: return false
         val placer = placers.getOrPut(chest) {

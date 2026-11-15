@@ -72,9 +72,10 @@ class Intent(
     // An intent is about the slots of the player who left it, so the end that is not its counterparty
     // has to be one of theirs. Matching on form alone lets an open container's own unpaired loss take
     // the player's drop intent, because the top inventory is snapshotted first and is therefore
-    // offered every intent ahead of the player's own slots.
+    // offered every intent ahead of the player's own slots. A throw out of a container is the one
+    // exception, and it always names the slot it was thrown out of.
     internal fun explains(end: Holder, form: ByteArray, player: UUID?, carried: (Nested) -> Boolean = { false }) =
-        (player != null && end.heldBy(player) || end is Nested && carried(end)) &&
+        (player != null && end.heldBy(player) || end is Nested && carried(end) || cause == Cause.CONTAINER_THROW && holder != null) &&
             (holder == null || holder == end) && matches(form)
 
     // A recorded movement that names neither end is still not a label: read as one it would emit the

@@ -14,6 +14,7 @@ import net.kyori.adventure.text.Component
 internal fun verb(cause: Cause): Component = when (cause) {
     PICKUP -> w("picked up", "подбор")
     DROP_FROM_HAND, DROP_FROM_MENU, DROP_MENU_CLOSE -> w("dropped", "выброс")
+    CONTAINER_THROW -> w("thrown out", "выброс")
     DROP_ON_DISCONNECT -> w("dropped on quit", "выброс при выходе")
     INVENTORY_OVERFLOW_DROP -> w("dropped, no room", "выпало, нет места")
     CURSOR_PLACE, CURSOR_TAKE, CURSOR_SWAP, QUICK_MOVE, HOTBAR_SWAP, OFFHAND_SWAP, COLLECT_ALL,
