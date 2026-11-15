@@ -494,21 +494,22 @@ internal fun handMoves(
     fun ownOrNamed(giver: UUID?, source: LedgerEntry) =
         giver == player || giver in named && source.timestamp in fromTs..toTs && keeps(source)
     // How much of a pile was dropped by such a giver, by its births: a pile another merged into is part theirs.
-    // What earlier pickups of this rollback already counted as theirs is spent, through the shared map.
-    fun sharedIn(pile: ItemEntityRef, form: Long, hops: Int = 0): Int =
-        rowsOf(pile).filter { it.qty > 0 && it.itemFormId == form }.sumOf { birth ->
+    // Less what pickups of this rollback already counted as theirs, in this pile or one merged on from it.
+    fun handedShare(pile: ItemEntityRef, form: Long, hops: Int = 0): Int {
+        val share = rowsOf(pile).filter { it.qty > 0 && it.itemFormId == form }.sumOf { birth ->
             when {
                 birth.cause != Cause.ITEM_MERGE -> if (ownOrNamed((birth.counterparty as? PlayerHolder)?.uuid, birth)) birth.qty else 0
                 // Through every merge before it, as far as a trace follows one.
                 hops >= MAX_HOPS -> 0
-                else -> (birth.counterparty as? ItemEntityRef)?.let { minOf(birth.qty, sharedIn(it, form, hops + 1)) } ?: 0
+                else -> (birth.counterparty as? ItemEntityRef)?.let { minOf(birth.qty, handedShare(it, form, hops + 1)) } ?: 0
             }
         }
-    fun handedShare(pile: ItemEntityRef, form: Long): Int = sharedIn(pile, form) - spent.getOrDefault(pile to "handed", 0)
+        return maxOf(0, share - spent.getOrDefault(pile to "handed", 0))
+    }
     // Of what came in, how much is to be taken away.
     fun toTake(entry: LedgerEntry, n: Int): Int = when (val from = entry.counterparty) {
         is ItemEntityRef -> {
-            val theirs = minOf(n, maxOf(0, handedShare(from, entry.itemFormId)))
+            val theirs = minOf(n, handedShare(from, entry.itemFormId))
             spent.merge(from to "handed", theirs, Int::plus)
             n - theirs
         }

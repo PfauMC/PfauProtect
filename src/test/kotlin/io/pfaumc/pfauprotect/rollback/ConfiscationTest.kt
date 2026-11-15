@@ -416,6 +416,26 @@ class ConfiscationTest : OneLedger() {
         assertEquals(mapOf((Carrier(alice) to id(stone)) to 6), owed(moves(inward = true, outward = false)))
     }
 
+    // Alice picked two out of a pile of hers and Bob's; Bob's two merged on into a mob's two, and she picked those
+    // four up as well. Her share went with the first pickup: `+inventory` takes all four of the second.
+    @Test
+    fun `a share picked up once is not counted again after a merge`() {
+        val hers = ItemEntityRef(UUID.randomUUID())
+        val his = ItemEntityRef(UUID.randomUUID())
+        val mobs = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 0), hers, stone, null, 2, T0))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 0), his, stone, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.ITEM_MERGE, his, hers, stone, null, 2, T0 + 2))
+        log.submit(Transfer(Cause.PICKUP, hers, PlayerInv(alice, 0), stone, null, 2, T0 + 3))
+        log.submit(Transfer(Cause.MOB_DROP, Void, mobs, stone, null, 2, T0 + 4))
+        log.submit(Transfer(Cause.ITEM_MERGE, hers, mobs, stone, null, 2, T0 + 5))
+        log.submit(Transfer(Cause.PICKUP, mobs, PlayerInv(alice, 1), stone, null, 4, T0 + 6))
+        log.drain()
+
+        val taken = handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward = true, outward = false, containers = true)) { false } }!!
+        assertEquals(4, taken.flatMap { it.owed }.sumOf { it.qty })
+    }
+
     // Bob knocked out Alice's totem: nothing fell, the totem from her off hand comes back into it out of
     // nothing, and only once.
     @Test
