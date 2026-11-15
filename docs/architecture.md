@@ -22,7 +22,14 @@ Packages under `io.pfaumc.pfauprotect`; tests sit in the package of the code the
 item_forms, registry, meta, nested_owners, tx, placed_forms, block_payloads, compensated (which postings a
 rollback gave back), confiscations (what offline players owe a rollback), by_chunk and by_actor. Capture transactions are
 serialized by one writer thread (`pfauprotect-ledger-writer`); `purgeBefore` and registry persistence write directly
-(`db.write`, `writeSynced`) under the shared database lock. Logically, every change is a `Transfer` of `qty > 0`
+(`db.write`, `writeSynced`) under the shared database lock. The ledger writer and every world's block writer
+share `WriterProgress`: a batch the base refuses (a full disk) is kept and retried, from 1 s up to every 30 s,
+with what it had minted forgotten so the retry writes it again. Meanwhile new work queues up to
+`LEDGER_BACKLOG_LIMIT` transfers or `BLOCK_BACKLOG_LIMIT` changes; past that it is dropped and counted
+(`pfauprotect_dropped`), except rollback rows and notes, which are always kept. The failure is logged as `writer cannot write` once and then every 5 minutes, which is
+what the Grafana alert matches, and `pfauprotect_writer_failing` is 1 for the base. A full disk stops a base, and
+RocksDB resumes it by itself within seconds of the disk having room. `drain` fails at once while a writer is failing,
+so rollbacks refuse to run on a journal that is behind. Logically, every change is a `Transfer` of `qty > 0`
 from one `Holder` to another (`Model.kt`); `entries` stores it as two `LedgerEntry` postings, a negative one on the
 source and a positive one on the target, and skips holders that are not addressable. Holders are:
 player inv/equip/cursor/ender, menu slot (not addressable), container, entity slot, item entity, nested

@@ -21,6 +21,8 @@ import org.rocksdb.LRUCache
 import org.rocksdb.Options
 import org.rocksdb.ReadOptions
 import org.rocksdb.RocksDB
+import org.rocksdb.RocksDBException
+import org.rocksdb.Status
 import org.rocksdb.WriteBatch
 import org.rocksdb.WriteBufferManager
 import org.rocksdb.WriteOptions
@@ -28,6 +30,7 @@ import java.nio.file.Files
 import io.pfaumc.pfauprotect.model.Void
 import io.pfaumc.pfauprotect.model.Cause
 import java.nio.file.Path
+import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.BlockingQueue
 import java.util.concurrent.ConcurrentHashMap
@@ -103,6 +106,15 @@ internal const val MAX_BATCH = 256
 internal const val WRITER_POLL_MILLIS = 50L
 internal const val WAL_FLUSH_INTERVAL_NANOS = 1_000_000_000L
 internal const val DRAIN_TIMEOUT_NANOS = 10_000_000_000L
+internal const val WRITER_RETRY_MIN_MILLIS = 1_000L
+internal const val WRITER_RETRY_MAX_MILLIS = 30_000L
+internal const val WRITER_REPORT_MILLIS = 5 * 60_000L
+
+// How far a writer that cannot write may fall behind before it drops what comes. At a few hundred
+// bytes a transfer or a change, the ledger and a busy world together stay within a few hundred MB.
+// ponytail: counted in items, not bytes; size them by bytes if a backlog of big items ever shows up.
+internal const val LEDGER_BACKLOG_LIMIT = 200_000L
+internal const val BLOCK_BACKLOG_LIMIT = 500_000L
 private const val UNASSIGNED = -1
 
 // Longer than the longest tail a key can carry after any prefix this class scans, so a prefix padded
@@ -168,6 +180,10 @@ private val META_BLOCK_CURSOR = "block_cursor".toByteArray()
 private val WORLD_BLOCK_PREFIX = byteArrayOf(HolderType.WORLD_BLOCK.toByte())
 
 internal val LOGGER: Logger = Logger.getLogger("PfauProtect")
+
+// A base that cannot write, a full disk above all, rather than a row that cannot be: the whole batch is
+// worth another try. Anything else, corruption included, would fail the same way every time.
+internal fun Throwable.isIoError() = this is RocksDBException && status?.code == Status.Code.IOError
 
 internal fun longBytes(v: Long): ByteArray = ByteWriter(8).longBE(v).toByteArray()
 
@@ -522,63 +538,156 @@ internal class ChunkedBatch(private val db: RocksDB, private val options: WriteO
     override fun close() = batch.close()
 }
 
-// What the writer of either base has been handed, what it has written, and why it stopped if it did.
-// `writer` and `unit` name them in the errors: the ledger writer and its transfers, a block writer and
-// its submissions.
-internal class WriterProgress<T>(private val writer: String, private val unit: String, private val queue: BlockingQueue<T>) {
+// What the writer of either base has been handed, what it has written, and what keeps it from writing
+// if something does. Counted in `unit`s, which `weight` tells per item: the ledger writer and its
+// transfers, a block writer and its changes. A writer `capacity` units behind drops what comes rather
+// than holding it: a disk that stays full must not take the heap with it.
+internal class WriterProgress<T>(
+    private val writer: String,
+    private val unit: String,
+    private val queue: BlockingQueue<T>,
+    private val capacity: Long,
+    private val weight: (T) -> Int,
+) {
     val submitted = AtomicLong()
     val written = AtomicLong()
+    val dropped = AtomicLong()
 
+    // The latest failure for as long as the writer cannot write, null once it writes again.
     @Volatile
     var failure: Throwable? = null
+        private set
+
+    @Volatile
+    private var failingSince = 0L
+    private var droppedBefore = 0L
+    private var lastReport = 0L
+
+    @Volatile
+    private var lastDropReport = 0L
 
     val backlog: Long get() = submitted.get() - written.get()
+
+    // Into the writer's own queue or, for the ledger's notes, a second one it also takes. False when the
+    // writer is too far behind, unless `bounded` is off: for what must not be lost even then. One item
+    // larger than the whole capacity still goes to an idle writer. The room is taken by a compare-and-set,
+    // so region threads offering at once cannot all pass the check and overshoot it together.
+    fun <Q> offer(into: BlockingQueue<Q>, item: Q, units: Int, bounded: Boolean = true): Boolean {
+        while (true) {
+            val before = submitted.get()
+            val behind = before - written.get()
+            if (bounded && behind > 0 && behind + units > capacity) {
+                val total = dropped.addAndGet(units.toLong())
+                Metrics.dropped.labelValues(writer).inc(units.toDouble())
+                val now = System.currentTimeMillis()
+                if (now - lastDropReport >= WRITER_REPORT_MILLIS) {
+                    lastDropReport = now
+                    LOGGER.log(Level.WARNING, "$writer writer is $behind $unit behind, the most it holds, and drops what comes: $total dropped so far")
+                }
+                return false
+            }
+            if (submitted.compareAndSet(before, before + units)) break
+        }
+        into.add(item)
+        return true
+    }
 
     fun drain() {
         val target = submitted.get()
         val deadline = System.nanoTime() + DRAIN_TIMEOUT_NANOS
         while (written.get() < target) {
-            failIfStopped()
+            failIfFailing()
             check(System.nanoTime() < deadline) {
                 "$writer writer did not catch up in ${DRAIN_TIMEOUT_NANOS / 1_000_000} ms, " +
                     "${target - written.get()} $unit are unwritten"
             }
             Thread.sleep(1)
         }
-        failIfStopped()
+        failIfFailing()
     }
 
-    private fun failIfStopped() {
-        failure?.let { throw IllegalStateException("$writer writer stopped and ${queue.size} $unit are unwritten", it) }
+    // At once rather than after the timeout: a writer that cannot write will not catch up in it either.
+    private fun failIfFailing() {
+        failure?.let {
+            throw IllegalStateException("$writer writer cannot write since ${Instant.ofEpochMilli(failingSince)}, $backlog $unit are unwritten", it)
+        }
     }
 
-    // The loop both writers run: a batch at a time until `finished` says an empty queue is the end, with the
-    // log fsynced once a second. `beforeEach` runs after every wait, whether anything came or not. A failure
-    // stops the writer for good and is kept for `drain` to report.
-    fun run(db: RocksDB, finished: () -> Boolean, beforeEach: () -> Unit = {}, write: (List<T>) -> Unit) {
+    // The loop both writers run: a batch at a time until `stopping` and `idle` together say an empty
+    // queue is the end, with the log fsynced once a second. `beforeEach` runs after every wait, whether
+    // anything came or not. A batch that fails is kept and tried again, sooner at first and then every
+    // half minute, until the base takes it. A full disk stops a base, and RocksDB resumes it by itself
+    // once there is room (to it ENOSPC is an error worth retrying); the writer then goes on where it was,
+    // nothing lost but what did not fit in the meantime. Only at shutdown does it give up.
+    fun run(db: RocksDB, stopping: () -> Boolean, idle: () -> Boolean = { true }, beforeEach: () -> Unit = {}, write: (List<T>) -> Unit) {
         var lastFlush = System.nanoTime()
-        try {
-            while (true) {
-                val first = queue.poll(WRITER_POLL_MILLIS, TimeUnit.MILLISECONDS)
-                beforeEach()
-                if (first == null && finished()) return
-                if (first != null) {
-                    val batched = ArrayList<T>(MAX_BATCH)
-                    batched += first
-                    queue.drainTo(batched, MAX_BATCH - 1)
-                    Metrics.writes.labelValues(writer).startTimer().use { write(batched) }
-                    written.addAndGet(batched.size.toLong())
-                    Metrics.written.labelValues(writer).inc(batched.size.toDouble())
+        var held: List<T>? = null
+        var pause = WRITER_RETRY_MIN_MILLIS
+        while (true) {
+            val batch = held ?: queue.poll(WRITER_POLL_MILLIS, TimeUnit.MILLISECONDS)?.let { first ->
+                ArrayList<T>(MAX_BATCH).also {
+                    it += first
+                    queue.drainTo(it, MAX_BATCH - 1)
                 }
+            }
+            try {
+                // Held until written, so a failure in `beforeEach` keeps it as well, and one in the log
+                // flush after it cannot have it written twice.
+                held = batch
+                beforeEach()
+                if (batch != null) {
+                    Metrics.writes.labelValues(writer).startTimer().use { write(batch) }
+                    val units = batch.sumOf(weight).toLong()
+                    written.addAndGet(units)
+                    Metrics.written.labelValues(writer).inc(units.toDouble())
+                }
+                held = null
                 if (System.nanoTime() - lastFlush >= WAL_FLUSH_INTERVAL_NANOS) {
                     db.flushWal(true)
                     lastFlush = System.nanoTime()
                 }
+            } catch (failure: Throwable) {
+                failed(failure)
+                if (stopping()) {
+                    LOGGER.log(Level.SEVERE, "$writer writer stopped at shutdown without writing, $backlog $unit are lost")
+                    return
+                }
+                val until = System.nanoTime() + pause * 1_000_000
+                while (!stopping() && System.nanoTime() < until) Thread.sleep(WRITER_POLL_MILLIS)
+                pause = minOf(pause * 2, WRITER_RETRY_MAX_MILLIS)
+                continue
             }
-        } catch (failure: Throwable) {
-            this.failure = failure
-            LOGGER.log(Level.SEVERE, "$writer writer stopped, ${queue.size} $unit are unwritten and further ones are dropped", failure)
+            pause = WRITER_RETRY_MIN_MILLIS
+            if (failure != null) recovered()
+            if (batch == null && stopping() && idle()) return
         }
+    }
+
+    // "cannot write" in both lines on purpose: it is what the alert looks for.
+    private fun failed(cause: Throwable) {
+        val now = System.currentTimeMillis()
+        if (failure == null) {
+            failingSince = now
+            droppedBefore = dropped.get()
+            lastReport = now
+            failure = cause
+            LOGGER.log(Level.SEVERE, "$writer writer cannot write; it keeps $backlog $unit and tries again until it can", cause)
+            return
+        }
+        failure = cause
+        if (now - lastReport < WRITER_REPORT_MILLIS) return
+        lastReport = now
+        LOGGER.log(
+            Level.WARNING,
+            "$writer writer cannot write for ${(now - failingSince) / 60_000} min now, " +
+                "$backlog $unit wait, ${dropped.get() - droppedBefore} dropped: ${cause.message}",
+        )
+    }
+
+    private fun recovered() {
+        val minutes = (System.currentTimeMillis() - failingSince) / 60_000
+        failure = null
+        LOGGER.log(Level.INFO, "$writer writer writes again after $minutes min, ${dropped.get() - droppedBefore} $unit were dropped meanwhile")
     }
 }
 
@@ -690,9 +799,13 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     private val pendingNotes = ConcurrentHashMap<NoteKey, NoteWrite>()
     private val noteQueue = LinkedBlockingQueue<NoteWrite>()
-    private val progress = WriterProgress("ledger", "transfers", queue)
+    private val progress = WriterProgress("ledger", "transfers", queue, LEDGER_BACKLOG_LIMIT) { it.size }
+
+    // What the writer took off `noteQueue` and could not write yet; the writer's alone.
+    private var heldNotes: List<NoteWrite>? = null
 
     val backlog: Long get() = progress.backlog
+    val failing: Boolean get() = progress.failure != null
 
     /** How many postings the ledger holds, as RocksDB estimates it without reading them. */
     fun estimatedRows(): Map<String, Long> = dbLock.read {
@@ -807,9 +920,10 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     /** Every movement in the list shares one `tx_id`, which is what carries a graph walk across `Void`. */
     fun submit(transaction: List<Transfer>) {
         // Once the writer is told to stop nobody takes the queue, and `drain` would wait for it in vain.
-        if (!running || progress.failure != null || transaction.isEmpty()) return
-        progress.submitted.incrementAndGet()
-        queue.add(transaction)
+        if (!running || transaction.isEmpty()) return
+        // A rollback's rows follow a world it has already changed: dropped, a second rollback would give
+        // the same items back again.
+        progress.offer(queue, transaction, transaction.size, bounded = transaction.none { it.cause == Cause.ROLLBACK })
     }
 
     fun drain() = progress.drain()
@@ -1287,10 +1401,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         if (closed) return
         val write = NoteWrite(NoteKey(family, at), value)
         pendingNotes[write.key] = write
-        // A stopped writer drains nothing, and the overlay above is all a read still gets.
-        if (progress.failure != null) return
-        progress.submitted.incrementAndGet()
-        noteQueue.add(write)
+        // Never dropped: a note is one per placed container or form, far fewer than the rows, and one left
+        // only on the overlay would be gone after a restart.
+        progress.offer(noteQueue, write, 1, bounded = false)
     }
 
     private fun familyOf(family: Int) = if (family == FORMS) placedFormsCf else nestedOwnersCf
@@ -1378,45 +1491,66 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
     private fun runWriter() = progress.run(
         db,
-        finished = { !running && noteQueue.isEmpty() },
+        stopping = { !running },
+        idle = { noteQueue.isEmpty() },
         beforeEach = {
-            val notes = ArrayList<NoteWrite>()
-            noteQueue.drainTo(notes)
+            val notes = heldNotes ?: ArrayList<NoteWrite>().also { noteQueue.drainTo(it) }
             if (notes.isNotEmpty()) {
+                heldNotes = notes
                 writeNotes(notes)
+                heldNotes = null
                 progress.written.addAndGet(notes.size.toLong())
             }
         },
     ) { writing.withLock { writeAll(it) } }
 
+    // Stands in, in tests, for a disk that refuses the batch.
+    @Volatile
+    internal var beforeWrite: () -> Unit = {}
+
     // A transaction that fails to encode is rolled back out of the batch and logged, so one bad row can't
-    // silence the writer; a failed write still stops it.
+    // silence the writer. A base that cannot write fails the whole batch instead, and the writer tries
+    // it again as it was.
     private fun writeAll(transactions: List<List<Transfer>>) {
-        WriteBatch().use { batch ->
-            pendingBatch = batch
-            try {
-                for (transaction in transactions.flatMap(::fitting)) {
-                    batch.setSavePoint()
-                    forms.recording()
-                    payloads.recording()
-                    try {
-                        writeTransaction(batch, transaction)
-                    } catch (failure: Exception) {
-                        batch.rollbackToSavePoint()
-                        // The forms this transaction named left with it; still interned, their numbers would
-                        // go to later postings with no form row behind them.
-                        forms.forgetRecorded()
-                        payloads.forgetRecorded()
-                        LOGGER.log(Level.SEVERE, "a movement could not be written and was dropped", failure)
-                    } finally {
-                        forms.stopRecording()
-                        payloads.stopRecording()
+        val txIdBefore = nextTxId
+        forms.recording()
+        payloads.recording()
+        try {
+            WriteBatch().use { batch ->
+                pendingBatch = batch
+                try {
+                    for (transaction in transactions.flatMap(::fitting)) {
+                        batch.setSavePoint()
+                        val formsBefore = forms.recorded()
+                        val payloadsBefore = payloads.recorded()
+                        try {
+                            writeTransaction(batch, transaction)
+                        } catch (failure: Exception) {
+                            if (failure.isIoError()) throw failure
+                            batch.rollbackToSavePoint()
+                            // The forms this transaction named left with it; still interned, their numbers would
+                            // go to later postings with no form row behind them.
+                            forms.forgetRecorded(formsBefore)
+                            payloads.forgetRecorded(payloadsBefore)
+                            LOGGER.log(Level.SEVERE, "a movement could not be written and was dropped", failure)
+                        }
                     }
+                } finally {
+                    pendingBatch = null
                 }
-            } finally {
-                pendingBatch = null
+                beforeWrite()
+                db.write(writeOptions, batch)
             }
-            db.write(writeOptions, batch)
+        } catch (failure: Throwable) {
+            // The same for the whole batch: its retry has to mint and stage them again. The transaction
+            // numbers go back too, so the retry writes the very rows this attempt would have.
+            forms.forgetRecorded()
+            payloads.forgetRecorded()
+            nextTxId = txIdBefore
+            throw failure
+        } finally {
+            forms.stopRecording()
+            payloads.stopRecording()
         }
     }
 
@@ -1649,12 +1783,17 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
 
         fun recording() = minted.set(ArrayList())
 
+        // How many this thread has minted since `recording()`, so `forgetRecorded` can take only those after.
+        fun recorded(): Int = minted.get()?.size ?: 0
+
         fun stopRecording() = minted.remove()
 
         @Synchronized
-        fun forgetRecorded() {
-            for (id in minted.get().orEmpty()) valueById.remove(id)?.let { idByValue.remove(FormKey(it), id) }
-            minted.get()?.clear()
+        fun forgetRecorded(since: Int = 0) {
+            val ids = minted.get() ?: return
+            val gone = ids.subList(since, ids.size)
+            for (id in gone) valueById.remove(id)?.let { idByValue.remove(FormKey(it), id) }
+            gone.clear()
         }
 
         // Unlike idOf, never mints: asking about a value must not intern it.
