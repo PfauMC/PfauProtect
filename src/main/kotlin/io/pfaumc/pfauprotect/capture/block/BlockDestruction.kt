@@ -80,6 +80,7 @@ import org.bukkit.entity.Creeper
 import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.FallingBlock
+import org.bukkit.entity.Fireball
 import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Player
 import org.bukkit.entity.Projectile
@@ -1074,9 +1075,12 @@ class BlockDestructionListener(
         // fire answers to whoever stands behind what lit it, and the whole chain off it with it.
         val entity = event.ignitingEntity
         if (player == null && entity != null) {
-            val by = behindChange(entity) ?: return
+            // A fireball's fire is filed even when nobody stands behind the shot: it is where a burnt
+            // building starts, and a lookup has to show it came out of the sky.
+            val fireball = entity is Fireball
+            val by = behindChange(entity) ?: if (fireball) null else return
             by.noted()?.let { attribution.placed(positionOf(block), lit, it) }
-            readBack(listOf(block), by.inferred(), Cause.BLK_FIRE_SPREAD)
+            readBack(listOf(block), by?.inferred(), if (fireball) Cause.BLK_FIREBALL else Cause.BLK_FIRE_SPREAD)
             return
         }
         if (player == null) {
@@ -1207,7 +1211,7 @@ class BlockDestructionListener(
         // its powder are whoever let the liquid run.
         val by = when {
             entity is Player -> entity.witnessed()
-            entity != null -> entities.summonerOf(entity.uniqueId)
+            entity != null -> entities.summonerOf(entity)
             cause == Cause.BLK_LIQUID_FORM || Tag.CONCRETE_POWDERS.isTagged(before.material) -> formedBy(block, before.asString)
             else -> null
         }
@@ -2117,7 +2121,7 @@ class BlockDestructionListener(
         litBy(entity)?.let { return it.witnessed() }
         (entity as? LightningStrike)?.let { return boltBy(it, entities::summonerOf) }
         (entity as? Vehicle)?.passengers?.firstOrNull { it is Player }?.let { return it.witnessed() }
-        return entities.summonerOf(firedBy(entity).uniqueId)
+        return entities.summonerOf(firedBy(entity))
     }
 
     private fun chestPartnerOf(block: Block): Block? {
@@ -2130,7 +2134,7 @@ class BlockDestructionListener(
         litBy(source)?.let { return it.witnessed() }
         // Where the dynamite came from, noted when it was primed; a wither nobody lit was still built by
         // somebody, and the explosion it opens with is the first thing it does.
-        entities.summonerOf(firedBy(source).uniqueId)?.let { return it }
+        entities.summonerOf(firedBy(source))?.let { return it }
         // Only a block that stood somewhere can be asked about, and of the entities that explode only
         // dynamite was one. A guess by where it went off, which a blast beside it may have thrown it from.
         if (source.type == EntityType.TNT) {

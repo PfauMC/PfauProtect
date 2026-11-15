@@ -23,6 +23,7 @@ import org.bukkit.entity.Creeper
 import org.bukkit.entity.EnderCrystal
 import org.bukkit.entity.IronGolem
 import org.bukkit.entity.Player
+import org.bukkit.entity.SmallFireball
 import org.bukkit.event.block.Action
 import org.bukkit.event.entity.CreatureSpawnEvent
 import org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason
@@ -30,6 +31,7 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause
 import org.bukkit.event.entity.EntityRemoveEvent
 import org.bukkit.event.player.PlayerInteractEvent
+import org.bukkit.persistence.PersistentDataContainer
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
@@ -415,6 +417,28 @@ class AttributionTest : BothPlanes() {
 
         listener.onRemove(EntityRemoveEvent(golem, EntityRemoveEvent.Cause.DEATH))
         assertNull(origins.summonerOf(golem.uniqueId))
+    }
+
+    // A fire charge shot into an unloaded chunk can strike after a restart, when memory holds nothing.
+    @Test
+    fun `a dispensed shot carries who set it off past a restart`() {
+        val data = HashMap<Any?, Any?>()
+        val container = stub(PersistentDataContainer::class.java, mapOf(
+            "set" to { a: Array<out Any?> -> data[a[0]] = a[2]; null },
+            "get" to { a: Array<out Any?> -> data[a[0]] },
+        ))
+        val shot = stub(SmallFireball::class.java, mapOf("getUniqueId" to UUID.randomUUID(), "getPersistentDataContainer" to container))
+        carryOrigin(shot, Attributed(alice, Confidence.NEARBY))
+
+        assertEquals(Attributed(alice, Confidence.NEARBY), EntityOrigins().summonerOf(shot))
+        // Memory still answers first.
+        origins.appeared(shot.uniqueId, bob)
+        assertEquals(bob, origins.summonerOf(shot)?.actor)
+        data.replaceAll { _, _ -> "not an origin" }
+        assertNull(EntityOrigins().summonerOf(shot))
+        // A value of another type under the key makes the container throw rather than answer.
+        val retyped = stub(PersistentDataContainer::class.java, mapOf("get" to { _: Array<out Any?> -> throw IllegalArgumentException("not a string") }))
+        assertNull(EntityOrigins().summonerOf(stub(SmallFireball::class.java, mapOf("getUniqueId" to UUID.randomUUID(), "getPersistentDataContainer" to retyped))))
     }
 
     @Test

@@ -136,6 +136,7 @@ internal fun verb(cause: Cause): Component = when (cause) {
     BLK_RESPAWN_ANCHOR -> b("respawn_anchor")
     BLK_END_CRYSTAL -> e("end_crystal")
     BLK_FIRE_SPREAD -> b("fire")
+    BLK_FIREBALL -> e("fireball")
     BLK_LIQUID_DESTROY -> w("washed away", "смыто")
     BLK_LIQUID_FORM -> w("set from liquid", "застывание")
     BLK_PISTON_EXTEND, BLK_PISTON_RETRACT -> b("piston")

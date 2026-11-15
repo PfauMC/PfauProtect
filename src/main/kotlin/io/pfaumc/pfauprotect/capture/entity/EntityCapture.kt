@@ -853,7 +853,7 @@ class EntityCapture(
         if (damager.type == EntityType.TNT) {
             attribution.placerAt(positionOf(damager.location.block), BlockDestructionListener.TNT)?.let { return Culprit(cause, it) }
         }
-        entities.summonerOf(shooter.uniqueId)?.let { return Culprit(cause, it) }
+        entities.summonerOf(shooter)?.let { return Culprit(cause, it) }
         // A dog set on somebody's cow is its owner's doing, as far as anything can say.
         ((shooter as? Tameable)?.owner as? Player)?.let { return Culprit(cause, Attributed(it.uniqueId)) }
         return Culprit(cause, aggroOf(damager))

@@ -265,7 +265,7 @@ internal fun behind(entity: Entity, nudges: Nudges, entities: EntityOrigins, dep
     val leashed = (entity as? Leashable)?.takeIf { it.isLeashed }?.leashHolder as? Player
     leashed?.let { return it.witnessed() }
     nudges.of(entity.uniqueId)?.let { return it }
-    entities.summonerOf(entity.uniqueId)?.let { return it }
+    entities.summonerOf(entity)?.let { return it }
     (entity as? Tameable)?.ownerUniqueId?.let { return Attributed(it) }
     return null
 }
