@@ -317,15 +317,15 @@ class ConfiscationTest : OneLedger() {
         val keeps = { entry: LedgerEntry -> crosses(entry, both) { false } }
         val id = { form: ByteArray -> log.forms.lookup(form)!! }
 
-        val hers = handMoves(log, alice, 0, Long.MAX_VALUE, setOf(alice, bob), keeps)!!
+        val hers = handMoves(log, alice, 0, Long.MAX_VALUE, setOf(alice, bob), keeps = keeps)!!
         assertEquals(
             setOf(Vanished(arrow.uuid) to id(stone), Carrier(bob) to id(sword)),
             hers.flatMap { it.owed }.map { it.taker to it.formId }.toSet(),
         )
         assertTrue(hers.all { it.back })
-        assertTrue(handMoves(log, bob, 0, Long.MAX_VALUE, setOf(alice, bob), keeps)!!.isEmpty())
+        assertTrue(handMoves(log, bob, 0, Long.MAX_VALUE, setOf(alice, bob), keeps = keeps)!!.isEmpty())
         // Bob alone: what he picked up is taken from him.
-        assertEquals(listOf(false), handMoves(log, bob, 0, Long.MAX_VALUE, setOf(bob), keeps)!!.map { it.back })
+        assertEquals(listOf(false), handMoves(log, bob, 0, Long.MAX_VALUE, setOf(bob), keeps = keeps)!!.map { it.back })
     }
 
     // Two of Alice's piles merged into one, and Bob picked one diamond out of it: three lie there, not four
@@ -343,6 +343,23 @@ class ConfiscationTest : OneLedger() {
         val owed = handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward = false, outward = true, containers = true)) { false } }!!
             .flatMap { it.owed }.groupingBy { it.taker }.fold(0) { sum, it -> sum + it.qty }
         assertEquals(mapOf(Lying(first.uuid) to 3, Carrier(bob) to 1), owed)
+    }
+
+    // Alice's and Bob's drops merged into one pile of four: a rollback of both shares it between them.
+    @Test
+    fun `two players' piles merged into one are shared between them`() {
+        val hers = ItemEntityRef(UUID.randomUUID())
+        val his = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 0), hers, diamond, null, 2, T0))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 0), his, diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.ITEM_MERGE, his, hers, diamond, null, 2, T0 + 2))
+        log.drain()
+        val spent = HashMap<Any, Int>()
+        val out = { entry: LedgerEntry -> crosses(entry, Crossing(inward = false, outward = true, containers = true)) { false } }
+
+        val owed = listOf(alice, bob).flatMap { handMoves(log, it, 0, Long.MAX_VALUE, setOf(alice, bob), spent, out)!! }
+            .flatMap { it.owed }.sumOf { it.qty }
+        assertEquals(4, owed)
     }
 
     // Bob knocked out Alice's totem: nothing fell, the totem from her off hand comes back into it out of

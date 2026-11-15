@@ -1123,7 +1123,8 @@ class Rollbacks(
                     ledger.drain()
                     blocks.drain()
                     if (query.crosses) {
-                        val read = users.map { handMoves(ledger, it, from, to, users, keeps::keeps) }
+                        val spent = HashMap<Any, Int>()
+                        val read = users.map { handMoves(ledger, it, from, to, users, spent, keeps::keeps) }
                         hands = read.filterNotNull().flatten()
                         if (null in read) listOf(Refused("those players did more in that window than one rollback reads; narrow the time")) else emptyList()
                     } else if (query.global) {

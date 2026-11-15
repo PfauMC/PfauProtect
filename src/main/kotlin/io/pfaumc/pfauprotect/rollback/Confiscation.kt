@@ -431,6 +431,8 @@ internal fun handMoves(
     fromTs: Long,
     toTs: Long,
     named: Set<UUID> = setOf(player),
+    // Shared by every player of one rollback: their piles may have merged into one.
+    spent: MutableMap<Any, Int> = HashMap(),
     keeps: (LedgerEntry) -> Boolean,
 ): List<HandMove>? {
     val rows = ArrayList<LedgerEntry>()
@@ -506,7 +508,6 @@ internal fun handMoves(
     }
     // What left into an entity's slots, followed out of them as a pile is: what still sits there stays. Each
     // posting out of the entity is spent once, however many of the player's go in before it.
-    val spent = HashMap<Any, Int>()
     fun throughEntity(slot: EntitySlot, form: Long, qty: Int, since: Long): List<Owed> {
         val owed = ArrayList<Owed>()
         var need = qty
