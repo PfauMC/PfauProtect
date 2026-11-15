@@ -328,6 +328,23 @@ class ConfiscationTest : OneLedger() {
         assertEquals(listOf(false), handMoves(log, bob, 0, Long.MAX_VALUE, setOf(bob), keeps)!!.map { it.back })
     }
 
+    // Two of Alice's piles merged into one, and Bob picked one diamond out of it: three lie there, not four
+    // twice over. Each loss gets its share of what lies there and of Bob's, not all of it.
+    @Test
+    fun `losses merged into one pile share it`() {
+        val first = ItemEntityRef(UUID.randomUUID())
+        val second = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 0), first, diamond, null, 2, T0))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 1), second, diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.ITEM_MERGE, second, first, diamond, null, 2, T0 + 2))
+        log.submit(Transfer(Cause.PICKUP, first, PlayerInv(bob, 0), diamond, null, 1, T0 + 3))
+        log.drain()
+
+        val owed = handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward = false, outward = true, containers = true)) { false } }!!
+            .flatMap { it.owed }.groupingBy { it.taker }.fold(0) { sum, it -> sum + it.qty }
+        assertEquals(mapOf(Lying(first.uuid) to 3, Carrier(bob) to 1), owed)
+    }
+
     // Bob knocked out Alice's totem: nothing fell, the totem from her off hand comes back into it out of
     // nothing, and only once.
     @Test

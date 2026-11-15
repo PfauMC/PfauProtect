@@ -121,6 +121,9 @@ internal fun trace(
     qty: Int,
     rowsOf: (ItemEntityRef) -> List<LedgerEntry>,
     hops: Int = 0,
+    // What earlier traces of the same plan already put on a pile or on a posting out of it, by uuid or ref:
+    // two losses that merged into one pile share what lies there and what left it, not each get all of it.
+    spent: MutableMap<Any, Int> = HashMap(),
 ): List<Owed> {
     if (qty <= 0) return emptyList()
     return when (lead) {
@@ -130,16 +133,19 @@ internal fun trace(
             val rows = rowsOf(lead).filter { it.itemFormId == formId }
             val owed = ArrayList<Owed>()
             var need = qty
-            val lying = rows.sumOf { it.qty }
+            val lying = rows.sumOf { it.qty } - spent.getOrDefault(lead.uuid, 0)
             if (lying > 0) {
                 val n = minOf(need, lying)
                 owed += Owed(Lying(lead.uuid), formId, n)
+                spent.merge(lead.uuid, n, Int::plus)
                 need -= n
             }
             for (out in rows.filter { it.qty < 0 }.sortedBy { it.txId }) {
                 if (need <= 0) break
-                val n = minOf(need, -out.qty)
-                owed += if (out.counterparty == Void) listOf(Owed(Vanished(lead.uuid), formId, n)) else trace(out.counterparty, formId, n, rowsOf, hops + 1)
+                val n = minOf(need, -out.qty - spent.getOrDefault(out.ref, 0))
+                if (n <= 0) continue
+                spent.merge(out.ref, n, Int::plus)
+                owed += if (out.counterparty == Void) listOf(Owed(Vanished(lead.uuid), formId, n)) else trace(out.counterparty, formId, n, rowsOf, hops + 1, spent)
                 need -= n
             }
             owed
@@ -436,7 +442,14 @@ internal fun handMoves(
     }
     rows.sortWith(compareBy<LedgerEntry> { it.txId }.thenBy { it.ordinal })
     val read = HashMap<Holder, List<LedgerEntry>>()
-    fun rowsOf(holder: Holder) = read.getOrPut(holder) { ledger.holderEntries(holder, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
+    // A pile or an entity whose history is cut short refuses the whole read: a plan over part of it gives
+    // back what is still somewhere, out of nothing.
+    var cut = false
+    fun rowsOf(holder: Holder) = read.getOrPut(holder) {
+        val page = ledger.holderPage(holder, 0, Long.MAX_VALUE, limit = ENTITY_ROWS)
+        if (!page.complete || page.unreadable > 0) cut = true
+        page.entries
+    }
     val pileRows = { pile: ItemEntityRef -> rowsOf(pile) }
     fun own(holder: Holder) = holder is PlayerHolder && holder.uuid == player || holder is EntitySlot && holder.uuid == player
     fun undoable(entry: LedgerEntry) = entry.cause !in NOT_DONE && entry.cause !in STATIONS &&
@@ -448,10 +461,19 @@ internal fun handMoves(
         is EntitySlot -> holder.uuid
         else -> null
     }
+    // A pile's birth is the mark, the one a rollback of whoever killed them leaves too: one death is never
+    // given back twice, whichever rollback comes first.
+    fun birthOf(pile: ItemEntityRef, txId: Long) = rowsOf(pile).firstOrNull { it.txId == txId && it.qty > 0 }
+    fun markOf(entry: LedgerEntry): PostingRef =
+        (entry.counterparty as? ItemEntityRef)?.takeIf { entry.qty < 0 }?.let { birthOf(it, entry.txId)?.ref } ?: entry.ref
+    // A mark covers the whole posting while a rollback gave back only what was left of it after pairing, so the
+    // pairing keeps the postings already given back: dropped from it, their paired half would be undone again.
+    val undoable = rows.filter(::undoable)
+    val marks = undoable.associateWith(::markOf)
+    val given = ledger.compensated(marks.values).keys
     val left = HashMap<LedgerEntry, Int>()
     val open = HashMap<Triple<Any, Long, Boolean>, ArrayDeque<LedgerEntry>>()
-    for (entry in rows) {
-        if (!undoable(entry)) continue
+    for (entry in undoable) {
         val place = placeOf(entry.counterparty) ?: continue
         val out = entry.qty < 0
         left[entry] = abs(entry.qty)
@@ -465,11 +487,6 @@ internal fun handMoves(
         }
         if (left.getValue(entry) > 0) open.getOrPut(Triple(place, entry.itemFormId, out)) { ArrayDeque() }.addLast(entry)
     }
-    // A pile's birth is the mark, the one a rollback of whoever killed them leaves too: one death is never
-    // given back twice, whichever rollback comes first.
-    fun birthOf(pile: ItemEntityRef, txId: Long) = rowsOf(pile).firstOrNull { it.txId == txId && it.qty > 0 }
-    fun markOf(entry: LedgerEntry): PostingRef =
-        (entry.counterparty as? ItemEntityRef)?.takeIf { entry.qty < 0 }?.let { birthOf(it, entry.txId)?.ref } ?: entry.ref
     // Where what came in was handed out from by a named player whose own half this rollback undoes, or by
     // themselves: the giver's half gives it back from here, and taking it as well would take it twice.
     fun handedByNamed(entry: LedgerEntry): Boolean {
@@ -489,7 +506,7 @@ internal fun handMoves(
     }
     // What left into an entity's slots, followed out of them as a pile is: what still sits there stays. Each
     // posting out of the entity is spent once, however many of the player's go in before it.
-    val spent = HashMap<PostingRef, Int>()
+    val spent = HashMap<Any, Int>()
     fun throughEntity(slot: EntitySlot, form: Long, qty: Int, since: Long): List<Owed> {
         val owed = ArrayList<Owed>()
         var need = qty
@@ -502,15 +519,13 @@ internal fun handMoves(
             owed += when (val to = out.counterparty) {
                 Void -> listOf(Owed(Vanished(slot.uuid), form, n))
                 is PlayerHolder -> if (to.uuid == player) emptyList() else listOf(Owed(Carrier(to.uuid), form, n))
-                is ItemEntityRef -> trace(to, form, n, pileRows).filter { it.taker != Carrier(player) }
+                is ItemEntityRef -> trace(to, form, n, pileRows, spent = spent).filter { it.taker != Carrier(player) }
                 else -> emptyList()
             }
         }
         return owed
     }
-    val kept = rows.filter { undoable(it) && keeps(it) }
-    val marks = kept.associateWith(::markOf)
-    val given = ledger.compensated(marks.values).keys
+    val kept = undoable.filter(keeps)
     val moves = ArrayList<HandMove>()
     val taken = HashMap<Long, MutableList<LedgerEntry>>()
     for (entry in kept) {
@@ -524,7 +539,7 @@ internal fun handMoves(
         }
         val owed = when (val to = entry.counterparty) {
             is ItemEntityRef -> {
-                val traced = trace(to, form, n, pileRows)
+                val traced = trace(to, form, n, pileRows, spent = spent)
                 val lost = n - traced.sumOf { it.qty }
                 traced.filter { it.taker != Carrier(player) } + listOfNotNull(Owed(Vanished(to.uuid), form, lost).takeIf { lost > 0 })
             }
@@ -540,7 +555,9 @@ internal fun handMoves(
         }
         if (owed.isEmpty()) continue
         val slot = (entry.holder as? PlayerInv ?: entry.holder as? PlayerEquip)?.slot
-        val pile = entry.spot?.takeIf { entry.counterparty is ItemEntityRef }
+        // Where the player stood: a pile they dropped, and one that fell out of an entity they put it in, lie
+        // within the chunk around it that the hold keeps loaded, merges included.
+        val pile = entry.spot?.takeIf { owed.any { it.taker is Lying } }
         moves += HandMove(
             player, true, owed, listOf(marks.getValue(entry)), slot?.let { mapOf(form to listOf(it)) }.orEmpty(),
             entry.timestamp, listOfNotNull(pile),
@@ -550,7 +567,7 @@ internal fun handMoves(
         val qty = entries.sumOf { left[it] ?: it.qty }
         moves += HandMove(player, false, listOf(followed(ledger, player, form, qty, fromTs, pileRows)), entries.map { marks.getValue(it) })
     }
-    return moves
+    return if (cut) null else moves
 }
 
 private fun pileRows(ledger: RocksItemLog) = { pile: ItemEntityRef -> ledger.holderEntries(pile, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
@@ -951,7 +968,8 @@ class Confiscations(
             val message = if (left == 0) "  took back $got ${name(item.formId)} from ${player.name}."
             else "  ${player.name} held only $got of ${item.qty} ${name(item.formId)}; $rest."
             tell(sender, message)
-            if (left > 0 && followed) short(item, left)
+            // Nowhere else to look: gone, which a restitution gives out of nothing.
+            if (left > 0) if (followed) short(item, left) else gone(item.formId, left)
         }
         if (direct.isNotEmpty()) sink(direct)
     }
