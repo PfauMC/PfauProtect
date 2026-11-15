@@ -27,8 +27,11 @@ object Metrics {
     val checks = seconds("pfauprotect_check_seconds", "Time of one self-check pass", "check")
     val recomputes = seconds("pfauprotect_recompute_seconds", "Time of one player's inventory recompute")
 
-    val written: Counter = Counter.builder().name("pfauprotect_written").help("Transfers and block submissions written")
+    val written: Counter = Counter.builder().name("pfauprotect_written").help("Transfers and block changes written")
         .labelNames("writer").register(registry)
+
+    val dropped: Counter = Counter.builder().name("pfauprotect_dropped")
+        .help("Transfers and block changes dropped because their writer was too far behind").labelNames("writer").register(registry)
 
     // The capture's unexplained movements, which the daily log line resets and this does not.
     val inferred: Counter = Counter.builder().name("pfauprotect_inferred").help("Movements booked without being seen, by cause")
@@ -51,7 +54,7 @@ class MetricsEndpoint(
     bases: () -> Map<String, Base>,
     rollbackRunning: () -> Boolean,
 ) : AutoCloseable {
-    class Base(val dir: Path, val unwritten: Long, val rows: Map<String, Long>, val compactionDebt: Long = 0)
+    class Base(val dir: Path, val unwritten: Long, val rows: Map<String, Long>, val compactionDebt: Long = 0, val failing: Boolean = false)
 
     private val readings: List<Collector> = listOf(
         GaugeWithCallback.builder().name("pfauprotect_base_bytes").help("Bytes a base takes on disk").labelNames("base")
@@ -61,6 +64,8 @@ class MetricsEndpoint(
             .callback { out -> for ((name, base) in bases()) for ((family, n) in base.rows) out.call(n.toDouble(), name, family) }.build(),
         GaugeWithCallback.builder().name("pfauprotect_unwritten").help("What a base's writer has been handed and not written yet")
             .labelNames("base").callback { out -> for ((name, base) in bases()) out.call(base.unwritten.toDouble(), name) }.build(),
+        GaugeWithCallback.builder().name("pfauprotect_writer_failing").help("1 while a base's writer cannot write and holds what it was handed")
+            .labelNames("base").callback { out -> for ((name, base) in bases()) out.call(if (base.failing) 1.0 else 0.0, name) }.build(),
         GaugeWithCallback.builder().name("pfauprotect_compaction_pending_bytes").help("Bytes RocksDB still has to compact in a base")
             .labelNames("base").callback { out -> for ((name, base) in bases()) out.call(base.compactionDebt.toDouble(), name) }.build(),
         GaugeWithCallback.builder().name("pfauprotect_rollback_running").help("1 while a rollback is being applied")

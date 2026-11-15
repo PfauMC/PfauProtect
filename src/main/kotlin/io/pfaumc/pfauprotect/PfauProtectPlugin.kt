@@ -493,10 +493,10 @@ class PfauProtectPlugin : JavaPlugin() {
             val worlds = running.blocks.worlds.mapNotNull { uid ->
                 val log = running.blocks.get(uid) ?: return@mapNotNull null
                 "world:${server.getWorld(uid)?.name ?: uid}" to
-                    MetricsEndpoint.Base(folder.resolve("blocks").resolve(uid.toString()), log.backlog, log.estimatedRows(), log.compactionDebt())
+                    MetricsEndpoint.Base(folder.resolve("blocks").resolve(uid.toString()), log.backlog, log.estimatedRows(), log.compactionDebt(), log.failing)
             }
             mapOf(
-                "ledger" to MetricsEndpoint.Base(folder.resolve("ledger"), running.ledger.backlog, running.ledger.estimatedRows(), running.ledger.compactionDebt()),
+                "ledger" to MetricsEndpoint.Base(folder.resolve("ledger"), running.ledger.backlog, running.ledger.estimatedRows(), running.ledger.compactionDebt(), running.ledger.failing),
                 "chat" to MetricsEndpoint.Base(folder.resolve("chat"), 0, emptyMap()),
             ) + worlds
         }) { running.rollbacks.runningSince() != null }
@@ -1041,7 +1041,7 @@ class PfauProtectPlugin : JavaPlugin() {
         offThread(sender, "the status failed", "The status failed; the server log has the details.") {
             val folder = dataFolder.toPath()
             sender.sendMessage(Ui.text("PfauProtect ${pluginMeta.version} · " + tr("status", "состояние"), Ui.FAINT))
-            sender.say("  ledger ${megabytes(folder.resolve("ledger"))}, ${running.ledger.backlog} transactions waiting to be written")
+            sender.say("  ledger ${megabytes(folder.resolve("ledger"))}, ${running.ledger.backlog} transfers waiting to be written")
             for (world in server.worlds) {
                 val log = running.blocks.get(world.uid)
                 sender.say(

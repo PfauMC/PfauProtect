@@ -26,8 +26,10 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.rocksdb.RocksDBException
 import java.nio.file.Path
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 class StorageTest : OneLedger() {
     private val chest = Container(world, 100, 64, -200, 0)
@@ -482,6 +484,25 @@ class StorageTest : OneLedger() {
         }
         assertEquals(postings.sorted(), unpacked.sorted())
         assertEquals("%016x".format(nextBefore + 1), stored.getValue("meta")[txIdKey], "the next id to hand out")
+    }
+
+    // A batch the disk refused named a form for the first time. Its form row went down with it, and a retry
+    // that still held the number interned would write postings naming a form no row stands behind.
+    @Test
+    fun `a batch the disk refused is written whole once it can be, the forms it named first among it`() {
+        val shovel = byteArrayOf(10, 11)
+        val refusals = AtomicInteger(1)
+        log.beforeWrite = { if (refusals.getAndDecrement() > 0) throw RocksDBException("No space left on device") }
+        log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, shovel, null, 1, T0 + 40))
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (refusals.get() >= 0 || log.backlog > 0 || log.failing) {
+            check(System.nanoTime() < deadline) { "the writer did not write the refused batch again" }
+            Thread.sleep(5)
+        }
+
+        reopen()
+        assertEquals(listOf(-1), aliceRows(shovel).map { it.qty })
+        assertEquals(emptyList<String>(), log.sweep(100).gaps)
     }
 
     // A region thread sets a note and reads it back within one event, long before the writer has put

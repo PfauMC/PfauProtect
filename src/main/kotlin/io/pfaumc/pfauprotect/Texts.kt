@@ -115,7 +115,7 @@ object Texts {
         r("The purge failed; the server log has the details\\.") to "Очистка не удалась; подробности в логе сервера.",
         r("The chat lookup failed; the server log has the details\\.") to "Поиск по чату не удался; подробности в логе сервера.",
         r("The status failed; the server log has the details\\.") to "Состояние не удалось получить; подробности в логе сервера.",
-        r("  ledger (.*), (\\d+) transactions waiting to be written") to "  журнал предметов $1, ждут записи транзакций: $2",
+        r("  ledger (.*), (\\d+) transfers waiting to be written") to "  журнал предметов $1, ждут записи перемещений: $2",
         r("  (\\S+): not recorded \\(config\\.yml\\)") to "  $1: не записывается (config.yml)",
         r("  (\\S+): (.*), (\\d+) changes waiting to be written") to "  $1: $2, ждут записи изменений: $3",
         r("  unexplained since the last report: nothing") to "  необъяснённое с прошлого отчёта: ничего",

@@ -170,9 +170,10 @@ class BlockLog(
     private val entitiesCf: ColumnFamilyHandle
 
     private val queue = LinkedBlockingQueue<List<WorldChange>>()
-    private val progress = WriterProgress("block", "submissions", queue)
+    private val progress = WriterProgress("block", "changes", queue, BLOCK_BACKLOG_LIMIT) { it.size }
 
     val backlog: Long get() = progress.backlog
+    val failing: Boolean get() = progress.failure != null
 
     /** How many rows each family holds, as RocksDB estimates it without reading them. */
     fun estimatedRows(): Map<String, Long> = dbLock.read {
@@ -418,9 +419,9 @@ class BlockLog(
         // writer stops there is nobody left to take the queue. A change accepted in between would be
         // counted as submitted, sit in the queue and never be written, and `drain` would not wait for
         // it either.
-        if (!running || closed || progress.failure != null || changes.isEmpty()) return false
-        progress.submitted.incrementAndGet()
-        queue.add(changes)
+        if (!running || closed || changes.isEmpty()) return false
+        // A rollback's rows are kept even then, as the ledger keeps its transfers.
+        if (!progress.offer(queue, changes, changes.size, bounded = changes.none { it.cause == Cause.ROLLBACK })) return false
         val blocks = changes.filterIsInstance<BlockChange>()
         if (blocks.isNotEmpty()) watch(blocks)
         return true
@@ -648,9 +649,10 @@ class BlockLog(
     override fun close() {
         running = false
         writerThread.join()
-        val unwritten = queue.size
-        if (unwritten > 0) {
-            LOGGER.log(Level.SEVERE, "block writer stopped with $unwritten submissions unwritten")
+        // A writer that gave up has said what it lost.
+        val unwritten = queue.sumOf { it.size }
+        if (unwritten > 0 && progress.failure == null) {
+            LOGGER.log(Level.SEVERE, "block writer stopped with $unwritten changes unwritten")
         }
         dbLock.write {
             if (closed) return
@@ -667,10 +669,24 @@ class BlockLog(
         action: (ByteArray, ByteArray) -> Boolean,
     ) = db.forEachUnder(cf, prefix, reverse, action = action)
 
-    private fun runWriter() = progress.run(db, finished = { !running }, write = ::writeAll)
+    private fun runWriter() = progress.run(db, stopping = { !running }, write = ::writeAll)
 
-    // A change that cannot be written is dropped on its own, as a movement is in the ledger's writeAll.
+    // A change that cannot be written is dropped on its own, as a movement is in the ledger's writeAll,
+    // and a base that cannot write fails the whole batch for the writer to try again. Its event numbers
+    // and newest time go back with it: kept, the retry would clamp its rows against themselves.
     private fun writeAll(submissions: List<List<WorldChange>>) {
+        val eventIdBefore = nextEventId
+        val lastTsBefore = lastTs
+        try {
+            writeBatch(submissions)
+        } catch (failure: Throwable) {
+            nextEventId = eventIdBefore
+            lastTs = lastTsBefore
+            throw failure
+        }
+    }
+
+    private fun writeBatch(submissions: List<List<WorldChange>>) {
         WriteBatch().use { batch ->
             // Nothing in the batch is readable until it is written, so a position this batch already
             // holds a row for can only be clamped against what is remembered here.
@@ -691,6 +707,7 @@ class BlockLog(
                             is EntityChange -> writeEntity(batch, change, eventId, ordinal)
                         }
                     } catch (failure: Exception) {
+                        if (failure.isIoError()) throw failure
                         batch.rollbackToSavePoint()
                         LOGGER.log(Level.SEVERE, "a block change could not be written and was dropped", failure)
                     }
