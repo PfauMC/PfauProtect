@@ -135,7 +135,8 @@ victim, so `p:` finds them, while `u:` still names only what the victim did.
   leaves containers out. Block placement and purge openings are never crossings. A rollback takes them only alone,
   with `user:` and no radius but `global` (`refusalOf`), and reads those players' hands rather than a place
   (`handMoves`): what left them goes back to them, taken from wherever it is now (a pile followed as a death's is, a
-  container it was put into, another player, an arrow followed out of its slot), and what went into nothing (eaten,
+  container it was put into or whoever took it out of there since, another player, an arrow followed out of its
+  slot; a pile a hopper or a mob took is beyond reach), and what went into nothing (eaten,
   burnt, thrown, despawned) out of nothing, as CoreProtect gives it; what came in is taken away. Left alone: their
   own ender chest, the benches (the result is still in the hands), admin commands (`/clear`, `/give`), creative mode,
   a join's load, a rollback's own rows, what still sits in a block

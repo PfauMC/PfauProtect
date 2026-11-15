@@ -362,6 +362,32 @@ class ConfiscationTest : OneLedger() {
         assertEquals(4, owed)
     }
 
+    // Alice put 3 diamonds into a chest and Bob took 2 out: Bob owes 2, the chest 1. Her dropped stone a hopper
+    // swallowed is beyond reach, not given again out of nothing. Bob's pile merged into hers and she picked the
+    // four up: `+inventory` takes Bob's two, not her own.
+    @Test
+    fun `a hands rollback follows the chest, leaves the hopper and splits a merged pickup`() {
+        val hopper = Container(world, 3, 64, 3, 0)
+        val dropped = ItemEntityRef(UUID.randomUUID())
+        val hers = ItemEntityRef(UUID.randomUUID())
+        val his = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, diamond, null, 3, T0))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 1), dropped, stone, null, 1, T0 + 2))
+        log.submit(Transfer(Cause.HOPPER_PULL_GROUND, dropped, hopper, stone, null, 1, T0 + 3))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 2), hers, diamond, null, 2, T0 + 4))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 1), his, diamond, null, 2, T0 + 5))
+        log.submit(Transfer(Cause.ITEM_MERGE, his, hers, diamond, null, 2, T0 + 6))
+        log.submit(Transfer(Cause.PICKUP, hers, PlayerInv(alice, 2), diamond, null, 4, T0 + 7))
+        log.drain()
+        fun moves(inward: Boolean, outward: Boolean) =
+            handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
+        fun owed(moves: List<HandMove>) = moves.flatMap { it.owed }.groupingBy { it.taker }.fold(0) { sum, it -> sum + it.qty }
+
+        assertEquals(mapOf(Carrier(bob) to 2, Stored(chest) to 1), owed(moves(inward = false, outward = true)))
+        assertEquals(mapOf(Carrier(alice) to 2), owed(moves(inward = true, outward = false)))
+    }
+
     // Bob knocked out Alice's totem: nothing fell, the totem from her off hand comes back into it out of
     // nothing, and only once.
     @Test
