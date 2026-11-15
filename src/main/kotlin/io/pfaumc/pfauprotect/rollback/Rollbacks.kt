@@ -79,6 +79,8 @@ import org.bukkit.event.entity.CreatureSpawnEvent
 import net.minecraft.world.entity.LivingEntity as NmsLivingEntity
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.entity.CampfireBlockEntity
+import net.minecraft.world.level.block.entity.ChiseledBookShelfBlockEntity
+import net.minecraft.world.level.block.ChiseledBookShelfBlock
 import net.minecraft.world.level.block.entity.LecternBlockEntity
 import net.minecraft.world.level.storage.TagValueInput
 import net.kyori.adventure.text.Component
@@ -947,17 +949,31 @@ class ChunkRollback(
 
     private fun put(level: ServerLevel, pos: BlockPos, state: String?, payload: ByteArray?) {
         if (state != null) level.setBlock(pos, (Bukkit.createBlockData(state) as CraftBlockData).state, PLACE_FLAGS)
-        if (payload == null) return
         val entity = level.getBlockEntity(pos) ?: return
-        val tag = nbtOf(payload)
-        entity.loadWithComponents(TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), tag))
-        // The tag still holds what the block held when the row was written, and the slot postings give
-        // that back; loading it as well would hand everything out twice.
-        (entity as? Clearable)?.clearContent()
-        entity.setChanged()
-        level.chunkSource.blockChanged(pos)
+        if (payload != null) {
+            val tag = nbtOf(payload)
+            entity.loadWithComponents(TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), tag))
+            // The tag still holds what the block held when the row was written, and the slot postings give
+            // that back; loading it as well would hand everything out twice.
+            (entity as? Clearable)?.clearContent()
+            entity.setChanged()
+            level.chunkSource.blockChanged(pos)
+        }
+        // A shelf's logged state shows the books it held, but only the slot postings put books back, each
+        // marking its own slot. A slot no posting refills would show a book that is not there, can't be taken
+        // and drops nothing, and taking from an empty slot never clears the mark.
+        if (entity is ChiseledBookShelfBlockEntity) {
+            val shown = level.getBlockState(pos)
+            val held = shelfState(shown, entity)
+            if (held != shown) level.setBlock(pos, held, PLACE_FLAGS)
+        }
     }
 }
+
+/** The shelf's state with each slot marked occupied exactly when its block entity holds a book there. */
+internal fun shelfState(state: BlockState, shelf: NmsContainer): BlockState =
+    ChiseledBookShelfBlock.SLOT_OCCUPIED_PROPERTIES.withIndex()
+        .fold(state) { acc, (slot, property) -> acc.setValue(property, !shelf.getItem(slot).isEmpty) }
 
 internal fun refusalOf(query: LookupQuery): String? = when {
     query.event != null -> null

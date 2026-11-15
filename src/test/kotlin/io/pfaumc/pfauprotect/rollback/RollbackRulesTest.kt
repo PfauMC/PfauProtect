@@ -32,6 +32,7 @@ import net.minecraft.world.level.block.Blocks
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.world.level.block.ChestBlock
+import net.minecraft.world.level.block.ChiseledBookShelfBlock
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.state.properties.ChestType
 import net.minecraft.world.level.block.entity.CampfireBlockEntity
@@ -367,5 +368,16 @@ class RollbackRulesTest {
         assertTrue(pair(mapOf(left to chest(ChestType.LEFT), right to chest(ChestType.RIGHT))).isEmpty())
         // A partner in a region this thread does not own is left to its own chunk's pass.
         assertTrue(pairChests(listOf(left), { if (it == left) chest(ChestType.LEFT) else Blocks.AIR.defaultBlockState() }) { it == left }.isEmpty())
+    }
+
+    @Test
+    fun `a shelf put back shows only the books its slots hold`() {
+        val logged = ChiseledBookShelfBlock.SLOT_OCCUPIED_PROPERTIES
+            .fold(Blocks.CHISELED_BOOKSHELF.defaultBlockState()) { state, slot -> state.setValue(slot, true) }
+        val shelf = SimpleContainer(6).apply { setItem(2, NmsItemStack(Items.BOOK)) }
+        val shown = shelfState(logged, shelf)
+        ChiseledBookShelfBlock.SLOT_OCCUPIED_PROPERTIES.forEachIndexed { slot, property ->
+            assertEquals(slot == 2, shown.getValue(property), "slot $slot")
+        }
     }
 }
