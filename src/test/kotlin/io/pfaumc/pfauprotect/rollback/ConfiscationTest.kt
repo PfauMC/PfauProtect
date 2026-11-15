@@ -259,7 +259,7 @@ class ConfiscationTest : OneLedger() {
         log.submit(Transfer(Cause.CONTAINER_REMOVE, Container(world, 9, 64, 9, 2), PlayerInv(alice, 8), diamond, null, 4, T0 + 4))
         log.drain()
         fun moves(inward: Boolean, outward: Boolean) =
-            handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
+            handMoves(log, alice, 0, Long.MAX_VALUE, inward = inward, outward = outward) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
         fun owed(moves: List<HandMove>) = moves.flatMap { it.owed }.groupingBy { it.taker to it.formId }.fold(0) { sum, it -> sum + it.qty }
         val id = { form: ByteArray -> log.forms.lookup(form)!! }
 
@@ -357,7 +357,7 @@ class ConfiscationTest : OneLedger() {
         val spent = HashMap<Any, Int>()
         val out = { entry: LedgerEntry -> crosses(entry, Crossing(inward = false, outward = true, containers = true)) { false } }
 
-        val owed = listOf(alice, bob).flatMap { handMoves(log, it, 0, Long.MAX_VALUE, setOf(alice, bob), spent, out)!! }
+        val owed = listOf(alice, bob).flatMap { handMoves(log, it, 0, Long.MAX_VALUE, setOf(alice, bob), spent, keeps = out)!! }
             .flatMap { it.owed }.sumOf { it.qty }
         assertEquals(4, owed)
     }
@@ -367,6 +367,7 @@ class ConfiscationTest : OneLedger() {
     // four up: `+inventory` takes Bob's two, not her own.
     @Test
     fun `a hands rollback follows the chest, leaves the hopper and splits a merged pickup`() {
+        val bread = byteArrayOf(5)
         val hopper = Container(world, 3, 64, 3, 0)
         val dropped = ItemEntityRef(UUID.randomUUID())
         val hers = ItemEntityRef(UUID.randomUUID())
@@ -375,13 +376,13 @@ class ConfiscationTest : OneLedger() {
         log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), diamond, null, 2, T0 + 1))
         log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 1), dropped, stone, null, 1, T0 + 2))
         log.submit(Transfer(Cause.HOPPER_PULL_GROUND, dropped, hopper, stone, null, 1, T0 + 3))
-        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 2), hers, diamond, null, 2, T0 + 4))
-        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 1), his, diamond, null, 2, T0 + 5))
-        log.submit(Transfer(Cause.ITEM_MERGE, his, hers, diamond, null, 2, T0 + 6))
-        log.submit(Transfer(Cause.PICKUP, hers, PlayerInv(alice, 2), diamond, null, 4, T0 + 7))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 2), hers, bread, null, 2, T0 + 4))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 1), his, bread, null, 2, T0 + 5))
+        log.submit(Transfer(Cause.ITEM_MERGE, his, hers, bread, null, 2, T0 + 6))
+        log.submit(Transfer(Cause.PICKUP, hers, PlayerInv(alice, 2), bread, null, 4, T0 + 7))
         log.drain()
         fun moves(inward: Boolean, outward: Boolean) =
-            handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
+            handMoves(log, alice, 0, Long.MAX_VALUE, inward = inward, outward = outward) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
         fun owed(moves: List<HandMove>) = moves.flatMap { it.owed }.groupingBy { it.taker }.fold(0) { sum, it -> sum + it.qty }
 
         assertEquals(mapOf(Carrier(bob) to 2, Stored(chest) to 1), owed(moves(inward = false, outward = true)))
@@ -408,7 +409,7 @@ class ConfiscationTest : OneLedger() {
         log.submit(Transfer(Cause.PICKUP, third, PlayerInv(alice, 1), stone, null, 8, T0 + 9))
         log.drain()
         fun moves(inward: Boolean, outward: Boolean) =
-            handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
+            handMoves(log, alice, 0, Long.MAX_VALUE, inward = inward, outward = outward) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
         fun owed(moves: List<HandMove>) = moves.flatMap { it.owed }.groupingBy { it.taker to it.formId }.fold(0) { sum, it -> sum + it.qty }
         val id = { form: ByteArray -> log.forms.lookup(form)!! }
 
@@ -434,6 +435,40 @@ class ConfiscationTest : OneLedger() {
 
         val taken = handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward = true, outward = false, containers = true)) { false } }!!
         assertEquals(4, taken.flatMap { it.owed }.sumOf { it.qty })
+    }
+
+    // Alice put one diamond into the chest twice and Bob took one: Bob owes one, the chest holds the other. She
+    // gave Bob a stone, he dropped it and Charlie picked it up: Charlie owes it. And the bread she picked out of a
+    // mob's pile before her own merged into it is not hers.
+    @Test
+    fun `deposits share a withdrawal, a carrier's drop is followed, a later merge is not counted back`() {
+        val charlie = UUID.fromString("00000000-0000-4000-8000-0000000000c3")
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, diamond, null, 1, T0))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, diamond, null, 1, T0 + 1))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), diamond, null, 1, T0 + 2))
+        val bobs = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.GIVE_ITEM_TO_MOB, PlayerInv(alice, 1), PlayerInv(bob, 1), stone, null, 1, T0 + 3))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 1), bobs, stone, null, 1, T0 + 4))
+        log.submit(Transfer(Cause.PICKUP, bobs, PlayerInv(charlie, 0), stone, null, 1, T0 + 5))
+        val mobs = ItemEntityRef(UUID.randomUUID())
+        val hers = ItemEntityRef(UUID.randomUUID())
+        val bread = byteArrayOf(5)
+        log.submit(Transfer(Cause.MOB_DROP, Void, mobs, bread, null, 2, T0 + 6))
+        log.submit(Transfer(Cause.PICKUP, mobs, PlayerInv(alice, 2), bread, null, 1, T0 + 7))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 3), hers, bread, null, 2, T0 + 8))
+        log.submit(Transfer(Cause.ITEM_MERGE, hers, mobs, bread, null, 2, T0 + 9))
+        log.drain()
+        fun moves(inward: Boolean, outward: Boolean) =
+            handMoves(log, alice, 0, Long.MAX_VALUE, inward = inward, outward = outward) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
+        fun owed(moves: List<HandMove>) = moves.flatMap { it.owed }.groupingBy { it.taker to it.formId }.fold(0) { sum, it -> sum + it.qty }
+        val id = { form: ByteArray -> log.forms.lookup(form)!! }
+
+        val out = owed(moves(inward = false, outward = true))
+        assertEquals(1, out[Carrier(bob) to id(diamond)])
+        assertEquals(1, out[Stored(chest) to id(diamond)])
+        assertEquals(1, out[Carrier(charlie) to id(stone)])
+        assertEquals(null, out[Carrier(bob) to id(stone)])
+        assertEquals(mapOf((Carrier(alice) to id(bread)) to 1), owed(moves(inward = true, outward = false)))
     }
 
     // Bob knocked out Alice's totem: nothing fell, the totem from her off hand comes back into it out of

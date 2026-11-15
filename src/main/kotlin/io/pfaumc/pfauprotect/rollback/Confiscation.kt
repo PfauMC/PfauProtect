@@ -433,6 +433,10 @@ internal fun handMoves(
     named: Set<UUID> = setOf(player),
     // Shared by every player of one rollback: their piles may have merged into one.
     spent: MutableMap<Any, Int> = HashMap(),
+    // Which way across this player's own hands: the filter's crossing says it for anyone's, so a gift to
+    // another player is a way in for them and would be undone by a `+inventory` of the giver.
+    inward: Boolean = true,
+    outward: Boolean = true,
     keeps: (LedgerEntry) -> Boolean,
 ): List<HandMove>? {
     val rows = ArrayList<LedgerEntry>()
@@ -494,14 +498,15 @@ internal fun handMoves(
     fun ownOrNamed(giver: UUID?, source: LedgerEntry) =
         giver == player || giver in named && source.timestamp in fromTs..toTs && keeps(source)
     // How much of a pile was dropped by such a giver, by its births: a pile another merged into is part theirs.
-    // Less what pickups of this rollback already counted as theirs, in this pile or one merged on from it.
-    fun handedShare(pile: ItemEntityRef, form: Long, hops: Int = 0): Int {
-        val share = rowsOf(pile).filter { it.qty > 0 && it.itemFormId == form }.sumOf { birth ->
+    // Less what pickups of this rollback already counted as theirs, in this pile or one merged on from it. Only
+    // what was in it by `before`: what merged in later was not there to be picked up.
+    fun handedShare(pile: ItemEntityRef, form: Long, before: Long, hops: Int = 0): Int {
+        val share = rowsOf(pile).filter { it.qty > 0 && it.itemFormId == form && it.txId < before }.sumOf { birth ->
             when {
                 birth.cause != Cause.ITEM_MERGE -> if (ownOrNamed((birth.counterparty as? PlayerHolder)?.uuid, birth)) birth.qty else 0
                 // Through every merge before it, as far as a trace follows one.
                 hops >= MAX_HOPS -> 0
-                else -> (birth.counterparty as? ItemEntityRef)?.let { minOf(birth.qty, handedShare(it, form, hops + 1)) } ?: 0
+                else -> (birth.counterparty as? ItemEntityRef)?.let { minOf(birth.qty, handedShare(it, form, birth.txId, hops + 1)) } ?: 0
             }
         }
         return maxOf(0, share - spent.getOrDefault(pile to "handed", 0))
@@ -509,7 +514,7 @@ internal fun handMoves(
     // Of what came in, how much is to be taken away.
     fun toTake(entry: LedgerEntry, n: Int): Int = when (val from = entry.counterparty) {
         is ItemEntityRef -> {
-            val theirs = minOf(n, handedShare(from, entry.itemFormId))
+            val theirs = minOf(n, handedShare(from, entry.itemFormId, entry.txId))
             spent.merge(from to "handed", theirs, Int::plus)
             n - theirs
         }
@@ -521,7 +526,7 @@ internal fun handMoves(
     }
     // What left into an entity's or a container's slots, followed out of them as a pile is. Each posting out
     // of it is spent once, however many of the player's go in before it. Into a hopper or a mob is beyond reach.
-    fun outOf(at: Holder, form: Long, qty: Int, since: Long): List<Owed> {
+    fun outOf(at: Holder, form: Long, qty: Int, since: Long, allocated: IntArray = IntArray(1)): List<Owed> {
         val owed = ArrayList<Owed>()
         var need = qty
         val gone = (at as? EntitySlot)?.uuid ?: player
@@ -539,6 +544,7 @@ internal fun handMoves(
                 else -> emptyList()
             }
         }
+        allocated[0] = qty - need
         return owed
     }
     // Put into a container: what the container lost of it since is followed to whoever took it, newest
@@ -568,10 +574,30 @@ internal fun handMoves(
             }
         }
         val taken = minOf(qty, maxOf(0, -after.sumOf { it.qty }))
-        val owed = outOf(box, form, taken, entry.timestamp)
-        return owed + listOfNotNull(Owed(Stored(box), form, qty - taken).takeIf { it.qty > 0 })
+        // What another deposit's share of the losses already took is still in there for this one.
+        val allocated = IntArray(1)
+        val owed = outOf(box, form, taken, entry.timestamp, allocated)
+        return owed + listOfNotNull(Owed(Stored(box), form, qty - allocated[0]).takeIf { it.qty > 0 })
     }
-    val kept = undoable.filter(keeps)
+    // Up to `qty` of a form a carrier dropped since, traced from each pile; each drop is spent once.
+    fun droppedBy(carrier: UUID, form: Long, qty: Int, since: Long): List<Owed> {
+        if (carrier == player) return emptyList()
+        val owed = ArrayList<Owed>()
+        var need = qty
+        val drops = ownRows(ledger, since, PlayerInv(carrier, 0), PlayerEquip(carrier, 0), PlayerCursor(carrier))
+            .filter { it.itemFormId == form && it.qty < 0 && it.counterparty is ItemEntityRef }
+            .sortedBy { it.txId }
+        for (drop in drops) {
+            if (need <= 0) break
+            val n = minOf(need, -drop.qty - spent.getOrDefault(drop.ref, 0))
+            if (n <= 0) continue
+            spent.merge(drop.ref, n, Int::plus)
+            need -= n
+            owed += trace(drop.counterparty, form, n, pileRows, spent = spent)
+        }
+        return owed
+    }
+    val kept = undoable.filter { (if (it.qty < 0) outward else inward) && keeps(it) }
     val moves = ArrayList<HandMove>()
     val taken = HashMap<Long, MutableList<Pair<LedgerEntry, Int>>>()
     for (entry in kept) {
@@ -594,10 +620,15 @@ internal fun handMoves(
             is PlayerHolder -> listOf(Owed(Carrier(to.uuid), form, n))
             Void -> listOf(Owed(Vanished(player), form, n))
             else -> emptyList()
-        }.map { item ->
-            // A carrier is followed into what they put it in since, offline too, as a thief is.
-            val carrier = item.taker as? Carrier ?: return@map item
-            followed(ledger, carrier.player, item.formId, item.qty, entry.timestamp, pileRows)
+        }.flatMap { item ->
+            // A carrier is followed into what they put it in since, offline too, as a thief is, and first into
+            // the piles they dropped of it: who picked those up has it, not nobody.
+            val carrier = item.taker as? Carrier ?: return@flatMap listOf(item)
+            val drops = droppedBy(carrier.player, item.formId, item.qty, entry.timestamp)
+            // What they picked up again they still owe; what the player picked up they have.
+            val rest = item.qty - drops.filter { it.taker != carrier }.sumOf { it.qty }
+            drops.filter { it.taker != Carrier(player) && it.taker != carrier } +
+                listOfNotNull(followed(ledger, carrier.player, item.formId, rest, entry.timestamp, pileRows).takeIf { rest > 0 })
         }
         if (owed.isEmpty()) continue
         val slot = (entry.holder as? PlayerInv ?: entry.holder as? PlayerEquip)?.slot

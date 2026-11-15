@@ -16,7 +16,9 @@ import io.pfaumc.pfauprotect.capture.block.Standing
 import io.pfaumc.pfauprotect.check.emptied
 import io.pfaumc.pfauprotect.model.LedgerEntry
 import io.pfaumc.pfauprotect.model.WorldBlock
+import io.pfaumc.pfauprotect.command.Action
 import io.pfaumc.pfauprotect.command.LookupQuery
+import io.pfaumc.pfauprotect.command.allOf
 import io.pfaumc.pfauprotect.command.LookupTarget
 import io.pfaumc.pfauprotect.command.Lookups
 import io.pfaumc.pfauprotect.command.RowFilter
@@ -1124,7 +1126,10 @@ class Rollbacks(
                     blocks.drain()
                     if (query.crosses) {
                         val spent = HashMap<Any, Int>()
-                        val read = users.map { handMoves(ledger, it, from, to, users, spent, keeps::keeps) }
+                        val crossings = query.actions.flatMap(::allOf).mapNotNull { Action.of(it.lowercase())?.crossing }
+                        val inward = crossings.any { it.inward }
+                        val outward = crossings.any { it.outward }
+                        val read = users.map { handMoves(ledger, it, from, to, users, spent, inward, outward, keeps::keeps) }
                         hands = read.filterNotNull().flatten()
                         if (null in read) listOf(Refused("those players did more in that window than one rollback reads; narrow the time")) else emptyList()
                     } else if (query.global) {
