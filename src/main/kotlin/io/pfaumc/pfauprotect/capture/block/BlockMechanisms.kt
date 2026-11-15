@@ -48,6 +48,7 @@ import org.bukkit.block.data.Levelled
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Player
 import org.bukkit.entity.Projectile
+import org.bukkit.projectiles.BlockProjectileSource
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
@@ -498,7 +499,11 @@ class BlockMechanismListener(
         val at = source.at
         if (!near(Spot(at.world, at.x + 0.5, at.y + 0.5, at.z + 0.5), spotOf(event.location), DISPENSE_REACH)) return
         entities.appeared(event.entity.uniqueId, source.by.actor, source.by.confidence)
-        (event.entity as? Projectile)?.let { carryOrigin(it, source.by) }
+        // Kept on the entity only for the shot this dispenser fired, which the server names as its shooter
+        // before the launch event: a skeleton's arrow in the same tick nearby would carry the guess for good.
+        val shot = event.entity as? Projectile ?: return
+        val from = (shot.shooter as? BlockProjectileSource)?.block ?: return
+        if (positionOf(from) == at) carryOrigin(shot, source.by)
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
