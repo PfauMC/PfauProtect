@@ -835,7 +835,7 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         steps: Int = Int.MAX_VALUE,
     ): EntryPage = dbLock.read {
         if (closed) return EntryPage(emptyList(), false)
-        scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit, keep, steps)
+        scan(EntryCodec.holderPrefix(holder, knownIds), fromTs, toTs, reverse, limit, keep, steps, timed = true)
     }
 
     /**
@@ -1566,19 +1566,25 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         limit: Int,
         keep: (LedgerEntry) -> Boolean = { true },
         steps: Int = Int.MAX_VALUE,
+        // A holder's keys run straight on into the time, so its walk starts at the window and stops where it
+        // ends: the rows outside it would otherwise use up `steps` before the window is reached.
+        timed: Boolean = false,
     ): EntryPage {
         val found = ArrayList<LedgerEntry>()
         if (limit <= 0) return EntryPage(found, false)
+        val from = if (!timed) null else ByteWriter(prefix.size + 8).bytes(prefix).longBE(if (reverse) toTs else fromTs).toByteArray()
+            .let { if (reverse) lastUnder(it) else it }
         var unreadable = 0
         var walked = 0
         // One row past the limit is what separates a scan that ended from one that was cut off, and
         // it costs a single decode. Guessing from the size instead is wrong both ways: a range that
         // ends exactly on the limit reads as cut off, and rows dropped by the time window read as
         // room to spare.
-        forEachUnder(prefix, reverse) { key, value ->
+        forEachUnder(prefix, reverse, from) { key, value ->
             // A chunk prefix stops three position bytes short of the timestamp, so no byte range
             // under it can express a time window; the window is applied to the decoded entry instead.
             // A row that does not decode cannot say when it was written, so it counts whatever the window.
+            if (timed && timeAt(key, prefix.size).let { if (reverse) it < fromTs else it > toTs }) return@forEachUnder false
             if (walked++ >= steps) return@forEachUnder false
             val entry = EntryCodec.decodeOrNull(key, value, registries)
             if (entry == null) unreadable++ else if (entry.timestamp in fromTs..toTs && keep(entry)) found += entry

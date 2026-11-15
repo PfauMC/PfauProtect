@@ -825,6 +825,22 @@ class StorageTest : OneLedger() {
         Cause.DROP_FROM_HAND, aliceInv, ItemEntityRef(UUID.randomUUID()), torch, null, 2, ts, actor = alice, spot = dropAt,
     )
 
+    // A holder's walk starts at its window: twenty newer rows past the window's end must not use up a budget of five
+    // steps before the one row inside it is reached, read either way.
+    @Test
+    fun `a holder read starts at its window and spends no steps outside it`() {
+        log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 10))
+        repeat(20) { log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, cobblestone, null, 1, T0 + 100 + it)) }
+        repeat(20) { log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, cobblestone, null, 1, T0 - 100 - it)) }
+        log.drain()
+
+        for (reverse in listOf(true, false)) {
+            val page = log.holderPage(chest, T0, T0 + 50, reverse = reverse, limit = 10, steps = 5)
+            assertEquals(listOf(1), page.entries.map { it.qty }, "reverse $reverse")
+            assertTrue(page.complete, "reverse $reverse")
+        }
+    }
+
     // A throw out of a chest touches none of the thrower's slots, so only the actor index leads from them to it:
     // once per movement, on the chest's side, and a purge takes the entry with the posting.
     @Test
