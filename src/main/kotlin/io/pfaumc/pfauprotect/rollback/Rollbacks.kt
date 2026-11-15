@@ -239,6 +239,9 @@ class Tally {
     // Players killed by those the filter names, whose drops go back to them.
     val deaths = ArrayList<EntityRow>()
 
+    // What crossed the hands of the players `action:inventory` or `action:item` names.
+    internal val hands = ArrayList<HandMove>()
+
     // Mobs brought back out of a bucket, whose bucket goes back to what it was.
     val buckets = ArrayList<Bucketed>()
 
@@ -976,17 +979,19 @@ internal fun shelfState(state: BlockState, shelf: NmsContainer): BlockState =
         .fold(state) { acc, (slot, property) -> acc.setValue(property, !shelf.getItem(slot).isEmpty) }
 
 internal fun refusalOf(query: LookupQuery): String? = when {
+    // A player's hands have no position, and a block or a chest undone beside them is a rollback of its own.
+    query.crosses && (query.event != null || query.users.isEmpty() || query.radius != null && !query.global || !query.handsOnly) ->
+        "action:inventory and action:item roll back what crossed the hands of the players user: names, wherever they were: give user:, and no radius:, event: or other action:."
     query.event != null -> null
     !query.hasFrom -> "A rollback needs time: how far back to undo, for example time:1h."
     query.players.isNotEmpty() -> "player: reads what a player carries and has no place to roll back; use user:."
-    query.radius == null -> "A rollback needs radius: the blocks around you it covers, or user: for all they did."
+    query.radius == null && !query.crosses -> "A rollback needs radius: the blocks around you it covers, or user: for all they did."
     query.global && query.users.isEmpty() -> "radius:global undoes what named players did; give user: as well."
     // These narrow only what a lookup shows: a rollback would read past them and undo more, or less, than
     // the lookup it was checked against.
     query.amount != null -> "amount: narrows a lookup to item rows; a rollback does not take it."
     query.rolledBack != null -> "rolledback: narrows what a lookup shows; a rollback does not take it."
     query.steal -> "action:steal is worked out for a lookup only; roll back action:withdraw instead."
-    query.crosses -> "action:inventory and action:item read a player's hands, which have no place to roll back; roll back action:+container or action:-container instead."
     else -> null
 }
 
@@ -1101,6 +1106,7 @@ class Rollbacks(
                 Debug.log { "  users $users, window $from..$to, radius $radius around ${at.label}" }
                 val since = TIME_FORMAT.format(Instant.ofEpochMilli(from)) +
                     if (query.hasUntil) " until ${TIME_FORMAT.format(Instant.ofEpochMilli(to))}" else ""
+                var hands: List<HandMove> = emptyList()
                 val readings = try {
                     // The writers run on threads of their own, and what they still hold is history the
                     // rollback would not see; so is a clock's move held back.
@@ -1116,7 +1122,11 @@ class Rollbacks(
                     }
                     ledger.drain()
                     blocks.drain()
-                    if (query.global) {
+                    if (query.crosses) {
+                        val read = users.map { handMoves(ledger, it, from, to, users, keeps::keeps) }
+                        hands = read.filterNotNull().flatten()
+                        if (null in read) listOf(Refused("those players did more in that window than one rollback reads; narrow the time")) else emptyList()
+                    } else if (query.global) {
                         everywhere(users, from, to, keeps)
                     } else {
                         listOf(reader.around(at.world, at.x, at.y, at.z, radius!!, from, to, keeps, column = users.isNotEmpty()))
@@ -1126,6 +1136,7 @@ class Rollbacks(
                 }
                 val where = when {
                     event != null -> at.label
+                    query.crosses -> "what crossed the hands of ${query.users.joinToString(", ")} since $since"
                     query.global -> "everything ${query.users.joinToString(", ")} did since $since"
                     else -> "${query.radius} blocks around ${target.label} since $since"
                 }
@@ -1153,7 +1164,7 @@ class Rollbacks(
                     }
                     else -> {
                         val leftBefore = if (apply || users.isEmpty()) 0 else reader.leftByThemBefore(plans, users, from)
-                        dispatch(sender, plans, where, apply, release, rows = rowsOf(query, target), leftBefore = leftBefore, since = from, began = began, done = done)
+                        dispatch(sender, plans, where, apply, release, rows = rowsOf(query, target), leftBefore = leftBefore, since = from, began = began, done = done, hands = hands)
                     }
                 }
             } catch (failure: Throwable) {
@@ -1183,6 +1194,7 @@ class Rollbacks(
         since: Long,
         began: Long,
         done: (PreviewResult) -> Unit,
+        hands: List<HandMove> = emptyList(),
     ) {
         val work = plans.mapNotNull { plan -> (Bukkit.getWorld(plan.world) as? CraftWorld)?.handle?.let { it to plan } }
             .flatMap { (level, plan) -> plan.chunks.map { level to it } }
@@ -1190,7 +1202,7 @@ class Rollbacks(
         val slotRows = plans.sumOf { it.postings }
         // The number after its word: "1 rows" and «1 строк» both read wrong.
         val read = tr("rows read: blocks $blockRows, slots $slotRows", "прочитано строк: блоков $blockRows, слотов $slotRows")
-        if (work.isEmpty() && plans.all { it.deaths.isEmpty() }) {
+        if (work.isEmpty() && plans.all { it.deaths.isEmpty() } && hands.isEmpty()) {
             sender.say("Nothing to roll back: $where.")
             done(PreviewResult("ready", "Nothing to roll back: $where.", PreviewBlocks(0, 0, 0), 0, PreviewEntities(0, 0, 0, 0)))
             release()
@@ -1199,10 +1211,18 @@ class Rollbacks(
         val total = Tally()
         total.since = since
         total.deaths += plans.flatMap { it.deaths }
+        total.hands += hands
+        total.slots += hands.count { it.back }
         val run = Run(sender, total, read, where, apply, rows, leftBefore, began, done)
-        // Only deaths to give back for, and no place to touch: straight on to them.
-        if (work.isEmpty()) return run.finishing(release)
-        val hold = ChunkHold(work)
+        // Where the piles to take back fell, held with the rest: a pile in a chunk nobody is near reads as gone,
+        // and would be given out of nothing while it still lies there.
+        val fell = hands.flatMap { it.piles } + plans.flatMap { plan -> plan.deaths.map { WorldBlock(plan.world, it.x, it.y, it.z) } }
+        val piles = if (!apply) emptyList() else fell
+            .mapNotNull { at -> (Bukkit.getWorld(at.world) as? CraftWorld)?.handle?.let { it to (at.x shr 4 to (at.z shr 4)) } }
+            .distinct()
+            .filter { (level, chunk) -> work.none { (l, w) -> l == level && w.chunkX == chunk.first && w.chunkZ == chunk.second } }
+            .map { (level, chunk) -> level to ChunkPlan(chunk.first, chunk.second, emptyList()) }
+        val hold = ChunkHold(work + piles)
         if (!hold.take()) {
             "Rollback refused: the chunks it works in did not load within ${LOAD_MILLIS / 1000} s.".let {
                 sender.say(it)
@@ -1212,7 +1232,8 @@ class Rollbacks(
             return
         }
         try {
-            run.start(work, release, hold)
+            // Only deaths or hands to give back for, and no place to touch: straight on to them.
+            if (work.isEmpty()) run.finishing(run.freeing(release, hold)) else run.start(work, release, hold)
         } catch (failure: Throwable) {
             hold.release()
             throw failure
@@ -1276,15 +1297,16 @@ class Rollbacks(
     ) {
         val actor = (sender as? Player)?.uniqueId
 
+        // Held through the taking back too: the piles it takes back lie in these chunks, and taking them is
+        // queued on the global region and then on the pile's own, after this returns. The chunks must stay
+        // loaded until then, or the piles read as gone while they still lie there.
+        fun freeing(release: () -> Unit, hold: ChunkHold): () -> Unit = {
+            release()
+            Bukkit.getGlobalRegionScheduler().runDelayed(plugin, { hold.release() }, HOLD_LINGER_TICKS)
+        }
+
         fun start(work: List<Pair<ServerLevel, ChunkPlan>>, release: () -> Unit, hold: ChunkHold) {
-            // Held through the taking back too: the piles it takes back lie in these chunks, and taking them is
-            // queued on the global region and then on the pile's own, after this returns. The chunks must stay
-            // loaded until then, or the piles read as gone while they still lie there.
-            val freed = {
-                release()
-                Bukkit.getGlobalRegionScheduler().runDelayed(plugin, { hold.release() }, HOLD_LINGER_TICKS)
-                Unit
-            }
+            val freed = freeing(release, hold)
             val left = AtomicInteger(work.size)
             val progress = Progress((sender as? Player)?.takeIf { apply }, work.size)
             val done = {
@@ -1355,6 +1377,21 @@ class Rollbacks(
                 val victim = nameOrId(death.uuid)
                 sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
                 if (apply) confiscations.restore(death.uuid, back, actor, sender, fallen.births().values.flatten(), fallen.slots(), death.timestamp)
+            }
+            // What crossed a player's hands: one line each way per player, then each crossing on its own.
+            for ((player, moves) in total.hands.groupBy { it.player }) {
+                val who = nameOrId(player)
+                val (back, away) = moves.partition { it.back }
+                if (back.isNotEmpty()) {
+                    sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $who what they lost: ${confiscations.describe(merged(back.flatMap { it.owed }))}")
+                }
+                if (away.isNotEmpty()) {
+                    val whom = confiscations.describe(merged(away.flatMap { it.owed }))
+                    sender.sayNamed(if (apply) "  taking back from $whom:" else "  would take back from $whom.")
+                }
+                if (!apply) continue
+                for (move in back) confiscations.restore(player, move.owed, actor, sender, move.marks, move.slots, move.at)
+                for (move in away) confiscations.takeAway(move.owed, move.marks, actor, sender)
             }
             // A mob let out of a bucket is no longer in it: the bucket with the mob for the one it was before.
             for (bucket in total.buckets) {

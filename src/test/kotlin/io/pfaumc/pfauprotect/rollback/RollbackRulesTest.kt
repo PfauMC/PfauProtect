@@ -178,6 +178,11 @@ class RollbackRulesTest {
             EventRef(1, 0, 64, 0, T0).toString() to null,
             "t:1h r:5" to null,
             "t:1h r:global u:Steve" to null,
+            "t:1h a:-inventory" to "give user:",
+            "t:1h r:5 u:Steve a:-inventory" to "no radius:",
+            "t:1h u:Steve a:-inventory,block" to "no radius:",
+            "t:1h u:Steve a:-inventory" to null,
+            "t:1h r:global u:Steve a:item" to null,
         )
         for ((query, refusal) in refusals) {
             val said = refusalOf(parseLookupQuery(query))
