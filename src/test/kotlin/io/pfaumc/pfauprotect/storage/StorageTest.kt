@@ -829,6 +829,8 @@ class StorageTest : OneLedger() {
     // steps before the one row inside it is reached, read either way.
     @Test
     fun `a holder read starts at its window and spends no steps outside it`() {
+        // A chest of its own: the fixture's chest already has rows in this window.
+        val chest = Container(world, 900, 64, 900, 0)
         log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, torch, null, 1, T0 + 10))
         repeat(20) { log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, cobblestone, null, 1, T0 + 100 + it)) }
         repeat(20) { log.submit(Transfer(Cause.CONTAINER_ADD, aliceInv, chest, cobblestone, null, 1, T0 - 100 - it)) }
