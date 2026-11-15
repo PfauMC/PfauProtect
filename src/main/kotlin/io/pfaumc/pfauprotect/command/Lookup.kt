@@ -441,6 +441,11 @@ data class LookupQuery(
     val crosses: Boolean
         get() = (actions + excluded).any { group -> allOf(group).any { Action.of(it.lowercase())?.crossing != null } }
 
+    // Every action a crossing and none left out: what a rollback of a player's hands takes.
+    val handsOnly: Boolean
+        get() = actions.all { group -> allOf(group).all { Action.of(it.lowercase())?.crossing != null } } &&
+            excluded.none { group -> allOf(group).any { Action.of(it.lowercase())?.crossing != null } }
+
     val limit: Int get() = rows ?: DEFAULT_LIMIT
 
     val hasFrom: Boolean get() = secondsBack != null || fromMillis != null

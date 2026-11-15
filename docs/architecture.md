@@ -107,7 +107,7 @@ online player through an `Intent`, from an offline one at their next join, from 
 back to what their oldest row in the window says they were (brought back from NBT with the same UUID, taken away,
 changed back, returned to where they stood), and a player killed by the one rolled back gets back what fell out of
 them. Every player death is an entity row; one with no player behind it (fall, lava, mob) has cause `player_died`
-and no actor, and is never rolled back. A death and a popped totem are also indexed in `by_actor` under the
+and no actor, and only `action:-inventory` gives its loss back. A death and a popped totem are also indexed in `by_actor` under the
 victim, so `p:` finds them, while `u:` still names only what the victim did.
 
 ## `/pp lookup` and `/pp purge` semantics
@@ -132,7 +132,18 @@ victim, so `p:` finds them, while `u:` still names only what the victim did.
 - `inventory` and `item` (each with `+`/`-`) are crossing actions: a direction across a player's hands, decided per
   row from both ends (`crosses`, `Action.crossing`) rather than by cause, so they work in `p:`, `r:`, the inspector and `u:`
   (which also keeps a player's rows that left their own slots with no position: drops, pickups, eating). `item`
-  leaves containers out. Block placement and purge openings are never crossings. A rollback refuses them (`refusalOf`).
+  leaves containers out. Block placement and purge openings are never crossings. A rollback takes them only alone,
+  with `user:` and no radius but `global` (`refusalOf`), and reads those players' hands rather than a place
+  (`handMoves`): what left them goes back to them, taken from wherever it is now (a pile followed as a death's is, a
+  container it was put into or whoever took it out of there since, another player, an arrow followed out of its
+  slot; a pile a hopper or a mob took is beyond reach), and what went into nothing (eaten,
+  burnt, thrown, despawned) out of nothing, as CoreProtect gives it; what came in is taken away. Left alone: their
+  own ender chest, the benches (the result is still in the hands), admin commands (`/clear`, `/give`), creative mode,
+  a join's load, a rollback's own rows, what still sits in a block
+  or an entity, whatever went out and came back from one place either way round, and their own pile picked up
+  again. What one named player handed another goes back through the giver's half only. A pile's birth is the mark,
+  so a death given back this way is not given back again by a rollback of the killer, nor the other way round; the
+  chunks the piles fell in are held while they are taken. A death nobody stands behind comes back only this way.
 - A withdrawal (`container`, `-container`, `steal`) is a `CONTAINER_REMOVE` or a `CONTAINER_THROW`: Q or Ctrl+Q over
   a slot of a block's or another entity's container throws straight out of it. The click pins that slot to the drop's
   intent (`droppingFrom`, cleared by the next pass), since an intent otherwise explains only the player's own slots.

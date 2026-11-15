@@ -8,6 +8,7 @@ import io.pfaumc.pfauprotect.capture.item.namedContents
 import io.pfaumc.pfauprotect.capture.item.Made
 import io.pfaumc.pfauprotect.capture.item.withContents
 import io.pfaumc.pfauprotect.model.Container
+import io.pfaumc.pfauprotect.model.EntitySlot
 import io.pfaumc.pfauprotect.model.PlayerInv
 import kotlin.jvm.optionals.getOrNull
 import io.pfaumc.pfauprotect.model.Nested
@@ -19,6 +20,7 @@ import io.pfaumc.pfauprotect.model.PostingRef
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.ItemEntityRef
 import io.pfaumc.pfauprotect.model.LedgerEntry
+import io.pfaumc.pfauprotect.model.MenuSlot
 import io.pfaumc.pfauprotect.model.PlayerEnder
 import io.pfaumc.pfauprotect.model.PlayerHolder
 import io.pfaumc.pfauprotect.model.Transfer
@@ -41,6 +43,7 @@ import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.Plugin
 import java.util.UUID
+import kotlin.math.abs
 import java.util.logging.Level
 import io.pfaumc.pfauprotect.capture.item.NestedItems
 import io.pfaumc.pfauprotect.command.itemKey
@@ -85,6 +88,9 @@ data class Lying(val entity: UUID) : Taker
 // player is owed of it can only be given out of nothing — it exists nowhere any more.
 data class Vanished(val entity: UUID) : Taker
 
+// The container a player put it into: taken out of there, and what is no longer there is beyond reach.
+data class Stored(val at: Container) : Taker
+
 /**
  * `stashes` are the containers a carrier put this item into since the window opened, newest first: what
  * is not in their hands any more is looked for there, so a thief who put the loot in a chest of their own
@@ -115,6 +121,9 @@ internal fun trace(
     qty: Int,
     rowsOf: (ItemEntityRef) -> List<LedgerEntry>,
     hops: Int = 0,
+    // What earlier traces of the same plan already put on a pile or on a posting out of it, by uuid or ref:
+    // two losses that merged into one pile share what lies there and what left it, not each get all of it.
+    spent: MutableMap<Any, Int> = HashMap(),
 ): List<Owed> {
     if (qty <= 0) return emptyList()
     return when (lead) {
@@ -124,16 +133,19 @@ internal fun trace(
             val rows = rowsOf(lead).filter { it.itemFormId == formId }
             val owed = ArrayList<Owed>()
             var need = qty
-            val lying = rows.sumOf { it.qty }
+            val lying = rows.sumOf { it.qty } - spent.getOrDefault(lead.uuid, 0)
             if (lying > 0) {
                 val n = minOf(need, lying)
                 owed += Owed(Lying(lead.uuid), formId, n)
+                spent.merge(lead.uuid, n, Int::plus)
                 need -= n
             }
             for (out in rows.filter { it.qty < 0 }.sortedBy { it.txId }) {
                 if (need <= 0) break
-                val n = minOf(need, -out.qty)
-                owed += if (out.counterparty == Void) listOf(Owed(Vanished(lead.uuid), formId, n)) else trace(out.counterparty, formId, n, rowsOf, hops + 1)
+                val n = minOf(need, -out.qty - spent.getOrDefault(out.ref, 0))
+                if (n <= 0) continue
+                spent.merge(out.ref, n, Int::plus)
+                owed += if (out.counterparty == Void) listOf(Owed(Vanished(lead.uuid), formId, n)) else trace(out.counterparty, formId, n, rowsOf, hops + 1, spent)
                 need -= n
             }
             owed
@@ -377,6 +389,264 @@ internal class Fallen(private val ledger: RocksItemLog, private val death: Entit
     }
 }
 
+/**
+ * One crossing of a player's hands to undo. `back`: what left them goes back to them, taken from wherever
+ * it is now, and what went into nothing (eaten, burnt, thrown, despawned) out of nothing, as CoreProtect
+ * gives it. Otherwise what came into them is taken away. `marks` are what a second rollback finds already
+ * given back; `piles`, where the piles it takes from fell, whose chunks are held while they are taken.
+ */
+internal class HandMove(
+    val player: UUID,
+    val back: Boolean,
+    val owed: List<Owed>,
+    val marks: List<PostingRef>,
+    val slots: Map<Long, List<Int>> = emptyMap(),
+    val at: Long = 0,
+    val piles: List<WorldBlock> = emptyList(),
+)
+
+// A bench's inputs and what it made of them. The result is still in the hands, and its inputs given back as
+// well would be the item twice; the result taken away would lose the inputs. Read neither way.
+private val STATIONS = MAKING + setOf(
+    Cause.CRAFT_CONSUME, Cause.CRAFT_REMAINDER, Cause.BREW, Cause.GRINDSTONE, Cause.SMITHING_TRIM,
+    Cause.ENCHANT_APPLY, Cause.ENCHANT_LAPIS_CONSUME, Cause.LOOM, Cause.CARTOGRAPHY,
+)
+
+// What nobody did with their hands: an admin's command (a /clear given back out of nothing would hand out
+// every inventory an admin ever cleared), creative mode, a join's load, a rollback's own rows and what the
+// ledger cannot name.
+private val NOT_DONE = Cause.entries.filter { it.name.startsWith("CMD_") || it.name.startsWith("CREATIVE_") }.toSet() +
+    setOf(Cause.INVENTORY_LOAD, Cause.ROLLBACK, Cause.PURGE_OPENING, Cause.UNKNOWN)
+
+/**
+ * What crossed a player's hands in the window that [keeps] keeps, for a rollback of `action:inventory` or
+ * `action:item` naming [named]. Left alone: their own ender chest, the benches, a rollback's own rows, what
+ * still sits in a block or an entity (a jukebox, a frame, a stuck arrow), and whatever went out and came
+ * back in from one place, either way round. What one named player handed another goes back through the
+ * giver's half only. Null when the window holds more than one rollback reads. Off the region thread.
+ */
+internal fun handMoves(
+    ledger: RocksItemLog,
+    player: UUID,
+    fromTs: Long,
+    toTs: Long,
+    named: Set<UUID> = setOf(player),
+    // Shared by every player of one rollback: their piles may have merged into one.
+    spent: MutableMap<Any, Int> = HashMap(),
+    // Which way across this player's own hands: the filter's crossing says it for anyone's, so a gift to
+    // another player is a way in for them and would be undone by a `+inventory` of the giver.
+    inward: Boolean = true,
+    outward: Boolean = true,
+    keeps: (LedgerEntry) -> Boolean,
+): List<HandMove>? {
+    val rows = ArrayList<LedgerEntry>()
+    // The crafting grid is a bench of its own and stays out with the others.
+    for (hand in listOf(PlayerInv(player, 0), PlayerEquip(player, 0), PlayerCursor(player))) {
+        val page = ledger.holderPage(hand, fromTs, toTs, limit = MAX_ROLLBACK_ROWS)
+        if (!page.complete || page.unreadable > 0) return null
+        rows += page.entries
+    }
+    rows.sortWith(compareBy<LedgerEntry> { it.txId }.thenBy { it.ordinal })
+    val read = HashMap<Holder, List<LedgerEntry>>()
+    // A pile or an entity whose history is cut short refuses the whole read: a plan over part of it gives
+    // back what is still somewhere, out of nothing.
+    var cut = false
+    fun rowsOf(holder: Holder) = read.getOrPut(holder) {
+        val page = ledger.holderPage(holder, 0, Long.MAX_VALUE, limit = ENTITY_ROWS)
+        if (!page.complete || page.unreadable > 0) cut = true
+        page.entries
+    }
+    val pileRows = { pile: ItemEntityRef -> rowsOf(pile) }
+    fun own(holder: Holder) = holder is PlayerHolder && holder.uuid == player || holder is EntitySlot && holder.uuid == player
+    fun undoable(entry: LedgerEntry) = entry.cause !in NOT_DONE && entry.cause !in STATIONS &&
+        entry.counterparty !is MenuSlot && entry.counterparty !is WorldBlock && !own(entry.counterparty)
+    // Out to a place and back in from it, or in and back out: neither half is undone, as far as they cover.
+    fun placeOf(holder: Holder): Any? = when (holder) {
+        is Container -> holder.copy(slot = 0)
+        is PlayerHolder -> holder.uuid
+        is EntitySlot -> holder.uuid
+        else -> null
+    }
+    // A pile's birth is the mark, the one a rollback of whoever killed them leaves too: one death is never
+    // given back twice, whichever rollback comes first.
+    fun birthOf(pile: ItemEntityRef, txId: Long) = rowsOf(pile).firstOrNull { it.txId == txId && it.qty > 0 }
+    fun markOf(entry: LedgerEntry): PostingRef =
+        (entry.counterparty as? ItemEntityRef)?.takeIf { entry.qty < 0 }?.let { birthOf(it, entry.txId)?.ref } ?: entry.ref
+    // A mark covers the whole posting while a rollback gave back only what was left of it after pairing, so the
+    // pairing keeps the postings already given back: dropped from it, their paired half would be undone again.
+    val undoable = rows.filter(::undoable)
+    val marks = undoable.associateWith(::markOf)
+    val given = ledger.compensated(marks.values).keys
+    val left = HashMap<LedgerEntry, Int>()
+    val open = HashMap<Triple<Any, Long, Boolean>, ArrayDeque<LedgerEntry>>()
+    for (entry in undoable) {
+        val place = placeOf(entry.counterparty) ?: continue
+        val out = entry.qty < 0
+        left[entry] = abs(entry.qty)
+        val earlier = open[Triple(place, entry.itemFormId, !out)]
+        while (earlier != null && earlier.isNotEmpty() && left.getValue(entry) > 0) {
+            val other = earlier.last()
+            val n = minOf(left.getValue(other), left.getValue(entry))
+            left[other] = left.getValue(other) - n
+            left[entry] = left.getValue(entry) - n
+            if (left.getValue(other) == 0) earlier.removeLast()
+        }
+        if (left.getValue(entry) > 0) open.getOrPut(Triple(place, entry.itemFormId, out)) { ArrayDeque() }.addLast(entry)
+    }
+    // Whether what a player handed out is given back by this rollback, or was theirs: then the giver's half
+    // gives it back from where it went, and taking it as well would take it twice.
+    fun ownOrNamed(giver: UUID?, source: LedgerEntry) =
+        giver == player || giver in named && source.timestamp in fromTs..toTs && keeps(source)
+    // How much of a pile was dropped by such a giver, by its births: a pile another merged into is part theirs.
+    // Less what pickups of this rollback already counted as theirs, in this pile or one merged on from it. Only
+    // what was in it by `before`: what merged in later was not there to be picked up.
+    fun handedShare(pile: ItemEntityRef, form: Long, before: Long, hops: Int = 0): Int {
+        val share = rowsOf(pile).filter { it.qty > 0 && it.itemFormId == form && it.txId < before }.sumOf { birth ->
+            when {
+                birth.cause != Cause.ITEM_MERGE -> if (ownOrNamed((birth.counterparty as? PlayerHolder)?.uuid, birth)) birth.qty else 0
+                // Through every merge before it, as far as a trace follows one.
+                hops >= MAX_HOPS -> 0
+                else -> (birth.counterparty as? ItemEntityRef)?.let { minOf(birth.qty, handedShare(it, form, birth.txId, hops + 1)) } ?: 0
+            }
+        }
+        return maxOf(0, share - spent.getOrDefault(pile to "handed", 0))
+    }
+    // Of what came in, how much is to be taken away.
+    fun toTake(entry: LedgerEntry, n: Int): Int = when (val from = entry.counterparty) {
+        is ItemEntityRef -> {
+            val theirs = minOf(n, handedShare(from, entry.itemFormId, entry.txId))
+            spent.merge(from to "handed", theirs, Int::plus)
+            n - theirs
+        }
+        is PlayerHolder -> {
+            val mirror = ledger.transactionEntries(entry).firstOrNull { it.ordinal != entry.ordinal && it.holder == from }
+            if (mirror != null && ownOrNamed(from.uuid, mirror)) 0 else n
+        }
+        else -> n
+    }
+    // What left into an entity's or a container's slots, followed out of them as a pile is. Each posting out
+    // of it is spent once, however many of the player's go in before it. Into a hopper or a mob is beyond reach.
+    fun outOf(at: Holder, form: Long, qty: Int, since: Long, allocated: IntArray = IntArray(1)): List<Owed> {
+        val owed = ArrayList<Owed>()
+        var need = qty
+        val gone = (at as? EntitySlot)?.uuid ?: player
+        // What they took back themselves the pairing already settled.
+        for (out in rowsOf(at).filter { it.itemFormId == form && it.qty < 0 && it.timestamp >= since && !own(it.counterparty) }.sortedBy { it.txId }) {
+            if (need <= 0) break
+            val n = minOf(need, -out.qty - spent.getOrDefault(out.ref, 0))
+            if (n <= 0) continue
+            spent.merge(out.ref, n, Int::plus)
+            need -= n
+            owed += when (val to = out.counterparty) {
+                Void -> listOf(Owed(Vanished(gone), form, n))
+                is PlayerHolder -> if (to.uuid == player) emptyList() else listOf(Owed(Carrier(to.uuid), form, n))
+                is ItemEntityRef -> trace(to, form, n, pileRows, spent = spent).filter { it.taker != Carrier(player) }
+                else -> emptyList()
+            }
+        }
+        allocated[0] = qty - need
+        return owed
+    }
+    // Put into a container: what the container lost of it since is followed to whoever took it, newest
+    // deposits first out (what others put in after counts against it), and the rest is taken out of it.
+    fun outOfContainer(at: Container, form: Long, qty: Int, entry: LedgerEntry): List<Owed> {
+        val box = at.copy(slot = 0)
+        val after = rowsOf(box).filter { it.itemFormId == form && it.txId > entry.txId && !own(it.counterparty) }
+        // A player who took some out and put it back later took nothing: their withdrawal is settled by the
+        // return, once per container, so a later taker is the one followed.
+        if (spent.putIfAbsent(box to form, 0) == null) {
+            val outs = HashMap<UUID, ArrayDeque<LedgerEntry>>()
+            for (row in rowsOf(box).filter { it.itemFormId == form }.sortedBy { it.txId }) {
+                val who = (row.counterparty as? PlayerHolder)?.uuid ?: continue
+                if (row.qty < 0) {
+                    outs.getOrPut(who) { ArrayDeque() }.addLast(row)
+                    continue
+                }
+                var back = row.qty
+                val earlier = outs[who] ?: continue
+                while (back > 0 && earlier.isNotEmpty()) {
+                    val out = earlier.last()
+                    val n = minOf(back, -out.qty - spent.getOrDefault(out.ref, 0))
+                    spent.merge(out.ref, n, Int::plus)
+                    back -= n
+                    if (-out.qty - spent.getOrDefault(out.ref, 0) <= 0) earlier.removeLast()
+                }
+            }
+        }
+        val taken = minOf(qty, maxOf(0, -after.sumOf { it.qty }))
+        // What another deposit's share of the losses already took is still in there for this one.
+        val allocated = IntArray(1)
+        val owed = outOf(box, form, taken, entry.timestamp, allocated)
+        return owed + listOfNotNull(Owed(Stored(box), form, qty - allocated[0]).takeIf { it.qty > 0 })
+    }
+    // Up to `qty` of a form a carrier dropped since, traced from each pile; each drop is spent once.
+    fun droppedBy(carrier: UUID, form: Long, qty: Int, since: Long): List<Owed> {
+        if (carrier == player) return emptyList()
+        val owed = ArrayList<Owed>()
+        var need = qty
+        val drops = ownRows(ledger, since, PlayerInv(carrier, 0), PlayerEquip(carrier, 0), PlayerCursor(carrier))
+            .filter { it.itemFormId == form && it.qty < 0 && it.counterparty is ItemEntityRef }
+            .sortedBy { it.txId }
+        for (drop in drops) {
+            if (need <= 0) break
+            val n = minOf(need, -drop.qty - spent.getOrDefault(drop.ref, 0))
+            if (n <= 0) continue
+            spent.merge(drop.ref, n, Int::plus)
+            need -= n
+            owed += trace(drop.counterparty, form, n, pileRows, spent = spent)
+        }
+        return owed
+    }
+    val kept = undoable.filter { (if (it.qty < 0) outward else inward) && keeps(it) }
+    val moves = ArrayList<HandMove>()
+    val taken = HashMap<Long, MutableList<Pair<LedgerEntry, Int>>>()
+    for (entry in kept) {
+        if (marks.getValue(entry) in given) continue
+        val n = left[entry] ?: abs(entry.qty)
+        if (n == 0) continue
+        val form = entry.itemFormId
+        if (entry.qty > 0) {
+            val take = toTake(entry, n)
+            if (take > 0) taken.getOrPut(form) { ArrayList() } += entry to take
+            continue
+        }
+        val owed = when (val to = entry.counterparty) {
+            // A pile taken by a hopper or a mob, or past the hops followed, still exists somewhere: beyond
+            // reach, as a death's is, rather than given again out of nothing.
+            is ItemEntityRef -> trace(to, form, n, pileRows, spent = spent).filter { it.taker != Carrier(player) }
+            // What still sits in an entity stays there.
+            is EntitySlot -> outOf(to, form, n, entry.timestamp)
+            is Container -> outOfContainer(to, form, n, entry)
+            is PlayerHolder -> listOf(Owed(Carrier(to.uuid), form, n))
+            Void -> listOf(Owed(Vanished(player), form, n))
+            else -> emptyList()
+        }.flatMap { item ->
+            // A carrier is followed into what they put it in since, offline too, as a thief is, and first into
+            // the piles they dropped of it: who picked those up has it, not nobody.
+            val carrier = item.taker as? Carrier ?: return@flatMap listOf(item)
+            val drops = droppedBy(carrier.player, item.formId, item.qty, entry.timestamp)
+            // What they picked up again they still owe; what the player picked up they have.
+            val rest = item.qty - drops.filter { it.taker != carrier }.sumOf { it.qty }
+            drops.filter { it.taker != Carrier(player) && it.taker != carrier } +
+                listOfNotNull(followed(ledger, carrier.player, item.formId, rest, entry.timestamp, pileRows).takeIf { rest > 0 })
+        }
+        if (owed.isEmpty()) continue
+        val slot = (entry.holder as? PlayerInv ?: entry.holder as? PlayerEquip)?.slot
+        // Where the player stood: a pile they dropped, and one that fell out of an entity they put it in, lie
+        // within the chunk around it that the hold keeps loaded, merges included.
+        val pile = entry.spot?.takeIf { owed.any { it.taker is Lying } }
+        moves += HandMove(
+            player, true, owed, listOf(marks.getValue(entry)), slot?.let { mapOf(form to listOf(it)) }.orEmpty(),
+            entry.timestamp, listOfNotNull(pile),
+        )
+    }
+    for ((form, entries) in taken) {
+        val qty = entries.sumOf { it.second }
+        moves += HandMove(player, false, listOf(followed(ledger, player, form, qty, fromTs, pileRows)), entries.map { marks.getValue(it.first) })
+    }
+    return if (cut) null else moves
+}
+
 private fun pileRows(ledger: RocksItemLog) = { pile: ItemEntityRef -> ledger.holderEntries(pile, 0, Long.MAX_VALUE, limit = ENTITY_ROWS) }
 
 /** The same taker and form owed more than once, as one amount. */
@@ -410,11 +680,26 @@ class Confiscations(
                 if (Bukkit.getPlayer(taker.player) == null) " (offline, at their next join)" else ""
             "$who: ${amounts(all)}"
         }
+        val stored = owed.filter { it.taker is Stored }.groupBy { (it.taker as Stored).at }.map { (at, all) ->
+            "container at ${at.x} ${at.y} ${at.z}: ${amounts(all)}"
+        }
         val piles = owed.filter { it.taker is Lying }
         val gone = owed.filter { it.taker is Vanished }
         val lying = if (piles.isEmpty()) emptyList() else listOf("${piles.map { it.taker }.distinct().size} items lying in the world: ${amounts(piles)}")
         val vanished = if (gone.isEmpty()) emptyList() else listOf("gone for good: ${amounts(gone)}")
-        return (players + lying + vanished).joinToString("; ")
+        return (players + stored + lying + vanished).joinToString("; ")
+    }
+
+    /** Takes away what came into a player's hands, its postings marked as given back. */
+    fun takeAway(owed: List<Owed>, marks: List<PostingRef>, actor: UUID?, sender: CommandSender) {
+        take(owed, actor, sender)
+        mark(owed, marks, actor)
+    }
+
+    // Nothing moves, so no posting is written: only the mark.
+    private fun mark(owed: List<Owed>, marks: List<PostingRef>, actor: UUID?) {
+        val form = owed.firstNotNullOfOrNull { ledger.form(it.formId) } ?: return
+        if (marks.isNotEmpty()) sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, form, null, 1, System.currentTimeMillis(), actor = actor, reverts = marks)))
     }
 
     private fun amounts(owed: List<Owed>) =
@@ -439,9 +724,8 @@ class Confiscations(
         val back = { formId: Long, n: Int -> give(victim, formId, n, actor, sender, slots[formId].orEmpty(), diedAt) }
         take(owed.filter { it.taker !is Vanished }, actor, sender, gone = back, taken = back)
         for (gone in owed.filter { it.taker is Vanished }) back(gone.formId, gone.qty)
-        // The piles' births marked as given back. Nothing moves, so no posting is written: only the mark.
-        val form = owed.firstNotNullOfOrNull { ledger.form(it.formId) } ?: return
-        if (births.isNotEmpty()) sink(listOf(Transfer(Cause.ROLLBACK, Void, Void, form, null, 1, System.currentTimeMillis(), actor = actor, reverts = births)))
+        // The piles' births marked as given back.
+        mark(owed, births, actor)
     }
 
     /** Takes one form from a player and gives as much of another back: a bucket with a mob for the one it was. */
@@ -492,6 +776,9 @@ class Confiscations(
                         pile.scheduler.run(plugin, { all.forEach { fromPile(pile, it, actor, sender, gone, taken) } }, missing)
                             ?: missing()
                     }
+                }
+                is Stored -> for (item in all) {
+                    fromStashes(Owed(taker, item.formId, item.qty, stashes = listOf(taker.at)), item.qty, actor, sender, gone, taken)
                 }
                 is Vanished -> Unit
             }
@@ -758,7 +1045,8 @@ class Confiscations(
             val message = if (left == 0) "  took back $got ${name(item.formId)} from ${player.name}."
             else "  ${player.name} held only $got of ${item.qty} ${name(item.formId)}; $rest."
             tell(sender, message)
-            if (left > 0 && followed) short(item, left)
+            // Nowhere else to look: gone, which a restitution gives out of nothing.
+            if (left > 0) if (followed) short(item, left) else gone(item.formId, left)
         }
         if (direct.isNotEmpty()) sink(direct)
     }

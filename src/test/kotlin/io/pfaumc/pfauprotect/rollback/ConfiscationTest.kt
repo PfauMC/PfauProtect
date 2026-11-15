@@ -4,9 +4,13 @@ import io.pfaumc.pfauprotect.OneLedger
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
+import io.pfaumc.pfauprotect.command.Crossing
+import io.pfaumc.pfauprotect.command.crosses
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntityKind
+import io.pfaumc.pfauprotect.model.EntitySlot
+import io.pfaumc.pfauprotect.model.LedgerEntry
 import io.pfaumc.pfauprotect.model.Holder
 import io.pfaumc.pfauprotect.model.Nested
 import io.pfaumc.pfauprotect.model.PlayerEquip
@@ -231,6 +235,240 @@ class ConfiscationTest : OneLedger() {
         log.submit(Transfer(Cause.ROLLBACK, Void, Void, diamond, null, 1, T0 + 2, reverts = births))
         log.drain()
         assertTrue(Fallen(log, death).restitution().isEmpty())
+    }
+
+    // A phantom killed Alice, nobody behind it. `u:alice a:-inventory` gives her the loss back from wherever it is
+    // now, as CoreProtect does: Bob's pile from Bob, the burnt one and the bread she ate out of nothing; what she
+    // picked up again and took back out of the chest she has. Once given, never again; and `a:+inventory` takes
+    // away what she took out of somebody's chest, but neither her own pile nor her own stone.
+    @Test
+    fun `what crossed a player's hands is undone from where it is now`() {
+        val picked = ItemEntityRef(UUID.randomUUID())
+        val burned = ItemEntityRef(UUID.randomUUID())
+        val regained = ItemEntityRef(UUID.randomUUID())
+        val bread = byteArrayOf(5)
+        for (pile in listOf(picked, burned, regained)) {
+            log.submit(Transfer(Cause.DEATH_DROP, PlayerInv(alice, 7), pile, diamond, null, 2, T0))
+        }
+        log.submit(Transfer(Cause.PICKUP, picked, PlayerInv(bob, 1), diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.ITEM_DESTROY_FIRE, burned, Void, diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.PICKUP, regained, PlayerInv(alice, 3), diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 5), chest, stone, null, 3, T0 + 2))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 5), stone, null, 1, T0 + 3))
+        log.submit(Transfer(Cause.CONSUME_FOOD, PlayerInv(alice, 6), Void, bread, null, 1, T0 + 4))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, Container(world, 9, 64, 9, 2), PlayerInv(alice, 8), diamond, null, 4, T0 + 4))
+        log.drain()
+        fun moves(inward: Boolean, outward: Boolean) =
+            handMoves(log, alice, 0, Long.MAX_VALUE, inward = inward, outward = outward) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
+        fun owed(moves: List<HandMove>) = moves.flatMap { it.owed }.groupingBy { it.taker to it.formId }.fold(0) { sum, it -> sum + it.qty }
+        val id = { form: ByteArray -> log.forms.lookup(form)!! }
+
+        val out = moves(inward = false, outward = true)
+        assertTrue(out.all { it.back })
+        assertEquals(
+            mapOf(
+                (Carrier(bob) to id(diamond)) to 2, (Vanished(burned.uuid) to id(diamond)) to 2,
+                (Stored(chest) to id(stone)) to 2, (Vanished(alice) to id(bread)) to 1,
+            ),
+            owed(out),
+        )
+        // Back into the slot it fell out of.
+        assertEquals(listOf(7), out.first { it.owed.any { owed -> owed.taker == Carrier(bob) } }.slots[id(diamond)])
+
+        log.submit(Transfer(Cause.ROLLBACK, Void, Void, diamond, null, 1, T0 + 5, reverts = out.flatMap { it.marks }))
+        log.drain()
+        assertTrue(moves(inward = false, outward = true).isEmpty())
+        // The rollback of whoever killed her finds the same piles given back.
+        assertTrue(Fallen(log, deathOf(picked, burned)).restitution().isEmpty())
+
+        val taken = moves(inward = true, outward = false)
+        assertTrue(taken.none { it.back })
+        assertEquals(mapOf((Carrier(alice) to id(diamond)) to 4), owed(taken))
+    }
+
+    // What a hands rollback must not undo: diamonds taken out of Bob's chest and put back, a sword still on a
+    // stand, a crafting's inputs (the block is still hers), an earlier rollback's own give. An arrow that
+    // despawned comes back out of nothing. With both of them named, what Bob picked up of Alice's drop goes back
+    // through her half only, not taken from him twice.
+    @Test
+    fun `a hands rollback leaves what came back, what still exists and what was made`() {
+        val bobs = Container(world, 40, 64, 40, 0)
+        val frame = EntitySlot(UUID.randomUUID(), 0)
+        val arrow = EntitySlot(UUID.randomUUID(), 0)
+        val pile = ItemEntityRef(UUID.randomUUID())
+        val sword = byteArrayOf(6)
+        val block = byteArrayOf(7)
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, bobs, PlayerInv(alice, 0), diamond, null, 4, T0))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), bobs, diamond, null, 4, T0 + 1))
+        log.submit(Transfer(Cause.ARMOR_STAND_SWAP, PlayerInv(alice, 1), frame, sword, null, 1, T0 + 2))
+        log.submit(Transfer(Cause.CRAFT_CONSUME, PlayerInv(alice, 2), Void, diamond, null, 9, T0 + 3))
+        log.submit(Transfer(Cause.CRAFT_RESULT, Void, PlayerInv(alice, 2), block, null, 1, T0 + 3))
+        log.submit(Transfer(Cause.ROLLBACK, Void, PlayerInv(alice, 3), stone, null, 5, T0 + 4))
+        log.submit(Transfer(Cause.PROJ_SHOT, PlayerInv(alice, 4), arrow, stone, null, 1, T0 + 5))
+        log.submit(Transfer(Cause.PROJ_DESPAWN, arrow, Void, stone, null, 1, T0 + 6))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 5), pile, sword, null, 1, T0 + 7))
+        log.submit(Transfer(Cause.PICKUP, pile, PlayerInv(bob, 0), sword, null, 1, T0 + 8))
+        // A join's load, an admin's /clear and /give: nothing her hands did, neither given back nor taken.
+        log.submit(Transfer(Cause.INVENTORY_LOAD, Void, PlayerInv(alice, 6), diamond, null, 20, T0 + 9))
+        log.submit(Transfer(Cause.CMD_CLEAR, PlayerInv(alice, 6), Void, diamond, null, 20, T0 + 10))
+        log.submit(Transfer(Cause.CMD_GIVE, Void, PlayerInv(alice, 6), diamond, null, 5, T0 + 11))
+        log.drain()
+        val both = Crossing(inward = true, outward = true, containers = true)
+        val keeps = { entry: LedgerEntry -> crosses(entry, both) { false } }
+        val id = { form: ByteArray -> log.forms.lookup(form)!! }
+
+        val hers = handMoves(log, alice, 0, Long.MAX_VALUE, setOf(alice, bob), keeps = keeps)!!
+        assertEquals(
+            setOf(Vanished(arrow.uuid) to id(stone), Carrier(bob) to id(sword)),
+            hers.flatMap { it.owed }.map { it.taker to it.formId }.toSet(),
+        )
+        assertTrue(hers.all { it.back })
+        assertTrue(handMoves(log, bob, 0, Long.MAX_VALUE, setOf(alice, bob), keeps = keeps)!!.isEmpty())
+        // Bob alone: what he picked up is taken from him.
+        assertEquals(listOf(false), handMoves(log, bob, 0, Long.MAX_VALUE, setOf(bob), keeps = keeps)!!.map { it.back })
+    }
+
+    // Two of Alice's piles merged into one, and Bob picked one diamond out of it: three lie there, not four
+    // twice over. Each loss gets its share of what lies there and of Bob's, not all of it.
+    @Test
+    fun `losses merged into one pile share it`() {
+        val first = ItemEntityRef(UUID.randomUUID())
+        val second = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 0), first, diamond, null, 2, T0))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 1), second, diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.ITEM_MERGE, second, first, diamond, null, 2, T0 + 2))
+        log.submit(Transfer(Cause.PICKUP, first, PlayerInv(bob, 0), diamond, null, 1, T0 + 3))
+        log.drain()
+
+        val owed = handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward = false, outward = true, containers = true)) { false } }!!
+            .flatMap { it.owed }.groupingBy { it.taker }.fold(0) { sum, it -> sum + it.qty }
+        assertEquals(mapOf(Lying(first.uuid) to 3, Carrier(bob) to 1), owed)
+    }
+
+    // Alice's and Bob's drops merged into one pile of four: a rollback of both shares it between them.
+    @Test
+    fun `two players' piles merged into one are shared between them`() {
+        val hers = ItemEntityRef(UUID.randomUUID())
+        val his = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 0), hers, diamond, null, 2, T0))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 0), his, diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.ITEM_MERGE, his, hers, diamond, null, 2, T0 + 2))
+        log.drain()
+        val spent = HashMap<Any, Int>()
+        val out = { entry: LedgerEntry -> crosses(entry, Crossing(inward = false, outward = true, containers = true)) { false } }
+
+        val owed = listOf(alice, bob).flatMap { handMoves(log, it, 0, Long.MAX_VALUE, setOf(alice, bob), spent, keeps = out)!! }
+            .flatMap { it.owed }.sumOf { it.qty }
+        assertEquals(4, owed)
+    }
+
+    // Alice put 3 diamonds into a chest and Bob took 2 out: Bob owes 2, the chest 1. Her dropped stone a hopper
+    // swallowed is beyond reach, not given again out of nothing. Bob's pile merged into hers and she picked the
+    // four up: `+inventory` takes Bob's two, not her own.
+    @Test
+    fun `a hands rollback follows the chest, leaves the hopper and splits a merged pickup`() {
+        val bread = byteArrayOf(5)
+        val hopper = Container(world, 3, 64, 3, 0)
+        val dropped = ItemEntityRef(UUID.randomUUID())
+        val hers = ItemEntityRef(UUID.randomUUID())
+        val his = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, diamond, null, 3, T0))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), diamond, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 1), dropped, stone, null, 1, T0 + 2))
+        log.submit(Transfer(Cause.HOPPER_PULL_GROUND, dropped, hopper, stone, null, 1, T0 + 3))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 2), hers, bread, null, 2, T0 + 4))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 1), his, bread, null, 2, T0 + 5))
+        log.submit(Transfer(Cause.ITEM_MERGE, his, hers, bread, null, 2, T0 + 6))
+        log.submit(Transfer(Cause.PICKUP, hers, PlayerInv(alice, 2), bread, null, 4, T0 + 7))
+        log.drain()
+        fun moves(inward: Boolean, outward: Boolean) =
+            handMoves(log, alice, 0, Long.MAX_VALUE, inward = inward, outward = outward) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
+        fun owed(moves: List<HandMove>) = moves.flatMap { it.owed }.groupingBy { it.taker }.fold(0) { sum, it -> sum + it.qty }
+
+        assertEquals(mapOf(Carrier(bob) to 2, Stored(chest) to 1), owed(moves(inward = false, outward = true)))
+        assertEquals(mapOf(Carrier(alice) to 2), owed(moves(inward = true, outward = false)))
+    }
+
+    // Bob took Alice's diamond out of the chest and put it back, then Charlie took it: Charlie owes it. And her
+    // two diamonds merged into Bob's pile, which merged into a third: of the eight she picked up, two were hers.
+    @Test
+    fun `a returned withdrawal and a chain of merges are followed through`() {
+        val charlie = UUID.fromString("00000000-0000-4000-8000-0000000000c3")
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, diamond, null, 1, T0))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), diamond, null, 1, T0 + 1))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 0), chest, diamond, null, 1, T0 + 2))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(charlie, 0), diamond, null, 1, T0 + 3))
+        val hers = ItemEntityRef(UUID.randomUUID())
+        val his = ItemEntityRef(UUID.randomUUID())
+        val third = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 1), hers, stone, null, 2, T0 + 4))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 1), his, stone, null, 2, T0 + 5))
+        log.submit(Transfer(Cause.MOB_DROP, Void, third, stone, null, 4, T0 + 6))
+        log.submit(Transfer(Cause.ITEM_MERGE, hers, his, stone, null, 2, T0 + 7))
+        log.submit(Transfer(Cause.ITEM_MERGE, his, third, stone, null, 4, T0 + 8))
+        log.submit(Transfer(Cause.PICKUP, third, PlayerInv(alice, 1), stone, null, 8, T0 + 9))
+        log.drain()
+        fun moves(inward: Boolean, outward: Boolean) =
+            handMoves(log, alice, 0, Long.MAX_VALUE, inward = inward, outward = outward) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
+        fun owed(moves: List<HandMove>) = moves.flatMap { it.owed }.groupingBy { it.taker to it.formId }.fold(0) { sum, it -> sum + it.qty }
+        val id = { form: ByteArray -> log.forms.lookup(form)!! }
+
+        assertEquals(mapOf((Carrier(charlie) to id(diamond)) to 1), owed(moves(inward = false, outward = true)).filterKeys { it.second == id(diamond) })
+        assertEquals(mapOf((Carrier(alice) to id(stone)) to 6), owed(moves(inward = true, outward = false)))
+    }
+
+    // Alice picked two out of a pile of hers and Bob's; Bob's two merged on into a mob's two, and she picked those
+    // four up as well. Her share went with the first pickup: `+inventory` takes all four of the second.
+    @Test
+    fun `a share picked up once is not counted again after a merge`() {
+        val hers = ItemEntityRef(UUID.randomUUID())
+        val his = ItemEntityRef(UUID.randomUUID())
+        val mobs = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 0), hers, stone, null, 2, T0))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 0), his, stone, null, 2, T0 + 1))
+        log.submit(Transfer(Cause.ITEM_MERGE, his, hers, stone, null, 2, T0 + 2))
+        log.submit(Transfer(Cause.PICKUP, hers, PlayerInv(alice, 0), stone, null, 2, T0 + 3))
+        log.submit(Transfer(Cause.MOB_DROP, Void, mobs, stone, null, 2, T0 + 4))
+        log.submit(Transfer(Cause.ITEM_MERGE, hers, mobs, stone, null, 2, T0 + 5))
+        log.submit(Transfer(Cause.PICKUP, mobs, PlayerInv(alice, 1), stone, null, 4, T0 + 6))
+        log.drain()
+
+        val taken = handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward = true, outward = false, containers = true)) { false } }!!
+        assertEquals(4, taken.flatMap { it.owed }.sumOf { it.qty })
+    }
+
+    // Alice put one diamond into the chest twice and Bob took one: Bob owes one, the chest holds the other. She
+    // gave Bob a stone, he dropped it and Charlie picked it up: Charlie owes it. And the bread she picked out of a
+    // mob's pile before her own merged into it is not hers.
+    @Test
+    fun `deposits share a withdrawal, a carrier's drop is followed, a later merge is not counted back`() {
+        val charlie = UUID.fromString("00000000-0000-4000-8000-0000000000c3")
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, diamond, null, 1, T0))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, diamond, null, 1, T0 + 1))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), diamond, null, 1, T0 + 2))
+        val bobs = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.GIVE_ITEM_TO_MOB, PlayerInv(alice, 1), PlayerInv(bob, 1), stone, null, 1, T0 + 3))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 1), bobs, stone, null, 1, T0 + 4))
+        log.submit(Transfer(Cause.PICKUP, bobs, PlayerInv(charlie, 0), stone, null, 1, T0 + 5))
+        val mobs = ItemEntityRef(UUID.randomUUID())
+        val hers = ItemEntityRef(UUID.randomUUID())
+        val bread = byteArrayOf(5)
+        log.submit(Transfer(Cause.MOB_DROP, Void, mobs, bread, null, 2, T0 + 6))
+        log.submit(Transfer(Cause.PICKUP, mobs, PlayerInv(alice, 2), bread, null, 1, T0 + 7))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 3), hers, bread, null, 2, T0 + 8))
+        log.submit(Transfer(Cause.ITEM_MERGE, hers, mobs, bread, null, 2, T0 + 9))
+        log.drain()
+        fun moves(inward: Boolean, outward: Boolean) =
+            handMoves(log, alice, 0, Long.MAX_VALUE, inward = inward, outward = outward) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
+        fun owed(moves: List<HandMove>) = moves.flatMap { it.owed }.groupingBy { it.taker to it.formId }.fold(0) { sum, it -> sum + it.qty }
+        val id = { form: ByteArray -> log.forms.lookup(form)!! }
+
+        val out = owed(moves(inward = false, outward = true))
+        assertEquals(1, out[Carrier(bob) to id(diamond)])
+        assertEquals(1, out[Stored(chest) to id(diamond)])
+        assertEquals(1, out[Carrier(charlie) to id(stone)])
+        assertEquals(null, out[Carrier(bob) to id(stone)])
+        assertEquals(mapOf((Carrier(alice) to id(bread)) to 1), owed(moves(inward = true, outward = false)))
     }
 
     // Bob knocked out Alice's totem: nothing fell, the totem from her off hand comes back into it out of
