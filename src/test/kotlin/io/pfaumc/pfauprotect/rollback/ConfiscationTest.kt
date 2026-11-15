@@ -388,6 +388,34 @@ class ConfiscationTest : OneLedger() {
         assertEquals(mapOf(Carrier(alice) to 2), owed(moves(inward = true, outward = false)))
     }
 
+    // Bob took Alice's diamond out of the chest and put it back, then Charlie took it: Charlie owes it. And her
+    // two diamonds merged into Bob's pile, which merged into a third: of the eight she picked up, two were hers.
+    @Test
+    fun `a returned withdrawal and a chain of merges are followed through`() {
+        val charlie = UUID.fromString("00000000-0000-4000-8000-0000000000c3")
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, diamond, null, 1, T0))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), diamond, null, 1, T0 + 1))
+        log.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 0), chest, diamond, null, 1, T0 + 2))
+        log.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(charlie, 0), diamond, null, 1, T0 + 3))
+        val hers = ItemEntityRef(UUID.randomUUID())
+        val his = ItemEntityRef(UUID.randomUUID())
+        val third = ItemEntityRef(UUID.randomUUID())
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(alice, 1), hers, stone, null, 2, T0 + 4))
+        log.submit(Transfer(Cause.DROP_FROM_HAND, PlayerInv(bob, 1), his, stone, null, 2, T0 + 5))
+        log.submit(Transfer(Cause.MOB_DROP, Void, third, stone, null, 4, T0 + 6))
+        log.submit(Transfer(Cause.ITEM_MERGE, hers, his, stone, null, 2, T0 + 7))
+        log.submit(Transfer(Cause.ITEM_MERGE, his, third, stone, null, 4, T0 + 8))
+        log.submit(Transfer(Cause.PICKUP, third, PlayerInv(alice, 1), stone, null, 8, T0 + 9))
+        log.drain()
+        fun moves(inward: Boolean, outward: Boolean) =
+            handMoves(log, alice, 0, Long.MAX_VALUE) { crosses(it, Crossing(inward, outward, containers = true)) { false } }!!
+        fun owed(moves: List<HandMove>) = moves.flatMap { it.owed }.groupingBy { it.taker to it.formId }.fold(0) { sum, it -> sum + it.qty }
+        val id = { form: ByteArray -> log.forms.lookup(form)!! }
+
+        assertEquals(mapOf((Carrier(charlie) to id(diamond)) to 1), owed(moves(inward = false, outward = true)).filterKeys { it.second == id(diamond) })
+        assertEquals(mapOf((Carrier(alice) to id(stone)) to 6), owed(moves(inward = true, outward = false)))
+    }
+
     // Bob knocked out Alice's totem: nothing fell, the totem from her off hand comes back into it out of
     // nothing, and only once.
     @Test

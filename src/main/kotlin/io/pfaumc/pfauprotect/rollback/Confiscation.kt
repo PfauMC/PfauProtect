@@ -495,16 +495,16 @@ internal fun handMoves(
         giver == player || giver in named && source.timestamp in fromTs..toTs && keeps(source)
     // How much of a pile was dropped by such a giver, by its births: a pile another merged into is part theirs.
     // What earlier pickups of this rollback already counted as theirs is spent, through the shared map.
-    fun handedShare(pile: ItemEntityRef, form: Long): Int {
-        val share = rowsOf(pile).filter { it.qty > 0 && it.itemFormId == form }.sumOf { birth ->
-            val origin = if (birth.cause != Cause.ITEM_MERGE) birth else {
-                val from = birth.counterparty as? ItemEntityRef ?: return@sumOf 0
-                rowsOf(from).firstOrNull { it.qty > 0 && it.cause != Cause.ITEM_MERGE } ?: return@sumOf 0
+    fun sharedIn(pile: ItemEntityRef, form: Long, hops: Int = 0): Int =
+        rowsOf(pile).filter { it.qty > 0 && it.itemFormId == form }.sumOf { birth ->
+            when {
+                birth.cause != Cause.ITEM_MERGE -> if (ownOrNamed((birth.counterparty as? PlayerHolder)?.uuid, birth)) birth.qty else 0
+                // Through every merge before it, as far as a trace follows one.
+                hops >= MAX_HOPS -> 0
+                else -> (birth.counterparty as? ItemEntityRef)?.let { minOf(birth.qty, sharedIn(it, form, hops + 1)) } ?: 0
             }
-            if (ownOrNamed((origin.counterparty as? PlayerHolder)?.uuid, origin)) birth.qty else 0
         }
-        return share - spent.getOrDefault(pile to "handed", 0)
-    }
+    fun handedShare(pile: ItemEntityRef, form: Long): Int = sharedIn(pile, form) - spent.getOrDefault(pile to "handed", 0)
     // Of what came in, how much is to be taken away.
     fun toTake(entry: LedgerEntry, n: Int): Int = when (val from = entry.counterparty) {
         is ItemEntityRef -> {
@@ -545,6 +545,27 @@ internal fun handMoves(
     fun outOfContainer(at: Container, form: Long, qty: Int, entry: LedgerEntry): List<Owed> {
         val box = at.copy(slot = 0)
         val after = rowsOf(box).filter { it.itemFormId == form && it.txId > entry.txId && !own(it.counterparty) }
+        // A player who took some out and put it back later took nothing: their withdrawal is settled by the
+        // return, once per container, so a later taker is the one followed.
+        if (spent.putIfAbsent(box to form, 0) == null) {
+            val outs = HashMap<UUID, ArrayDeque<LedgerEntry>>()
+            for (row in rowsOf(box).filter { it.itemFormId == form }.sortedBy { it.txId }) {
+                val who = (row.counterparty as? PlayerHolder)?.uuid ?: continue
+                if (row.qty < 0) {
+                    outs.getOrPut(who) { ArrayDeque() }.addLast(row)
+                    continue
+                }
+                var back = row.qty
+                val earlier = outs[who] ?: continue
+                while (back > 0 && earlier.isNotEmpty()) {
+                    val out = earlier.last()
+                    val n = minOf(back, -out.qty - spent.getOrDefault(out.ref, 0))
+                    spent.merge(out.ref, n, Int::plus)
+                    back -= n
+                    if (-out.qty - spent.getOrDefault(out.ref, 0) <= 0) earlier.removeLast()
+                }
+            }
+        }
         val taken = minOf(qty, maxOf(0, -after.sumOf { it.qty }))
         val owed = outOf(box, form, taken, entry.timestamp)
         return owed + listOfNotNull(Owed(Stored(box), form, qty - taken).takeIf { it.qty > 0 })
