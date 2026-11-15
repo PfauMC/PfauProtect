@@ -57,7 +57,7 @@ private val STORIES = setOf(EntityKind.REMOVED, EntityKind.CREATED, EntityKind.C
 // still stop it.
 private val NATURE = setOf(
     Cause.BLK_GROW, Cause.BLK_FADE, Cause.BLK_FORM, Cause.BLK_LEAF_DECAY, Cause.BLK_SCULK,
-    Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD, Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM,
+    Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD, Cause.BLK_FIREBALL, Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM,
 )
 
 // A storm's fire is nature too, for all that it names the bolt.

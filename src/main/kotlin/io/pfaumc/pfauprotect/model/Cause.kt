@@ -257,6 +257,9 @@ enum class Cause(val id: Int) {
     // What a neighbour's change made of a block beside it, which the server rewrites with no event: the
     // sides bars or a fence join, a stair's corner, a wall's height. On whoever changed the neighbour.
     BLK_SHAPE(0xBF),
+    // The fire a fireball lit where it struck: a fire charge out of a dispenser, a blaze's or a ghast's
+    // shot. Kept apart from fire spreading, so a lookup tells a shot from fire walking over from next door.
+    BLK_FIREBALL(0xBE),
 
     CMD_GIVE(0xF0),
     CMD_ITEM_REPLACE(0xF1),
@@ -288,7 +291,7 @@ enum class Cause(val id: Int) {
 // The block plane's whole range, so a filter can name it without listing every cause: 0xCA..0xEF, and
 // the block causes that were numbered outside it.
 val BLOCK_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0xCA..0xEF }.toSet() +
-    setOf(Cause.BLK_SIGN_EDIT, Cause.BLK_SHAPE, Cause.BLK_LIQUID_FLOW, Cause.BLK_PLUGIN)
+    setOf(Cause.BLK_SIGN_EDIT, Cause.BLK_SHAPE, Cause.BLK_FIREBALL, Cause.BLK_LIQUID_FLOW, Cause.BLK_PLUGIN)
 
 // What the entity plane writes, some of it shared with an item row of the same event.
 val ENTITY_PLANE_CAUSES: Set<Cause> = setOf(

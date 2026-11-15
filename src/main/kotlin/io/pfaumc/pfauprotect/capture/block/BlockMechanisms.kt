@@ -32,6 +32,7 @@ import io.pfaumc.pfauprotect.capture.item.bookHeld
 import io.pfaumc.pfauprotect.capture.item.containerAt
 import io.pfaumc.pfauprotect.attribution.energyAt
 import io.pfaumc.pfauprotect.attribution.culprit
+import io.pfaumc.pfauprotect.attribution.carryOrigin
 import io.pfaumc.pfauprotect.capture.item.equipmentSlotOf
 import io.pfaumc.pfauprotect.storage.itemTypeIdOf
 import io.pfaumc.pfauprotect.capture.item.positionOf
@@ -46,6 +47,7 @@ import org.bukkit.block.ShulkerBox
 import org.bukkit.block.data.Levelled
 import org.bukkit.craftbukkit.inventory.CraftItemStack
 import org.bukkit.entity.Player
+import org.bukkit.entity.Projectile
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
@@ -496,6 +498,7 @@ class BlockMechanismListener(
         val at = source.at
         if (!near(Spot(at.world, at.x + 0.5, at.y + 0.5, at.z + 0.5), spotOf(event.location), DISPENSE_REACH)) return
         entities.appeared(event.entity.uniqueId, source.by.actor, source.by.confidence)
+        (event.entity as? Projectile)?.let { carryOrigin(it, source.by) }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

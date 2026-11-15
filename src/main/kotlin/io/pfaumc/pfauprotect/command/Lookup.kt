@@ -196,7 +196,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
         ),
         "explosion", "explosions", "tnt", "creeper",
     ),
-    FIRE(setOf(Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD), "fire", "burn", "burnt"),
+    FIRE(setOf(Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD, Cause.BLK_FIREBALL), "fire", "burn", "burnt"),
     LIQUID(
         setOf(Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM, Cause.BLK_LIQUID_FLOW, Cause.BLK_BUCKET, Cause.BLK_SPONGE),
         "liquid", "water", "lava", "bucket",

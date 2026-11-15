@@ -196,7 +196,7 @@ class WorldItemListener(
             val at = positionOf(source.location.block)
             attribution.placerAt(at, BlockDestructionListener.TNT)?.let { return it.actor }
         }
-        return entities.summonerOf(firedBy(source).uniqueId).culprit()
+        return entities.summonerOf(firedBy(source)).culprit()
     }
 
     // A box that fell out of a block something other than a hand broke is given the name its contents

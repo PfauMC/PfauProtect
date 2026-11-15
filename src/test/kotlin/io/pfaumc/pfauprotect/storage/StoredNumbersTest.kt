@@ -219,6 +219,7 @@ class StoredNumbersTest {
                 "BLK_SPONGE" to 0xCB,
                 "BLK_COMMAND" to 0xCA,
                 "BLK_SHAPE" to 0xBF,
+                "BLK_FIREBALL" to 0xBE,
                 "CMD_GIVE" to 0xF0,
                 "CMD_ITEM_REPLACE" to 0xF1,
                 "CMD_ITEM_MODIFY" to 0xF2,

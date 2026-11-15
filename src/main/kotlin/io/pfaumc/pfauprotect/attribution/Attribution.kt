@@ -6,8 +6,11 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.storage.Registries
 import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import io.pfaumc.pfauprotect.model.WorldBlock
+import org.bukkit.NamespacedKey
 import org.bukkit.block.Block
 import org.bukkit.entity.Entity
+import org.bukkit.entity.Projectile
+import org.bukkit.persistence.PersistentDataType
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
@@ -64,8 +67,8 @@ internal val POURING_CAUSES = setOf(Cause.BLK_BUCKET, Cause.BLK_DISPENSER)
 // And for a liquid that ran into its position: the flow's row carries who let it run.
 internal val FLOWING_CAUSES = POURING_CAUSES + Cause.BLK_LIQUID_FLOW
 
-// And for a fire: lit by hand or by lava, leapt from another fire, or left by a block that burnt.
-internal val FIRING_CAUSES = setOf(Cause.BLK_PLAYER_USE, Cause.BLK_FIRE_SPREAD, Cause.BLK_FIRE_BURN)
+// And for a fire: lit by hand, by lava or by a fireball, leapt from another fire, or left by a block that burnt.
+internal val FIRING_CAUSES = setOf(Cause.BLK_PLAYER_USE, Cause.BLK_FIRE_SPREAD, Cause.BLK_FIREBALL, Cause.BLK_FIRE_BURN)
 
 internal val LIQUIDS = setOf("minecraft:water", "minecraft:lava")
 
@@ -382,7 +385,9 @@ internal const val ORIGIN_MILLIS = 6 * 60 * 60 * 1000L
  * In memory only, and deliberately: an entity that outlived a restart is answered with nobody rather
  * than with a guess, because deriving an origin from the block journal would name the wrong wither the
  * first time two of them stood in one world. A summon is not a placement either, so the journal holds
- * nothing for this rung to fall back on.
+ * nothing for this rung to fall back on. A projectile out of a dispenser is the exception: it carries
+ * its origin in its own data ([carryOrigin]), because a shot can lie in an unloaded chunk across a
+ * restart and strike when somebody walks up to it.
  */
 class EntityOrigins(private val now: () -> Long = System::currentTimeMillis) {
     private class Note(val actor: UUID, override val at: Long, val confidence: Confidence) : Stamped
@@ -402,5 +407,21 @@ class EntityOrigins(private val now: () -> Long = System::currentTimeMillis) {
     fun summonerOf(entity: UUID): Attributed? =
         origins[entity]?.let { Attributed(it.actor, it.confidence) }
 
+    // The same, falling back on what a projectile carries once memory has lost it to a restart or the window.
+    fun summonerOf(entity: Entity): Attributed? =
+        summonerOf(entity.uniqueId) ?: (entity as? Projectile)?.let(::carriedOrigin)
+
     fun sweep() = origins.sweep()
 }
+
+private val ORIGIN = NamespacedKey("pfauprotect", "origin")
+
+internal fun carryOrigin(projectile: Projectile, by: Attributed) =
+    projectile.persistentDataContainer.set(ORIGIN, PersistentDataType.STRING, "${by.actor} ${by.confidence.id}")
+
+// Written by us, but an entity's data is anyone's to edit: a bad value, or one of another type, reads as nobody.
+internal fun carriedOrigin(projectile: Projectile): Attributed? = runCatching {
+    val raw = projectile.persistentDataContainer.get(ORIGIN, PersistentDataType.STRING) ?: return null
+    val (actor, confidence) = raw.split(' ').takeIf { it.size == 2 } ?: return null
+    Attributed(UUID.fromString(actor), Confidence.byId(confidence.toInt())!!)
+}.getOrNull()
