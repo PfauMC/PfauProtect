@@ -1,7 +1,9 @@
 package io.pfaumc.pfauprotect.api
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException
+import io.pfaumc.pfauprotect.COORDINATES_PERMISSION
 import io.pfaumc.pfauprotect.LOOKUP_PERMISSION
+import io.pfaumc.pfauprotect.Places
 import io.pfaumc.pfauprotect.ROLLBACK_PERMISSION
 import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.Ui
@@ -66,6 +68,13 @@ internal class Api(
         threads.shutdownNow()
     }
 
+    // A chat line names its world; a place token needs the id. Not a constructor parameter: `ask` stays the trailing lambda.
+    internal var worldIdOf: (String) -> UUID? = { name -> Bukkit.getWorlds().firstOrNull { it.name == name }?.uid }
+
+    // Trusted code (no access) reads real coordinates. A caller whose permission cannot be told is treated as lacking it.
+    private fun hidden(access: Access?) =
+        Settings.hideCoordinates && access != null && ask(access, COORDINATES_PERMISSION) != true
+
     /** Throws unless the caller holds [permission]. */
     fun check(access: Access, permission: String) = require(access, permission, ask)
 
@@ -103,7 +112,7 @@ internal class Api(
      */
     fun lookupAs(request: LookupRequest, access: Access?, here: Boolean = false): CompletableFuture<LookupPage> = off {
         require(access, LOOKUP_PERMISSION, ask)
-        val parsed = queryOf(request.words, request.since, request.until)
+        val parsed = queryOf(request.words, request.since, request.until).copy(hide = hidden(access))
         val query = if (here && parsed.global && !GLOBAL_WORD.containsMatchIn(request.words)) parsed.copy(radius = null) else parsed
         val world = request.world ?: refuse("A lookup needs a world.")
         val target = query.targetOr(LookupTarget(world, request.x, request.y, request.z, "${request.x} ${request.y} ${request.z}"))
@@ -112,13 +121,13 @@ internal class Api(
 
     fun actorActionsAs(request: LookupRequest, access: Access?): CompletableFuture<LookupPage> = off {
         require(access, LOOKUP_PERMISSION, ask)
-        val query = queryOf(request.words, request.since, request.until)
+        val query = queryOf(request.words, request.since, request.until).copy(hide = hidden(access))
         lookups.pageOf(lookups.findAllWorlds(query), query)
     }
 
     fun chatAs(request: ChatRequest, access: Access?): CompletableFuture<ChatPage> = off {
         require(access, LOOKUP_PERMISSION, ask)
-        val query = queryOf(request.words, request.since, request.until, chat = true)
+        val query = queryOf(request.words, request.since, request.until, chat = true).copy(hide = hidden(access))
         lookups.idsOf(chatPlayers(query))
         val kinds = request.kinds.map { it.lowercase() }.toSet()
         val unknown = kinds - CHAT_KINDS
@@ -139,8 +148,8 @@ internal class Api(
             query.excluded.isEmpty() && chatActionsOf(query).isEmpty()
         val (found, deathsComplete) = if (wantsDeaths) lookups.deaths(query) else emptyList<Pair<UUID, EntityRow>>() to true
         val deaths = found.filter { (world, row) -> request.world == null || near(Ui.worldName(world), row.x, row.y, row.z) }
-            .map { (world, row) -> deathOf(world, row) }
-        val merged = (read.runs.map(::entryOf) + deaths).sortedByDescending { it.time }
+            .map { (world, row) -> deathOf(world, row, query.hide) }
+        val merged = (read.runs.map { entryOf(it, query.hide) } + deaths).sortedByDescending { it.time }
         val lines = merged.drop(query.limit * (query.page - 1)).take(query.limit)
         // A death read cut short may have older deaths behind it.
         ChatPage(lines, query.page, merged.size > query.limit * query.page || read.cut || !deathsComplete)
@@ -150,6 +159,7 @@ internal class Api(
         val result = CompletableFuture<PreviewResult>()
         off {
             require(access, ROLLBACK_PERMISSION, ask)
+            // No `hide` here: the sender is the online player themselves, whom Rollbacks.preview asks for coordinates.
             val query = queryOf(request.words, request.since, request.until)
             val player = playerOf(access.player)
                 ?: throw PfauProtectException(PfauProtectException.OFFLINE, "A preview is shown in the game, and the player is not online.")
@@ -193,23 +203,29 @@ internal class Api(
         return if (pending != null && pending + PENDING_MILLIS == expires) last else NONE
     }
 
-    private fun entryOf(run: ChatRun): ChatEntry {
+    private fun entryOf(run: ChatRun, hide: Boolean): ChatEntry {
         val line = run.first
         val placed = line.world.isNotEmpty()
         val hit = line.hit?.let {
             HitInfo(player(line.player), player(it.victim), run.damage, line.text.ifEmpty { null }, it.confidence.name.lowercase())
         }
-        return ChatEntry(
+        val entry = ChatEntry(
             line.timestamp, line.kind.name.lowercase(), player(line.player), line.text,
             line.world.takeIf { placed }, line.x.takeIf { placed }, line.y.takeIf { placed }, line.z.takeIf { placed }, hit, run.rows,
         )
+        // A world that is no longer loaded has no token: its line then carries no place at all.
+        return if (hide && placed) withToken(entry, worldIdOf(line.world), line.x, line.y, line.z) else entry
     }
 
+    private fun withToken(entry: ChatEntry, world: UUID?, x: Int, y: Int, z: Int) =
+        entry.copy(world = null, x = null, y = null, z = null, place = world?.let { Places.text(it, x, y, z) })
+
     // A death with nobody behind it (a fall, lava, a mob) has no attacker; `via` is what killed, `death` how.
-    private fun deathOf(world: UUID, row: EntityRow): ChatEntry {
+    private fun deathOf(world: UUID, row: EntityRow, hide: Boolean): ChatEntry {
         val victim = player(row.uuid)
         val hit = HitInfo(row.actor?.let(::player), victim, 0f, row.via, row.confidence.name.lowercase())
-        return ChatEntry(row.timestamp, "death", victim, row.death.orEmpty(), Ui.worldName(world), row.x, row.y, row.z, hit, 1)
+        val entry = ChatEntry(row.timestamp, "death", victim, row.death.orEmpty(), Ui.worldName(world), row.x, row.y, row.z, hit, 1)
+        return if (hide) withToken(entry, world, row.x, row.y, row.z) else entry
     }
 
     private fun player(uuid: UUID) = PlayerRef(uuid, lookups.nameOfPlayer(uuid))

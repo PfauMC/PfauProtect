@@ -7,6 +7,13 @@ language: ru
 # This server's name in a network of several, which the API and the MCP add-on give with their answers.
 server-name: ""
 
+# Show a place token instead of coordinates to everyone without pfauprotect.coordinates. The console always
+# sees coordinates. Tokens are decoded with the key in plugins/PfauProtect/coord-key, made on first start;
+# to rotate it, delete the file and restart (tokens given out before stop working).
+# Only places the plugin prints are masked: coordinates players typed into chat or commands that /pp chat shows
+# are not redacted (put such commands, e.g. tp, in chat.hidden-commands if needed).
+hide-coordinates: false
+
 worlds:
   # Worlds where no block or entity rows are written. Items are booked wherever they go.
   disabled: []

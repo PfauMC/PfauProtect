@@ -7,6 +7,8 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import io.pfaumc.pfauprotect.Place
+import io.pfaumc.pfauprotect.Places
 import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.api.Access
 import io.pfaumc.pfauprotect.api.Api
@@ -85,22 +87,19 @@ internal class McpTools(private val api: Api, private val version: String, priva
             wait(api.actorActionsAs(LookupRequest(words = words(args, ACTOR_WORDS), since = args.moment("since"), until = args.moment("until")), access))
         }
         "chat_pvp_log" -> {
-            val world = args.string("world")?.let(::worldOf)
+            val spot = spotOf(args)
             val request = ChatRequest(
                 words = words(args, CHAT_WORDS), since = args.moment("since"), until = args.moment("until"),
-                kinds = args.list("kinds").toSet(), world = world?.uid,
-                x = args.int("x") ?: 0, y = args.int("y") ?: 0, z = args.int("z") ?: 0, radius = args.int("radius"),
+                kinds = args.list("kinds").toSet(), world = spot?.world,
+                x = spot?.x ?: 0, y = spot?.y ?: 0, z = spot?.z ?: 0, radius = args.int("radius"),
             )
-            if (request.radius != null && (world == null || listOf("x", "y", "z").any { args.int(it) == null })) {
-                throw BadArguments("radius needs world, x, y and z")
-            }
+            if (request.radius != null && spot == null) throw BadArguments("radius needs world, x, y and z, or place")
             wait(api.chatAs(request, access))
         }
         "start_preview" -> {
             access ?: throw BadArguments("start_preview is made for a player")
-            val world = args.string("world")?.let(::worldOf)
-            if (world != null && listOf("x", "y", "z").any { args.int(it) == null }) throw BadArguments("world needs x, y and z")
-            val request = LookupRequest(world?.uid, args.int("x") ?: 0, args.int("y") ?: 0, args.int("z") ?: 0, words(args, PREVIEW_WORDS), args.moment("since"), args.moment("until"))
+            val spot = spotOf(args)
+            val request = LookupRequest(spot?.world, spot?.x ?: 0, spot?.y ?: 0, spot?.z ?: 0, words(args, PREVIEW_WORDS), args.moment("since"), args.moment("until"))
             // A big area reads longer than a gateway waits: it is then running, and preview_status tells the rest.
             try {
                 wait(api.previewAs(access, request), PREVIEW_SECONDS)
@@ -115,9 +114,22 @@ internal class McpTools(private val api: Api, private val version: String, priva
     }
 
     private fun placed(args: JsonObject, words: String): LookupRequest {
+        val spot = spotOf(args) ?: throw BadArguments("world, x, y and z are required, or place")
+        return LookupRequest(spot.world, spot.x, spot.y, spot.z, words, args.moment("since"), args.moment("until"))
+    }
+
+    // The place a call names: a token, or world with x, y and z; none when it names neither.
+    private fun spotOf(args: JsonObject): Place? {
+        val token = args.string("place")
+        val loose = listOf("world", "x", "y", "z").filter { args.get(it)?.isJsonNull == false }
+        if (token != null) {
+            if (loose.isNotEmpty()) throw BadArguments("give place, or world, x, y and z, not both")
+            return Places.decode(token, worlds().map { it.uid }) ?: throw BadArguments("unknown place")
+        }
+        if (loose.isEmpty()) return null
         val world = worldOf(args.string("world") ?: throw BadArguments("world is required"))
         val (x, y, z) = listOf("x", "y", "z").map { args.int(it) ?: throw BadArguments("$it is required") }
-        return LookupRequest(world.uid, x, y, z, words, args.moment("since"), args.moment("until"))
+        return Place(world.uid, x, y, z)
     }
 
     private fun worldOf(name: String): World =

@@ -82,6 +82,18 @@ buttons for a player who reads in one (`lookup.dialog` in `config.yml`, overridd
 kept in their PDC), chat lines otherwise. The console, the inspector and the short answers stay in chat.
 The inspector aims with its own ray (a spectator inside terrain starts it past that block) and asks `part:block` or `part:contents` of a container (`Part`, hidden like `asof:`; the page buttons keep it).
 
+**Place tokens.** With `hide-coordinates: true` in `config.yml`, a player without `pfauprotect.coordinates` never
+sees x/y/z: lookup lines, hovers, rollback headings, confiscation and verify lines and the commands they carry say a
+token like `K7QM-2XFA-9RT3-BW4P` instead (`Places.kt`; the console is never hidden). `LookupQuery.hide` is read once per
+command with `Places.hidden(sender)`. The token is world, x, y, z run through a keyed permutation (8-round Feistel on
+HMAC-SHA256, key in `plugins/PfauProtect/coord-key`, made on first start), not a hash: the server decodes it with
+no index of positions (the block log has none), and nobody without the key can read a place off a token or make one up.
+Deleting `coord-key` and restarting rotates the key and every token handed out stops decoding. Tokens are accepted by
+`/pp tp <token>` (same spectator gate as `tp <x y z>`), `at:<token>` and `event:<id>@<token>@<time>`; the token's
+world replaces the one the command runs in. Typed `x,y,z` keeps working for everyone. The setting masks only places the
+plugin prints: coordinates players typed into chat or commands that `/pp chat` shows are not redacted (list such
+commands, e.g. `tp`, in `chat.hidden-commands` if needed).
+
 **Settings, texts, chat, API.** `Settings.kt` reads `config.yml` (language, disabled worlds and causes, limits,
 the mob death thresholds). Messages are written in English and go out through `CommandSender.say()`
 (`Texts.kt`), which translates whole lines by regex when the language is `ru`; a new message needs a line

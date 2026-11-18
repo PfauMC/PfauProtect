@@ -53,22 +53,38 @@ object Ui {
      * Where a row happened: a mark a player clicks to be taken there, the coordinates themselves for the
      * console, which can neither click nor go.
      */
-    fun place(world: UUID, x: Int, y: Int, z: Int, clickable: Boolean): Component = place(worldName(world), x, y, z, clickable)
+    fun place(world: UUID, x: Int, y: Int, z: Int, clickable: Boolean, hide: Boolean): Component =
+        place(worldName(world), world, x, y, z, clickable, hide)
 
-    fun place(name: String, x: Int, y: Int, z: Int, clickable: Boolean): Component {
-        if (!clickable) return text("$x $y $z", FAINT)
-        return teleport(text("⌖", MUTED), name, x, y, z, "$x $y $z $name")
+    /** A place whose world is known by name only, as the chat log keeps it: a token needs the world loaded, else nothing is shown. */
+    fun place(name: String, x: Int, y: Int, z: Int, clickable: Boolean, hide: Boolean): Component {
+        val world = runCatching { Bukkit.getWorld(name)?.uid }.getOrNull()
+        if (hide && world == null) return Component.empty()
+        return place(name, world, x, y, z, clickable, hide)
+    }
+
+    private fun place(name: String, world: UUID?, x: Int, y: Int, z: Int, clickable: Boolean, hide: Boolean): Component {
+        val where = if (hide) Places.text(world!!, x, y, z) else "$x $y $z $name"
+        // "?" is no token (out-of-range y from a chat row, or no key): nothing to click.
+        if (hide && where == UNKNOWN_PLACE) return text(where, FAINT)
+        // The click is what lands in the chat log, so with the setting on it carries a token even where the text shows numbers.
+        val go = if (hide || !Settings.hideCoordinates) where else world?.let { Places.text(it, x, y, z) } ?: UNKNOWN_PLACE
+        if (!clickable || go == UNKNOWN_PLACE) return text(if (hide) where else "$x $y $z", FAINT)
+        return teleport(text("⌖", MUTED), go, where)
     }
 
     /** The place a whole page is about, in its heading: written out, set apart by colour, and the way there. */
-    fun coordinates(world: UUID, x: Int, y: Int, z: Int, clickable: Boolean): Component {
-        val name = worldName(world)
-        val shown = text("($x $y $z $name)", WHERE)
-        return if (clickable) teleport(shown, name, x, y, z) else shown
+    fun coordinates(world: UUID, x: Int, y: Int, z: Int, clickable: Boolean, hide: Boolean): Component {
+        val where = if (hide) Places.text(world, x, y, z) else "$x $y $z ${worldName(world)}"
+        if (hide && where == UNKNOWN_PLACE) return text(where, FAINT)
+        val shown = text("($where)", WHERE)
+        val go = Places.forCommand(world, x, y, z, hide) ?: where
+        return if (clickable && go != UNKNOWN_PLACE) teleport(shown, go) else shown
     }
 
-    private fun teleport(label: Component, name: String, x: Int, y: Int, z: Int, vararg hint: String): Component =
-        hover(label, *hint, tr("Click to teleport", "Клик — телепорт")).clickEvent(ClickEvent.runCommand("/pp tp $x $y $z $name"))
+    // [go] is what /pp tp takes after the verb: a token, or "x y z world".
+    private fun teleport(label: Component, go: String, vararg hint: String): Component =
+        hover(label, *hint, tr("Click to teleport", "Клик — телепорт")).clickEvent(ClickEvent.runCommand("/pp tp $go"))
 
     fun worldName(world: UUID): String = runCatching { Bukkit.getWorld(world)?.name }.getOrNull() ?: world.toString().take(8)
 

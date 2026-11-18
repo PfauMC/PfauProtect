@@ -25,6 +25,17 @@ class TextsTest {
         assertTranslatedKeeping("Nothing to roll back: 5 blocks around 1 2 3.", "5", "1 2 3")
     }
 
+    @Test
+    fun `a place token is carried through where x y z is`() {
+        Settings.language = "ru"
+        for (place in listOf("K7QM-2XFA-9RT3-BW4P", "-10 64 5")) {
+            val line = Texts.translate("  gap in world at $place: stone stands there, the item plane holds 1 confirmed and 2 inferred")
+            assertEquals("  разрыв в world на $place: стоит stone, в плоскости предметов подтверждённых 1 и выведенных 2", line)
+            assertTrue("в $place" in Texts.translate("rolled back stone at $place"))
+        }
+        assertNotEquals("Unknown place.", Texts.translate("Unknown place."))
+    }
+
     // The wording is the translator's to change; the values a sentence was filled with are not.
     private fun assertTranslatedKeeping(english: String, vararg values: String) {
         val translated = Texts.translate(english)

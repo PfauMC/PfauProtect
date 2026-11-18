@@ -25,6 +25,9 @@ object Texts {
 
     private fun r(pattern: String) = Regex(pattern)
 
+    // "x y z" or a Places token; one group, so a rule copies it whole.
+    private const val PLACE = "-?\\d+ -?\\d+ -?\\d+|[0-9A-Z]{4}(?:-[0-9A-Z]{4}){3}"
+
     private val SENTENCES: List<Pair<Regex, String>> = listOf(
         // Rollback
         r("A rollback needs time: how far back to undo, for example time:1h\\.") to "Откату нужно time: насколько назад отменять, например time:1h.",
@@ -100,6 +103,7 @@ object Texts {
         r("This world's block log is not open\\.") to "Журнал блоков этого мира не открыт.",
         r("Unknown player: (.*)") to "Неизвестный игрок: $1",
         r("Unknown world: (.*)") to "Неизвестный мир: $1",
+        r("Unknown place\\.") to "Неизвестное место.",
         r("Teleport only works in spectator mode\\.") to "Телепорт работает только в режиме наблюдателя.",
         r("(.*) is not online\\.") to "$1 не в сети.",
         // Inspector, purge, status, self-checks, reconcile
@@ -123,6 +127,7 @@ object Texts {
         r("  rollback: none running") to "  откат: не идёт",
         r("  registry (\\S+) has handed out (\\d+) of its (\\d+) numbers and reuses none of them: a wider field has to be in place before the last one is gone") to
             "  реестр $1 выдал $2 из $3 номеров и не переиспользует их: поле надо расширить до того, как кончится последний",
+        r("  (\\d+) gaps, see the server log") to "  разрывов: $1, смотри лог сервера",
         r("  gap: (.*)") to "  разрыв: $1",
         r("  rollback: one running for (\\d+) s") to "  откат: идёт уже $1 с",
         r("Running both self-checks to the end; this reads the whole journal\\.") to "Запускаю обе самопроверки до конца; это читает весь журнал.",
@@ -150,7 +155,7 @@ object Texts {
         r("'(.*)' is not a row count between 1 and (\\d+)") to "'$1' — не число строк от 1 до $2",
         r("  \\.\\.\\. and (\\d+) more") to "  ... и ещё $1",
         r("Two planes: (\\d+) positions compared, (\\d+) gaps, (\\d+) overdrawn, (\\d+) the block plane never recorded, (\\d+) too recent to judge, (\\d+) unreadable\\.") to "Две плоскости: сравнено позиций $1, разрывов $2, перерасходов $3, не записано плоскостью блоков $4, слишком свежих $5, нечитаемых $6.",
-        r("  gap in (\\S+) at (-?\\d+) (-?\\d+) (-?\\d+): (\\S+) stands there, the item plane holds (-?\\d+) confirmed and (-?\\d+) inferred") to "  разрыв в $1 на $2 $3 $4: стоит $5, в плоскости предметов подтверждённых $6 и выведенных $7",
+        r("  gap in (\\S+) at ($PLACE): (\\S+) stands there, the item plane holds (-?\\d+) confirmed and (-?\\d+) inferred") to "  разрыв в $1 на $2: стоит $3, в плоскости предметов подтверждённых $4 и выведенных $5",
         r("  (\\d+) positions were touched too recently; 'verify recent' judges them too\\.") to "  позиций, тронутых слишком недавно: $1; их проверяет и 'verify recent'.",
         r("Anything held before the ledger was opened differs by exactly that much for ever; a difference that stays put is that constant rather than a leak\\.") to "Всё, что было до открытия журнала, навсегда расходится ровно на эту величину; неизменная разница — это она, а не утечка.",
         r("The ledger is not open\\.") to "Журнал не открыт.",
@@ -168,7 +173,7 @@ object Texts {
         r("container ") to "контейнер ",
         r(" from ") to " из ",
         r(" to ") to " в ",
-        r(" at (-?\\d+) (-?\\d+) (-?\\d+)") to " в $1 $2 $3",
+        r(" at ($PLACE)") to " в $1",
         r("(\\d+) blocks around ") to "$1 блоков вокруг ",
         r("everything (.*) did since ") to "всё, что сделал $1, с ",
         r("what crossed the hands of (.*) since ") to "что прошло через руки $1, с ",
