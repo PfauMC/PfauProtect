@@ -476,13 +476,13 @@ data class LookupQuery(
     internal val fetch: Int get() = minOf(wanted * FETCH_FACTOR, MAX_FETCH)
 
     /** The same question about the same place, at another page. */
-    fun pageCommand(target: LookupTarget, page: Int): String {
+    fun pageCommand(target: LookupTarget, page: Int): String? {
         // x,y,z carries no world, so a place in another world than the sender's is pinned by a token even for a
         // reader who may see coordinates; with the setting on every reader's button carries one. A token that cannot
-        // be made leaves the pin out: coordinates would end up in the chat log.
+        // be made has no button: coordinates would end up in the chat log, and a button without the pin reads where the reader stands then.
         return when (val token = Places.forCommand(target.world, target.x, target.y, target.z, hide || atWorld != null)) {
             null -> pageCommand("l", page, "at:${target.x},${target.y},${target.z}")
-            UNKNOWN_PLACE -> pageCommand("l", page)
+            UNKNOWN_PLACE -> null
             else -> pageCommand("l", page, "at:$token")
         }
     }
@@ -500,7 +500,10 @@ private val PAGED_AWAY = setOf("page", "pg", "at", "asof", "part")
 
 /** Where a lookup asked with `at:` reads, in the world it was asked from. */
 fun LookupQuery.targetOr(fallback: LookupTarget): LookupTarget {
-    val (x, y, z) = at ?: return (event?.world?.let { fallback.copy(world = it) } ?: fallback).let { target ->
+    // An event a token named stands where the token says, not where the reader does.
+    val named = event?.takeIf { at == null && it.world != null }
+    if (named != null) return LookupTarget(named.world!!, named.x, named.y, named.z, placeText(named.world, named.x, named.y, named.z, hide))
+    val (x, y, z) = at ?: return fallback.let { target ->
         // The label of a looked-at block or a standing place carries the real position; the token says the same.
         if (!hide) target else target.copy(label = (target.block?.let { "${it.substringAfter(':')} at " } ?: "") + Places.text(target.world, target.x, target.y, target.z))
     }
@@ -1033,9 +1036,10 @@ class LookupArgument(
             val source = context.source as? CommandSourceStack
             val at = source?.location
             val hide = Places.hidden(source?.sender)
+            // No token to offer when the key is unusable: `at:?` would not parse.
             return offer(builder, tokenStart + colon + 1, listOfNotNull(at?.let {
                 if (hide) Places.text(it.world.uid, it.blockX, it.blockY, it.blockZ) else "${it.blockX},${it.blockY},${it.blockZ}"
-            }))
+            }?.takeIf { it != UNKNOWN_PLACE }))
         }
         val valueStart = if (comma > colon) comma + 1 else colon + 1
         return offer(builder, tokenStart + valueStart, valuesFor(param))
@@ -1789,8 +1793,8 @@ class Lookups(
         }
         showPage(
             sender, query, title, drawn, notes,
-            back = query.pageCommand(target, query.page - 1).takeIf { pages && query.page > 1 },
-            forward = query.pageCommand(target, query.page + 1).takeIf { pages && more },
+            back = query.pageCommand(target, query.page - 1)?.takeIf { pages && query.page > 1 },
+            forward = query.pageCommand(target, query.page + 1)?.takeIf { pages && more },
             place = place,
             more = more || !complete,
         )

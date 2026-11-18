@@ -1066,7 +1066,9 @@ class Rollbacks(
             Taking.Busy -> sender.say("Another rollback is still running; apply again once it has reported.")
             is Taking.Started -> {
                 hide(sender)
-                run(sender, taken.asked.target, taken.asked.query, apply = true, startedAt = taken.at)
+                // The permission may have been taken away since the preview: the place and filters stay, the heading is drawn again.
+                val (query, target) = previewAsk(sender, taken.asked.target, taken.asked.query)
+                run(sender, target, query, apply = true, startedAt = taken.at)
             }
         }
     }

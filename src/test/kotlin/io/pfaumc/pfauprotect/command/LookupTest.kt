@@ -444,7 +444,7 @@ class LookupTest {
         // Asked at a moment, which the next page keeps: rows written since would shift every page.
         val query = parseLookupQuery("u:Bob t:1h page:2 at:1,2,3").copy(asOf = 1_700_000_000_000L)
         assertEquals(Triple(1, 2, 3), query.at)
-        val command = query.pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 3)
+        val command = query.pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 3)!!
         val asked = parseLookupQuery(command.removePrefix("/pp l "))
         assertEquals(query.copy(page = 3, at = Triple(7, 64, -3), words = asked.words), asked)
     }
@@ -463,7 +463,7 @@ class LookupTest {
         val query = parseLookupQuery("part:contents")
         assertEquals(Part.CONTENTS, query.part)
         assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("part:x") }
-        val command = query.copy(words = "part:contents page:1").pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2)
+        val command = query.copy(words = "part:contents page:1").pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2)!!
         assertTrue(command.contains("part:contents") && command.split(" ").count { it.startsWith("part:") } == 1, command)
     }
 
@@ -488,7 +488,7 @@ class LookupTest {
         val elsewhere = LookupTarget(UUID(0, 9), 0, 0, 0, "")
         assertEquals(LookupTarget(world, 10, -60, -42, "10 -60 -42"), query.targetOr(elsewhere))
         assertEquals(EventRef(7, 10, -60, -42, 123, world), EventRef.parse("7@$token@123"))
-        assertEquals(world, parseLookupQuery("event:7@$token@123").targetOr(elsewhere).world)
+        assertEquals(LookupTarget(world, 10, -60, -42, "10 -60 -42"), parseLookupQuery("event:7@$token@123").targetOr(elsewhere))
         assertNull(parseLookupQuery("at:1,2,3").atWorld)
         assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("at:ZZZZ-ZZZZ-ZZZZ-ZZZZ") }
     }
@@ -498,7 +498,7 @@ class LookupTest {
         val token = Places.encode(world, 100, 64, -200)
         val query = parseLookupQuery("at:$token")
         assertFalse(query.hide)
-        val command = query.pageCommand(query.targetOr(LookupTarget(UUID(0, 9), 0, 0, 0, "")), 2)
+        val command = query.pageCommand(query.targetOr(LookupTarget(UUID(0, 9), 0, 0, 0, "")), 2)!!
         val pinned = command.substringAfter("at:").substringBefore(' ')
         assertEquals(Place(world, 100, 64, -200), Places.decode(pinned))
     }
@@ -509,7 +509,7 @@ class LookupTest {
         val target = query.targetOr(LookupTarget(world, 0, 0, 0, ""))
         val token = Places.encode(world, 100, 64, -200)
         assertEquals(token, target.label)
-        assertEquals(query.pageCommand(target, 2).substringAfter("at:").substringBefore(' '), token)
+        assertEquals(query.pageCommand(target, 2)!!.substringAfter("at:").substringBefore(' '), token)
         val label = query.copy(at = null).targetOr(LookupTarget(world, 1, 2, 3, "stone at 1 2 3", "minecraft:stone")).label
         assertEquals("stone at ${Places.encode(world, 1, 2, 3)}", label)
         val event = EventRef(7, 1, 2, 3, 123, world)
@@ -527,12 +527,12 @@ class LookupTest {
         try {
             val query = parseLookupQuery("at:100,64,-200")
             assertFalse(query.hide)
-            val command = query.pageCommand(LookupTarget(world, 100, 64, -200, ""), 2)
+            val command = query.pageCommand(LookupTarget(world, 100, 64, -200, ""), 2)!!
             assertEquals(Place(world, 100, 64, -200), Places.decode(command.substringAfter("at:").substringBefore(' ')))
             assertFalse(command.contains("100"))
-            // y out of the packed range: the pin is left out, never written as numbers.
+            // y out of the packed range: no token, so no button rather than one that reads where the reader stands.
             val unknown = query.pageCommand(LookupTarget(world, 100, 100_000, -200, ""), 2)
-            assertFalse(unknown.contains("at:") || unknown.contains("100"))
+            assertNull(unknown)
         } finally {
             Settings.hideCoordinates = before
         }

@@ -114,7 +114,7 @@ internal class Api(
         require(access, LOOKUP_PERMISSION, ask)
         val parsed = queryOf(request.words, request.since, request.until).copy(hide = hidden(access))
         val query = if (here && parsed.global && !GLOBAL_WORD.containsMatchIn(request.words)) parsed.copy(radius = null) else parsed
-        val world = request.world ?: refuse("A lookup needs a world.")
+        val world = request.world ?: query.atWorld ?: refuse("A lookup needs a world.")
         val target = query.targetOr(LookupTarget(world, request.x, request.y, request.z, "${request.x} ${request.y} ${request.z}"))
         lookups.pageOf(lookups.find(target, query), query)
     }
@@ -148,9 +148,10 @@ internal class Api(
             query.excluded.isEmpty() && chatActionsOf(query).isEmpty()
         val (found, deathsComplete) = if (wantsDeaths) lookups.deaths(query) else emptyList<Pair<UUID, EntityRow>>() to true
         val deaths = found.filter { (world, row) -> request.world == null || near(Ui.worldName(world), row.x, row.y, row.z) }
-            .map { (world, row) -> deathOf(world, row, query.hide) }
-        val merged = (read.runs.map { entryOf(it, query.hide) } + deaths).sortedByDescending { it.time }
-        val lines = merged.drop(query.limit * (query.page - 1)).take(query.limit)
+        // Entries (a token each, when hidden) are made after the page is cut, not for every row before it. Stable: equal times keep their order.
+        val merged = (read.runs.map { it.first.timestamp to { entryOf(it, query.hide) } } +
+            deaths.map { (world, row) -> row.timestamp to { deathOf(world, row, query.hide) } }).sortedByDescending { it.first }
+        val lines = merged.drop(query.limit * (query.page - 1)).take(query.limit).map { it.second() }
         // A death read cut short may have older deaths behind it.
         ChatPage(lines, query.page, merged.size > query.limit * query.page || read.cut || !deathsComplete)
     }

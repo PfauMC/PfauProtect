@@ -138,6 +138,7 @@ private const val SWEEP_GAPS_LOGGED = 5
 private const val NOTE_MINUTES = 5L
 // How long a rollback waits for the clocks to file what they held back: a tick or two, unless a region lags.
 private const val HELD_WAIT_SECONDS = 2L
+private val NUMERIC_TP = Regex("^(/?pp tp) -?\\d+ -?\\d+ -?\\d+ \\S+", RegexOption.IGNORE_CASE)
 private const val PLANE_POSTINGS = 2000
 private const val PLANE_MINUTES = 10L
 private const val RECONCILE_MINUTES = 30L
@@ -987,7 +988,8 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.CHAT -> Ui.text(": " + line.text)
                     ChatKind.CHAT_GLOBAL -> half(" G", Ui.CHANGED, tr("global chat", "глобальный чат"), line.text)
                     ChatKind.CHAT_LOCAL -> half(" L", Ui.MUTED, tr("local chat", "локальный чат"), line.text)
-                    ChatKind.COMMAND -> Ui.text(" " + line.text, Ui.CHANGED)
+                    // A teleport link clicked before the setting was turned on left numbers in the journal.
+                    ChatKind.COMMAND -> Ui.text(" " + if (asked.hide) line.text.replace(NUMERIC_TP, "$1 $UNKNOWN_PLACE") else line.text, Ui.CHANGED)
                     ChatKind.JOIN -> Ui.text(tr(" joined", " · вход"), Ui.GAINED)
                     ChatKind.QUIT -> Ui.text(tr(" left", " · выход"), Ui.MUTED)
                     ChatKind.HIT, ChatKind.TOTEM -> hitOf(run)

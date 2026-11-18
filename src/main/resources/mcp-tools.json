@@ -33,7 +33,8 @@
         "all": {"type": "boolean", "description": "Do not fold repeated rows."},
         "words": {"type": "string", "description": "Further `/pp lookup` words, appended as they are."}
       },
-      "anyOf": [{"required": ["place"]}, {"required": ["world", "x", "y", "z"]}],
+      "oneOf": [{"required": ["place"]}, {"required": ["world", "x", "y", "z"]}],
+      "not": {"required": ["place"], "anyOf": [{"required": ["world"]}, {"required": ["x"]}, {"required": ["y"]}, {"required": ["z"]}]},
       "additionalProperties": false
     }
   },
@@ -58,7 +59,8 @@
         "limit": {"type": "integer", "minimum": 1, "maximum": 200},
         "all": {"type": "boolean"}
       },
-      "anyOf": [{"required": ["place"]}, {"required": ["world", "x", "y", "z"]}],
+      "oneOf": [{"required": ["place"]}, {"required": ["world", "x", "y", "z"]}],
+      "not": {"required": ["place"], "anyOf": [{"required": ["world"]}, {"required": ["x"]}, {"required": ["y"]}, {"required": ["z"]}]},
       "additionalProperties": false
     }
   },
@@ -113,6 +115,9 @@
         "limit": {"type": "integer", "minimum": 1, "maximum": 200},
         "all": {"type": "boolean", "description": "Do not fold blow after blow into one line."}
       },
+      "dependentRequired": {"x": ["world", "y", "z"], "y": ["world", "x", "z"], "z": ["world", "x", "y"]},
+      "not": {"required": ["place"], "anyOf": [{"required": ["world"]}, {"required": ["x"]}, {"required": ["y"]}, {"required": ["z"]}]},
+      "if": {"required": ["radius"]}, "then": {"anyOf": [{"required": ["place"]}, {"required": ["world", "x", "y", "z"]}]},
       "additionalProperties": false
     }
   },
@@ -137,6 +142,8 @@
         "exclude": {"type": "array", "items": {"type": "string"}},
         "words": {"type": "string", "description": "Further `/pp rollback` words, appended as they are, e.g. an event: token."}
       },
+      "dependentRequired": {"x": ["world", "y", "z"], "y": ["world", "x", "z"], "z": ["world", "x", "y"], "world": ["x", "y", "z"]},
+      "not": {"required": ["place"], "anyOf": [{"required": ["world"]}, {"required": ["x"]}, {"required": ["y"]}, {"required": ["z"]}]},
       "additionalProperties": false
     }
   },

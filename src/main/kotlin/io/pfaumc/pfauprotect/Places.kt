@@ -59,12 +59,17 @@ object Places {
             return
         }
         val fresh = ByteArray(KEY_BYTES).also { SecureRandom().nextBytes(it) }
-        Files.createDirectories(dataFolder)
-        // Written whole and moved into place, so a crash mid-write leaves no half a key.
+        // Written whole and moved into place, so a crash mid-write leaves no half a key. A failure here must not
+        // keep the journal from opening: the key stays unset (viewers see "?") and the key is published only once saved.
         val written = file.resolveSibling("$KEY_FILE.tmp")
-        Files.writeString(written, Base64.getEncoder().encodeToString(fresh))
-        Files.move(written, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        key = fresh
+        runCatching {
+            Files.createDirectories(dataFolder)
+            Files.writeString(written, Base64.getEncoder().encodeToString(fresh))
+            Files.move(written, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        }.onSuccess { key = fresh }.onFailure {
+            runCatching { Files.deleteIfExists(written) }
+            log.severe("Cannot save $file (${it.message}); places are shown as '?' to viewers who may not see coordinates until it can be written.")
+        }
     }
 
     internal fun useKey(key: ByteArray) {

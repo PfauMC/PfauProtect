@@ -87,10 +87,14 @@ internal class McpTools(private val api: Api, private val version: String, priva
             wait(api.actorActionsAs(LookupRequest(words = words(args, ACTOR_WORDS), since = args.moment("since"), until = args.moment("until")), access))
         }
         "chat_pvp_log" -> {
-            val spot = spotOf(args)
+            // A world alone, without a radius, still filters lines to that world.
+            val worldOnly = args.string("place") == null && args.int("radius") == null &&
+                listOf("x", "y", "z").all { args.get(it)?.isJsonNull != false }
+            val onlyWorld = if (worldOnly) args.string("world")?.let { worldOf(it).uid } else null
+            val spot = if (onlyWorld != null) null else spotOf(args)
             val request = ChatRequest(
                 words = words(args, CHAT_WORDS), since = args.moment("since"), until = args.moment("until"),
-                kinds = args.list("kinds").toSet(), world = spot?.world,
+                kinds = args.list("kinds").toSet(), world = onlyWorld ?: spot?.world,
                 x = spot?.x ?: 0, y = spot?.y ?: 0, z = spot?.z ?: 0, radius = args.int("radius"),
             )
             if (request.radius != null && spot == null) throw BadArguments("radius needs world, x, y and z, or place")

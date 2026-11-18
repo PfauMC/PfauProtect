@@ -28,7 +28,7 @@ class TextsTest {
     @Test
     fun `a place token is carried through where x y z is`() {
         Settings.language = "ru"
-        for (place in listOf("K7QM-2XFA-9RT3-BW4P", "-10 64 5")) {
+        for (place in listOf("K7QM-2XFA-9RT3-BW4P", "-10 64 5", UNKNOWN_PLACE)) {
             val line = Texts.translate("  gap in world at $place: stone stands there, the item plane holds 1 confirmed and 2 inferred")
             assertEquals("  разрыв в world на $place: стоит stone, в плоскости предметов подтверждённых 1 и выведенных 2", line)
             assertTrue("в $place" in Texts.translate("rolled back stone at $place"))

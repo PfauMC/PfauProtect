@@ -26,7 +26,7 @@ object Texts {
     private fun r(pattern: String) = Regex(pattern)
 
     // "x y z" or a Places token; one group, so a rule copies it whole.
-    private const val PLACE = "-?\\d+ -?\\d+ -?\\d+|[0-9A-Z]{4}(?:-[0-9A-Z]{4}){3}"
+    private const val PLACE = "-?\\d+ -?\\d+ -?\\d+|[0-9A-Z]{4}(?:-[0-9A-Z]{4}){3}|\\?"
 
     private val SENTENCES: List<Pair<Regex, String>> = listOf(
         // Rollback
