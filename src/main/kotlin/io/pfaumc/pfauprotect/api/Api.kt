@@ -85,7 +85,7 @@ internal class Api(
         val sender = Bukkit.createCommandSender { lines += PlainTextComponentSerializer.plainText().serialize(it) }
         return off {
             val query = parseLookupQuery(words)
-            lookups.report(sender, lookupTargetAt(at), query)
+            lookups.report(sender, query.targetOr(lookupTargetAt(at)), query)
             lines.toList()
         }
     }
@@ -114,7 +114,7 @@ internal class Api(
         require(access, LOOKUP_PERMISSION, ask)
         val parsed = queryOf(request.words, request.since, request.until).copy(hide = hidden(access))
         val query = if (here && parsed.global && !GLOBAL_WORD.containsMatchIn(request.words)) parsed.copy(radius = null) else parsed
-        val world = request.world ?: query.atWorld ?: refuse("A lookup needs a world.")
+        val world = request.world ?: query.atWorld ?: query.event?.world?.takeIf { query.at == null } ?: refuse("A lookup needs a world.")
         val target = query.targetOr(LookupTarget(world, request.x, request.y, request.z, "${request.x} ${request.y} ${request.z}"))
         lookups.pageOf(lookups.find(target, query), query)
     }

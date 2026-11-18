@@ -67,6 +67,7 @@ object Places {
             Files.writeString(written, Base64.getEncoder().encodeToString(fresh))
             Files.move(written, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         }.onSuccess { key = fresh }.onFailure {
+            key = null
             runCatching { Files.deleteIfExists(written) }
             log.severe("Cannot save $file (${it.message}); places are shown as '?' to viewers who may not see coordinates until it can be written.")
         }
@@ -118,6 +119,11 @@ object Places {
 
     /** Cheap syntactic check, so a parser can tell a token from "x,y,z" before asking the key. */
     fun looksLikeToken(s: String): Boolean = normalize(s) != null
+
+    private val NUMERIC_TP = Regex("^(/?pp tp) -?\\d+ -?\\d+ -?\\d+ \\S+", RegexOption.IGNORE_CASE)
+
+    /** A typed `/pp tp x y z world` with the position blanked, for text a hidden reader gets. */
+    fun redactTeleport(text: String): String = text.replace(NUMERIC_TP, "$1 $UNKNOWN_PLACE")
 
     /** Whether [viewer] gets tokens in place of coordinates; the console (null too) always reads the real ones. */
     fun hidden(viewer: CommandSender?): Boolean =

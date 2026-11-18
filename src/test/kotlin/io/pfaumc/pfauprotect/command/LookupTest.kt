@@ -504,6 +504,14 @@ class LookupTest {
     }
 
     @Test
+    fun `a page button keeps the world an event token named`() = withTokens { world ->
+        val query = parseLookupQuery("event:7@${Places.encode(world, 100, 64, -200)}@123")
+        val command = query.pageCommand(query.targetOr(LookupTarget(UUID(0, 9), 0, 0, 0, "")), 2)!!
+        val pinned = command.substringAfter(" at:").substringBefore(' ')
+        assertEquals(Place(world, 100, 64, -200), Places.decode(pinned))
+    }
+
+    @Test
     fun `a hidden asker is given tokens in the commands and labels, never the numbers`() = withTokens { world ->
         val query = parseLookupQuery("at:100,64,-200").copy(hide = true)
         val target = query.targetOr(LookupTarget(world, 0, 0, 0, ""))

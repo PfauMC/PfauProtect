@@ -480,7 +480,7 @@ data class LookupQuery(
         // x,y,z carries no world, so a place in another world than the sender's is pinned by a token even for a
         // reader who may see coordinates; with the setting on every reader's button carries one. A token that cannot
         // be made has no button: coordinates would end up in the chat log, and a button without the pin reads where the reader stands then.
-        return when (val token = Places.forCommand(target.world, target.x, target.y, target.z, hide || atWorld != null)) {
+        return when (val token = Places.forCommand(target.world, target.x, target.y, target.z, hide || atWorld != null || event?.world != null)) {
             null -> pageCommand("l", page, "at:${target.x},${target.y},${target.z}")
             UNKNOWN_PLACE -> null
             else -> pageCommand("l", page, "at:$token")
