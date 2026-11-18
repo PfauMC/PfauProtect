@@ -69,6 +69,7 @@ Callers who may not read coordinates get a `place` token (like `7K2M-9QXA-30FD-W
 `world`, `x`, `y`, `z`; those fields are then absent. Pass the token back as `place` in `lookup`,
 `container_history`, `chat_pvp_log` and `start_preview`. `lookup` and `container_history` need `place` or world, x, y
 and z at the top level; `chat_pvp_log` needs one only with a `radius` (a world alone filters to that world);
-`start_preview` without one is centred on an `at:` in `words` (a token or x,y,z) if there is one, otherwise where the
+`start_preview` without one is centred on an `at:` in `words` (a token or x,y,z) if there is one, else on the place of a
+tokenized `event:` in `words`, otherwise where the
 moderator stands. A token that does not
 decode is an error: `unknown place`. Any caller may use `place` instead of world and x/y/z.
