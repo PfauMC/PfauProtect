@@ -77,6 +77,8 @@ import org.bukkit.command.CommandSender
 import org.bukkit.plugin.Plugin
 import io.pfaumc.pfauprotect.Metrics
 import io.pfaumc.pfauprotect.SECONDS_PER_UNIT
+import io.pfaumc.pfauprotect.Places
+import io.pfaumc.pfauprotect.UNKNOWN_PLACE
 import io.pfaumc.pfauprotect.Settings
 import kotlin.math.abs
 import io.pfaumc.pfauprotect.ROLLBACK_PERMISSION
@@ -422,10 +424,14 @@ data class LookupQuery(
     val filter: String? = null,
     val all: Boolean = false,
     val at: Triple<Int, Int, Int>? = null,
+    // The world a token in `at:` named; a typed position has none and is read in the world the command runs in.
+    val atWorld: UUID? = null,
     // The words it was asked with, which the page buttons ask again.
     val words: String = "",
     // Whether ⌖ may run /pp tp for the one asking: read where they asked, as the answer is written off it.
     val teleports: Boolean = false,
+    // Whether places are written as tokens for them, read the same way.
+    val hide: Boolean = false,
     // Whether ↶ may run or type /pp rollback for them, read the same way.
     val rollbacks: Boolean = false,
     // Whether the page opens in a dialog: the asker's choice, read where they asked like `teleports`.
@@ -470,7 +476,16 @@ data class LookupQuery(
     internal val fetch: Int get() = minOf(wanted * FETCH_FACTOR, MAX_FETCH)
 
     /** The same question about the same place, at another page. */
-    fun pageCommand(target: LookupTarget, page: Int): String = pageCommand("l", page, "at:${target.x},${target.y},${target.z}")
+    fun pageCommand(target: LookupTarget, page: Int): String? {
+        // x,y,z carries no world, so a place in another world than the sender's is pinned by a token even for a
+        // reader who may see coordinates; with the setting on every reader's button carries one. A token that cannot
+        // be made has no button: coordinates would end up in the chat log, and a button without the pin reads where the reader stands then.
+        return when (val token = Places.forCommand(target.world, target.x, target.y, target.z, hide || atWorld != null || event?.world != null)) {
+            null -> pageCommand("l", page, "at:${target.x},${target.y},${target.z}")
+            UNKNOWN_PLACE -> null
+            else -> pageCommand("l", page, "at:$token")
+        }
+    }
 
     /** The same question to `/pp [subcommand]` at another page, with the words that pin what it is about. */
     fun pageCommand(subcommand: String, page: Int, vararg pinned: String): String {
@@ -485,20 +500,41 @@ private val PAGED_AWAY = setOf("page", "pg", "at", "asof", "part")
 
 /** Where a lookup asked with `at:` reads, in the world it was asked from. */
 fun LookupQuery.targetOr(fallback: LookupTarget): LookupTarget {
-    val (x, y, z) = at ?: return fallback
-    return LookupTarget(fallback.world, x, y, z, "$x $y $z")
+    // An event a token named stands where the token says, not where the reader does.
+    val named = event?.takeIf { at == null && it.world != null }
+    if (named != null) return LookupTarget(named.world!!, named.x, named.y, named.z, placeText(named.world, named.x, named.y, named.z, hide))
+    val (x, y, z) = at ?: return fallback.let { target ->
+        // The label of a looked-at block or a standing place carries the real position; the token says the same.
+        if (!hide) target else target.copy(label = (target.block?.let { "${it.substringAfter(':')} at " } ?: "") + Places.text(target.world, target.x, target.y, target.z))
+    }
+    val world = atWorld ?: fallback.world
+    return LookupTarget(world, x, y, z, placeText(world, x, y, z, hide))
 }
 
+/** A place as a line says it: "x y z", or its token for someone who may not read coordinates. */
+internal fun placeText(world: UUID, x: Int, y: Int, z: Int, hide: Boolean) = if (hide) Places.text(world, x, y, z) else "$x $y $z"
+
 /** An event of a world's block plane, with where and when it happened, which is all a rollback of it reads. */
-data class EventRef(val id: Long, val x: Int, val y: Int, val z: Int, val at: Long) {
+// `world` is set where the event is read from a row, or where a token named it; a typed x,y,z leaves it to the command's world.
+data class EventRef(val id: Long, val x: Int, val y: Int, val z: Int, val at: Long, val world: UUID? = null) {
     override fun toString() = "event:$id@$x,$y,$z@$at"
+
+    /**
+     * What a command or a line carries: the place as a [token] for someone who may not read coordinates, or to pin
+     * the world. Null when a token is due and cannot be made (a typed position names no world, or is out of range).
+     */
+    fun text(token: Boolean): String? =
+        if (!token) toString() else world?.let { Places.text(it, x, y, z) }?.takeIf { it != UNKNOWN_PLACE }?.let { "event:$id@$it@$at" }
+
+    /** Whether a command about this event has to name its world: it is not the one the command runs in. */
+    fun elsewhere(commandWorld: UUID): Boolean = world != null && world != commandWorld
 
     companion object {
         fun parse(value: String): EventRef? {
             val parts = value.split('@')
             if (parts.size != 3) return null
-            val (x, y, z) = positionOrNull(parts[1]) ?: return null
-            return EventRef(parts[0].toLongOrNull() ?: return null, x, y, z, parts[2].toLongOrNull() ?: return null)
+            val spot = positionOrNull(parts[1]) ?: return null
+            return EventRef(parts[0].toLongOrNull() ?: return null, spot.x, spot.y, spot.z, parts[2].toLongOrNull() ?: return null, spot.world)
         }
     }
 }
@@ -650,7 +686,7 @@ fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.no
             Param.AMOUNT -> query.copy(amount = amountOrNull(value) ?: fail(reader, BAD_AMOUNT, value))
             Param.EVENT -> query.copy(event = EventRef.parse(value) ?: fail(reader, BAD_EVENT, value))
             Param.FILTER -> query.copy(filter = value)
-            Param.AT -> query.copy(at = positionOrNull(value) ?: fail(reader, BAD_POSITION, value))
+            Param.AT -> (positionOrNull(value) ?: fail(reader, BAD_POSITION, value)).let { query.copy(at = Triple(it.x, it.y, it.z), atWorld = it.world) }
             Param.ASOF -> query.copy(asOf = value.toLongOrNull()?.takeIf { it > 0 } ?: fail(reader, BAD_MOMENT, value))
             Param.PART -> query.copy(part = Part.entries.firstOrNull { it.word == value.lowercase() } ?: fail(reader, BAD_PART, value))
         }
@@ -691,8 +727,13 @@ private fun actions(reader: StringReader, valueStart: Int, value: String, chat: 
     return found
 }
 
-private fun positionOrNull(value: String): Triple<Int, Int, Int>? =
-    value.split(',').takeIf { it.size == 3 }?.map { it.toIntOrNull() ?: return null }?.let { (x, y, z) -> Triple(x, y, z) }
+// `world` is only there for a token, which names its own; plain x,y,z is read in the command's world.
+private class Spot(val world: UUID?, val x: Int, val y: Int, val z: Int)
+
+private fun positionOrNull(value: String): Spot? {
+    if (Places.looksLikeToken(value)) return Places.decode(value)?.let { Spot(it.world, it.x, it.y, it.z) }
+    return value.split(',').takeIf { it.size == 3 }?.map { it.toIntOrNull() ?: return null }?.let { (x, y, z) -> Spot(null, x, y, z) }
+}
 
 private fun yesNoOrNull(value: String): Boolean? = when (value.lowercase()) {
     "yes", "true", "y", "1" -> true
@@ -992,8 +1033,13 @@ class LookupArgument(
         val param = Param.of(token.substring(0, colon).lowercase())
         // A position is one value with commas in it, not a list.
         if (param == Param.AT) {
-            val at = (context.source as? CommandSourceStack)?.location
-            return offer(builder, tokenStart + colon + 1, listOfNotNull(at?.let { "${it.blockX},${it.blockY},${it.blockZ}" }))
+            val source = context.source as? CommandSourceStack
+            val at = source?.location
+            val hide = Places.hidden(source?.sender)
+            // No token to offer when the key is unusable: `at:?` would not parse.
+            return offer(builder, tokenStart + colon + 1, listOfNotNull(at?.let {
+                if (hide) Places.text(it.world.uid, it.blockX, it.blockY, it.blockZ) else "${it.blockX},${it.blockY},${it.blockZ}"
+            }?.takeIf { it != UNKNOWN_PLACE }))
         }
         val valueStart = if (comma > colon) comma + 1 else colon + 1
         return offer(builder, tokenStart + valueStart, valuesFor(param))
@@ -1078,7 +1124,8 @@ internal class Line(
     val places: List<WorldBlock> = emptyList(),
     // The row it was drawn from, a LedgerEntry, BlockRow or EntityRow, for the API's rows.
     val source: Any? = null,
-    val draw: (amount: Int, rows: Int) -> Component,
+    // `hide`: the reader may not see coordinates, so a hover that would carry them says the token.
+    val draw: (amount: Int, rows: Int, hide: Boolean) -> Component,
 )
 
 // A run of the same thing within this long of each other reads as one line: forty blocks of one wall
@@ -1311,6 +1358,7 @@ internal fun pageRows(sender: CommandSender): Int =
  */
 internal fun LookupQuery.askedBy(sender: CommandSender, dialog: Boolean = true): LookupQuery = copy(
     teleports = canTeleport(sender),
+    hide = Places.hidden(sender),
     rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION),
     dialog = dialog && readsInDialog(sender),
     rows = rows ?: pageRows(sender).takeIf { dialog },
@@ -1372,8 +1420,9 @@ internal fun showPage(
 // A mark of its own after the line: a hover and a click put on the whole line show only between its parts, which
 // have their own. A window has no chat line to type the rollback into, so there it runs, which is only a preview
 // until /pp apply; in chat it is typed out to be looked at first.
-private fun undo(event: EventRef, dialog: Boolean): Component {
-    val command = "/pp rollback $event"
+// No button where the token cannot be made: the command would carry coordinates into the chat log.
+private fun undo(event: EventRef, dialog: Boolean, token: Boolean): Component? {
+    val command = "/pp rollback ${event.text(token) ?: return null}"
     return Ui.hover(Ui.text("↶", Ui.MUTED), tr("Roll back this one event: a preview first", "Откатить это событие: сначала предпросмотр"))
         .decoration(TextDecoration.STRIKETHROUGH, false)
         .clickEvent(if (dialog) ClickEvent.runCommand(command) else ClickEvent.suggestCommand(command))
@@ -1437,7 +1486,7 @@ class Lookups(
     fun entity(sender: CommandSender, entity: UUID, type: String, at: LookupTarget) {
         val short = entity.toString().take(8)
         val label = "$type $short"
-        val query = LookupQuery(teleports = canTeleport(sender), rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION))
+        val query = LookupQuery(teleports = canTeleport(sender), hide = Places.hidden(sender), rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION))
         plugin.offThread(sender, "lookup of $label failed", "The lookup failed; the server log has the details.") {
             val slots = ledger.holderPage(EntitySlot(entity, 0), 0, Long.MAX_VALUE, reverse = true, limit = MAX_FETCH)
             val items = entryLines(wholeTransactions(ledger, slots.entries))
@@ -1648,8 +1697,8 @@ class Lookups(
             val who = entry.actor ?: playerOf(entry.holder) ?: playerOf(entry.counterparty)
             val same = "i ${entry.cause} $who ${entry.itemFormId} ${entry.qty > 0} ${slotless(entry.holder)} ${slotless(entry.counterparty)}"
             val places = listOfNotNull(entry.holder.block, entry.counterparty.block, entry.spot)
-            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, places, entry) { amount, _ ->
-                draw(entry, who, amount)
+            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, places, entry) { amount, _, hide ->
+                draw(entry, who, amount, hide)
             }
         }
     }
@@ -1657,14 +1706,14 @@ class Lookups(
     private fun lineOf(world: UUID, row: BlockRow, back: Boolean): Line {
         val change = blockChange(row)
         val same = "b ${row.cause} ${row.actor} ${row.confidence} ${change.sign} ${change.from} ${change.to}"
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), listOf(WorldBlock(world, row.x, row.y, row.z)), row) { _, rows ->
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp, world), listOf(WorldBlock(world, row.x, row.y, row.z)), row) { _, rows, _ ->
             draw(row, change, rows)
         }
     }
 
     private fun lineOf(world: UUID, row: EntityRow, back: Boolean): Line {
         val same = "e ${row.cause} ${row.actor} ${row.confidence} ${row.kind} ${row.type}"
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp), listOf(WorldBlock(world, row.x, row.y, row.z)), row) { _, rows ->
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp, world), listOf(WorldBlock(world, row.x, row.y, row.z)), row) { _, rows, _ ->
             draw(row, rows)
         }
     }
@@ -1682,7 +1731,7 @@ class Lookups(
         // One read world-wide, or an entity's story around where it stands, only names its world; a player's hands
         // are read in every world and name none.
         val place = if (query.global || query.players.isNotEmpty() || !pages) null
-        else Ui.coordinates(target.world, target.x, target.y, target.z, query.teleports)
+        else Ui.coordinates(target.world, target.x, target.y, target.z, query.teleports, query.hide)
         val title = if (place != null || query.players.isNotEmpty()) where else where.append(Ui.text(" · ${Ui.worldName(target.world)}", Ui.MUTED))
         val placed = place?.let { title.append(Ui.text(" ")).append(it) } ?: title
         if (query.count) return summary(sender, query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found, complete, placed)
@@ -1705,7 +1754,7 @@ class Lookups(
         val here = WorldBlock(target.world, target.x, target.y, target.z).takeIf { place != null && (query.radius ?: 0) == 0 }
         val drawn = lines.map { run ->
             val line = run.first
-            var out = line.draw(run.amount, run.rows)
+            var out = line.draw(run.amount, run.rows, query.hide)
             val event = line.event?.takeIf { run.rows == 1 }
             // Struck through for the eye, said in words for whoever cannot see the line drawn.
             val back = if (line.undone) arrayOf(tr("rolled back", "откачено")) else emptyArray()
@@ -1719,14 +1768,16 @@ class Lookups(
             // the event to type. A folded line is many events and has no one to give.
             val mark = when {
                 event == null -> null
-                query.rollbacks -> undo(event, query.dialog)
-                !clickable -> Ui.text("$event", Ui.FAINT)
+                // A command typed from here must keep the world a token pinned, even for a reader of coordinates, and
+                // with the setting on carry a token for every reader: the click is logged in chat.
+                query.rollbacks -> undo(event, query.dialog, Settings.hideCoordinates || query.hide || query.atWorld != null || event.elsewhere(target.world))
+                !clickable -> event.text(query.hide || query.atWorld != null || event.elsewhere(target.world))?.let { Ui.text(it, Ui.FAINT) }
                 else -> null
             }
             if (mark != null) out = out.append(Ui.text("  ")).append(mark)
             // First on the line, where it is found in the same place on every line and a wrap cannot leave it alone
             // on a line of its own; and outside the strike and the hover, which are the row's.
-            val spot = line.places.firstOrNull { it != here }?.let { Ui.place(it.world, it.x, it.y, it.z, clickable) }
+            val spot = line.places.firstOrNull { it != here }?.let { Ui.place(it.world, it.x, it.y, it.z, clickable, query.hide) }
             val start = Component.text().append(Ui.text(" "))
             if (spot != null) start.append(spot).append(Ui.text(" "))
             start.append(out).build()
@@ -1742,8 +1793,8 @@ class Lookups(
         }
         showPage(
             sender, query, title, drawn, notes,
-            back = query.pageCommand(target, query.page - 1).takeIf { pages && query.page > 1 },
-            forward = query.pageCommand(target, query.page + 1).takeIf { pages && more },
+            back = query.pageCommand(target, query.page - 1)?.takeIf { pages && query.page > 1 },
+            forward = query.pageCommand(target, query.page + 1)?.takeIf { pages && more },
             place = place,
             more = more || !complete,
         )
@@ -1950,7 +2001,7 @@ class Lookups(
         cause.name.lowercase(), *more,
     )
 
-    private fun draw(entry: LedgerEntry, who: UUID?, amount: Int): Component {
+    private fun draw(entry: LedgerEntry, who: UUID?, amount: Int, hide: Boolean): Component {
         val gained = entry.qty > 0
         // Both halves of a mutation face the Void, so without this they read as an item destroyed and
         // an unrelated item created at the same instant, which is the very thing they exist to deny.
@@ -1966,7 +2017,7 @@ class Lookups(
             else -> Cause.CONTAINER_REMOVE
         }
         val act = act(if (gained) "+" else "-", entry.cause, *inPlace, worded = worded)
-        val flow = if (boxed) null else Component.text().append(holder(from)).append(Ui.text(" → ", Ui.FAINT)).append(holder(to)).build()
+        val flow = if (boxed) null else Component.text().append(holder(from, hide)).append(Ui.text(" → ", Ui.FAINT)).append(holder(to, hide)).build()
         return row(Ui.ago(entry.timestamp), who(who, entry.confidence), act, item(entry.itemFormId, amount), flow)
     }
 
@@ -2112,7 +2163,7 @@ class Lookups(
     }
 
     // The short name of each end of a movement; where exactly in it — the slot, the coordinates — on hover.
-    private fun holder(holder: Holder): Component = when (holder) {
+    private fun holder(holder: Holder, hide: Boolean): Component = when (holder) {
         is PlayerInv -> Ui.hover(Ui.text(playerName(holder.uuid), Ui.WHO), tr("inventory, slot ${holder.slot}", "инвентарь, слот ${holder.slot}"))
         is PlayerEquip -> Ui.hover(Ui.text(playerName(holder.uuid), Ui.WHO), tr("equipment, slot ${holder.slot}", "снаряжение, слот ${holder.slot}"))
         is PlayerCursor -> Ui.hover(Ui.text(playerName(holder.uuid), Ui.WHO), tr("cursor", "курсор"))
@@ -2122,8 +2173,8 @@ class Lookups(
             tr("slot ${holder.slot}", "слот ${holder.slot}"),
         )
         is MenuSlot -> Ui.hover(Ui.text(menuName(holder.menuType), Ui.MUTED), tr("menu slot ${holder.slot}", "слот меню ${holder.slot}"))
-        is Container -> Ui.hover(Ui.text(tr("container", "контейнер"), Ui.MUTED), "${holder.x} ${holder.y} ${holder.z}", tr("slot ${holder.slot}", "слот ${holder.slot}"))
-        is WorldBlock -> Ui.hover(Ui.text(tr("block", "блок"), Ui.MUTED), "${holder.x} ${holder.y} ${holder.z}")
+        is Container -> Ui.hover(Ui.text(tr("container", "контейнер"), Ui.MUTED), placeText(holder.world, holder.x, holder.y, holder.z, hide), tr("slot ${holder.slot}", "слот ${holder.slot}"))
+        is WorldBlock -> Ui.hover(Ui.text(tr("block", "блок"), Ui.MUTED), placeText(holder.world, holder.x, holder.y, holder.z, hide))
         // A crafting grid is the player's own entity slot, and a name reads better than their uuid.
         is EntitySlot -> knownName(holder.uuid)?.let { Ui.hover(Ui.text(it, Ui.WHO), tr("crafting grid, slot ${holder.slot}", "сетка крафта, слот ${holder.slot}")) }
             ?: Ui.hover(Ui.text(tr("entity", "сущность"), Ui.MUTED), "${holder.uuid}", tr("slot ${holder.slot}", "слот ${holder.slot}"))
@@ -2135,10 +2186,10 @@ class Lookups(
     /** A page of [found] as the API's rows, folded and cut as a player's page is. */
     internal fun pageOf(found: Found, query: LookupQuery): LookupPage {
         val page = paged(found.lines, query)
-        return LookupPage(page.runs.map(::rowOf), query.page, page.more, found.complete, listOfNotNull(found.note))
+        return LookupPage(page.runs.map { rowOf(it, query.hide) }, query.page, page.more, found.complete, listOfNotNull(found.note))
     }
 
-    private fun rowOf(run: Folded): LookupRow {
+    private fun rowOf(run: Folded, hide: Boolean): LookupRow {
         val line = run.first
         val actor = line.who?.takeIf { it != LIGHTNING }?.let(::playerRef)
         val actorKind = when (line.who) {
@@ -2149,9 +2200,10 @@ class Lookups(
         val place = line.places.firstOrNull()
         val row = LookupRow(
             time = line.timestamp, actor = actor, actorKind = actorKind, action = "changed", cause = line.cause.name.lowercase(),
-            confidence = "fact", world = place?.let { Ui.worldName(it.world) }, x = place?.x, y = place?.y, z = place?.z,
+            confidence = "fact", world = place?.takeIf { !hide }?.let { Ui.worldName(it.world) }, x = place?.x?.takeIf { !hide }, y = place?.y?.takeIf { !hide }, z = place?.z?.takeIf { !hide },
             thing = null, thingAfter = null, name = null, amount = run.amount, from = null, to = null, container = null, slot = null,
-            via = null, rolledBack = line.undone, repeats = run.rows, event = line.event?.takeIf { run.rows == 1 }?.toString(),
+            via = null, rolledBack = line.undone, repeats = run.rows, event = line.event?.takeIf { run.rows == 1 }?.text(hide),
+            place = place?.takeIf { hide }?.let { Places.text(it.world, it.x, it.y, it.z) },
         )
         return when (val source = line.source) {
             is LedgerEntry -> {
@@ -2160,8 +2212,8 @@ class Lookups(
                 row.copy(
                     action = if (source.kind == Kind.MUTATE) "changed" else if (source.qty > 0) "added" else "removed",
                     confidence = source.confidence.name.lowercase(), thing = itemKey(ledger, source.itemFormId),
-                    name = customName(source.itemFormId), from = holderRef(from), to = holderRef(to),
-                    container = container?.let(::holderRef), slot = container?.slot,
+                    name = customName(source.itemFormId), from = holderRef(from, hide), to = holderRef(to, hide),
+                    container = container?.let { holderRef(it, hide) }, slot = container?.slot,
                 )
             }
             is BlockRow -> {
@@ -2196,14 +2248,14 @@ class Lookups(
 
     private fun playerRef(uuid: UUID) = PlayerRef(uuid, knownName(uuid))
 
-    private fun holderRef(holder: Holder): HolderRef = when (holder) {
+    private fun holderRef(holder: Holder, hide: Boolean): HolderRef = when (holder) {
         is PlayerInv -> HolderRef("inventory", playerRef(holder.uuid), slot = holder.slot)
         is PlayerEquip -> HolderRef("equipment", playerRef(holder.uuid), slot = holder.slot)
         is PlayerCursor -> HolderRef("cursor", playerRef(holder.uuid))
         is PlayerEnder -> HolderRef("ender_chest", playerRef(holder.uuid), slot = holder.slot)
         is MenuSlot -> HolderRef("menu", slot = holder.slot)
-        is Container -> HolderRef("container", null, Ui.worldName(holder.world), holder.x, holder.y, holder.z, holder.slot)
-        is WorldBlock -> HolderRef("block", null, Ui.worldName(holder.world), holder.x, holder.y, holder.z)
+        is Container -> if (hide) HolderRef("container", slot = holder.slot, place = Places.text(holder.world, holder.x, holder.y, holder.z)) else HolderRef("container", null, Ui.worldName(holder.world), holder.x, holder.y, holder.z, holder.slot)
+        is WorldBlock -> if (hide) HolderRef("block", place = Places.text(holder.world, holder.x, holder.y, holder.z)) else HolderRef("block", null, Ui.worldName(holder.world), holder.x, holder.y, holder.z)
         // A crafting grid is the player's own entity slot.
         is EntitySlot -> HolderRef(if (knownName(holder.uuid) != null) "crafting" else "entity", playerRef(holder.uuid), slot = holder.slot)
         is ItemEntityRef -> HolderRef("ground", PlayerRef(holder.uuid, null))

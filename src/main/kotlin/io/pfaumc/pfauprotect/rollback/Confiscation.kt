@@ -1,5 +1,7 @@
 package io.pfaumc.pfauprotect.rollback
 
+import io.pfaumc.pfauprotect.Places
+import io.pfaumc.pfauprotect.command.placeText
 import io.pfaumc.pfauprotect.sayNamed
 import io.pfaumc.pfauprotect.capture.item.ContainerCaptureListener
 import io.pfaumc.pfauprotect.capture.item.Intent
@@ -674,14 +676,14 @@ class Confiscations(
 ) : Listener {
 
     // Players one by one; piles together, since there can be dozens of them and none has a name.
-    fun describe(owed: List<Owed>): String {
+    fun describe(owed: List<Owed>, hide: Boolean = false): String {
         val players = owed.filter { it.taker is Carrier }.groupBy { it.taker as Carrier }.map { (taker, all) ->
             val who = nameOrId(taker.player) +
                 if (Bukkit.getPlayer(taker.player) == null) " (offline, at their next join)" else ""
             "$who: ${amounts(all)}"
         }
         val stored = owed.filter { it.taker is Stored }.groupBy { (it.taker as Stored).at }.map { (at, all) ->
-            "container at ${at.x} ${at.y} ${at.z}: ${amounts(all)}"
+            "container at ${placeText(at.world, at.x, at.y, at.z, hide)}: ${amounts(all)}"
         }
         val piles = owed.filter { it.taker is Lying }
         val gone = owed.filter { it.taker is Vanished }
@@ -893,7 +895,7 @@ class Confiscations(
                 }
                 if (got > 0) {
                     taken(item.formId, got)
-                    sender?.sayNamed("  took back $got ${name(item.formId)} from the container at ${stash.x} ${stash.y} ${stash.z} it was put into.")
+                    sender?.sayNamed("  took back $got ${name(item.formId)} from the container at ${placeText(stash.world, stash.x, stash.y, stash.z, Places.hidden(sender))} it was put into.")
                 }
                 next(left - got)
             }
@@ -923,7 +925,7 @@ class Confiscations(
                     if (got > 0) {
                         taken(item.formId, got)
                         val at = pile.location
-                        sender?.sayNamed("  took back $got ${name(item.formId)} out of a shulker box lying at ${at.blockX} ${at.blockY} ${at.blockZ}.")
+                        sender?.sayNamed("  took back $got ${name(item.formId)} out of a shulker box lying at ${placeText(at.world.uid, at.blockX, at.blockY, at.blockZ, Places.hidden(sender))}.")
                     }
                     next(left - got)
                 }) { next(left) } ?: next(left)

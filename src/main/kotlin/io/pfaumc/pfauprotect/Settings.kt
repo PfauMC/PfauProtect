@@ -14,6 +14,9 @@ object Settings {
     // Which server of a network the API's and MCP's answers come from; empty names none.
     @Volatile var serverName = ""
 
+    // Whether players without pfauprotect.coordinates see place tokens instead of coordinates.
+    @Volatile var hideCoordinates = false
+
     @Volatile var disabledWorlds: Set<String> = emptySet()
 
     @Volatile var disabledCauses: Set<Cause> = emptySet()
@@ -66,6 +69,7 @@ object Settings {
         chatKeepDays = config.getInt("chat.keep-days", chatKeepDays).coerceIn(0, 100_000)
         globalPrefix = config.getString("chat.global-prefix", globalPrefix).orEmpty()
         serverName = config.getString("server-name", serverName)!!.trim()
+        hideCoordinates = config.getBoolean("hide-coordinates", hideCoordinates)
         mcpEnabled = config.getBoolean("mcp.enabled", mcpEnabled)
         mcpAddress = config.getString("mcp.address", mcpAddress)!!
         mcpPort = config.getInt("mcp.port", mcpPort).coerceIn(1, 65_535)

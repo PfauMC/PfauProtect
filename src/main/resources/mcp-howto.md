@@ -55,9 +55,21 @@ moderator in the game applies it.
 
 ## Preparing a rollback
 
-1. Tell the moderator the place: `/pp tp <x> <y> <z> <world>`. Wait until they say they are there.
+1. Tell the moderator the place: `/pp tp <x> <y> <z> <world>`, or `/pp tp <token>` if you only hold a
+   `place` token. Wait until they say they are there.
 2. `start_preview` with the filters you settled on. Read the counts back to them: blocks to change,
    conflicts (blocks somebody else changed later, which stay as they are), slots, entities.
 3. If it says `running`, ask `preview_status` until it is ready.
 4. The moderator checks the drawn blocks and clicks `[apply]` or `[cancel]` themselves. You cannot apply
    a rollback.
+
+## Places
+
+Callers who may not read coordinates get a `place` token (like `7K2M-9QXA-30FD-WB5E`) where a result would carry
+`world`, `x`, `y`, `z`; those fields are then absent. Pass the token back as `place` in `lookup`,
+`container_history`, `chat_pvp_log` and `start_preview`. `lookup` and `container_history` need `place` or world, x, y
+and z at the top level; `chat_pvp_log` needs one only with a `radius` (a world alone filters to that world);
+`start_preview` without one is centred on an `at:` in `words` (a token or x,y,z) if there is one, else on the place of a
+tokenized `event:` in `words`, otherwise where the
+moderator stands. A token that does not
+decode is an error: `unknown place`. Any caller may use `place` instead of world and x/y/z.

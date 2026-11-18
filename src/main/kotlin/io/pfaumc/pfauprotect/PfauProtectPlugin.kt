@@ -87,6 +87,7 @@ import io.pfaumc.pfauprotect.command.showPage
 import io.pfaumc.pfauprotect.command.durationOrNull
 import io.pfaumc.pfauprotect.command.lookupTargetAt
 import io.pfaumc.pfauprotect.command.offThread
+import io.pfaumc.pfauprotect.command.placeText
 import io.pfaumc.pfauprotect.command.openContents
 import io.pfaumc.pfauprotect.command.parseLookupQuery
 import io.pfaumc.pfauprotect.command.targetOr
@@ -152,6 +153,7 @@ private const val DEBUG_PERMISSION = "pfauprotect.debug"
 internal const val TELEPORT_PERMISSION = "pfauprotect.teleport"
 private const val TELEPORT_BYPASS_PERMISSION = "pfauprotect.teleport.bypass"
 private const val MCP_PERMISSION = "pfauprotect.mcp"
+internal const val COORDINATES_PERMISSION = "pfauprotect.coordinates"
 
 // /pp tp works only in spectator unless the bypass node is held: on PfauMC another plugin brings a moderator
 // back to where they entered spectator when they leave it, so a jump made there moves them nowhere for real.
@@ -273,6 +275,7 @@ class PfauProtectPlugin : JavaPlugin() {
         Debug.sink = logger::info
         saveDefaultConfig()
         Settings.load(config, logger)
+        Places.init(dataFolder.toPath(), logger)
         val ledger = RocksItemLog(dataFolder.toPath().resolve("ledger"))
         // onDisable closes what `running` holds, and until it is set that is nothing: the ledger would keep
         // its lock file and its writer, and the next enable could not open it.
@@ -525,7 +528,8 @@ class PfauProtectPlugin : JavaPlugin() {
     // A gap means one end of a movement was written and the other was not, which is a hole in the
     // capture rather than anything a player did. The periodic pass is one round, reported as it is found
     // rather than once the ledger is already being read in anger; /pp verify runs rounds to the end.
-    private fun checkLedger(ledger: RocksItemLog, rounds: Int, say: (String) -> Unit): Boolean {
+    // [hide]: the one reading may not see coordinates, and a ledger gap names its holders by them.
+    private fun checkLedger(ledger: RocksItemLog, rounds: Int, say: (String) -> Unit, hide: Boolean = false): Boolean {
         val reports = inRounds(rounds, { it.reachedEnd }) { ledger.sweep(SWEEP_ENTRIES) }
         val checked = reports.sumOf { it.checked }
         val unreadable = reports.sumOf { it.unreadable }
@@ -537,14 +541,16 @@ class PfauProtectPlugin : JavaPlugin() {
         val whole = rounds > 1
         if (!whole && !found && !(reachedEnd && checked > 0)) return false
         say("Transaction invariant: $checked entries, ${gaps.size} gaps, $unreadable unreadable.")
-        sayGaps(gaps, say) { "  gap: $it" }
+        // One line for a hidden reader, not a line per gap that says nothing; the gaps themselves go to the log.
+        if (hide && gaps.isNotEmpty()) say("  ${gaps.size} gaps, see the server log")
+        sayGaps(gaps, if (hide) { line: String -> logger.warning(line) } else say) { "  gap: $it" }
         if (whole && !reachedEnd) say("  stopped on the round limit; run it again to cover the rest.")
         return found
     }
 
     // A position where the two planes disagree is a change that reached one of them and not the other,
     // which from inside either plane on its own reads as perfectly consistent.
-    private fun checkPlanes(planes: PlaneSync, rounds: Int, judgeRecent: Boolean, say: (String) -> Unit): Boolean {
+    private fun checkPlanes(planes: PlaneSync, rounds: Int, judgeRecent: Boolean, say: (String) -> Unit, hide: Boolean = false): Boolean {
         // Reading as though a settle window's worth of time had already passed is what lets a position
         // touched a moment ago be judged at all.
         val now = System.currentTimeMillis() + if (judgeRecent) SETTLE_MILLIS else 0
@@ -571,7 +577,7 @@ class PfauProtectPlugin : JavaPlugin() {
         )
         sayGaps(gaps, say) { gap ->
             val world = server.getWorld(gap.at.world)?.name ?: gap.at.world.toString()
-            "  gap in $world at ${gap.at.x} ${gap.at.y} ${gap.at.z}: ${gap.standing} stands there, " +
+            "  gap in $world at ${placeText(gap.at.world, gap.at.x, gap.at.y, gap.at.z, hide)}: ${gap.standing} stands there, " +
                 "the item plane holds ${gap.fact} confirmed and ${gap.inferred} inferred"
         }
         if (whole && settling > 0 && !judgeRecent) {
@@ -727,14 +733,16 @@ class PfauProtectPlugin : JavaPlugin() {
     private fun rollbackNode(literal: String) = gated(literal, ROLLBACK_PERMISSION)
         .executes { context ->
             withRunning(context.source) { running, sender ->
-                running.rollbacks.preview(sender, lookupTargetAt(context.source.location), LookupQuery())
+                // Rollbacks.preview decides what the sender may read, and labels the target for it.
+                val query = LookupQuery()
+                running.rollbacks.preview(sender, query.targetOr(lookupTargetAt(context.source.location)), query)
             }
         }
         .then(
             Commands.argument("query", LookupArgument(rollback = true))
                 .executes { context ->
-                    val query = context.getArgument("query", LookupQuery::class.java)
                     withRunning(context.source) { running, sender ->
+                        val query = context.getArgument("query", LookupQuery::class.java)
                         running.rollbacks.preview(sender, query.targetOr(lookupTargetAt(context.source.location)), query)
                     }
                 }
@@ -755,8 +763,17 @@ class PfauProtectPlugin : JavaPlugin() {
                         .executes { teleport(it, StringArgumentType.getString(it, "world")) }
                 )
         )
+        // A plain word, not ArgumentTypes.player(): that one rejects the 19-char dashed token before we run.
         // A name is no position, so the two never compete for one word.
-        .then(Commands.argument("player", ArgumentTypes.player()).executes(::teleportToPlayer))
+        .then(
+            Commands.argument("player", StringArgumentType.word())
+                .suggests { context, builder ->
+                    val viewer = context.source.sender as? Player
+                    server.onlinePlayers.filter { viewer?.canSee(it) ?: true }.forEach { builder.suggest(it.name) }
+                    builder.buildFuture()
+                }
+                .executes(::teleportToPlayer)
+        )
 
     // The mode is checked here, not in `requires`: the client keeps the command tree across a game mode
     // change, and the refusal deserves its own words rather than "unknown command".
@@ -771,9 +788,17 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     private fun teleportToPlayer(context: CommandContext<CommandSourceStack>): Int {
-        val player = teleporting(context) ?: return 0
-        val target = context.getArgument("player", PlayerSelectorArgumentResolver::class.java).resolve(context.source).first()
+        // A place token is one word like a player name: an online player wins, then a token, else the name is reported.
+        val word = StringArgumentType.getString(context, "player")
         val sender = context.source.sender
+        val viewer = sender as? Player
+        val target = server.getPlayerExact(word)?.takeIf { viewer?.canSee(it) ?: true }
+        if (target == null) {
+            if (Places.looksLikeToken(word)) return teleportToPlace(context, word)
+            sender.say("$word is not online.")
+            return 0
+        }
+        val player = teleporting(context) ?: return 0
         // Folia: the target's place is read on its own region's thread, and the teleport starts on the
         // teleported player's, as the coordinate teleport does from the command. The mode is asked again
         // there: two hops later the player may have left spectator.
@@ -787,6 +812,18 @@ class PfauProtectPlugin : JavaPlugin() {
             sender.say("${target.name} is not online.")
             return 0
         }
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun teleportToPlace(context: CommandContext<CommandSourceStack>, token: String): Int {
+        val player = teleporting(context) ?: return 0
+        val place = Places.decode(token)
+        val world = place?.let { server.getWorld(it.world) }
+        if (place == null || world == null) {
+            context.source.sender.say("Unknown place.")
+            return 0
+        }
+        player.teleportAsync(Location(world, place.x + 0.5, place.y.toDouble(), place.z + 0.5, player.location.yaw, player.location.pitch))
         return Command.SINGLE_SUCCESS
     }
 
@@ -832,7 +869,8 @@ class PfauProtectPlugin : JavaPlugin() {
         // console name a place of their own, and looking past the last block falls back to where one stands.
         val player = (source.executor as? Player)?.takeIf { it.world == source.location.world && it.location.distanceSquared(source.location) < 1e-6 }
         val aimed = player?.getTargetBlockExact(TARGET_RANGE)
-        running.lookups.run(sender, query.targetOr(aimed?.let(::lookupTargetAt) ?: lookupTargetAt(source.location)), query)
+        val asked = query.copy(hide = Places.hidden(sender))
+        running.lookups.run(sender, asked.targetOr(aimed?.let(::lookupTargetAt) ?: lookupTargetAt(source.location)), asked)
     }
 
     private fun near(source: CommandSourceStack, radius: Int): Int = withRunning(source) { running, sender ->
@@ -949,7 +987,8 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.CHAT -> Ui.text(": " + line.text)
                     ChatKind.CHAT_GLOBAL -> half(" G", Ui.CHANGED, tr("global chat", "глобальный чат"), line.text)
                     ChatKind.CHAT_LOCAL -> half(" L", Ui.MUTED, tr("local chat", "локальный чат"), line.text)
-                    ChatKind.COMMAND -> Ui.text(" " + line.text, Ui.CHANGED)
+                    // A teleport link clicked before the setting was turned on left numbers in the journal.
+                    ChatKind.COMMAND -> Ui.text(" " + if (asked.hide) Places.redactTeleport(line.text) else line.text, Ui.CHANGED)
                     ChatKind.JOIN -> Ui.text(tr(" joined", " · вход"), Ui.GAINED)
                     ChatKind.QUIT -> Ui.text(tr(" left", " · выход"), Ui.MUTED)
                     ChatKind.HIT, ChatKind.TOTEM -> hitOf(run)
@@ -958,7 +997,7 @@ class PfauProtectPlugin : JavaPlugin() {
                 // A run reads at its first hit: who started is what it is looked up for. The place goes first, as on
                 // a lookup's lines.
                 val out = Component.text().append(Ui.text(" "))
-                if (line.world.isNotEmpty()) out.append(Ui.place(line.world, line.x, line.y, line.z, asked.teleports)).append(Ui.text(" "))
+                if (line.world.isNotEmpty()) out.append(Ui.place(line.world, line.x, line.y, line.z, asked.teleports, asked.hide)).append(Ui.text(" "))
                 out.append(Ui.ago(run.oldest)).append(Ui.text("  ")).append(who).append(what).build()
             }
             showPage(
@@ -1064,8 +1103,9 @@ class PfauProtectPlugin : JavaPlugin() {
         sender.say("Running both self-checks to the end; this reads the whole journal.")
         offThread(sender, "the self-checks failed", "The self-checks failed; the server log has the details.") {
             running.drainAll()
-            checkLedger(running.ledger, VERIFY_ROUNDS, sender::say)
-            checkPlanes(running.planes, VERIFY_ROUNDS, judgeRecent, sender::say)
+            val hide = Places.hidden(sender)
+            checkLedger(running.ledger, VERIFY_ROUNDS, sender::say, hide)
+            checkPlanes(running.planes, VERIFY_ROUNDS, judgeRecent, sender::say, hide)
         }
     }
 

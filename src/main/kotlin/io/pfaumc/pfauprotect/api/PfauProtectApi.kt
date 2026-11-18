@@ -109,13 +109,15 @@ data class HolderRef(
     val y: Int? = null,
     val z: Int? = null,
     val slot: Int? = null,
+    val place: String? = null,
 )
 
 /**
  * One line of a lookup. [action] is added, removed or changed; [cause] is the cause's code, the word config.yml
  * and the hover of a line use; [confidence] is fact, inferred (worked out), nearby (only stood near) or aggro (a
  * creeper went off at them). [repeats] is how many rows of the same thing within a minute the line stands for,
- * [event] the token `event:` takes to roll back that one row.
+ * [event] the token `event:` takes to roll back that one row. A caller who may not read coordinates gets [place],
+ * a token `at:` takes, in place of world, x, y and z (here, in [HolderRef] and in [ChatEntry]).
  */
 data class LookupRow(
     val time: Long,
@@ -140,6 +142,7 @@ data class LookupRow(
     val rolledBack: Boolean,
     val repeats: Int,
     val event: String?,
+    val place: String? = null,
 )
 
 /** A page of rows, newest first. [complete] false: the read stopped early, and an empty page clears nobody. */
@@ -177,6 +180,7 @@ data class ChatEntry(
     val z: Int?,
     val hit: HitInfo?,
     val repeats: Int,
+    val place: String? = null,
 )
 
 data class ChatPage(val lines: List<ChatEntry>, val page: Int, val more: Boolean)

@@ -4,6 +4,7 @@ import io.pfaumc.pfauprotect.api.PfauProtectException
 import io.pfaumc.pfauprotect.api.PreviewBlocks
 import io.pfaumc.pfauprotect.api.PreviewEntities
 import io.pfaumc.pfauprotect.api.PreviewResult
+import io.pfaumc.pfauprotect.Places
 import io.pfaumc.pfauprotect.say
 import io.pfaumc.pfauprotect.sayNamed
 import ca.spottedleaf.concurrentutil.util.Priority
@@ -23,6 +24,8 @@ import io.pfaumc.pfauprotect.command.LookupTarget
 import io.pfaumc.pfauprotect.command.Lookups
 import io.pfaumc.pfauprotect.command.RowFilter
 import io.pfaumc.pfauprotect.command.offThread
+import io.pfaumc.pfauprotect.command.placeText
+import io.pfaumc.pfauprotect.command.targetOr
 import io.pfaumc.pfauprotect.command.offlineName
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Kind
@@ -999,6 +1002,12 @@ internal fun refusalOf(query: LookupQuery): String? = when {
 
 private fun refused(reason: String) = PreviewResult("refused", reason)
 
+/** The query as [sender] may read it, and the target labelled the way their heading says it: a token for someone hidden from coordinates. */
+internal fun previewAsk(sender: CommandSender, target: LookupTarget, query: LookupQuery): Pair<LookupQuery, LookupTarget> {
+    val asked = query.copy(hide = Places.hidden(sender))
+    return asked to asked.targetOr(target)
+}
+
 /**
  * `/pp rollback`, `apply` and `cancel`. A rollback is previewed first and applied on a second word; the
  * preview is the same reading run against the world without touching it, and apply reads it all again.
@@ -1024,7 +1033,10 @@ class Rollbacks(
      * [done] hears what the preview would do once it has read it, or why it was refused; a preview waiting for
      * apply is said to lapse [PENDING_MILLIS] after it was read.
      */
-    fun preview(sender: CommandSender, target: LookupTarget, query: LookupQuery, done: (PreviewResult) -> Unit = {}) {
+    fun preview(sender: CommandSender, where: LookupTarget, wanted: LookupQuery, done: (PreviewResult) -> Unit = {}) {
+        // The one place that decides what the sender may read: the heading and every later line of this rollback,
+        // apply included (the slot keeps what was asked here), come off this query and target.
+        val (query, target) = previewAsk(sender, where, wanted)
         refusalOf(query)?.let {
             sender.say(it)
             done(refused(it))
@@ -1054,7 +1066,9 @@ class Rollbacks(
             Taking.Busy -> sender.say("Another rollback is still running; apply again once it has reported.")
             is Taking.Started -> {
                 hide(sender)
-                run(sender, taken.asked.target, taken.asked.query, apply = true, startedAt = taken.at)
+                // The permission may have been taken away since the preview: the place and filters stay, the heading is drawn again.
+                val (query, target) = previewAsk(sender, taken.asked.target, taken.asked.query)
+                run(sender, target, query, apply = true, startedAt = taken.at)
             }
         }
     }
@@ -1104,7 +1118,10 @@ class Rollbacks(
                 val from = event?.let { it.at - EVENT_MILLIS } ?: query.fromTs(now)
                 val to = event?.let { it.at + EVENT_MILLIS } ?: minOf(query.toTs(now), now)
                 val radius = if (event != null) query.radius ?: EVENT_RADIUS else query.radius
-                val at = if (event != null) LookupTarget(target.world, event.x, event.y, event.z, "event ${event.id} at ${event.x} ${event.y} ${event.z}") else target
+                val at = if (event != null) {
+                    val world = event.world ?: target.world
+                    LookupTarget(world, event.x, event.y, event.z, "event ${event.id} at ${placeText(world, event.x, event.y, event.z, query.hide)}")
+                } else target
                 Debug.log { "  users $users, window $from..$to, radius $radius around ${at.label}" }
                 val since = TIME_FORMAT.format(Instant.ofEpochMilli(from)) +
                     if (query.hasUntil) " until ${TIME_FORMAT.format(Instant.ofEpochMilli(to))}" else ""
@@ -1381,7 +1398,7 @@ class Rollbacks(
                 val back = fallen.restitution()
                 if (back.isEmpty()) continue
                 val victim = nameOrId(death.uuid)
-                sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back)}")
+                sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $victim what they lost: ${confiscations.describe(back, Places.hidden(sender))}")
                 if (apply) confiscations.restore(death.uuid, back, actor, sender, fallen.births().values.flatten(), fallen.slots(), death.timestamp)
             }
             // What crossed a player's hands: one line each way per player, then each crossing on its own.
@@ -1389,10 +1406,10 @@ class Rollbacks(
                 val who = nameOrId(player)
                 val (back, away) = moves.partition { it.back }
                 if (back.isNotEmpty()) {
-                    sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $who what they lost: ${confiscations.describe(merged(back.flatMap { it.owed }))}")
+                    sender.sayNamed("  ${if (apply) "giving back" else "would give back"} to $who what they lost: ${confiscations.describe(merged(back.flatMap { it.owed }), Places.hidden(sender))}")
                 }
                 if (away.isNotEmpty()) {
-                    val whom = confiscations.describe(merged(away.flatMap { it.owed }))
+                    val whom = confiscations.describe(merged(away.flatMap { it.owed }), Places.hidden(sender))
                     sender.sayNamed(if (apply) "  taking back from $whom:" else "  would take back from $whom.")
                 }
                 if (!apply) continue
@@ -1411,7 +1428,7 @@ class Rollbacks(
                 confiscations.exchange(bucket.player, bucket.withMob, bucket.empty, actor, sender)
             }
             if (owed.isEmpty()) return
-            val whom = confiscations.describe(owed)
+            val whom = confiscations.describe(owed, Places.hidden(sender))
             if (!apply) {
                 sender.sayNamed("  would take back from $whom.")
                 return

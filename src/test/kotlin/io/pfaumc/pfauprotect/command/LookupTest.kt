@@ -4,6 +4,8 @@ import com.mojang.brigadier.context.StringRange
 import com.mojang.brigadier.StringReader
 import com.mojang.brigadier.exceptions.CommandSyntaxException
 import com.mojang.brigadier.suggestion.SuggestionsBuilder
+import io.pfaumc.pfauprotect.Place
+import io.pfaumc.pfauprotect.Places
 import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
@@ -422,7 +424,7 @@ class LookupTest {
     fun `runs fold gap by gap and keep undone rows apart`() {
         fun line(secondsAgo: Long, amount: Int, undone: Boolean = false) = Line(
             1_000_000L - secondsAgo * 1000, Cause.BLK_PLAYER_BREAK, null, "break stone", amount, undone, null,
-        ) { _, _ -> Component.empty() }
+        ) { _, _, _ -> Component.empty() }
         val lines = listOf(line(0, 64), line(30, 32), line(70, 1), line(131, 5), line(161, 7, undone = true), line(191, 2), line(221, 3))
         assertEquals(listOf(3, 1, 1, 2), folded(lines, all = false).map { it.rows })
         assertEquals(listOf(97, 5, 7, 5), folded(lines, all = false).map { it.amount })
@@ -442,7 +444,7 @@ class LookupTest {
         // Asked at a moment, which the next page keeps: rows written since would shift every page.
         val query = parseLookupQuery("u:Bob t:1h page:2 at:1,2,3").copy(asOf = 1_700_000_000_000L)
         assertEquals(Triple(1, 2, 3), query.at)
-        val command = query.pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 3)
+        val command = query.pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 3)!!
         val asked = parseLookupQuery(command.removePrefix("/pp l "))
         assertEquals(query.copy(page = 3, at = Triple(7, 64, -3), words = asked.words), asked)
     }
@@ -461,7 +463,95 @@ class LookupTest {
         val query = parseLookupQuery("part:contents")
         assertEquals(Part.CONTENTS, query.part)
         assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("part:x") }
-        val command = query.copy(words = "part:contents page:1").pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2)
+        val command = query.copy(words = "part:contents page:1").pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2)!!
         assertTrue(command.contains("part:contents") && command.split(" ").count { it.startsWith("part:") } == 1, command)
+    }
+
+    // A place token names its own world, which replaces the one the command runs in.
+    private fun withTokens(block: (UUID) -> Unit) {
+        val world = UUID(0, 5)
+        val before = Places.loaded
+        Places.useKey(ByteArray(32) { it.toByte() })
+        Places.loaded = { listOf(world) }
+        try {
+            block(world)
+        } finally {
+            Places.loaded = before
+        }
+    }
+
+    @Test
+    fun `at and event take a place token and read it in the world it names`() = withTokens { world ->
+        val token = Places.encode(world, 10, -60, -42)
+        val query = parseLookupQuery("at:$token")
+        assertEquals(Triple(10, -60, -42), query.at)
+        val elsewhere = LookupTarget(UUID(0, 9), 0, 0, 0, "")
+        assertEquals(LookupTarget(world, 10, -60, -42, "10 -60 -42"), query.targetOr(elsewhere))
+        assertEquals(EventRef(7, 10, -60, -42, 123, world), EventRef.parse("7@$token@123"))
+        assertEquals(LookupTarget(world, 10, -60, -42, "10 -60 -42"), parseLookupQuery("event:7@$token@123").targetOr(elsewhere))
+        assertNull(parseLookupQuery("at:1,2,3").atWorld)
+        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("at:ZZZZ-ZZZZ-ZZZZ-ZZZZ") }
+    }
+
+    @Test
+    fun `a page button keeps the world a token pinned even for a reader of coordinates`() = withTokens { world ->
+        val token = Places.encode(world, 100, 64, -200)
+        val query = parseLookupQuery("at:$token")
+        assertFalse(query.hide)
+        val command = query.pageCommand(query.targetOr(LookupTarget(UUID(0, 9), 0, 0, 0, "")), 2)!!
+        val pinned = command.substringAfter("at:").substringBefore(' ')
+        assertEquals(Place(world, 100, 64, -200), Places.decode(pinned))
+    }
+
+    @Test
+    fun `a page button keeps the world an event token named`() = withTokens { world ->
+        val query = parseLookupQuery("event:7@${Places.encode(world, 100, 64, -200)}@123")
+        val command = query.pageCommand(query.targetOr(LookupTarget(UUID(0, 9), 0, 0, 0, "")), 2)!!
+        val pinned = command.substringAfter(" at:").substringBefore(' ')
+        assertEquals(Place(world, 100, 64, -200), Places.decode(pinned))
+    }
+
+    @Test
+    fun `a hidden asker is given tokens in the commands and labels, never the numbers`() = withTokens { world ->
+        val query = parseLookupQuery("at:100,64,-200").copy(hide = true)
+        val target = query.targetOr(LookupTarget(world, 0, 0, 0, ""))
+        val token = Places.encode(world, 100, 64, -200)
+        assertEquals(token, target.label)
+        assertEquals(query.pageCommand(target, 2)!!.substringAfter("at:").substringBefore(' '), token)
+        val label = query.copy(at = null).targetOr(LookupTarget(world, 1, 2, 3, "stone at 1 2 3", "minecraft:stone")).label
+        assertEquals("stone at ${Places.encode(world, 1, 2, 3)}", label)
+        val event = EventRef(7, 1, 2, 3, 123, world)
+        assertEquals("event:7@${Places.encode(world, 1, 2, 3)}@123", event.text(true))
+        assertEquals(event.toString(), event.text(false))
+        assertEquals(event, EventRef.parse(event.text(true)!!.removePrefix("event:")))
+        // A typed position names no world, so no token can be made for it.
+        assertNull(EventRef(7, 1, 2, 3, 123).text(true))
+    }
+
+    @Test
+    fun `with the setting on a page button carries a token even for a reader of coordinates, and none where it cannot be made`() = withTokens { world ->
+        val before = Settings.hideCoordinates
+        Settings.hideCoordinates = true
+        try {
+            val query = parseLookupQuery("at:100,64,-200")
+            assertFalse(query.hide)
+            val command = query.pageCommand(LookupTarget(world, 100, 64, -200, ""), 2)!!
+            assertEquals(Place(world, 100, 64, -200), Places.decode(command.substringAfter("at:").substringBefore(' ')))
+            assertFalse(command.contains("100"))
+            // y out of the packed range: no token, so no button rather than one that reads where the reader stands.
+            val unknown = query.pageCommand(LookupTarget(world, 100, 100_000, -200, ""), 2)
+            assertNull(unknown)
+        } finally {
+            Settings.hideCoordinates = before
+        }
+    }
+
+    @Test
+    fun `an event in another world than the command's is pinned by a token, one in the same world is not`() = withTokens { world ->
+        val event = EventRef(7, 1, 2, 3, 123, world)
+        assertTrue(event.elsewhere(UUID(0, 9)))
+        assertFalse(event.elsewhere(world))
+        assertFalse(EventRef(7, 1, 2, 3, 123).elsewhere(UUID(0, 9)))
+        assertEquals("event:7@${Places.encode(world, 1, 2, 3)}@123", event.text(true))
     }
 }

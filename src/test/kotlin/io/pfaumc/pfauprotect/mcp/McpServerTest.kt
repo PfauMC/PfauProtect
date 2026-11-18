@@ -2,7 +2,13 @@ package io.pfaumc.pfauprotect.mcp
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import io.pfaumc.pfauprotect.AIR
 import io.pfaumc.pfauprotect.BothPlanes
+import io.pfaumc.pfauprotect.Places
+import io.pfaumc.pfauprotect.STONE
+import io.pfaumc.pfauprotect.T0
+import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.Vanilla
@@ -181,6 +187,41 @@ class McpServerTest : BothPlanes() {
             *gateway("X-PfauProtect-Permissions" to "pfauprotect.lookup"),
         )
         assertEquals(-32602, JsonParser.parseString(response.body()).asJsonObject.getAsJsonObject("error").get("code").asInt)
+    }
+
+    // What a caller without pfauprotect.coordinates reads is a token, and the token reads the same place back.
+    @Test
+    fun `a caller who may not read coordinates gets a place token and can pass it back`() {
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.drain()
+        val before = Settings.hideCoordinates
+        Places.useKey(ByteArray(32) { it.toByte() })
+        Settings.hideCoordinates = true
+        try {
+            val blind = gateway("X-PfauProtect-Permissions" to "pfauprotect.lookup")
+            val row = call("lookup", """{"world":"$world","x":10,"y":64,"z":-3}""", *blind)
+                .getAsJsonObject("structuredContent").getAsJsonArray("rows")[0].asJsonObject
+            val place = row.get("place").asString
+            assertEquals(Places.encode(world, 10, 64, -3), place)
+            assertEquals(emptyList<String>(), listOf("world", "x", "y", "z").filter { row.has(it) })
+
+            val back = call("lookup", """{"place":"$place"}""", *blind).getAsJsonObject("structuredContent").getAsJsonArray("rows")
+            assertEquals(row.get("time"), back[0].asJsonObject.get("time"))
+
+            val unknown = JsonParser.parseString(post(
+                """{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"lookup","arguments":{"place":"0000-0000-0000-0000"}}}""", *blind,
+            ).body()).asJsonObject.getAsJsonObject("error")
+            assertEquals(-32602, unknown.get("code").asInt)
+            assertEquals("unknown place", unknown.get("message").asString)
+
+            // Whoever holds the permission reads the real position, and may use a token all the same.
+            val sighted = gateway("X-PfauProtect-Permissions" to "pfauprotect.lookup,pfauprotect.coordinates")
+            val plain = call("lookup", """{"place":"$place"}""", *sighted).getAsJsonObject("structuredContent").getAsJsonArray("rows")[0].asJsonObject
+            assertEquals(listOf(10, 64, -3), listOf("x", "y", "z").map { plain.get(it).asInt })
+            assertFalse(plain.has("place"))
+        } finally {
+            Settings.hideCoordinates = before
+        }
     }
 
     private companion object {

@@ -2,6 +2,8 @@ package io.pfaumc.pfauprotect.api
 
 import io.pfaumc.pfauprotect.AIR
 import io.pfaumc.pfauprotect.BothPlanes
+import io.pfaumc.pfauprotect.Places
+import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.STONE
 import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.T0
@@ -240,6 +242,25 @@ class ApiTest : BothPlanes() {
         assertEquals("refused", older.answer().status)
         assertEquals(ready, newer.answer())
         assertEquals(ready, api.previewStatus(alice))
+    }
+
+    @Test
+    fun `a chat line and a death carry a place token, not coordinates, for a caller who may not read them`() {
+        said(ChatLine(T0 + 1, ChatKind.HIT, alice, "", "world", 1, 64, 1, Hit(bob, 6f, Confidence.FACT)))
+        log.submit(listOf(EntityChange(2, 64, 2, EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED, "minecraft:player", bob, T0 + 4, actor = alice)))
+        log.drain()
+        val before = Settings.hideCoordinates
+        Places.useKey(ByteArray(32) { it.toByte() })
+        Settings.hideCoordinates = true
+        try {
+            val blind = api(ask = { _, permission -> permission != "pfauprotect.coordinates" }).apply { worldIdOf = { world } }
+            val (death, hit) = blind.chatAs(ChatRequest(words = "u:Alice&Bob #all"), Access(alice)).answer().lines
+            assertEquals(Places.encode(world, 2, 64, 2), death.place)
+            assertEquals(Places.encode(world, 1, 64, 1), hit.place)
+            assertTrue(listOf(death, hit).all { it.world == null && it.x == null && it.y == null && it.z == null })
+        } finally {
+            Settings.hideCoordinates = before
+        }
     }
 
     // An online player whose own thread runs what is given to it at once.

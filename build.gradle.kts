@@ -114,6 +114,10 @@ bukkit {
                 default = BukkitPluginDescription.Permission.Default.OP
             }
         }
+        register("pfauprotect.coordinates") {
+            description = "See real coordinates while hide-coordinates is on"
+            default = BukkitPluginDescription.Permission.Default.FALSE
+        }
     }
 }
 
