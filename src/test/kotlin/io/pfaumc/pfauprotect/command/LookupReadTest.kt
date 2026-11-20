@@ -8,6 +8,8 @@ import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
 import io.pfaumc.pfauprotect.bob
 import io.pfaumc.pfauprotect.storage.BlockChange
+import io.pfaumc.pfauprotect.attribution.Attributed
+import io.pfaumc.pfauprotect.api.LookupRow
 import io.pfaumc.pfauprotect.storage.EntityChange
 import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.model.Confidence
@@ -159,7 +161,7 @@ class LookupReadTest : BothPlanes() {
     fun `a part reads the contents of a container or its block apart`() {
         val chest = Container(world, 10, 64, -3, 0)
         shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), chest, stone, null, 1, T0))
-        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, WorldBlock(world, 10, 64, -3), stone, null, 1, T0 + 1))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 1), WorldBlock(world, 10, 64, -3), stone, null, 1, T0 + 1))
         log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 2)))
         shared.drain()
         log.drain()
@@ -175,7 +177,7 @@ class LookupReadTest : BothPlanes() {
     @Test
     fun `a position answers with both planes in the order things happened`() {
         val at = WorldBlock(world, 10, 64, -3)
-        shared.submit(Transfer(Cause.BLOCK_PLACE, Void, at, stone, null, 1, T0))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 1), at, stone, null, 1, T0))
         log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
         log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0 + 1000)))
         shared.submit(moved(at, Void, stone, Cause.BLK_TNT, null, T0 + 1000))
@@ -186,10 +188,11 @@ class LookupReadTest : BothPlanes() {
 
         assertTrue(lines.any { it.contains("- block.minecraft.tnt") && it.contains("minecraft:stone → minecraft:air") }, "$lines")
         assertTrue(lines.any { it.contains("{blk_player_place}") && it.contains("minecraft:air → minecraft:stone") }, "$lines")
-        assertTrue(lines.any { it.contains("{block_place}") && it.contains("∅") }, "the item plane is still there: $lines")
+        assertTrue(lines.any { it.contains("{block_place}") }, "the item plane is still there: $lines")
+        // The stone written off where it stood is the block row's own change, and is not shown twice.
         val causes = listOf("{blk_tnt}", "{block_place}", "{blk_player_place}")
         val read = lines.mapNotNull { line -> causes.firstOrNull { it in line } }.map { if (it == "{blk_tnt}") "tnt" else "place" }
-        assertEquals(listOf("tnt", "tnt", "place", "place"), read, "$lines")
+        assertEquals(listOf("tnt", "place", "place"), read, "$lines")
     }
 
     // A world-wide lookup of a player goes to every place they touched, however far apart, and at each
@@ -220,6 +223,66 @@ class LookupReadTest : BothPlanes() {
         val lines = said(LookupQuery(users = listOf("Alice"), radius = -1, all = true), players = mapOf("Alice" to alice))
 
         assertTrue(lines.first { " → " in it }.let { "minecraft:air → minecraft:dirt" in it && "rolled back" in it }, "$lines")
+    }
+
+    // Each page was cut from a read of its own depth: the drops of an earlier page's breaks and the rows under a long
+    // folded run came and went with it, and whole minutes of a player fell between two pages.
+    @Test
+    fun `paging through a player's lookup shows every line once`() {
+        val by = Attributed(alice, Confidence.FACT)
+        // Two long runs, one in each plane, each longer than a first page reads of it.
+        repeat(100) { shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), Container(world, 50, 64, 0, 0), stone, null, 1, T0 + 200_000 + it)) }
+        repeat(30) { log.submit(listOf(BlockChange(it, 70, 0, STONE, AIR, Cause.BLK_FIRE_BURN, T0 + 100_000 + it, actor = alice))) }
+        // And a blast of one millisecond in both planes, which only `#all` pages through row by row.
+        repeat(10) {
+            log.submit(listOf(BlockChange(it, 80, 0, STONE, AIR, Cause.BLK_TNT, T0 + 300_000, actor = alice)))
+            log.submit(listOf(EntityChange(it, 80, 1, EntityKind.REMOVED, Cause.ENTITY_KILLED, "minecraft:cat", UUID.randomUUID(), T0 + 300_000, actor = alice)))
+        }
+        repeat(12) {
+            val ts = T0 + it * 1000L
+            log.submit(listOf(BlockChange(it, 64, 0, STONE, AIR, Cause.BLK_PLAYER_BREAK, ts, actor = alice)))
+            shared.submit(moved(WorldBlock(world, it, 64, 0), ItemEntityRef(UUID.randomUUID()), stone, Cause.BLOCK_DROP, by, ts))
+            shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), Container(world, 50, 64, 0, 0), stone, null, 1, ts + 500))
+        }
+        log.drain()
+        shared.drain()
+        val lookups = Lookups(stub(Plugin::class.java), shared, logs, codec, mapOf("Alice" to alice)::get) { null }
+        fun page(query: LookupQuery) = lookups.pageOf(lookups.findAllWorlds(query), query)
+        fun keys(rows: List<LookupRow>) = rows.map { listOf(it.time, it.cause, it.x, it.y, it.z, it.thing, it.repeats) }
+
+        for (all in listOf(false, true)) {
+            val whole = page(LookupQuery(users = listOf("Alice"), rows = 200, all = all))
+            assertFalse(whole.more)
+            val paged = ArrayList<LookupRow>()
+            var n = 1
+            do {
+                val next = page(LookupQuery(users = listOf("Alice"), rows = 2, page = n++, all = all))
+                paged += next.rows
+            } while (next.more && n < 200)
+            assertEquals(keys(whole.rows), keys(paged), "all $all")
+        }
+    }
+
+    // A rollback puts a leaf back counting its distance anew, and a window that ended before the rollback still
+    // shows the row as put back: a wither's leaves read as never rolled back.
+    @Test
+    fun `a row a rollback put back after the window is marked, a leaf by the state it was given`() {
+        log.submit(listOf(BlockChange(10, 64, -3, "minecraft:oak_leaves[distance=3,persistent=false,waterlogged=false]", AIR, Cause.BLK_WITHER, T0, actor = alice)))
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, "minecraft:oak_leaves[distance=1,persistent=false,waterlogged=false]", Cause.ROLLBACK, T0 + 60_000)))
+        log.drain()
+        val window = LookupQuery(fromMillis = T0 - 1000, untilMillis = T0 + 1000)
+
+        val here = said(window)
+        assertTrue(here.any { "{blk_wither}" in it && "rolled back" in it }, "$here")
+        val theirs = said(window.copy(users = listOf("Alice"), radius = -1), players = mapOf("Alice" to alice))
+        assertTrue(theirs.any { "{blk_wither}" in it && "rolled back" in it }, "$theirs")
+        // A page pinned to a moment sees no rollback from that moment on.
+        for (query in listOf(window, window.copy(users = listOf("Alice"), radius = -1))) {
+            val before = said(query.copy(asOf = T0 + 60_000), players = mapOf("Alice" to alice))
+            assertTrue(before.any { "{blk_wither}" in it && "rolled back" !in it }, "$before")
+            val after = said(query.copy(asOf = T0 + 60_001), players = mapOf("Alice" to alice))
+            assertTrue(after.any { "{blk_wither}" in it && "rolled back" in it }, "$after")
+        }
     }
 
     @Test
@@ -531,10 +594,10 @@ class LookupReadTest : BothPlanes() {
     fun `a busy corner of the chunk does not hide the position that was asked about`() {
         val corner = WorldBlock(world, 15, 64, -15)
         val here = WorldBlock(world, 10, 64, -3)
-        shared.submit(Transfer(Cause.BLK_TNT, here, Void, stone, null, 1, T0))
+        shared.submit(Transfer(Cause.BLK_TNT, here, ItemEntityRef(UUID.randomUUID()), stone, null, 1, T0))
         log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0)))
         repeat(40) { i ->
-            shared.submit(Transfer(Cause.BLK_TNT, corner, Void, stone, null, 1, T0 + 1 + i))
+            shared.submit(Transfer(Cause.BLK_TNT, corner, ItemEntityRef(UUID.randomUUID()), stone, null, 1, T0 + 1 + i))
             log.submit(listOf(BlockChange(15, 64, -15, STONE, AIR, Cause.BLK_TNT, T0 + 1 + i)))
         }
         shared.drain()
@@ -543,7 +606,7 @@ class LookupReadTest : BothPlanes() {
         // Two rows asked for, eight times that read: far fewer than the corner holds.
         val lines = said(LookupQuery(radius = 1, rows = 2)).filter { it.contains("10 64 -3") }
 
-        assertTrue(lines.any { it.contains("∅") }, "the item plane lost it: $lines")
+        assertTrue(lines.any { it.contains("on the ground") }, "the item plane lost it: $lines")
         assertTrue(lines.any { it.contains("event:") }, "the block plane lost it: $lines")
     }
 

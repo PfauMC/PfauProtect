@@ -444,9 +444,14 @@ class BlockLog(
     ): List<BlockRow> = dbLock.read {
         val found = ArrayList<BlockRow>()
         if (closed || limit <= 0) return found
-        forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse) { key, value ->
-            // The timestamp follows a position prefix directly, so the walk is already in time order
-            // and the window is nothing but the rows it drops.
+        val prefix = BlockCodec.positionPrefix(x, y, z)
+        // The timestamp follows a position prefix directly, so the walk starts at the window's near end and is
+        // already in time order: the window is nothing but the rows it drops, and past its far end nothing is kept.
+        val from = if (reverse) lastUnder(ByteWriter(prefix.size + 8).bytes(prefix).longBE(toTs).toByteArray())
+        else ByteWriter(prefix.size + 8).bytes(prefix).longBE(fromTs).toByteArray()
+        db.forEachUnder(rowsCf, prefix, reverse, from) { key, value ->
+            val ts = if (key.size >= BlockCodec.KEY_SIZE) timeAt(key, Zcode.SIZE) else null
+            if (ts != null && (if (reverse) ts < fromTs else ts > toTs)) return@forEachUnder false
             val row = blockRow(key, value)
             if (row != null && row.timestamp in fromTs..toTs) found += row
             found.size < limit
