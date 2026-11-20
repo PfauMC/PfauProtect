@@ -1277,8 +1277,10 @@ private fun Holder.selfOfBlock() = this is WorldBlock || this == Void
  * block row of that same change: the row says it already, and a second line of it read as a duplicate that
  * never got the row's rollback mark. Without the row (a world whose block log is not open) the posting stays.
  */
-internal fun withoutTwins(items: List<Line>, planes: List<Line>): List<Line> {
-    val changed = planes.filter { it.source is BlockRow }.flatMapTo(HashSet()) { line -> line.places.map { it to line.timestamp } }
+// Only a block row `rolledback:` leaves on screen stands in for the posting: the two planes are marked apart.
+internal fun withoutTwins(items: List<Line>, planes: List<Line>, rolledBack: Boolean?): List<Line> {
+    val changed = planes.filter { it.source is BlockRow && (rolledBack == null || it.undone == rolledBack) }
+        .flatMapTo(HashSet()) { line -> line.places.map { it to line.timestamp } }
     return items.filterNot { line ->
         val entry = line.source as? LedgerEntry ?: return@filterNot false
         entry.holder.selfOfBlock() && entry.counterparty.selfOfBlock() &&
@@ -1565,7 +1567,7 @@ class Lookups(
             place
         }
         val note = "This world's block log is not open.".takeIf { blocks.get(target.world) == null }
-        return Found(withoutTwins(items, changes) + changes, page.complete && planesComplete && !steps.ranOut, where, note)
+        return Found(withoutTwins(items, changes, query.rolledBack) + changes, page.complete && planesComplete && !steps.ranOut, where, note)
     }
 
     /**
@@ -1666,7 +1668,7 @@ class Lookups(
         val kept = filter((traded + dropped).distinctBy { it.ref }, query).sortedByDescending { it.timestamp }
         val items = if (query.count) kept else kept.take(depth)
         val planes = planeLines(world, rows, entities, keeps, undoes, entityUndoes)
-        val lines = withoutTwins(entryLines(wholeTransactions(ledger, items)), planes) + planes
+        val lines = withoutTwins(entryLines(wholeTransactions(ledger, items)), planes, query.rolledBack) + planes
         val complete = own.all { it.complete } && slots.all { it.complete } && thrown.all { it.complete } && undoesComplete
         return Found(lines, complete, Ui.text(""), horizon = maxOf(horizon, stoppedAt(items.map { it.timestamp }, items.size < kept.size)))
     }
