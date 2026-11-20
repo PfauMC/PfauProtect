@@ -276,6 +276,13 @@ class LookupReadTest : BothPlanes() {
         assertTrue(here.any { "{blk_wither}" in it && "rolled back" in it }, "$here")
         val theirs = said(window.copy(users = listOf("Alice"), radius = -1), players = mapOf("Alice" to alice))
         assertTrue(theirs.any { "{blk_wither}" in it && "rolled back" in it }, "$theirs")
+        // A page pinned to a moment sees no rollback from that moment on.
+        for (query in listOf(window, window.copy(users = listOf("Alice"), radius = -1))) {
+            val before = said(query.copy(asOf = T0 + 60_000), players = mapOf("Alice" to alice))
+            assertTrue(before.any { "{blk_wither}" in it && "rolled back" !in it }, "$before")
+            val after = said(query.copy(asOf = T0 + 60_001), players = mapOf("Alice" to alice))
+            assertTrue(after.any { "{blk_wither}" in it && "rolled back" in it }, "$after")
+        }
     }
 
     @Test

@@ -1589,7 +1589,7 @@ class Lookups(
     private fun byUsers(worlds: List<UUID>, query: LookupQuery, users: Set<UUID>): Found {
         val heading = Ui.text(tr("everything by ${query.users.joinToString(", ")}", "всё от ${query.users.joinToString(", ")}"))
         // One row past the page, which is how the answer knows there is a next one.
-        var depth = query.wanted + 1
+        var depth = minOf(query.wanted + 1, GLOBAL_WALK)
         while (true) {
             val found = worlds.mapNotNull { findEverywhere(it, query, users, depth) }
             val all = found.flatMap { it.lines }.distinctBy { line -> (line.source as? LedgerEntry)?.ref ?: line }
@@ -1639,8 +1639,9 @@ class Lookups(
             own.maxOfOrNull { read -> stoppedAt(read.blocks.map { it.timestamp } + read.entities.map { it.timestamp }, read.blocks.size + read.entities.size > depth || !read.complete) } ?: Long.MIN_VALUE,
             (slots + thrown).maxOfOrNull { page -> stoppedAt(page.entries.map { it.timestamp }, !page.complete) } ?: Long.MIN_VALUE,
         )
-        val rows = own.flatMap { it.blocks }.filter { it.timestamp > horizon }
-        val entities = own.flatMap { it.entities }.filter { it.timestamp > horizon }
+        // Uncut here: a count and an answer at the walk's end show every row read, and byUsers cuts the page.
+        val rows = own.flatMap { it.blocks }
+        val entities = own.flatMap { it.entities }
         // Each place once, from the oldest of their rows there, for every row read rather than the page's: a line
         // an earlier page had and a later read left out shifts every run after it, and the page cut with them.
         fun <T> placesOf(found: List<T>, at: (T) -> Triple<Int, Int, Int>, ts: (T) -> Long, of: (T) -> Boolean = { true }) =
@@ -1650,7 +1651,7 @@ class Lookups(
         // A pinned page reads no rollback past its moment, or the marks, and the pages with them, would move.
         val later = if (query.hasUntil) query.asOf?.minus(1) ?: Long.MAX_VALUE else toTs
         val undoes = undoesAt(log, placesOf(rows, { Triple(it.x, it.y, it.z) }, { it.timestamp }), later)
-        val entityUndoes = entityUndoesAt(log, placesOf(entities, { Triple(it.x, it.y, it.z) }, { it.timestamp }), later)
+        val (entityUndoes, undoesComplete) = entityUndoesAt(log, placesOf(entities, { Triple(it.x, it.y, it.z) }, { it.timestamp }), later)
         val traded = (slots.flatMap { it.entries } + thrown.flatMap { it.entries }).filter {
             // A drop or pickup from this version on says where it happened; the world decides, as for a block.
             val at = it.spot ?: it.counterparty.block
@@ -1666,7 +1667,7 @@ class Lookups(
         val items = if (query.count) kept else kept.take(depth)
         val planes = planeLines(world, rows, entities, keeps, undoes, entityUndoes)
         val lines = withoutTwins(entryLines(wholeTransactions(ledger, items)), planes) + planes
-        val complete = own.all { it.complete } && slots.all { it.complete } && thrown.all { it.complete }
+        val complete = own.all { it.complete } && slots.all { it.complete } && thrown.all { it.complete } && undoesComplete
         return Found(lines, complete, Ui.text(""), horizon = maxOf(horizon, stoppedAt(items.map { it.timestamp }, items.size < kept.size)))
     }
 
@@ -1677,8 +1678,11 @@ class Lookups(
         log.at(at.first, at.second, at.third, ts, toTs, limit = LATER_READ, reverse = true).filter { it.cause == Cause.ROLLBACK }
     }
 
-    private fun entityUndoesAt(log: BlockLog, places: Map<Triple<Int, Int, Int>, Long>, toTs: Long): List<EntityRow> = places.flatMap { (at, ts) ->
-        log.entitiesAt(at.first, at.second, at.third, ts, toTs, MAX_ENTITY_WALK).rows.filter { it.cause == Cause.ROLLBACK }
+    // The same for entities, and whether every place was read to its end: a mark missed behind the walk's cap is
+    // an answer that cannot say no rollback came.
+    private fun entityUndoesAt(log: BlockLog, places: Map<Triple<Int, Int, Int>, Long>, toTs: Long): Pair<List<EntityRow>, Boolean> {
+        val reads = places.map { (at, ts) -> log.entitiesAt(at.first, at.second, at.third, ts, toTs, MAX_ENTITY_WALK) }
+        return reads.flatMap { read -> read.rows.filter { it.cause == Cause.ROLLBACK } } to reads.all { it.complete }
     }
 
     /**
@@ -1911,9 +1915,9 @@ class Lookups(
         fun after(places: List<Triple<Int, Int, Int>>) = if (!query.hasUntil || toTs == Long.MAX_VALUE) emptyMap() else places.associateWith { toTs + 1 }
         val until = query.asOf?.minus(1) ?: Long.MAX_VALUE
         val later = undoesAt(log, after(rows.map { Triple(it.x, it.y, it.z) }), until)
-        val laterEntities = entityUndoesAt(log, after(entities.map { Triple(it.x, it.y, it.z) }), until)
+        val (laterEntities, laterComplete) = entityUndoesAt(log, after(entities.map { Triple(it.x, it.y, it.z) }), until)
         // Not cut to the page: runs fold only afterwards, and a cut before them shifts every later page.
-        return planeLines(target.world, rows, entities, keeps, later, laterEntities) to complete
+        return planeLines(target.world, rows, entities, keeps, later, laterEntities) to (complete && laterComplete)
     }
 
     // [laterRows] and [laterEntities] are rollback rows read only for the marks they leave.
