@@ -24,6 +24,7 @@ import io.papermc.paper.registry.data.dialog.DialogBase
 import io.papermc.paper.registry.data.dialog.action.DialogAction
 import io.papermc.paper.registry.data.dialog.body.DialogBody
 import io.papermc.paper.registry.data.dialog.type.DialogType
+import io.pfaumc.pfauprotect.storage.BlockLog
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.ChatKind
 import io.pfaumc.pfauprotect.storage.ChatLine
@@ -38,6 +39,7 @@ import io.pfaumc.pfauprotect.model.BLOCK_CAUSES
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.ENTITY_PLANE_CAUSES
 import io.pfaumc.pfauprotect.model.block
+import io.pfaumc.pfauprotect.rollback.quiet
 import io.pfaumc.pfauprotect.rollback.spot
 import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.Container
@@ -1150,7 +1152,7 @@ internal fun folded(lines: List<Line>, all: Boolean): List<Folded> {
 }
 
 /** What a lookup found, before it is drawn: its lines, whether the read saw them all, its heading, a word aside. */
-internal class Found(val lines: List<Line>, val complete: Boolean, val where: Component, val note: String? = null)
+internal class Found(val lines: List<Line>, val complete: Boolean, val where: Component, val note: String? = null, val horizon: Long = Long.MIN_VALUE)
 
 internal fun refuse(reason: String): Nothing = throw PfauProtectException(PfauProtectException.REFUSED, reason)
 
@@ -1159,9 +1161,12 @@ internal fun uuidOrNull(word: String): UUID? = if (word.length == 36) runCatchin
 /** The runs of a page and whether there is a next one, of the lines `rolledback:` keeps. */
 internal class Paged(val runs: List<Folded>, val more: Boolean)
 
+// The lines `rolledback:` keeps, newest first, as pages fold them.
+internal fun shownOf(found: List<Line>, query: LookupQuery): List<Line> =
+    (query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found).sortedByDescending { it.timestamp }
+
 internal fun paged(found: List<Line>, query: LookupQuery): Paged {
-    val shown = query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found
-    val matched = shown.sortedByDescending { it.timestamp }
+    val matched = shownOf(found, query)
     val runs = folded(matched, query.all)
     // The read stops before the filter runs, so a cut-short page must say so even when few rows matched.
     val more = runs.size > query.limit * query.page || matched.size > query.wanted
@@ -1262,6 +1267,23 @@ internal fun readChat(chat: ChatLog, query: LookupQuery, keeps: (ChatLine) -> Bo
         runs = chatRuns(read, query.all)
     }
     return ChatRead(runs, read.size == reading)
+}
+
+// An end a block's own item form moves between: the position it stands in, or nowhere.
+private fun Holder.selfOfBlock() = this is WorldBlock || this == Void
+
+/**
+ * [items] without the block's own item form written off, moved or exchanged where a line of [planes] has the
+ * block row of that same change: the row says it already, and a second line of it read as a duplicate that
+ * never got the row's rollback mark. Without the row (a world whose block log is not open) the posting stays.
+ */
+internal fun withoutTwins(items: List<Line>, planes: List<Line>): List<Line> {
+    val changed = planes.filter { it.source is BlockRow }.flatMapTo(HashSet()) { line -> line.places.map { it to line.timestamp } }
+    return items.filterNot { line ->
+        val entry = line.source as? LedgerEntry ?: return@filterNot false
+        entry.holder.selfOfBlock() && entry.counterparty.selfOfBlock() &&
+            listOf(entry.holder, entry.counterparty).any { it is WorldBlock && (it to entry.timestamp) in changed }
+    }
 }
 
 // Where a movement went to or came from, without the slot: forty stacks out of one chest are one act.
@@ -1518,7 +1540,8 @@ class Lookups(
         val users = idsOf(query.users)
         if (query.global) {
             if (users.isEmpty()) refuse("A world-wide lookup needs a player, user:<name>, or a radius.")
-            return findEverywhere(target.world, query, users) ?: refuse("This world's block log is not open.")
+            if (blocks.get(target.world) == null) refuse("This world's block log is not open.")
+            return byUsers(listOf(target.world), query, users)
         }
         val steps = Steps(BOX_STEPS)
         val page = read(target, query, steps)
@@ -1542,7 +1565,7 @@ class Lookups(
             place
         }
         val note = "This world's block log is not open.".takeIf { blocks.get(target.world) == null }
-        return Found(items + changes, page.complete && planesComplete && !steps.ranOut, where, note)
+        return Found(withoutTwins(items, changes) + changes, page.complete && planesComplete && !steps.ranOut, where, note)
     }
 
     /**
@@ -1553,58 +1576,82 @@ class Lookups(
         val users = idsOf(query.users)
         if (users.isEmpty()) refuse("A world-wide lookup needs a player, user:<name>, or a radius.")
         // A world closed between the list and its read is a world not read, which a whole answer cannot claim.
-        val worlds = blocks.worlds.toList()
-        val found = worlds.mapNotNull { findEverywhere(it, query, users) }
-        val lines = found.flatMap { it.lines }.distinctBy { line -> (line.source as? LedgerEntry)?.ref ?: line }
-        val complete = found.isNotEmpty() && found.size == worlds.size && found.all { it.complete }
-        return Found(lines, complete, Ui.text(tr("everything by ${query.users.joinToString(", ")}", "всё от ${query.users.joinToString(", ")}")))
+        return byUsers(blocks.worlds.toList(), query, users)
+    }
+
+    /**
+     * What the named players did in [worlds], read until the page is whole. Every source is read newest first
+     * and stops at its own depth, so below the newest row where one of them stopped, the others' lines stand
+     * without its own. A page shown from there gains lines on the next, deeper read, which pushes its runs past
+     * the next page's cut: whole minutes went missing between pages. So the lines end where the first source
+     * stopped, and the read goes deeper until they fill the page or the walk runs out, as [readChat] does.
+     */
+    private fun byUsers(worlds: List<UUID>, query: LookupQuery, users: Set<UUID>): Found {
+        val heading = Ui.text(tr("everything by ${query.users.joinToString(", ")}", "всё от ${query.users.joinToString(", ")}"))
+        // One row past the page, which is how the answer knows there is a next one.
+        var depth = query.wanted + 1
+        while (true) {
+            val found = worlds.mapNotNull { findEverywhere(it, query, users, depth) }
+            val all = found.flatMap { it.lines }.distinctBy { line -> (line.source as? LedgerEntry)?.ref ?: line }
+            val read = found.isNotEmpty() && found.size == worlds.size && found.all { it.complete }
+            val horizon = found.maxOfOrNull { it.horizon } ?: Long.MIN_VALUE
+            if (horizon == Long.MIN_VALUE) return Found(all, read, heading)
+            // Strictly newer: the rows of the very millisecond a read stopped in may be only partly read.
+            val lines = all.filter { it.timestamp > horizon }
+            if (!query.count && folded(shownOf(lines, query), query.all).size > query.limit * query.page) return Found(lines, read, heading)
+            // A count is of what the read saw; at the walk's end the lines are left uncut, and the answer says it is
+            // not whole.
+            if (query.count || depth >= GLOBAL_WALK) return Found(all, false, heading)
+            depth = minOf(depth * 4, GLOBAL_WALK)
+        }
     }
 
     /**
      * Everything the named players did in this world, newest first: their own block and entity rows by the
-     * index of rows that name them, the containers they traded with by their own slots, and only as many
-     * of either as the page needs. The rest of each place's history is read only to see what a rollback
-     * has since given back. Item rows with no position (eating, crafting, rows from before drops had a spot)
-     * have no world, so they show in the answer of each world.
+     * index of rows that name them, the containers they traded with by their own slots, [depth] rows of the
+     * former. The rest of each place's history is read only to see what a rollback has since given back. Item
+     * rows with no position (eating, crafting, rows from before drops had a spot) have no world, so they show
+     * in the answer of each world. [Found.horizon] is the newest row at which one of the reads stopped short.
      */
-    private fun findEverywhere(world: UUID, query: LookupQuery, users: Set<UUID>): Found? {
+    private fun findEverywhere(world: UUID, query: LookupQuery, users: Set<UUID>, depth: Int): Found? {
         val log = blocks.get(world) ?: return null
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val keeps = rowFilter(query)
-        // One row past the page, which is how the answer knows there is a next one.
-        val wanted = query.wanted + 1
-        val own = users.map { log.byActor(it, fromTs, toTs, wanted, GLOBAL_WALK, keeps::keeps, keeps::keeps) }
-        val rows = own.flatMap { it.blocks }
-        val entities = own.flatMap { it.entities }
-        // Each place once, from the oldest of their rows there, and only the places of the rows this page can
-        // show: the earlier pages' rows are read for the page to start where they stopped, and following each
-        // up is a seek per plane. Pages that folded long runs end deeper than this guess, and the rows that
-        // pushed past it go without their mark.
-        fun <T> placesOf(found: List<T>, at: (T) -> Triple<Int, Int, Int>, ts: (T) -> Long, of: (T) -> Boolean = { true }) =
-            found.sortedByDescending(ts).drop(query.limit * (query.page - 1)).take(query.limit * GROUPED_READ)
-                .filter(of).groupBy(at).mapValues { (_, here) -> here.minOf(ts) }
-        val places = placesOf(rows, { Triple(it.x, it.y, it.z) }, { it.timestamp })
-        val entityPlaces = placesOf(entities, { Triple(it.x, it.y, it.z) }, { it.timestamp })
-        // A rollback row names whoever ran it, so the index of the one rolled back never leads to it.
-        val undoes = places.flatMap { (at, ts) ->
-            log.at(at.first, at.second, at.third, ts, toTs, limit = LATER_READ, reverse = true).filter { it.cause == Cause.ROLLBACK }
-        }
-        val entityUndoes = entityPlaces.flatMap { (at, ts) ->
-            log.entitiesAt(at.first, at.second, at.third, ts, toTs, MAX_ENTITY_WALK).rows.filter { it.cause == Cause.ROLLBACK }
-        }
+        // One past the depth, which tells a read that stopped short from one that came to exactly that many rows.
+        val own = users.map { log.byActor(it, fromTs, toTs, depth + 1, GLOBAL_WALK, keeps::keeps, keeps::keeps) }
         // What they put in or took out names them on their own slots; what fell out of a container they broke
         // names them only as its actor, on the container, so the places of their rows are read too.
         // Drops, pickups and eating have no position at all, so they are kept when they left a player's own
         // slots, as CoreProtect shows them; a click between two of one player's own slots is not that.
         fun own(holder: Holder) = (holder as? PlayerHolder)?.uuid ?: (holder as? EntitySlot)?.uuid?.takeIf { it in users }
-        val slots = holderRows(users.flatMap { ownHolders(it) }, fromTs, toTs, query)
+        // The item reads go deeper with the block read, or a long folded run of item rows would hold the cut still.
+        val itemDepth = maxOf(query.fetch, depth)
+        val slots = users.flatMap { ownHolders(it) }.map { holderRows(listOf(it), fromTs, toTs, query, itemDepth) }
         // A throw straight out of somebody's container touches none of their slots and names them only as its actor.
         // This world's only, as the read goes: another world's throws would use the read up.
         val thrown = users.map { user ->
-            ledger.actorPage(user, fromTs, toTs, query.fetch, { (it.spot ?: it.holder.block)?.world == world && keeps.keeps(it) }, HOLDER_STEPS)
+            ledger.actorPage(user, fromTs, toTs, itemDepth, { (it.spot ?: it.holder.block)?.world == world && keeps.keeps(it) }, HOLDER_STEPS)
         }
-        val traded = (slots.entries + thrown.flatMap { it.entries }).filter {
+        // A read that stopped short having kept nothing says nothing of where it stopped; its `complete` tells that.
+        fun stoppedAt(times: List<Long>, short: Boolean) = if (short) times.minOrNull() ?: Long.MIN_VALUE else Long.MIN_VALUE
+        val horizon = maxOf(
+            own.maxOfOrNull { read -> stoppedAt(read.blocks.map { it.timestamp } + read.entities.map { it.timestamp }, read.blocks.size + read.entities.size > depth || !read.complete) } ?: Long.MIN_VALUE,
+            (slots + thrown).maxOfOrNull { page -> stoppedAt(page.entries.map { it.timestamp }, !page.complete) } ?: Long.MIN_VALUE,
+        )
+        val rows = own.flatMap { it.blocks }.filter { it.timestamp > horizon }
+        val entities = own.flatMap { it.entities }.filter { it.timestamp > horizon }
+        // Each place once, from the oldest of their rows there, for every row read rather than the page's: a line
+        // an earlier page had and a later read left out shifts every run after it, and the page cut with them.
+        fun <T> placesOf(found: List<T>, at: (T) -> Triple<Int, Int, Int>, ts: (T) -> Long, of: (T) -> Boolean = { true }) =
+            found.filter(of).groupBy(at).mapValues { (_, here) -> here.minOf(ts) }
+        // A rollback row names whoever ran it, so the index of the one rolled back never leads to it; and one run
+        // after the window's end has put the row back all the same.
+        // A pinned page reads no rollback past its moment, or the marks, and the pages with them, would move.
+        val later = if (query.hasUntil) query.asOf?.minus(1) ?: Long.MAX_VALUE else toTs
+        val undoes = undoesAt(log, placesOf(rows, { Triple(it.x, it.y, it.z) }, { it.timestamp }), later)
+        val entityUndoes = entityUndoesAt(log, placesOf(entities, { Triple(it.x, it.y, it.z) }, { it.timestamp }), later)
+        val traded = (slots.flatMap { it.entries } + thrown.flatMap { it.entries }).filter {
             // A drop or pickup from this version on says where it happened; the world decides, as for a block.
             val at = it.spot ?: it.counterparty.block
             if (at != null) at.world == world else own(it.counterparty).let { mine -> mine == null || mine != own(it.holder) }
@@ -1614,10 +1661,24 @@ class Lookups(
         val dropped = broken.flatMap { (at, ts) ->
             holdersAt(world, at.first, at.second, at.third).flatMap { ledger.holderPage(it, ts, toTs, reverse = true, limit = LATER_READ).entries }
         }
-        val lines = itemLines((traded + dropped).distinctBy { it.ref }, query) +
-            planeLines(world, (rows + undoes).distinct(), (entities + entityUndoes).distinct(), keeps)
-        val who = query.users.joinToString(", ")
-        return Found(lines, own.all { it.complete } && slots.complete && thrown.all { it.complete }, Ui.text(tr("everything by $who", "всё от $who")))
+        // The item rows are cut to the depth as well, and where that cut falls is one more place a read stopped.
+        val kept = filter((traded + dropped).distinctBy { it.ref }, query).sortedByDescending { it.timestamp }
+        val items = if (query.count) kept else kept.take(depth)
+        val planes = planeLines(world, rows, entities, keeps, undoes, entityUndoes)
+        val lines = withoutTwins(entryLines(wholeTransactions(ledger, items)), planes) + planes
+        val complete = own.all { it.complete } && slots.all { it.complete } && thrown.all { it.complete }
+        return Found(lines, complete, Ui.text(""), horizon = maxOf(horizon, stoppedAt(items.map { it.timestamp }, items.size < kept.size)))
+    }
+
+    // The rollback rows at each place from the moment given to [toTs]: they mark the rows there, and are not shown.
+    // ponytail: the newest LATER_READ rows of the place only; a rollback behind more changes than that leaves no
+    // mark, and a read for rollback rows alone would walk a clock's whole history.
+    private fun undoesAt(log: BlockLog, places: Map<Triple<Int, Int, Int>, Long>, toTs: Long): List<BlockRow> = places.flatMap { (at, ts) ->
+        log.at(at.first, at.second, at.third, ts, toTs, limit = LATER_READ, reverse = true).filter { it.cause == Cause.ROLLBACK }
+    }
+
+    private fun entityUndoesAt(log: BlockLog, places: Map<Triple<Int, Int, Int>, Long>, toTs: Long): List<EntityRow> = places.flatMap { (at, ts) ->
+        log.entitiesAt(at.first, at.second, at.third, ts, toTs, MAX_ENTITY_WALK).rows.filter { it.cause == Cause.ROLLBACK }
     }
 
     /**
@@ -1845,31 +1906,46 @@ class Lookups(
             entities = found.entities
             complete = found.complete
         }
+        // A window that ends in the past still has to say what a rollback after it put back: each place is
+        // read on from the window's end, for its rollback rows alone.
+        fun after(places: List<Triple<Int, Int, Int>>) = if (!query.hasUntil || toTs == Long.MAX_VALUE) emptyMap() else places.associateWith { toTs + 1 }
+        val until = query.asOf?.minus(1) ?: Long.MAX_VALUE
+        val later = undoesAt(log, after(rows.map { Triple(it.x, it.y, it.z) }), until)
+        val laterEntities = entityUndoesAt(log, after(entities.map { Triple(it.x, it.y, it.z) }), until)
         // Not cut to the page: runs fold only afterwards, and a cut before them shifts every later page.
-        return planeLines(target.world, rows, entities, keeps) to complete
+        return planeLines(target.world, rows, entities, keeps, later, laterEntities) to complete
     }
 
-    private fun planeLines(world: UUID, rows: List<BlockRow>, entities: List<EntityRow>, keeps: RowFilter): List<Line> =
-        marked(rows).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(world, row, back) } +
-            markedEntities(entities).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(world, row, back) }
+    // [laterRows] and [laterEntities] are rollback rows read only for the marks they leave.
+    private fun planeLines(
+        world: UUID,
+        rows: List<BlockRow>,
+        entities: List<EntityRow>,
+        keeps: RowFilter,
+        laterRows: List<BlockRow> = emptyList(),
+        laterEntities: List<EntityRow> = emptyList(),
+    ): List<Line> =
+        marked(rows, laterRows).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(world, row, back) } +
+            markedEntities(entities, laterEntities).filter { keeps.keeps(it.first) }.map { (row, back) -> lineOf(world, row, back) }
 
     /**
      * Each row with a mark when a rollback since put back what it took: a later rollback row at its position
-     * that returned the state it replaced. Read among the rows at hand, so a rollback outside the window is
-     * not seen; and before the filter, which under action: would have dropped the rollback rows.
+     * that returned the state it replaced, as a rollback puts it back (a leaf counts its distance anew, a
+     * signal is off). Read among the rows at hand and [later], and before the filter, which under action:
+     * would have dropped the rollback rows.
      */
-    private fun marked(rows: List<BlockRow>): List<Pair<BlockRow, Boolean>> {
-        val rollbacks = rows.filter { it.cause == Cause.ROLLBACK }.groupBy { it.spot }
+    private fun marked(rows: List<BlockRow>, later: List<BlockRow> = emptyList()): List<Pair<BlockRow, Boolean>> {
+        val rollbacks = (rows + later).filter { it.cause == Cause.ROLLBACK }.groupBy { it.spot }
         return rows.map { row ->
             val undone = row.cause != Cause.ROLLBACK && rollbacks[row.spot].orEmpty().any {
-                it.timestamp >= row.timestamp && it.stateAfter == row.stateBefore
+                it.timestamp >= row.timestamp && (it.stateAfter == row.stateBefore || stateOf(ledger, it.stateAfter) == quiet(stateOf(ledger, row.stateBefore)))
             }
             row to undone
         }
     }
 
-    private fun markedEntities(rows: List<EntityRow>): List<Pair<EntityRow, Boolean>> {
-        val rollbacks = rows.filter { it.cause == Cause.ROLLBACK }.groupBy { it.uuid }
+    private fun markedEntities(rows: List<EntityRow>, later: List<EntityRow> = emptyList()): List<Pair<EntityRow, Boolean>> {
+        val rollbacks = (rows + later).filter { it.cause == Cause.ROLLBACK }.groupBy { it.uuid }
         return rows.map { row ->
             val undone = row.cause != Cause.ROLLBACK && rollbacks[row.uuid].orEmpty().any { it.timestamp >= row.timestamp }
             row to undone
@@ -1893,9 +1969,9 @@ class Lookups(
         WorldBlock(world, x, y, z).takeIf { part != Part.CONTENTS },
     )
 
-    private fun holderRows(holders: List<Holder>, fromTs: Long, toTs: Long, query: LookupQuery): EntryPage {
+    private fun holderRows(holders: List<Holder>, fromTs: Long, toTs: Long, query: LookupQuery, limit: Int = query.fetch): EntryPage {
         val keeps = rowFilter(query)
-        val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = query.fetch, keep = keeps::keeps, steps = HOLDER_STEPS) }
+        val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = limit, keep = keeps::keeps, steps = HOLDER_STEPS) }
         return EntryPage(pages.flatMap { it.entries }, pages.all { it.complete })
     }
 

@@ -138,7 +138,12 @@ victim, so `p:` finds them, while `u:` still names only what the victim did.
   alone is its whole day). Moments are kept as epoch millis (`fromMillis`/`untilMillis`) so the page buttons
   keep the same window while `asOf` moves. `page:` pages through the answer, `at:x,y,z` pins the place (the page buttons add it). Runs of
   the same thing within a minute fold into one `×N` line; `#all` shows each. `action:steal`, `amount:`,
-  `rolledback:`, `#count`/`#sum` narrow it.
+  `rolledback:`, `#count`/`#sum` narrow it. Pages are cut by folded runs, so a page is only as good as the lines
+  above it: `user: r:global` (`byUsers`) ends its lines at the newest row where one of its reads stopped and reads
+  deeper until the page is full, and derives drops and rollback marks for every row it read, not the page's alone.
+  A row is `rolled back` when a later rollback row at its place put back its state as a rollback puts it (`quiet`),
+  also after the window's end when the window has one. A block's own item form written off or moved where its
+  block row of the same moment is on screen is not shown a second time (`withoutTwins`).
 - In the list parameters (`user:`, `player:`, `action:`, `include:`, `exclude:`) `,` is either and `&` is all of
   them in one row, binding tighter: `u:A&B,C`. `filter:` in `/pp chat` takes only `&`; a comma is text there. The groups stay strings in
   `LookupQuery` and `RowFilter` splits them (`allOf`). A block row names its two states and one actor; an entity

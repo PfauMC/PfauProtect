@@ -446,7 +446,9 @@ class BlockLog(
         if (closed || limit <= 0) return found
         forEachUnder(BlockCodec.positionPrefix(x, y, z), reverse) { key, value ->
             // The timestamp follows a position prefix directly, so the walk is already in time order
-            // and the window is nothing but the rows it drops.
+            // and the window is nothing but the rows it drops; once past its far end there is nothing more to keep.
+            val ts = if (key.size >= BlockCodec.KEY_SIZE) timeAt(key, Zcode.SIZE) else null
+            if (ts != null && (if (reverse) ts < fromTs else ts > toTs)) return@forEachUnder false
             val row = blockRow(key, value)
             if (row != null && row.timestamp in fromTs..toTs) found += row
             found.size < limit
