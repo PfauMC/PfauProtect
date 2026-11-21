@@ -152,13 +152,15 @@ internal enum class Param(vararg val keys: String) {
     ASOF("asof"),
     // Which part of a place the inspector asks about, `block` or `contents`; the page buttons keep it. Not offered to type.
     PART("part"),
+    // `view:chat`: the inspector's page buttons, whose next page stays in chat like the first. Not offered to type.
+    VIEW("view"),
     ;
 
     val canonical: String get() = keys.first()
 
     companion object {
         private val byKey = entries.flatMap { param -> param.keys.map { it to param } }.toMap()
-        val prefixes = entries.filter { it != ASOF && it != PART }.map { "${it.canonical}:" }
+        val prefixes = entries.filter { it != ASOF && it != PART && it != VIEW }.map { "${it.canonical}:" }
         val help = prefixes.joinToString(" ")
         fun of(key: String): Param? = byKey[key]
     }
@@ -442,6 +444,8 @@ data class LookupQuery(
     val asOf: Long? = null,
     // Of a single place: its block, its contents, or both. A radius or a player ignores it.
     val part: Part = Part.ALL,
+    // The inspector's: every page in chat, whatever the reader chose for their lookups; a window on every click would be in the way.
+    val inChat: Boolean = false,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
@@ -493,12 +497,12 @@ data class LookupQuery(
     fun pageCommand(subcommand: String, page: Int, vararg pinned: String): String {
         // A bare word is a player, even one named `page`.
         val kept = words.split(' ').filter { it.isNotBlank() && it.substringBefore(':', "").lowercase() !in PAGED_AWAY }
-        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }, part.word?.let { "part:$it" }) + "page:$page").joinToString(" ")
+        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }, part.word?.let { "part:$it" }, "view:chat".takeIf { inChat }) + "page:$page").joinToString(" ")
     }
 }
 
 private const val GROUPED_READ = 4
-private val PAGED_AWAY = setOf("page", "pg", "at", "asof", "part")
+private val PAGED_AWAY = setOf("page", "pg", "at", "asof", "part", "view")
 
 /** Where a lookup asked with `at:` reads, in the world it was asked from. */
 fun LookupQuery.targetOr(fallback: LookupTarget): LookupTarget {
@@ -582,6 +586,8 @@ private val BAD_EVENT = DynamicCommandExceptionType { said("'$it' is not an even
 private val UNKNOWN_FLAG = DynamicCommandExceptionType { said("unknown flag '$it', expected #count, #sum or #all") }
 private val BAD_POSITION = DynamicCommandExceptionType { said("'$it' is not a position, expected x,y,z") }
 private val BAD_MOMENT = DynamicCommandExceptionType { said("'$it' is not a moment; the page buttons fill it in") }
+private val BAD_VIEW = DynamicCommandExceptionType { said("'$it' is not a view, expected view:chat") }
+
 private val BAD_PART = DynamicCommandExceptionType { said("'$it' is not a part, expected part:block or part:contents") }
 private val STEAL_EXCLUDED = DynamicCommandExceptionType {
     said("'$it': a theft is worked out for each withdrawal, so exclude:steal is not taken; use exclude:withdraw instead")
@@ -691,6 +697,7 @@ fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.no
             Param.AT -> (positionOrNull(value) ?: fail(reader, BAD_POSITION, value)).let { query.copy(at = Triple(it.x, it.y, it.z), atWorld = it.world) }
             Param.ASOF -> query.copy(asOf = value.toLongOrNull()?.takeIf { it > 0 } ?: fail(reader, BAD_MOMENT, value))
             Param.PART -> query.copy(part = Part.entries.firstOrNull { it.word == value.lowercase() } ?: fail(reader, BAD_PART, value))
+            Param.VIEW -> query.copy(inChat = value.equals("chat", ignoreCase = true) || fail(reader, BAD_VIEW, value))
         }
         reader.cursor = tokenStart + token.length
     }
@@ -1071,7 +1078,7 @@ class LookupArgument(
         Param.PAGE -> listOf("2", "3")
         Param.ROLLEDBACK -> listOf("no", "yes")
         Param.AMOUNT -> listOf(">=8", ">=64", "<4")
-        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, Param.PART, null -> emptyList()
+        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, Param.PART, Param.VIEW, null -> emptyList()
     }
 }
 
@@ -1102,7 +1109,7 @@ private val EXCLUDABLE: List<String> by lazy {
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
-private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF, Param.PART)
+private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF, Param.PART, Param.VIEW)
 
 // The clicks of a window, which `verb` words "moved", and the container causes themselves: what a line between a
 // player's hands and a container may be drawn as put in or taken out.
@@ -1126,6 +1133,8 @@ internal class Line(
     val places: List<WorldBlock> = emptyList(),
     // The row it was drawn from, a LedgerEntry, BlockRow or EntityRow, for the API's rows.
     val source: Any? = null,
+    // Of a block row: the item rows of the same change, which its hover tells rather than lines of their own (`withTwins`).
+    val twins: MutableList<LedgerEntry> = ArrayList(),
     // `hide`: the reader may not see coordinates, so a hover that would carry them says the token.
     val draw: (amount: Int, rows: Int, hide: Boolean) -> Component,
 )
@@ -1270,21 +1279,48 @@ internal fun readChat(chat: ChatLog, query: LookupQuery, keeps: (ChatLine) -> Bo
 }
 
 // An end a block's own item form moves between: the position it stands in, or nowhere.
-private fun Holder.selfOfBlock() = this is WorldBlock || this == Void
+internal fun Holder.selfOfBlock() = this is WorldBlock || this == Void
+
+// How far apart the two planes may write one change: a break's drop comes in an event of its own, a placement's item
+// leaves the hand in the recompute pass after it.
+private const val TWIN_MILLIS = 2_000L
+
+// The position an item row is one half of a block change at: the block's own item form going or coming there, or the
+// item a placement took out of the hand.
+private fun anchorOf(entry: LedgerEntry): WorldBlock? {
+    val block = entry.holder as? WorldBlock ?: entry.counterparty as? WorldBlock ?: return null
+    val other = if (entry.holder == block) entry.counterparty else entry.holder
+    return block.takeIf { other.selfOfBlock() || entry.cause == Cause.BLOCK_PLACE }
+}
 
 /**
- * [items] without the block's own item form written off, moved or exchanged where a line of [planes] has the
- * block row of that same change: the row says it already, and a second line of it read as a duplicate that
- * never got the row's rollback mark. Without the row (a world whose block log is not open) the posting stays.
+ * [items] without the rows of a change a line of [planes] already shows: the block's own item form written off or
+ * put in, and what the same transaction dropped with no place of its own. A break was three lines, the stone gone,
+ * the cobblestone on the ground and the block row, and read as three things done; they go into the block line's
+ * hover ([Line.twins]) instead. Without the block row (a world whose block log is not open) the rows stay.
+ * A container's contents spilt by the break are a transaction of their own and stay lines: they are what is looked for.
  */
-// Only a block row `rolledback:` leaves on screen stands in for the posting: the two planes are marked apart.
-internal fun withoutTwins(items: List<Line>, planes: List<Line>, rolledBack: Boolean?): List<Line> {
-    val changed = planes.filter { it.source is BlockRow && (rolledBack == null || it.undone == rolledBack) }
-        .flatMapTo(HashSet()) { line -> line.places.map { it to line.timestamp } }
+// Only a block row `rolledback:` leaves on screen takes the rows: the two planes are marked apart.
+internal fun withTwins(items: List<Line>, planes: List<Line>, rolledBack: Boolean?): List<Line> {
+    val blocks = planes.filter { it.source is BlockRow && (rolledBack == null || it.undone == rolledBack) }.groupBy { it.places.first() }
+    // Per transaction, the block line of each position it changed. One transaction over a crater has many, and
+    // a drop with no place of its own cannot be told to one of them.
+    val homes = HashMap<Long, MutableMap<WorldBlock, Line>>()
+    for (line in items) {
+        val entry = line.source as? LedgerEntry ?: continue
+        val at = anchorOf(entry) ?: continue
+        val block = blocks[at]?.filter { abs(it.timestamp - entry.timestamp) <= TWIN_MILLIS }?.minByOrNull { abs(it.timestamp - entry.timestamp) } ?: continue
+        homes.getOrPut(entry.txId, ::HashMap).putIfAbsent(at, block)
+    }
+    val spread = items.mapNotNull { line -> (line.source as? LedgerEntry)?.let { it.txId to line.places } }
+        .groupBy({ it.first }, { it.second }).mapValues { (_, places) -> places.flatten().toSet().size }
     return items.filterNot { line ->
         val entry = line.source as? LedgerEntry ?: return@filterNot false
-        entry.holder.selfOfBlock() && entry.counterparty.selfOfBlock() &&
-            listOf(entry.holder, entry.counterparty).any { it is WorldBlock && (it to entry.timestamp) in changed }
+        val here = homes[entry.txId] ?: return@filterNot false
+        val block = anchorOf(entry)?.let(here::get)
+            ?: here.values.singleOrNull()?.takeIf { line.places.isEmpty() && spread.getValue(entry.txId) <= 1 } ?: return@filterNot false
+        block.twins += entry
+        true
     }
 }
 
@@ -1377,15 +1413,15 @@ internal fun pageRows(sender: CommandSender): Int =
 
 /**
  * The query as [sender] asked it, with what is read on their thread rather than off it, where the answer is
- * drawn, and with the moment it was asked. [dialog] false is the inspector's: chat, and the short default
+ * drawn, and with the moment it was asked. [LookupQuery.inChat] is the inspector's: chat, and the short default
  * page, as it answers every click.
  */
-internal fun LookupQuery.askedBy(sender: CommandSender, dialog: Boolean = true): LookupQuery = copy(
+internal fun LookupQuery.askedBy(sender: CommandSender): LookupQuery = copy(
     teleports = canTeleport(sender),
     hide = Places.hidden(sender),
     rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION),
-    dialog = dialog && readsInDialog(sender),
-    rows = rows ?: pageRows(sender).takeIf { dialog },
+    dialog = !inChat && readsInDialog(sender),
+    rows = rows ?: pageRows(sender).takeIf { !inChat },
     asOf = asOf ?: System.currentTimeMillis(),
 )
 
@@ -1410,6 +1446,7 @@ internal fun showPage(
     forward: String?,
     place: Component? = null,
     more: Boolean = forward != null,
+    legend: Boolean = false,
 ) {
     val paged = back != null || forward != null
     if (!query.dialog || sender !is Player) {
@@ -1417,6 +1454,7 @@ internal fun showPage(
         // the eye finds it first.
         val top = Component.text().append(Ui.hover(RULE, "PfauProtect")).append(Ui.text(" ")).append(title).append(Ui.text(" ")).append(RULE)
         if (place != null) top.append(Ui.text(" ")).append(place)
+        if (legend && sender is Player) top.append(Ui.text(" ")).append(Ui.hover(Ui.text("[?]", Ui.WHO), *legendLines(query.hide)))
         sender.sendMessage(top.build())
         lines.forEach(sender::sendMessage)
         notes.forEach(sender::sendMessage)
@@ -1454,6 +1492,23 @@ private fun undo(event: EventRef, dialog: Boolean, token: Boolean): Component? {
 
 private val RULE = Ui.text("-----", Ui.FAINT)
 
+// How to read a lookup line, for a player who was handed the inspector and nothing else: every part of it, in order.
+private fun legendLines(hide: Boolean): Array<String> = listOf(
+    tr("How to read a line:", "Как читать строку:"),
+    tr("5m: how long ago (hover: the date)", "5мин: сколько времени прошло (наведи: дата)"),
+    tr("Name: who did it", "Имя: кто это сделал"),
+    tr("  Name? worked out, not seen", "  Имя? вычислено, не видели напрямую"),
+    tr("  (Name) was only nearby", "  (Имя) был только рядом"),
+    tr("  Name* a creeper went off at them", "  Имя* на нём взорвался крипер"),
+    tr("+ added, - removed, ~ changed", "+ появилось, - убрано, ~ изменилось"),
+    tr("then what was done and to what (hover: more)", "дальше что сделано и с чем (наведи: подробнее)"),
+    tr("×5: that many times in a row", "×5: столько раз подряд"),
+    tr("A code like K7QM-2XFA-…: the place, click copies it", "Код вида K7QM-2XFA-…: место, клик копирует его").takeIf { hide },
+    tr("⌖: where it happened (click: teleport)", "⌖: где это было (клик: телепорт)"),
+    tr("Struck through: already rolled back", "Зачёркнуто: уже откачено"),
+    tr("↶: roll this one event back", "↶: откатить это событие"),
+).filterNotNull().toTypedArray()
+
 // The rule under a page, with the page in it, the arrows that go somewhere clickable, and the last page said to be
 // the last: no count of them is kept, as that would read every row. [more] is whether rows are left past this page,
 // which a page with no command for the next one can still have. The console is told the words to type.
@@ -1488,9 +1543,8 @@ class Lookups(
     // Only a uuid this server knows a player by, as a name has to be: a mistyped one must not read as "nothing recorded".
     private val idOf: (String) -> UUID? = { word -> uuidOrNull(word)?.takeIf { knownName(it) != null } ?: idOfName(word) }
 
-    /** [dialog] false keeps the answer in chat whatever the reader chose: the inspector's, which a window on every click would get in the way of. */
-    fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery, dialog: Boolean = true) {
-        val asked = query.askedBy(sender, dialog)
+    fun run(sender: CommandSender, target: LookupTarget, query: LookupQuery) {
+        val asked = query.askedBy(sender)
         val kind = when {
             query.players.isNotEmpty() -> "player"
             query.global -> "user"
@@ -1567,7 +1621,7 @@ class Lookups(
             place
         }
         val note = "This world's block log is not open.".takeIf { blocks.get(target.world) == null }
-        return Found(withoutTwins(items, changes, query.rolledBack) + changes, page.complete && planesComplete && !steps.ranOut, where, note)
+        return Found(withTwins(items, changes, query.rolledBack) + changes, page.complete && planesComplete && !steps.ranOut, where, note)
     }
 
     /**
@@ -1668,7 +1722,7 @@ class Lookups(
         val kept = filter((traded + dropped).distinctBy { it.ref }, query).sortedByDescending { it.timestamp }
         val items = if (query.count) kept else kept.take(depth)
         val planes = planeLines(world, rows, entities, keeps, undoes, entityUndoes)
-        val lines = withoutTwins(entryLines(wholeTransactions(ledger, items)), planes, query.rolledBack) + planes
+        val lines = withTwins(entryLines(wholeTransactions(ledger, items)), planes, query.rolledBack) + planes
         val complete = own.all { it.complete } && slots.all { it.complete } && thrown.all { it.complete } && undoesComplete
         return Found(lines, complete, Ui.text(""), horizon = maxOf(horizon, stoppedAt(items.map { it.timestamp }, items.size < kept.size)))
     }
@@ -1773,8 +1827,9 @@ class Lookups(
     private fun lineOf(world: UUID, row: BlockRow, back: Boolean): Line {
         val change = blockChange(row)
         val same = "b ${row.cause} ${row.actor} ${row.confidence} ${change.sign} ${change.from} ${change.to}"
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp, world), listOf(WorldBlock(world, row.x, row.y, row.z)), row) { _, rows, _ ->
-            draw(row, change, rows)
+        val twins = ArrayList<LedgerEntry>()
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp, world), listOf(WorldBlock(world, row.x, row.y, row.z)), row, twins) { _, rows, _ ->
+            draw(row, change, rows, twins)
         }
     }
 
@@ -1864,6 +1919,7 @@ class Lookups(
             forward = query.pageCommand(target, query.page + 1)?.takeIf { pages && more },
             place = place,
             more = more || !complete,
+            legend = true,
         )
     }
 
@@ -2073,15 +2129,21 @@ class Lookups(
             Ui.text("${playerName(actor)}*", Ui.WHO),
             tr("a creeper went off at them; they did not light it", "крипер взорвался на нём, сам не поджигал"),
         )
-        else -> Ui.text(playerName(actor), Ui.WHO)
+        else -> Ui.hover(Ui.text(playerName(actor), Ui.WHO), tr("who did it", "кто это сделал"))
     }
 
     // The cause's own name waits on the hover: what config.yml and action: filters are written in. [worded] is
     // the cause whose words the line shows, when they say it better than the cause's own.
     private fun act(sign: String, cause: Cause, vararg more: String, worded: Cause = cause): Component = Ui.hover(
         Component.text().append(sign(sign)).append(Component.text(" ")).append(verb(worded)).build(),
-        cause.name.lowercase(), *more,
+        signWords(sign), cause.name.lowercase(), *more,
     )
+
+    private fun signWords(sign: String) = when (sign) {
+        "+" -> tr("+ added", "+ появилось, добавлено")
+        "-" -> tr("- removed", "- убрано, взято")
+        else -> tr("~ changed", "~ изменено")
+    }
 
     private fun draw(entry: LedgerEntry, who: UUID?, amount: Int, hide: Boolean): Component {
         val gained = entry.qty > 0
@@ -2118,14 +2180,14 @@ class Lookups(
         }
     }
 
-    private fun draw(row: BlockRow, change: BlockChange, rows: Int): Component {
+    private fun draw(row: BlockRow, change: BlockChange, rows: Int, twins: List<LedgerEntry>): Component {
         val thing = Component.text().color(Ui.THING).append(Ui.block(change.from))
         if (change.to != null) thing.append(Ui.text(" → ", Ui.FAINT)).append(Ui.block(change.to))
         thing.append(times(rows))
         // The whole state is what makes a row restorable and is noise in a list, so it waits for a hover,
         // with which half of a door or a bed it was: two rows of one are otherwise the same row twice.
         val details = listOfNotNull(
-            "${stateOf(ledger, row.stateBefore)} → ${stateOf(ledger, row.stateAfter)}",
+            tr("block, before → after: ", "блок, было → стало: ") + "${stateOf(ledger, row.stateBefore)} → ${stateOf(ledger, row.stateAfter)}",
             tr("the other half", "вторая половина").takeIf { row.alongside },
             tr("with contents", "с содержимым").takeIf { (row.payloadBefore != null || row.payloadAfter != null) && signOf(row) == null },
         )
@@ -2134,10 +2196,27 @@ class Lookups(
             pressed != null -> Component.text().color(Ui.MUTED).append(Ui.text("← ")).append(Ui.any(pressed.first)).build()
             else -> signOf(row)?.let { Ui.text(it, Ui.MUTED) }
         }
+        val hover = Component.text().append(Ui.text(details.joinToString("\n")))
+        // A folded line stands for many changes and would show one of them as if it were all, so, like the contents, its items wait for #all.
+        if (rows == 1) twinLines(twins).forEach { hover.append(Component.newline()).append(it) }
         return row(
             Ui.ago(row.timestamp), who(row.actor, row.confidence, pressed?.second), act(change.sign, row.cause),
-            opens(Ui.hover(thing.build(), *details.toTypedArray()), row.payloadBefore, row.payloadAfter, change.sign == "-", rows), extra,
+            opens(thing.build().hoverEvent(HoverEvent.showText(hover.build())), row.payloadBefore, row.payloadAfter, change.sign == "-", rows), extra,
         )
+    }
+
+    // What came out of or went into the block with the change, a line each in its hover: the cobblestone of a stone.
+    // The block's own item form going or coming is the change itself. Both halves of a movement can be on screen, so
+    // a transaction counts the larger of what it gave and what it took.
+    private fun twinLines(twins: List<LedgerEntry>): List<Component> {
+        val told = twins.filterNot { it.holder.selfOfBlock() && it.counterparty.selfOfBlock() }.distinctBy { it.ref }
+        if (told.isEmpty()) return emptyList()
+        val amounts = told.groupBy { Triple(it.txId, it.cause, it.itemFormId) }
+            .mapValues { (_, rows) -> maxOf(rows.filter { it.qty > 0 }.sumOf { it.qty }, rows.filter { it.qty < 0 }.sumOf { -it.qty }) }
+            .entries.groupBy({ it.key.second to it.key.third }, { it.value }).mapValues { it.value.sum() }
+        return listOf(Ui.text(tr("items:", "предметы:"), Ui.MUTED)) + amounts.map { (key, amount) ->
+            Component.text().append(Ui.text("  ")).append(verb(key.first).color(Ui.MUTED)).append(Ui.text(" ")).append(item(key.second, amount)).build()
+        }
     }
 
     /**

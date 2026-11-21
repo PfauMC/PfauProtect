@@ -7,7 +7,9 @@ import org.bukkit.event.Listener
 import org.bukkit.event.block.Action
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.player.PlayerInteractEntityEvent
-import org.bukkit.event.hanging.HangingBreakByEntityEvent
+import io.papermc.paper.event.entity.EntityBreakByEntityEvent
+import org.bukkit.event.vehicle.VehicleDamageEvent
+import org.bukkit.entity.LivingEntity
 import org.bukkit.event.entity.EntityDamageByEntityEvent
 import io.pfaumc.pfauprotect.TARGET_RANGE
 import org.bukkit.FluidCollisionMode
@@ -17,7 +19,6 @@ import org.bukkit.block.Container
 import org.bukkit.block.Sign
 import org.bukkit.entity.ArmorStand
 import org.bukkit.entity.Entity
-import org.bukkit.entity.Hanging
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.inventory.EquipmentSlot
 import java.util.UUID
@@ -68,7 +69,7 @@ class Inspector(private val lookups: Lookups) : Listener {
         val target = if (choice.inFront) block.getRelative(hit.hitBlockFace ?: return) else block
         event.isCancelled = true
         if (again(player, target.location to choice.part)) return
-        lookups.run(player, lookupTargetAt(target), LookupQuery(part = choice.part), dialog = false)
+        lookups.run(player, lookupTargetAt(target), LookupQuery(part = choice.part, inChat = true))
     }
 
     // A spectator sees through the block the camera is in, so the ray starts where it leaves that one block;
@@ -100,24 +101,34 @@ class Inspector(private val lookups: Lookups) : Listener {
         inspect(event.player, event.rightClicked)
     }
 
-    // A frame or a stand hit while inspecting is asked about rather than broken.
+    // A frame, a stand or an end crystal hit while inspecting is asked about rather than broken, or set off.
     @EventHandler(priority = EventPriority.LOWEST)
     fun onHit(event: EntityDamageByEntityEvent) {
         val player = event.damager as? Player ?: return
         if (player.uniqueId !in enabled) return
         // A mob or a player is fought as usual: an inspector who could not hit back would be defenceless.
-        if (event.entity !is Hanging && event.entity !is ArmorStand) return
+        if (!spared(event.entity)) return
         event.isCancelled = true
         inspect(player, event.entity)
     }
 
+    // Whatever is fixed to a block (a frame, a painting, a leash knot, a cushion) breaks on the hit without being
+    // damaged first, an empty frame among them, and a cushion is no Hanging to the API.
     @EventHandler(priority = EventPriority.LOWEST)
-    fun onHangingHit(event: HangingBreakByEntityEvent) {
+    fun onBreak(event: EntityBreakByEntityEvent) {
         val player = event.remover as? Player ?: return
         if (player.uniqueId !in enabled) return
         event.isCancelled = true
-        // An empty frame breaks on the hit without being damaged first.
         inspect(player, event.entity)
+    }
+
+    // A minecart or a boat takes its hits through an event of its own.
+    @EventHandler(priority = EventPriority.LOWEST)
+    fun onVehicleHit(event: VehicleDamageEvent) {
+        val player = event.attacker as? Player ?: return
+        if (player.uniqueId !in enabled) return
+        event.isCancelled = true
+        inspect(player, event.vehicle)
     }
 
     private fun inspect(player: Player, entity: Entity) {
@@ -134,6 +145,9 @@ class Inspector(private val lookups: Lookups) : Listener {
 }
 
 private const val REPEAT_MILLIS = 1_000L
+
+/** Whether an inspector's hit on [entity] is a question rather than a blow: anything but a living mob or player. */
+internal fun spared(entity: Entity): Boolean = entity !is LivingEntity || entity is ArmorStand
 
 private const val STEP = 0.05
 

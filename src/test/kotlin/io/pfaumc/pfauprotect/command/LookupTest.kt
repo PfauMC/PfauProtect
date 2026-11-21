@@ -467,6 +467,17 @@ class LookupTest {
         assertTrue(command.contains("part:contents") && command.split(" ").count { it.startsWith("part:") } == 1, command)
     }
 
+    // The inspector answers in chat; its next page came through /pp lookup and opened a window for a reader of them.
+    @Test
+    fun `the inspector's page button keeps its pages in chat`() {
+        val inspector = LookupQuery(inChat = true)
+        val command = inspector.pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2)!!
+        val next = parseLookupQuery(command.removePrefix("/pp l "))
+        assertTrue(next.inChat, command)
+        assertEquals(1, next.copy(words = command.removePrefix("/pp l ")).pageCommand("l", 3).split(" ").count { it.startsWith("view:") })
+        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("view:dialog") }
+    }
+
     // A place token names its own world, which replaces the one the command runs in.
     private fun withTokens(block: (UUID) -> Unit) {
         val world = UUID(0, 5)
