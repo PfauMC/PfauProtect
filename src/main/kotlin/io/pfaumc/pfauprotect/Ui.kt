@@ -34,19 +34,42 @@ object Ui {
     fun hover(component: Component, vararg lines: String): Component =
         component.hoverEvent(HoverEvent.showText(Component.text(lines.joinToString("\n"))))
 
-    /** How long ago, in its one largest unit; the date and time to the second when hovered. */
-    fun ago(at: Long): Component =
-        hover(text(agoText(System.currentTimeMillis() - at), MUTED), DATE.format(Instant.ofEpochMilli(at)))
+    /** How long ago, in its one largest unit; said in words with the date and time to the second when hovered. */
+    fun ago(at: Long): Component {
+        val (n, unit) = agoOf(System.currentTimeMillis() - at)
+        return hover(text("$n${tr(unit.en, unit.short)}", MUTED), tr("$n ${unit.en(n)} ago", "${unit.ru(n)} назад"), DATE.format(Instant.ofEpochMilli(at)))
+    }
 
-    private val AGO_UNITS = listOf("y" to "г", "mo" to "мес", "d" to "д", "h" to "ч", "m" to "м")
+    // `м` alone reads as metres as easily as minutes, so the Russian minute is `мин`; the English keeps what `time:` takes.
+    private enum class AgoUnit(val en: String, val short: String, private val word: String, private val ruForms: Triple<String, String, String>) {
+        Y("y", "г", "year", Triple("год", "года", "лет")),
+        MO("mo", "мес", "month", Triple("месяц", "месяца", "месяцев")),
+        D("d", "д", "day", Triple("день", "дня", "дней")),
+        H("h", "ч", "hour", Triple("час", "часа", "часов")),
+        M("m", "мин", "minute", Triple("минуту", "минуты", "минут")),
+        S("s", "с", "second", Triple("секунду", "секунды", "секунд"));
 
-    private fun agoText(millis: Long): String {
-        val s = maxOf(0, millis / 1000)
-        for ((en, ru) in AGO_UNITS) {
-            val unit = SECONDS_PER_UNIT.getValue(en)
-            if (s >= unit) return "${s / unit}${tr(en, ru)}"
+        fun en(n: Long) = if (n == 1L) word else "${word}s"
+
+        fun ru(n: Long): String {
+            val form = when {
+                n % 100 in 11..14 -> ruForms.third
+                n % 10 == 1L -> ruForms.first
+                n % 10 in 2..4 -> ruForms.second
+                else -> ruForms.third
+            }
+            return "$n $form"
         }
-        return "$s${tr("s", "с")}"
+    }
+
+    private fun agoOf(millis: Long): Pair<Long, AgoUnit> {
+        val s = maxOf(0, millis / 1000)
+        for (unit in AgoUnit.entries) {
+            if (unit == AgoUnit.S) break
+            val seconds = SECONDS_PER_UNIT.getValue(unit.en)
+            if (s >= seconds) return s / seconds to unit
+        }
+        return s to AgoUnit.S
     }
 
     /**
@@ -69,18 +92,32 @@ object Ui {
         if (hide && where == UNKNOWN_PLACE) return text(where, FAINT)
         // The click is what lands in the chat log, so with the setting on it carries a token even where the text shows numbers.
         val go = if (hide || !Settings.hideCoordinates) where else world?.let { Places.text(it, x, y, z) } ?: UNKNOWN_PLACE
-        if (!clickable || go == UNKNOWN_PLACE) return text(if (hide) where else "$x $y $z", FAINT)
-        return teleport(text("⌖", MUTED), go, where)
+        if (!clickable || go == UNKNOWN_PLACE) return copyable(text(if (hide) where else "$x $y $z", FAINT), where, hide)
+        // A line has no room for the code beside ⌖: shift and click puts it into the chat box instead.
+        val mark = teleport(text("⌖", MUTED), go, where, *if (hide) arrayOf(tr("Shift+click: paste the code into chat", "Shift+клик — вставить код в чат")) else emptyArray())
+        return if (hide) mark.insertion(where) else mark
     }
 
     /** The place a whole page is about, in its heading: written out, set apart by colour, and the way there. */
     fun coordinates(world: UUID, x: Int, y: Int, z: Int, clickable: Boolean, hide: Boolean): Component {
         val where = if (hide) Places.text(world, x, y, z) else "$x $y $z ${worldName(world)}"
         if (hide && where == UNKNOWN_PLACE) return text(where, FAINT)
-        val shown = text("($where)", WHERE)
         val go = Places.forCommand(world, x, y, z, hide) ?: where
-        return if (clickable && go != UNKNOWN_PLACE) teleport(shown, go) else shown
+        val canGo = clickable && go != UNKNOWN_PLACE
+        // A code is clicked to be copied, so the way there is a mark of its own; numbers stay the way there.
+        if (!hide && canGo) return teleport(text("($where)", WHERE), go)
+        val shown = Component.text().append(text("(", WHERE)).append(copyable(text(where, WHERE), where, hide)).append(text(")", WHERE))
+        if (canGo) shown.append(text(" ")).append(teleport(text("⌖", MUTED), go))
+        return shown.build()
     }
+
+    // The place as text a click copies: a code to hand to a moderator or type into `at:`, which nobody can read
+    // off a chat screen by eye without a mistake, or the coordinates.
+    private fun copyable(label: Component, value: String, hide: Boolean): Component = hover(
+        label,
+        *if (hide) arrayOf(tr("Place code: the coordinates are hidden", "Код места: координаты скрыты")) else emptyArray(),
+        tr("Click to copy", "Клик — скопировать"),
+    ).clickEvent(ClickEvent.copyToClipboard(value))
 
     // [go] is what /pp tp takes after the verb: a token, or "x y z world".
     private fun teleport(label: Component, go: String, vararg hint: String): Component =

@@ -79,8 +79,13 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 [chat|dialog]` and `help` (also the bare `/pp`). Permissions are declared in `build.gradle.kts` `bukkit {}`.
 A page of `lookup`, `near` or `chat` goes through `showPage` (`Lookup.kt`): a Paper dialog with the arrows as
 buttons for a player who reads in one (`lookup.dialog` in `config.yml`, overridden per player by `/pp view` and
-kept in their PDC), chat lines otherwise. The console, the inspector and the short answers stay in chat.
+kept in their PDC), chat lines otherwise. The console, the inspector and the short answers stay in chat; the
+inspector's page buttons carry `view:chat` (`LookupQuery.inChat`, hidden like `asof:`) so its next pages do too.
 The inspector aims with its own ray (a spectator inside terrain starts it past that block) and asks `part:block` or `part:contents` of a container (`Part`, hidden like `asof:`; the page buttons keep it).
+A hit while inspecting is a question about anything but a living mob or player (`spared`): frames, paintings,
+cushions (`EntityBreakByEntityEvent`), stands, end crystals, minecarts and boats (`VehicleDamageEvent`).
+A chat page has `[?]` in its heading, whose hover says how to read a line. A place code is copied on click; ⌖ beside
+it teleports (`Ui.coordinates`, `Ui.place`).
 
 **Place tokens.** With `hide-coordinates: true` in `config.yml`, a player without `pfauprotect.coordinates` never
 sees x/y/z: lookup lines, hovers, rollback headings, confiscation and verify lines and the commands they carry say a
@@ -142,8 +147,11 @@ victim, so `p:` finds them, while `u:` still names only what the victim did.
   above it: `user: r:global` (`byUsers`) ends its lines at the newest row where one of its reads stopped and reads
   deeper until the page is full, and derives drops and rollback marks for every row it read, not the page's alone.
   A row is `rolled back` when a later rollback row at its place put back its state as a rollback puts it (`quiet`),
-  also after the window's end when the window has one. A block's own item form written off or moved where its
-  block row of the same moment is on screen is not shown a second time (`withoutTwins`).
+  also after the window's end when the window has one. The item rows of a change whose block row is on screen
+  (the block's own item form written off or put in within `TWIN_MILLIS`, and what the same transaction dropped
+  with no place of its own when it touched only that place) are no lines of their own: the block line's hover lists
+  them (`withTwins`, `Line.twins`; a folded run adds up those of all its lines). `#count` and the API's rows still
+  count them as rows of their own. A container's spilt contents stay lines.
 - In the list parameters (`user:`, `player:`, `action:`, `include:`, `exclude:`) `,` is either and `&` is all of
   them in one row, binding tighter: `u:A&B,C`. `filter:` in `/pp chat` takes only `&`; a comma is text there. The groups stay strings in
   `LookupQuery` and `RowFilter` splits them (`allOf`). A block row names its two states and one actor; an entity

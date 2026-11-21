@@ -424,7 +424,7 @@ class LookupTest {
     fun `runs fold gap by gap and keep undone rows apart`() {
         fun line(secondsAgo: Long, amount: Int, undone: Boolean = false) = Line(
             1_000_000L - secondsAgo * 1000, Cause.BLK_PLAYER_BREAK, null, "break stone", amount, undone, null,
-        ) { _, _, _ -> Component.empty() }
+        ) { _, _, _, _ -> Component.empty() }
         val lines = listOf(line(0, 64), line(30, 32), line(70, 1), line(131, 5), line(161, 7, undone = true), line(191, 2), line(221, 3))
         assertEquals(listOf(3, 1, 1, 2), folded(lines, all = false).map { it.rows })
         assertEquals(listOf(97, 5, 7, 5), folded(lines, all = false).map { it.amount })
@@ -465,6 +465,17 @@ class LookupTest {
         assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("part:x") }
         val command = query.copy(words = "part:contents page:1").pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2)!!
         assertTrue(command.contains("part:contents") && command.split(" ").count { it.startsWith("part:") } == 1, command)
+    }
+
+    // The inspector answers in chat; its next page came through /pp lookup and opened a window for a reader of them.
+    @Test
+    fun `the inspector's page button keeps its pages in chat`() {
+        val inspector = LookupQuery(inChat = true)
+        val command = inspector.pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2)!!
+        val next = parseLookupQuery(command.removePrefix("/pp l "))
+        assertTrue(next.inChat, command)
+        assertEquals(1, next.copy(words = command.removePrefix("/pp l ")).pageCommand("l", 3).split(" ").count { it.startsWith("view:") })
+        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("view:dialog") }
     }
 
     // A place token names its own world, which replaces the one the command runs in.
