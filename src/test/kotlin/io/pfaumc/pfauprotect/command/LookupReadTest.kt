@@ -100,9 +100,9 @@ class LookupReadTest : BothPlanes() {
 
         val first = said(LookupQuery(rows = 1))
         assertTrue(first.any { it.contains("block.minecraft.tnt") }, "$first")
-        assertTrue(first.none { it.contains("{blk_player_place}") }, "$first")
+        assertTrue(first.none { it.contains("\nblk_player_place}") }, "$first")
         val second = said(LookupQuery(rows = 1, page = 2))
-        assertTrue(second.any { it.contains("{blk_player_place}") }, "$second")
+        assertTrue(second.any { it.contains("\nblk_player_place}") }, "$second")
         assertTrue(second.none { it.contains("block.minecraft.tnt") }, "$second")
     }
 
@@ -139,7 +139,7 @@ class LookupReadTest : BothPlanes() {
         log.drain()
 
         val lines = said(LookupQuery(rows = 1, causes = setOf(Cause.BLK_PLAYER_PLACE)))
-        assertTrue(lines.any { it.contains("{blk_player_place}") } && lines.last().contains("page 1, the last"), "$lines")
+        assertTrue(lines.any { it.contains("\nblk_player_place}") } && lines.last().contains("page 1, the last"), "$lines")
     }
 
     // A clock or a griefer at work writes rows while the pages are read; « has to bring back the page that was left.
@@ -167,11 +167,12 @@ class LookupReadTest : BothPlanes() {
         log.drain()
 
         val contents = said(LookupQuery(part = Part.CONTENTS))
-        assertTrue(contents.any { it.contains("{container_add}") }, "$contents")
-        assertTrue(contents.none { it.contains("{blk_player_place}") || it.contains("{block_place}") }, "$contents")
+        assertTrue(contents.any { it.contains("\ncontainer_add}") }, "$contents")
+        assertTrue(contents.none { it.contains("\nblk_player_place}") || it.contains("\nblock_place}") }, "$contents")
         val block = said(LookupQuery(part = Part.BLOCK))
-        assertTrue(block.none { it.contains("{container_add}") }, "$block")
-        assertTrue(block.any { it.contains("{blk_player_place}") } && block.any { it.contains("{block_place}") }, "$block")
+        assertTrue(block.none { it.contains("\ncontainer_add}") }, "$block")
+        // The item that left the hand is the block line's own, told in its hover.
+        assertTrue(block.any { it.contains("\nblk_player_place}") && it.contains("items:") }, "$block")
     }
 
     @Test
@@ -187,12 +188,97 @@ class LookupReadTest : BothPlanes() {
         val lines = said()
 
         assertTrue(lines.any { it.contains("- block.minecraft.tnt") && it.contains("minecraft:stone → minecraft:air") }, "$lines")
-        assertTrue(lines.any { it.contains("{blk_player_place}") && it.contains("minecraft:air → minecraft:stone") }, "$lines")
-        assertTrue(lines.any { it.contains("{block_place}") }, "the item plane is still there: $lines")
-        // The stone written off where it stood is the block row's own change, and is not shown twice.
-        val causes = listOf("{blk_tnt}", "{block_place}", "{blk_player_place}")
-        val read = lines.mapNotNull { line -> causes.firstOrNull { it in line } }.map { if (it == "{blk_tnt}") "tnt" else "place" }
-        assertEquals(listOf("tnt", "place", "place"), read, "$lines")
+        assertTrue(lines.any { it.contains("\nblk_player_place}") && it.contains("minecraft:air → minecraft:stone") }, "$lines")
+        // The stone written off where it stood and the one out of the hand are the block rows' own changes, and are
+        // not shown twice.
+        val causes = listOf("\nblk_tnt}", "\nblock_place}", "\nblk_player_place}")
+        val read = lines.mapNotNull { line -> causes.firstOrNull { it in line } }.map { if (it == "\nblk_tnt}") "tnt" else "place" }
+        assertEquals(listOf("tnt", "place"), read, "$lines")
+    }
+
+    // A break was three lines: the stone gone, the cobblestone on the ground and the block row, read as three things
+    // done. The drop is written in an event of its own, a few milliseconds after the block row.
+    @Test
+    fun `a break reads as one line with what fell out in its hover`() {
+        val at = WorldBlock(world, 10, 64, -3)
+        val cobblestone = byteArrayOf(4)
+        val diamond = byteArrayOf(5)
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        shared.submit(listOf(
+            Transfer(Cause.BLOCK_DROP, at, Void, stone, null, 1, T0 + 30, actor = alice),
+            Transfer(Cause.BLOCK_DROP, Void, ItemEntityRef(UUID.randomUUID()), cobblestone, null, 1, T0 + 30, actor = alice),
+        ))
+        // What a container held spills in a transaction of its own and is what gets looked for: it stays a line.
+        shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, Container(world, 10, 64, -3, 0), ItemEntityRef(UUID.randomUUID()), diamond, null, 3, T0 + 30, actor = alice))
+        shared.drain()
+        log.drain()
+
+        val lines = said().filter { "\n" in it }
+        val broken = lines.single { it.contains("\nblk_player_break}") }
+        assertTrue(broken.contains("items:") && broken.contains("fell out of a block"), broken)
+        assertTrue(lines.none { it.contains("\nblock_drop}") }, "$lines")
+        assertTrue(lines.any { it.contains("\ncontainer_break_drop}") && !it.contains("blk_player_break") }, "$lines")
+        // A count and the API read rows, not hovers: the drop is still one of them.
+        assertTrue(said(LookupQuery(count = true)).any { it.contains("{block_drop}") })
+        val lookups = Lookups(stub(Plugin::class.java), shared, logs, codec, { null }) { null }
+        val target = LookupTarget(world, 10, 64, -3, "stone at 10 64 -3")
+        val rows = lookups.pageOf(lookups.find(target, LookupQuery()), LookupQuery())
+        assertTrue(rows.rows.any { it.cause == "block_drop" && it.amount == 1 }, "${rows.rows}")
+    }
+
+    // The planes are marked apart: a break put back whose cobblestone nobody gave back is not one change any more,
+    // and the drop under a struck-through line would read as given back too.
+    @Test
+    fun `a drop a rollback did not give back stays a line beside the block it put back`() {
+        val at = WorldBlock(world, 10, 64, -3)
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        shared.submit(listOf(
+            Transfer(Cause.BLOCK_DROP, at, Void, stone, null, 1, T0 + 30, actor = alice),
+            Transfer(Cause.BLOCK_DROP, Void, ItemEntityRef(UUID.randomUUID()), byteArrayOf(4), null, 1, T0 + 30, actor = alice),
+        ))
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.ROLLBACK, T0 + 5000)))
+        shared.drain()
+        log.drain()
+
+        val lines = said().filter { "\n" in it }
+        assertTrue(lines.single { it.contains("\nblk_player_break}") }.let { "rolled back" in it && "items:" !in it }, "$lines")
+        assertTrue(lines.any { it.contains("on the ground") && "rolled back" !in it }, "$lines")
+        assertTrue(lines.none { it.contains("on the ground") && it.contains("block.minecraft.stone") }, "the block's own form stays folded: $lines")
+    }
+
+    // A placement's item leaves the hand in the recompute pass after its row, so a break right after it is nearer in
+    // time; the item belongs to the row that put the block there.
+    @Test
+    fun `a placement's item goes with the placement, not with the break after it`() {
+        val at = WorldBlock(world, 10, 64, -3)
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 500, actor = alice)))
+        shared.submit(moved(at, Void, stone, Cause.BLOCK_DROP, Attributed(alice, Confidence.FACT), T0 + 520))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 1), at, stone, null, 1, T0 + 600, actor = alice))
+        shared.drain()
+        log.drain()
+
+        val lines = said(LookupQuery(all = true)).filter { "\n" in it }
+        assertEquals(2, lines.size, "$lines")
+        assertTrue(lines.single { it.contains("\nblk_player_place}") }.contains("items:"), "$lines")
+        assertFalse(lines.single { it.contains("\nblk_player_break}") }.contains("items:"), "$lines")
+    }
+
+    // One transaction over a crater changes many places: a drop with no place of its own cannot be told to one of them.
+    @Test
+    fun `a drop of a transaction over many places stays a line`() {
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_TNT, T0), BlockChange(11, 64, -3, STONE, AIR, Cause.BLK_TNT, T0)))
+        shared.submit(listOf(
+            Transfer(Cause.BLK_TNT, WorldBlock(world, 10, 64, -3), Void, stone, null, 1, T0),
+            Transfer(Cause.BLK_TNT, WorldBlock(world, 11, 64, -3), Void, stone, null, 1, T0),
+            Transfer(Cause.BLK_TNT, Void, ItemEntityRef(UUID.randomUUID()), byteArrayOf(4), null, 1, T0),
+        ))
+        shared.drain()
+        log.drain()
+
+        val lines = said()
+        assertTrue(lines.any { it.contains("on the ground") }, "$lines")
+        assertTrue(lines.none { it.contains("items:") }, "$lines")
     }
 
     // A world-wide lookup of a player goes to every place they touched, however far apart, and at each
@@ -273,15 +359,15 @@ class LookupReadTest : BothPlanes() {
         val window = LookupQuery(fromMillis = T0 - 1000, untilMillis = T0 + 1000)
 
         val here = said(window)
-        assertTrue(here.any { "{blk_wither}" in it && "rolled back" in it }, "$here")
+        assertTrue(here.any { "\nblk_wither}" in it && "rolled back" in it }, "$here")
         val theirs = said(window.copy(users = listOf("Alice"), radius = -1), players = mapOf("Alice" to alice))
-        assertTrue(theirs.any { "{blk_wither}" in it && "rolled back" in it }, "$theirs")
+        assertTrue(theirs.any { "\nblk_wither}" in it && "rolled back" in it }, "$theirs")
         // A page pinned to a moment sees no rollback from that moment on.
         for (query in listOf(window, window.copy(users = listOf("Alice"), radius = -1))) {
             val before = said(query.copy(asOf = T0 + 60_000), players = mapOf("Alice" to alice))
-            assertTrue(before.any { "{blk_wither}" in it && "rolled back" !in it }, "$before")
+            assertTrue(before.any { "\nblk_wither}" in it && "rolled back" !in it }, "$before")
             val after = said(query.copy(asOf = T0 + 60_001), players = mapOf("Alice" to alice))
-            assertTrue(after.any { "{blk_wither}" in it && "rolled back" in it }, "$after")
+            assertTrue(after.any { "\nblk_wither}" in it && "rolled back" in it }, "$after")
         }
     }
 
@@ -582,7 +668,7 @@ class LookupReadTest : BothPlanes() {
         val byPosition = shared.holderEntries(here, 0, Long.MAX_VALUE)
         assertEquals(byPosition, wholeTransactions(shared, byPosition))
         val lines = said()
-        assertTrue(lines.any { it.contains("10 64 -3") && it.contains("{blk_tnt}") }, "$lines")
+        assertTrue(lines.any { it.contains("10 64 -3") && it.contains("\nblk_tnt}") }, "$lines")
         assertTrue(lines.none { it.contains("11 64 -3") }, "$lines")
     }
 
@@ -620,7 +706,7 @@ class LookupReadTest : BothPlanes() {
         shared.drain()
 
         val lines = said(LookupQuery(rows = 1, causes = setOf(Cause.BLOCK_PLACE)))
-        assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
+        assertTrue(lines.any { it.contains("\nblock_place}") }, "$lines")
         assertTrue(lines.none { it.contains("limit:4") || it.contains("page:2") }, "$lines")
     }
 
@@ -645,7 +731,7 @@ class LookupReadTest : BothPlanes() {
         shared.drain()
 
         val lines = said(LookupQuery(radius = 1, rows = 1, causes = setOf(Cause.BLOCK_PLACE)))
-        assertTrue(lines.any { it.contains("{block_place}") }, "$lines")
+        assertTrue(lines.any { it.contains("\nblock_place}") }, "$lines")
         assertTrue(lines.none { it.contains("limit:4") }, "nothing was cut short: $lines")
     }
 
@@ -692,16 +778,16 @@ class LookupReadTest : BothPlanes() {
         shared.drain()
 
         val lines = said()
-        assertTrue(lines.single { it.contains("{container_remove}") }.contains("rolled back"), "$lines")
+        assertTrue(lines.single { it.contains("\ncontainer_remove}") }.contains("rolled back"), "$lines")
         // Out of the chest into her hands reads as taken out, and the chest the lookup is about is not repeated on
         // the line, by its ends or its place: the heading has it.
-        assertTrue(lines.single { it.contains("{container_remove}") }.let { "took out" in it && "→" !in it && "10 64 -3" !in it }, "$lines")
+        assertTrue(lines.single { it.contains("\ncontainer_remove}") }.let { "took out" in it && "→" !in it && "10 64 -3" !in it }, "$lines")
         assertTrue(lines.first().contains("(10 64 -3 "), "$lines")
         // A page alone is the last one, and says so.
         assertTrue(lines.last().let { it.startsWith("-----") && "page 1, the last" in it }, "$lines")
-        assertTrue(lines.single { it.contains("{rollback}") }.let { !it.contains("rolled back") }, "$lines")
+        assertTrue(lines.single { it.contains("\nrollback}") }.let { !it.contains("rolled back") }, "$lines")
         val back = said(LookupQuery(rolledBack = true)).drop(1).dropLast(1)
-        assertTrue(back.single().contains("{container_remove}"), "$back")
+        assertTrue(back.single().contains("\ncontainer_remove}"), "$back")
     }
 
     // A lookup of one place leaves out the place it is about on its lines, but not the other end of a movement:
@@ -713,7 +799,7 @@ class LookupReadTest : BothPlanes() {
 
         // radius:0 reads the one place too.
         for (query in listOf(LookupQuery(), LookupQuery(radius = 0))) {
-            val line = said(query).single { it.contains("{hopper_pull_container}") }
+            val line = said(query).single { it.contains("\nhopper_pull_container}") }
             assertTrue(line.trimStart().startsWith("10 65 -3") && !line.contains("10 64 -3 "), line)
         }
     }
@@ -735,7 +821,7 @@ class LookupReadTest : BothPlanes() {
 
         // Her inventory, equipment and cursor read as taken out of the chest, with no ends drawn; her ender chest
         // is not her hands and keeps both.
-        assertEquals(4, lines.count { it.contains("{container_remove}") }, "$lines")
+        assertEquals(4, lines.count { it.contains("\ncontainer_remove}") }, "$lines")
         assertTrue(lines.any { it.contains("block.minecraft.crafting_table") && it.contains("Alice{crafting grid, slot 1}") }, "$lines")
         assertTrue(lines.any { it.contains("ender_chest") && it.contains("{slot 7}") }, "$lines")
         assertTrue(lines.none { it.contains("Bob") }, "$lines")
