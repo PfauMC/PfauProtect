@@ -310,6 +310,8 @@ private class Collected(private val keeps: RowFilter) {
     val nature = ArrayList<BlockRow>()
     val foreign = ArrayList<BlockRow>()
     val entityRows = ArrayList<EntityRow>()
+    // Every entity's appearance in the window, whatever the filter keeps: what was not there when it opened.
+    val created = ArrayList<EntityRow>()
     var unreadable = 0
     var budget = WALK_BUDGET
     // Who changed which block, when, and whether by placing it, by the rows kept.
@@ -337,6 +339,7 @@ private class Collected(private val keeps: RowFilter) {
             else -> foreign += row
         }
         entities.filterTo(entityRows) { keeps.keeps(it) }
+        entities.filterTo(created) { it.kind == EntityKind.CREATED }
     }
 
     // What a block's own break or placing moved, the block itself and its slots, goes back with the block
@@ -528,7 +531,7 @@ class RollbackReader(
         fun ofEvent(entry: LedgerEntry) = spots == null || entry.holder.block?.let { Triple(it.x, it.y, it.z) } in spots
         return plan(
             world, read.rows + passedBy(read.rows, read.nature, ::turf), slots.filter(::ofEvent), losses.filter(::ofEvent),
-            read.entityRows, toTs, read.unreadable, origins(log, world, read.rows, read.foreign, fromTs, keeps),
+            read.entityRows, read.created, toTs, read.unreadable, origins(log, world, read.rows, read.foreign, fromTs, keeps),
         )
     }
 
@@ -552,6 +555,7 @@ class RollbackReader(
         kept: List<LedgerEntry>,
         losses: List<LedgerEntry>,
         entityRows: List<EntityRow>,
+        created: List<EntityRow>,
         toTs: Long,
         unreadable: Int,
         origins: Map<WorldBlock, String>,
@@ -603,8 +607,15 @@ class RollbackReader(
                 else -> Unit
             }
         }
+        val appeared = created.groupBy { it.uuid }
         for ((uuid, story) in stories.groupBy { it.uuid }) {
             val oldest = story.minWith(ENTITY_ROW_ORDER)
+            // Put there inside the window by the player whose hand its first kept row names, a row the words
+            // left out: a crystal the griefer set down and blew up with the next one, under `action:explosion`.
+            // It was not there when the window opened, and brought back it is theirs, set up again.
+            val theirs = oldest.kind != EntityKind.CREATED && oldest.actor != null &&
+                appeared[uuid].orEmpty().any { it.actor == oldest.actor && ENTITY_ROW_ORDER.compare(it, oldest) < 0 }
+            if (theirs) continue
             val before = oldest.payloadBefore?.let { ledger.payload(it) }
             if (before == null && (oldest.payloadBefore != null || oldest.kind != EntityKind.CREATED)) {
                 unnamed++
