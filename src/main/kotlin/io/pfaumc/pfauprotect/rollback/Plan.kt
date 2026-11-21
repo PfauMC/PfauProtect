@@ -615,14 +615,16 @@ class RollbackReader(
             // Put there inside the window, in a row the words left out, by the player whose hand its first kept
             // row names or by one the rollback names: a crystal the griefer set down and blew up with the next
             // one, under `action:explosion`. It was not there when the window opened, and brought back it is
-            // theirs, set up again. Unless somebody's things went into it since: a stand wearing another's armour.
+            // theirs, set up again. Unless somebody else's things went into it since: a stand wearing another's
+            // armour. The item it was put down from goes into its slot too, and is the placer's own.
             if (oldest.kind != EntityKind.CREATED) {
                 val put = appeared[uuid].orEmpty().filter { row ->
                     ENTITY_ROW_ORDER.compare(row, oldest) < 0 && row.actor?.let { it == oldest.actor || named(it) } == true
                 }.minWithOrNull(ENTITY_ROW_ORDER)
                 if (put != null) {
-                    val held = ledger.holderPage(EntitySlot(uuid, 0), put.timestamp, toTs, limit = 1)
-                    if (held.complete && held.unreadable == 0 && held.entries.isEmpty()) continue
+                    val held = ledger.holderPage(EntitySlot(uuid, 0), put.timestamp, toTs, limit = MAX_ROLLBACK_ROWS)
+                    val others = held.entries.any { it.qty > 0 && it.cause != Cause.PLACE_ENTITY_ITEM && it.actor != put.actor }
+                    if (held.complete && held.unreadable == 0 && !others) continue
                 }
             }
             val before = oldest.payloadBefore?.let { ledger.payload(it) }

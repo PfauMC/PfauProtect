@@ -636,6 +636,8 @@ class RollbackTest : BothPlanes() {
         blown(4, "minecraft:armor_stand", stand)
         blown(5, "minecraft:armor_stand", dressed)
         log.drain()
+        // What a crystal is put down from goes into its slot, as the placing books it.
+        shared.submit(Transfer(Cause.PLACE_ENTITY_ITEM, PlayerInv(alice, 0), EntitySlot(crystal, 0), diamond, null, 1, T0, actor = alice))
         shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 0), EntitySlot(dressed, 100), diamond, null, 1, T0 + 5, actor = bob))
         shared.drain()
 
