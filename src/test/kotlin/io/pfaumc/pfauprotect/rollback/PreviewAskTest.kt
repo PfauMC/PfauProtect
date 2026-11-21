@@ -1,6 +1,7 @@
 package io.pfaumc.pfauprotect.rollback
 
 import io.pfaumc.pfauprotect.Places
+import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.LookupTarget
@@ -14,6 +15,12 @@ import org.junit.jupiter.api.Test
 import java.util.UUID
 
 class PreviewAskTest {
+    // Rollbacks.kt's statics register a ticket type: run first in a fresh JVM, an unbooted registry breaks every
+    // later test of that JVM.
+    init {
+        ServerRegistries.access
+    }
+
     private val world = UUID(0, 5)
 
     @AfterEach

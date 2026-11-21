@@ -5,6 +5,7 @@ import io.pfaumc.pfauprotect.STONE
 import io.pfaumc.pfauprotect.DIRT
 import io.pfaumc.pfauprotect.SOURCE_WATER
 import org.junit.jupiter.api.extension.ExtendWith
+import io.pfaumc.pfauprotect.ServerRegistries
 import io.pfaumc.pfauprotect.Vanilla
 import io.pfaumc.pfauprotect.T0
 import io.pfaumc.pfauprotect.alice
@@ -46,6 +47,12 @@ private const val LAVA = "minecraft:lava[level=0]"
 
 @ExtendWith(Vanilla::class)
 class RollbackRulesTest {
+    // Rollbacks.kt's statics register a ticket type: run first in a fresh JVM, an unbooted registry breaks every
+    // later test of that JVM.
+    init {
+        ServerRegistries.access
+    }
+
     private val diamond = byteArrayOf(9)
 
     private fun step(before: String, after: String) = Step(before, after, null)
