@@ -150,7 +150,8 @@ victim, so `p:` finds them, while `u:` still names only what the victim did.
   also after the window's end when the window has one. The item rows of a change whose block row is on screen
   (the block's own item form written off or put in within `TWIN_MILLIS`, and what the same transaction dropped
   with no place of its own when it touched only that place) are no lines of their own: the block line's hover lists
-  them (`withTwins`, `Line.twins`). A container's spilt contents stay lines.
+  them (`withTwins`, `Line.twins`; a folded run adds up those of all its lines). `#count` and the API's rows still
+  count them as rows of their own. A container's spilt contents stay lines.
 - In the list parameters (`user:`, `player:`, `action:`, `include:`, `exclude:`) `,` is either and `&` is all of
   them in one row, binding tighter: `u:A&B,C`. `filter:` in `/pp chat` takes only `&`; a comma is text there. The groups stay strings in
   `LookupQuery` and `RowFilter` splits them (`allOf`). A block row names its two states and one actor; an entity

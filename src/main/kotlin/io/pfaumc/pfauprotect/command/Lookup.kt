@@ -1135,15 +1135,20 @@ internal class Line(
     val source: Any? = null,
     // Of a block row: the item rows of the same change, which its hover tells rather than lines of their own (`withTwins`).
     val twins: MutableList<LedgerEntry> = ArrayList(),
-    // `hide`: the reader may not see coordinates, so a hover that would carry them says the token.
-    val draw: (amount: Int, rows: Int, hide: Boolean) -> Component,
+    // Of a block row: `+` a block came, `-` one went, `~` it changed; what an item row of the change has to agree with.
+    val sign: String? = null,
+    // `hide`: the reader may not see coordinates, so a hover that would carry them says the token. `twins`: those of
+    // every line of the run.
+    val draw: (amount: Int, rows: Int, hide: Boolean, twins: List<LedgerEntry>) -> Component,
 )
 
 // A run of the same thing within this long of each other reads as one line: forty blocks of one wall
 // broken in a minute are one act, and forty lines of it push everything else off the screen.
 private const val FOLD_MILLIS = 60_000L
 
-internal class Folded(val first: Line, var rows: Int, var amount: Int, var oldest: Long)
+internal class Folded(val first: Line, var rows: Int, var amount: Int, var oldest: Long) {
+    val twins: MutableList<LedgerEntry> = ArrayList(first.twins)
+}
 
 internal fun folded(lines: List<Line>, all: Boolean): List<Folded> {
     val out = ArrayList<Folded>()
@@ -1153,6 +1158,7 @@ internal fun folded(lines: List<Line>, all: Boolean): List<Folded> {
             run.rows++
             run.amount += line.amount
             run.oldest = line.timestamp
+            run.twins += line.twins
         } else {
             out += Folded(line, 1, line.amount, line.timestamp)
         }
@@ -1285,13 +1291,18 @@ internal fun Holder.selfOfBlock() = this is WorldBlock || this == Void
 // leaves the hand in the recompute pass after it.
 private const val TWIN_MILLIS = 2_000L
 
-// The position an item row is one half of a block change at: the block's own item form going or coming there, or the
-// item a placement took out of the hand.
-private fun anchorOf(entry: LedgerEntry): WorldBlock? {
-    val block = entry.holder as? WorldBlock ?: entry.counterparty as? WorldBlock ?: return null
-    val other = if (entry.holder == block) entry.counterparty else entry.holder
-    return block.takeIf { other.selfOfBlock() || entry.cause == Cause.BLOCK_PLACE }
+// The positions an item row is one half of a block change at, and whether the block came there: the block's own item
+// form going or coming, at either end of a block moved, or the item a placement took out of the hand.
+private fun anchorsOf(entry: LedgerEntry): List<Pair<WorldBlock, Boolean>> = listOf(entry.holder, entry.counterparty).mapNotNull { end ->
+    val block = end as? WorldBlock ?: return@mapNotNull null
+    val other = if (end == entry.holder) entry.counterparty else entry.holder
+    if (!other.selfOfBlock() && entry.cause != Cause.BLOCK_PLACE) return@mapNotNull null
+    block to if (end == entry.holder) entry.qty > 0 else entry.qty < 0
 }
+
+/** What of [twins] a hover, a count or the API tells: the block's own item form going or coming is the change itself. */
+internal fun told(twins: List<LedgerEntry>): List<LedgerEntry> =
+    twins.filterNot { it.holder.selfOfBlock() && it.counterparty.selfOfBlock() }.distinctBy { it.ref }
 
 /**
  * [items] without the rows of a change a line of [planes] already shows: the block's own item form written off or
@@ -1308,16 +1319,19 @@ internal fun withTwins(items: List<Line>, planes: List<Line>, rolledBack: Boolea
     val homes = HashMap<Long, MutableMap<WorldBlock, Line>>()
     for (line in items) {
         val entry = line.source as? LedgerEntry ?: continue
-        val at = anchorOf(entry) ?: continue
-        val block = blocks[at]?.filter { abs(it.timestamp - entry.timestamp) <= TWIN_MILLIS }?.minByOrNull { abs(it.timestamp - entry.timestamp) } ?: continue
-        homes.getOrPut(entry.txId, ::HashMap).putIfAbsent(at, block)
+        for ((at, came) in anchorsOf(entry)) {
+            // A placement's item leaves the hand after the row; a break right after it is the nearer row and is not its.
+            val block = blocks[at]?.filter { abs(it.timestamp - entry.timestamp) <= TWIN_MILLIS && (it.sign == "~" || (it.sign == "+") == came) }
+                ?.minByOrNull { abs(it.timestamp - entry.timestamp) } ?: continue
+            homes.getOrPut(entry.txId, ::HashMap).putIfAbsent(at, block)
+        }
     }
     val spread = items.mapNotNull { line -> (line.source as? LedgerEntry)?.let { it.txId to line.places } }
         .groupBy({ it.first }, { it.second }).mapValues { (_, places) -> places.flatten().toSet().size }
     return items.filterNot { line ->
         val entry = line.source as? LedgerEntry ?: return@filterNot false
         val here = homes[entry.txId] ?: return@filterNot false
-        val block = anchorOf(entry)?.let(here::get)
+        val block = anchorsOf(entry).firstNotNullOfOrNull { here[it.first] }
             ?: here.values.singleOrNull()?.takeIf { line.places.isEmpty() && spread.getValue(entry.txId) <= 1 } ?: return@filterNot false
         block.twins += entry
         true
@@ -1454,7 +1468,7 @@ internal fun showPage(
         // the eye finds it first.
         val top = Component.text().append(Ui.hover(RULE, "PfauProtect")).append(Ui.text(" ")).append(title).append(Ui.text(" ")).append(RULE)
         if (place != null) top.append(Ui.text(" ")).append(place)
-        if (legend && sender is Player) top.append(Ui.text(" ")).append(Ui.hover(Ui.text("[?]", Ui.WHO), *legendLines(query.hide)))
+        if (legend && sender is Player) top.append(Ui.text(" ")).append(Ui.hover(Ui.text("[?]", Ui.WHO), *legendLines(query.hide, query.teleports, query.rollbacks)))
         sender.sendMessage(top.build())
         lines.forEach(sender::sendMessage)
         notes.forEach(sender::sendMessage)
@@ -1493,7 +1507,7 @@ private fun undo(event: EventRef, dialog: Boolean, token: Boolean): Component? {
 private val RULE = Ui.text("-----", Ui.FAINT)
 
 // How to read a lookup line, for a player who was handed the inspector and nothing else: every part of it, in order.
-private fun legendLines(hide: Boolean): Array<String> = listOf(
+private fun legendLines(hide: Boolean, teleports: Boolean, rollbacks: Boolean): Array<String> = listOf(
     tr("How to read a line:", "Как читать строку:"),
     tr("5m: how long ago (hover: the date)", "5мин: сколько времени прошло (наведи: дата)"),
     tr("Name: who did it", "Имя: кто это сделал"),
@@ -1504,9 +1518,9 @@ private fun legendLines(hide: Boolean): Array<String> = listOf(
     tr("then what was done and to what (hover: more)", "дальше что сделано и с чем (наведи: подробнее)"),
     tr("×5: that many times in a row", "×5: столько раз подряд"),
     tr("A code like K7QM-2XFA-…: the place, click copies it", "Код вида K7QM-2XFA-…: место, клик копирует его").takeIf { hide },
-    tr("⌖: where it happened (click: teleport)", "⌖: где это было (клик: телепорт)"),
+    tr("⌖: where it happened (click: teleport)", "⌖: где это было (клик: телепорт)").takeIf { teleports },
     tr("Struck through: already rolled back", "Зачёркнуто: уже откачено"),
-    tr("↶: roll this one event back", "↶: откатить это событие"),
+    tr("↶: roll this one event back", "↶: откатить это событие").takeIf { rollbacks },
 ).filterNotNull().toTypedArray()
 
 // The rule under a page, with the page in it, the arrows that go somewhere clickable, and the last page said to be
@@ -1810,15 +1824,17 @@ class Lookups(
         return entryLines(wholeTransactions(ledger, reachable))
     }
 
+    // A slot posting names its player as a holder rather than as its actor.
+    private fun whoOf(entry: LedgerEntry): UUID? = entry.actor ?: playerOf(entry.holder) ?: playerOf(entry.counterparty)
+
     // Item rows marked when a rollback has since given them back.
     private fun entryLines(entries: List<LedgerEntry>): List<Line> {
         val given = ledger.compensated(entries.map { it.ref }).keys
         return entries.map { entry ->
-            // A slot posting names its player as a holder rather than as its actor.
-            val who = entry.actor ?: playerOf(entry.holder) ?: playerOf(entry.counterparty)
+            val who = whoOf(entry)
             val same = "i ${entry.cause} $who ${entry.itemFormId} ${entry.qty > 0} ${slotless(entry.holder)} ${slotless(entry.counterparty)}"
             val places = listOfNotNull(entry.holder.block, entry.counterparty.block, entry.spot)
-            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, places, entry) { amount, _, hide ->
+            Line(entry.timestamp, entry.cause, who, same, abs(entry.qty), entry.ref in given, null, places, entry) { amount, _, hide, _ ->
                 draw(entry, who, amount, hide)
             }
         }
@@ -1828,14 +1844,14 @@ class Lookups(
         val change = blockChange(row)
         val same = "b ${row.cause} ${row.actor} ${row.confidence} ${change.sign} ${change.from} ${change.to}"
         val twins = ArrayList<LedgerEntry>()
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp, world), listOf(WorldBlock(world, row.x, row.y, row.z)), row, twins) { _, rows, _ ->
-            draw(row, change, rows, twins)
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp, world), listOf(WorldBlock(world, row.x, row.y, row.z)), row, twins, change.sign) { _, rows, _, run ->
+            draw(row, change, rows, run)
         }
     }
 
     private fun lineOf(world: UUID, row: EntityRow, back: Boolean): Line {
         val same = "e ${row.cause} ${row.actor} ${row.confidence} ${row.kind} ${row.type}"
-        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp, world), listOf(WorldBlock(world, row.x, row.y, row.z)), row) { _, rows, _ ->
+        return Line(row.timestamp, row.cause, row.actor, same, 1, back, EventRef(row.eventId, row.x, row.y, row.z, row.timestamp, world), listOf(WorldBlock(world, row.x, row.y, row.z)), row) { _, rows, _, _ ->
             draw(row, rows)
         }
     }
@@ -1856,7 +1872,12 @@ class Lookups(
         else Ui.coordinates(target.world, target.x, target.y, target.z, query.teleports, query.hide)
         val title = if (place != null || query.players.isNotEmpty()) where else where.append(Ui.text(" · ${Ui.worldName(target.world)}", Ui.MUTED))
         val placed = place?.let { title.append(Ui.text(" ")).append(it) } ?: title
-        if (query.count) return summary(sender, query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found, complete, placed)
+        if (query.count) {
+            val kept = query.rolledBack?.let { wanted -> found.filter { it.undone == wanted } } ?: found
+            // An item row a block line took into its hover is still a row of its own to count.
+            val counted = kept.map { it.cause to it.who } + kept.flatMap { line -> told(line.twins).map { it.cause to whoOf(it) } }
+            return summary(sender, counted, complete, placed)
+        }
         val page = paged(found, query)
         val lines = page.runs
         // Only a limit the parser takes is worth suggesting; at the top already, only a smaller area helps.
@@ -1876,7 +1897,7 @@ class Lookups(
         val here = WorldBlock(target.world, target.x, target.y, target.z).takeIf { place != null && (query.radius ?: 0) == 0 }
         val drawn = lines.map { run ->
             val line = run.first
-            var out = line.draw(run.amount, run.rows, query.hide)
+            var out = line.draw(run.amount, run.rows, query.hide, run.twins)
             val event = line.event?.takeIf { run.rows == 1 }
             // Struck through for the eye, said in words for whoever cannot see the line drawn.
             val back = if (line.undone) arrayOf(tr("rolled back", "откачено")) else emptyArray()
@@ -1924,7 +1945,7 @@ class Lookups(
     }
 
     // How many rows of each cause and player, the most first: where a griefer was busiest, before the rows.
-    private fun summary(sender: CommandSender, found: List<Line>, complete: Boolean, where: Component) {
+    private fun summary(sender: CommandSender, found: List<Pair<Cause, UUID?>>, complete: Boolean, where: Component) {
         if (found.isEmpty()) {
             // A read cut short may have stopped before the rows asked for; "nothing" would clear whoever they name.
             val why = if (complete) tr("nothing recorded", "ничего не записано")
@@ -1933,7 +1954,7 @@ class Lookups(
             return
         }
         sender.sendMessage(Component.text().append(Ui.text(tr("Count of ${found.size} rows: ", "Сводка, строк ${found.size}: "), Ui.FAINT)).append(where).build())
-        for ((key, n) in found.groupingBy { it.cause to it.who }.eachCount().entries.sortedByDescending { it.value }) {
+        for ((key, n) in found.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }) {
             sender.sendMessage(row(Ui.text("  $n", Ui.MUTED), Ui.hover(verb(key.first), key.first.name.lowercase()), who(key.second, Confidence.FACT)))
         }
         if (!complete) sender.sendMessage(Ui.text(tr("  … the read stopped early; these are counts of what it saw", "  … чтение остановилось раньше; это сводка прочитанного"), Ui.MUTED))
@@ -2197,8 +2218,8 @@ class Lookups(
             else -> signOf(row)?.let { Ui.text(it, Ui.MUTED) }
         }
         val hover = Component.text().append(Ui.text(details.joinToString("\n")))
-        // A folded line stands for many changes and would show one of them as if it were all, so, like the contents, its items wait for #all.
-        if (rows == 1) twinLines(twins).forEach { hover.append(Component.newline()).append(it) }
+        // Of a folded line, the items of every change it stands for, added up.
+        twinLines(twins).forEach { hover.append(Component.newline()).append(it) }
         return row(
             Ui.ago(row.timestamp), who(row.actor, row.confidence, pressed?.second), act(change.sign, row.cause),
             opens(thing.build().hoverEvent(HoverEvent.showText(hover.build())), row.payloadBefore, row.payloadAfter, change.sign == "-", rows), extra,
@@ -2209,7 +2230,7 @@ class Lookups(
     // The block's own item form going or coming is the change itself. Both halves of a movement can be on screen, so
     // a transaction counts the larger of what it gave and what it took.
     private fun twinLines(twins: List<LedgerEntry>): List<Component> {
-        val told = twins.filterNot { it.holder.selfOfBlock() && it.counterparty.selfOfBlock() }.distinctBy { it.ref }
+        val told = told(twins)
         if (told.isEmpty()) return emptyList()
         val amounts = told.groupBy { Triple(it.txId, it.cause, it.itemFormId) }
             .mapValues { (_, rows) -> maxOf(rows.filter { it.qty > 0 }.sumOf { it.qty }, rows.filter { it.qty < 0 }.sumOf { -it.qty }) }
@@ -2347,7 +2368,11 @@ class Lookups(
     /** A page of [found] as the API's rows, folded and cut as a player's page is. */
     internal fun pageOf(found: Found, query: LookupQuery): LookupPage {
         val page = paged(found.lines, query)
-        return LookupPage(page.runs.map { rowOf(it, query.hide) }, query.page, page.more, found.complete, listOfNotNull(found.note))
+        // A caller reads rows, not hovers: what a block line took into its hover follows it as rows again.
+        val rows = page.runs.flatMap { run ->
+            listOf(rowOf(run, query.hide)) + entryLines(told(run.twins)).map { rowOf(Folded(it, 1, it.amount, it.timestamp), query.hide) }
+        }
+        return LookupPage(rows, query.page, page.more, found.complete, listOfNotNull(found.note))
     }
 
     private fun rowOf(run: Folded, hide: Boolean): LookupRow {

@@ -8,6 +8,8 @@ import org.bukkit.event.block.Action
 import org.bukkit.event.player.PlayerInteractEvent
 import org.bukkit.event.player.PlayerInteractEntityEvent
 import io.papermc.paper.event.entity.EntityBreakByEntityEvent
+import org.bukkit.event.hanging.HangingBreakByEntityEvent
+import org.bukkit.entity.Projectile
 import org.bukkit.event.vehicle.VehicleDamageEvent
 import org.bukkit.entity.LivingEntity
 import org.bukkit.event.entity.EntityDamageByEntityEvent
@@ -112,8 +114,16 @@ class Inspector(private val lookups: Lookups) : Listener {
         inspect(player, event.entity)
     }
 
-    // Whatever is fixed to a block (a frame, a painting, a leash knot, a cushion) breaks on the hit without being
-    // damaged first, an empty frame among them, and a cushion is no Hanging to the API.
+    // Whatever is fixed to a block breaks on the hit without being damaged first, an empty frame among them. A frame,
+    // a painting or a leash knot says so as a Hanging; a cushion, which is none, through Paper's own event.
+    @EventHandler(priority = EventPriority.LOWEST)
+    fun onHangingHit(event: HangingBreakByEntityEvent) {
+        val player = event.remover as? Player ?: return
+        if (player.uniqueId !in enabled) return
+        event.isCancelled = true
+        inspect(player, event.entity)
+    }
+
     @EventHandler(priority = EventPriority.LOWEST)
     fun onBreak(event: EntityBreakByEntityEvent) {
         val player = event.remover as? Player ?: return
@@ -146,8 +156,11 @@ class Inspector(private val lookups: Lookups) : Listener {
 
 private const val REPEAT_MILLIS = 1_000L
 
-/** Whether an inspector's hit on [entity] is a question rather than a blow: anything but a living mob or player. */
-internal fun spared(entity: Entity): Boolean = entity !is LivingEntity || entity is ArmorStand
+/**
+ * Whether an inspector's hit on [entity] is a question rather than a blow: anything but a living mob or player, or a
+ * shot, which is hit to send it back.
+ */
+internal fun spared(entity: Entity): Boolean = entity is ArmorStand || entity !is LivingEntity && entity !is Projectile
 
 private const val STEP = 0.05
 

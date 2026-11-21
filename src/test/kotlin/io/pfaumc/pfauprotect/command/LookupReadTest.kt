@@ -218,6 +218,30 @@ class LookupReadTest : BothPlanes() {
         assertTrue(broken.contains("items:") && broken.contains("fell out of a block"), broken)
         assertTrue(lines.none { it.contains("\nblock_drop}") }, "$lines")
         assertTrue(lines.any { it.contains("\ncontainer_break_drop}") && !it.contains("blk_player_break") }, "$lines")
+        // A count and the API read rows, not hovers: the drop is still one of them.
+        assertTrue(said(LookupQuery(count = true)).any { it.contains("{block_drop}") })
+        val lookups = Lookups(stub(Plugin::class.java), shared, logs, codec, { null }) { null }
+        val target = LookupTarget(world, 10, 64, -3, "stone at 10 64 -3")
+        val rows = lookups.pageOf(lookups.find(target, LookupQuery()), LookupQuery())
+        assertTrue(rows.rows.any { it.cause == "block_drop" && it.amount == 1 }, "${rows.rows}")
+    }
+
+    // A placement's item leaves the hand in the recompute pass after its row, so a break right after it is nearer in
+    // time; the item belongs to the row that put the block there.
+    @Test
+    fun `a placement's item goes with the placement, not with the break after it`() {
+        val at = WorldBlock(world, 10, 64, -3)
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 500, actor = alice)))
+        shared.submit(moved(at, Void, stone, Cause.BLOCK_DROP, Attributed(alice, Confidence.FACT), T0 + 520))
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 1), at, stone, null, 1, T0 + 600, actor = alice))
+        shared.drain()
+        log.drain()
+
+        val lines = said(LookupQuery(all = true)).filter { "\n" in it }
+        assertEquals(2, lines.size, "$lines")
+        assertTrue(lines.single { it.contains("\nblk_player_place}") }.contains("items:"), "$lines")
+        assertFalse(lines.single { it.contains("\nblk_player_break}") }.contains("items:"), "$lines")
     }
 
     // One transaction over a crater changes many places: a drop with no place of its own cannot be told to one of them.

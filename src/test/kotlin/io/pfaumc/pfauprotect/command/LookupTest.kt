@@ -424,7 +424,7 @@ class LookupTest {
     fun `runs fold gap by gap and keep undone rows apart`() {
         fun line(secondsAgo: Long, amount: Int, undone: Boolean = false) = Line(
             1_000_000L - secondsAgo * 1000, Cause.BLK_PLAYER_BREAK, null, "break stone", amount, undone, null,
-        ) { _, _, _ -> Component.empty() }
+        ) { _, _, _, _ -> Component.empty() }
         val lines = listOf(line(0, 64), line(30, 32), line(70, 1), line(131, 5), line(161, 7, undone = true), line(191, 2), line(221, 3))
         assertEquals(listOf(3, 1, 1, 2), folded(lines, all = false).map { it.rows })
         assertEquals(listOf(97, 5, 7, 5), folded(lines, all = false).map { it.amount })
