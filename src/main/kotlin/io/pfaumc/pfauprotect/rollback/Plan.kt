@@ -310,6 +310,8 @@ private class Collected(private val keeps: RowFilter) {
     val nature = ArrayList<BlockRow>()
     val foreign = ArrayList<BlockRow>()
     val entityRows = ArrayList<EntityRow>()
+    // Every entity's appearance in the window, whatever the filter keeps: what was not there when it opened.
+    val created = ArrayList<EntityRow>()
     var unreadable = 0
     var budget = WALK_BUDGET
     // Who changed which block, when, and whether by placing it, by the rows kept.
@@ -337,6 +339,8 @@ private class Collected(private val keeps: RowFilter) {
             else -> foreign += row
         }
         entities.filterTo(entityRows) { keeps.keeps(it) }
+        // A rollback's own bringing back is nobody's placing: a frame it put back and the griefer blew up again comes back.
+        entities.filterTo(created) { it.kind == EntityKind.CREATED && it.cause != Cause.ROLLBACK }
     }
 
     // What a block's own break or placing moved, the block itself and its slots, goes back with the block
@@ -528,7 +532,7 @@ class RollbackReader(
         fun ofEvent(entry: LedgerEntry) = spots == null || entry.holder.block?.let { Triple(it.x, it.y, it.z) } in spots
         return plan(
             world, read.rows + passedBy(read.rows, read.nature, ::turf), slots.filter(::ofEvent), losses.filter(::ofEvent),
-            read.entityRows, toTs, read.unreadable, origins(log, world, read.rows, read.foreign, fromTs, keeps),
+            read.entityRows, read.created, keeps::names, toTs, read.unreadable, origins(log, world, read.rows, read.foreign, fromTs, keeps),
         )
     }
 
@@ -552,6 +556,8 @@ class RollbackReader(
         kept: List<LedgerEntry>,
         losses: List<LedgerEntry>,
         entityRows: List<EntityRow>,
+        created: List<EntityRow>,
+        named: (UUID) -> Boolean,
         toTs: Long,
         unreadable: Int,
         origins: Map<WorldBlock, String>,
@@ -603,8 +609,25 @@ class RollbackReader(
                 else -> Unit
             }
         }
+        val appeared = created.groupBy { it.uuid }
         for ((uuid, story) in stories.groupBy { it.uuid }) {
             val oldest = story.minWith(ENTITY_ROW_ORDER)
+            // Put there inside the window, in a row the words left out, by the player whose hand its first kept
+            // row names or by one the rollback names: a crystal the griefer set down and blew up with the next
+            // one, under `action:explosion`. It was not there when the window opened, and brought back it is
+            // theirs, set up again. Unless somebody else's things went into it since: a stand wearing another's
+            // armour. The item it was put down from goes into its slot too, and is the placer's own. A rollback's
+            // own taking away is no blow: undoing it brings back what the operator had put down.
+            if (oldest.kind != EntityKind.CREATED && oldest.cause != Cause.ROLLBACK) {
+                val put = appeared[uuid].orEmpty().filter { row ->
+                    ENTITY_ROW_ORDER.compare(row, oldest) < 0 && row.actor?.let { it == oldest.actor || named(it) } == true
+                }.minWithOrNull(ENTITY_ROW_ORDER)
+                if (put != null) {
+                    val held = ledger.holderPage(EntitySlot(uuid, 0), put.timestamp, toTs, limit = MAX_ROLLBACK_ROWS)
+                    val others = held.entries.any { it.qty > 0 && it.cause != Cause.PLACE_ENTITY_ITEM && it.actor != put.actor }
+                    if (held.complete && held.unreadable == 0 && !others) continue
+                }
+            }
             val before = oldest.payloadBefore?.let { ledger.payload(it) }
             if (before == null && (oldest.payloadBefore != null || oldest.kind != EntityKind.CREATED)) {
                 unnamed++

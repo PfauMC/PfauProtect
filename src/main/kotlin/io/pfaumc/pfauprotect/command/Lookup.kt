@@ -916,6 +916,7 @@ internal class RowFilter(
     private val isPlayer: (UUID) -> Boolean = { false },
 ) {
     internal val namesUsers: Boolean get() = users.isNotEmpty()
+    internal fun names(player: UUID): Boolean = users.any { player in it }
     private val causes = query.causes
     private val kinds = query.kinds
     private val all = query.all

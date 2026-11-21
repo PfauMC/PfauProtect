@@ -82,6 +82,7 @@ import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
 import org.bukkit.event.entity.CreatureSpawnEvent
 import net.minecraft.world.entity.LivingEntity as NmsLivingEntity
+import net.minecraft.world.level.block.entity.BaseContainerBlockEntity
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.block.entity.CampfireBlockEntity
 import net.minecraft.world.level.block.entity.ChiseledBookShelfBlockEntity
@@ -548,7 +549,7 @@ class ChunkRollback(
                 return@forEachIndexed
             }
             try {
-                put(level, spots[i], target, back?.payloadBefore)
+                put(level, spots[i], target, back?.payloadBefore, keep = plan.refills.isEmpty())
                 touched[i] = true
                 if (returnsBlock) restored(tally, plan)
             } catch (failure: Exception) {
@@ -623,8 +624,12 @@ class ChunkRollback(
         }
         // After the blocks, so a frame comes back to a wall that is there again.
         val seats = ArrayList<Pair<UUID, UUID>>()
-        for (plan in positions) for (entity in plan.entities) entity(level, entity, actor, apply, tally, seats)
-        seat(seats)
+        val aboard = ArrayList<Pair<UUID, UUID>>()
+        val brought = HashSet<UUID>()
+        for (plan in positions) for (entity in plan.entities) entity(level, entity, actor, apply, tally, seats, aboard, brought)
+        // A standing vehicle's riders are seated only when this run brought them back: one taken out of the
+        // cart since stays out on a second run of the same rollback.
+        seat(seats + aboard.filter { it.first in brought })
         for (plan in positions) if (plan.at in tally.restored) tally.piles += plan.dropped
         if (!apply) return tally
         val difference = rollbackDifference(world, actor, System.currentTimeMillis())
@@ -731,7 +736,10 @@ class ChunkRollback(
      * that is already as it should be is left alone, so a second rollback does nothing twice. A live
      * entity may stand in another region by now, so what is done to it waits for its own thread.
      */
-    private fun entity(level: ServerLevel, plan: EntityPlan, actor: UUID?, apply: Boolean, tally: Tally, seats: MutableList<Pair<UUID, UUID>>) {
+    private fun entity(
+        level: ServerLevel, plan: EntityPlan, actor: UUID?, apply: Boolean, tally: Tally,
+        seats: MutableList<Pair<UUID, UUID>>, aboard: MutableList<Pair<UUID, UUID>>, brought: MutableSet<UUID>,
+    ) {
         val alive = Bukkit.getEntity(plan.uuid)?.takeIf { it.isValid }
         val kind = plan.oldest.kind
         // Gone, or changed or led away and then killed or broken in the same window: brought back as it was
@@ -739,7 +747,7 @@ class ChunkRollback(
         if (alive == null && (kind == EntityKind.REMOVED || kind != EntityKind.CREATED && plan.removed)) {
             tally.entitiesBack++
             plan.bucket?.let { tally.buckets += it }
-            if (apply) bringBack(level, plan, actor, tally, seats)
+            if (apply && bringBack(level, plan, actor, tally, seats)) brought += plan.uuid
             return
         }
         when (kind) {
@@ -753,7 +761,13 @@ class ChunkRollback(
                 tally.entitiesTaken++
                 if (apply) tally.jobs += EntityJob(alive) { takeAway(alive, plan, actor) }
             }
-            EntityKind.REMOVED -> tally.entitiesAlready++
+            EntityKind.REMOVED -> {
+                tally.entitiesAlready++
+                // Back already, from an earlier rollback: a cart `action:explosion` brought back without the
+                // golem killed in it. Who sat in it is on the cart's snapshot alone, taken before the blast
+                // threw the golem out, so a golem this run brings back finds its seat through it.
+                if (apply) aboard += seatsOf(plan.uuid, nbtOf(plan.before!!))
+            }
             else -> {
                 if (alive == null) return run { tally.entitiesGoneSince++ }
                 tally.entitiesReverted++
@@ -775,7 +789,7 @@ class ChunkRollback(
     }
 
     // On the region that owns the place it went from.
-    private fun bringBack(level: ServerLevel, plan: EntityPlan, actor: UUID?, tally: Tally, seats: MutableList<Pair<UUID, UUID>>) {
+    private fun bringBack(level: ServerLevel, plan: EntityPlan, actor: UUID?, tally: Tally, seats: MutableList<Pair<UUID, UUID>>): Boolean {
         val tag = nbtOf(plan.before!!)
         for (key in DYING) tag.remove(key)
         seats += seatsOf(plan.uuid, tag)
@@ -784,11 +798,12 @@ class ChunkRollback(
         if (entity == null || !level.tryAddFreshEntityWithPassengers(entity, CreatureSpawnEvent.SpawnReason.CUSTOM)) {
             tally.failed++
             plugin.logger.warning("a rollback could not bring back ${plan.type} ${plan.uuid}")
-            return
+            return false
         }
         slotsBack(plan, actor, tally)
         tally.piles += plan.drops
         filed(plan, EntityKind.CREATED, actor)
+        return true
     }
 
     /**
@@ -955,8 +970,16 @@ class ChunkRollback(
         }
     }
 
-    private fun put(level: ServerLevel, pos: BlockPos, state: String?, payload: ByteArray?) {
-        if (state != null) level.setBlock(pos, (Bukkit.createBlockData(state) as CraftBlockData).state, PLACE_FLAGS)
+    private fun put(level: ServerLevel, pos: BlockPos, state: String?, payload: ByteArray?, keep: Boolean) {
+        val next = state?.let { (Bukkit.createBlockData(it) as CraftBlockData).state }
+        // A container an earlier rollback already put back and filled, reshaped again by a second one (a chest
+        // half paired otherwise): its postings were given back then and are not given again (`keep`: nothing
+        // left to refill here), so what it holds now stays in it. Cleared with the tag below, the store went
+        // empty. Where postings still refill it they rebuild it whole, and keeping it too would double it.
+        val held = (level.getBlockEntity(pos) as? BaseContainerBlockEntity)
+            ?.takeIf { keep && (next == null || level.getBlockState(pos).block == next.block) }
+            ?.let { box -> List(box.containerSize) { box.getItem(it).copy() } }
+        if (next != null) level.setBlock(pos, next, PLACE_FLAGS)
         val entity = level.getBlockEntity(pos) ?: return
         if (payload != null) {
             val tag = nbtOf(payload)
@@ -964,6 +987,7 @@ class ChunkRollback(
             // The tag still holds what the block held when the row was written, and the slot postings give
             // that back; loading it as well would hand everything out twice.
             (entity as? Clearable)?.clearContent()
+            if (held != null && entity is BaseContainerBlockEntity && entity.containerSize == held.size) held.forEachIndexed(entity::setItem)
             entity.setChanged()
             level.chunkSource.blockChanged(pos)
         }
