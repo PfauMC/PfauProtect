@@ -531,7 +531,7 @@ class RollbackReader(
         fun ofEvent(entry: LedgerEntry) = spots == null || entry.holder.block?.let { Triple(it.x, it.y, it.z) } in spots
         return plan(
             world, read.rows + passedBy(read.rows, read.nature, ::turf), slots.filter(::ofEvent), losses.filter(::ofEvent),
-            read.entityRows, read.created, toTs, read.unreadable, origins(log, world, read.rows, read.foreign, fromTs, keeps),
+            read.entityRows, read.created, keeps::names, toTs, read.unreadable, origins(log, world, read.rows, read.foreign, fromTs, keeps),
         )
     }
 
@@ -556,6 +556,7 @@ class RollbackReader(
         losses: List<LedgerEntry>,
         entityRows: List<EntityRow>,
         created: List<EntityRow>,
+        named: (UUID) -> Boolean,
         toTs: Long,
         unreadable: Int,
         origins: Map<WorldBlock, String>,
@@ -610,12 +611,19 @@ class RollbackReader(
         val appeared = created.groupBy { it.uuid }
         for ((uuid, story) in stories.groupBy { it.uuid }) {
             val oldest = story.minWith(ENTITY_ROW_ORDER)
-            // Put there inside the window by the player whose hand its first kept row names, a row the words
-            // left out: a crystal the griefer set down and blew up with the next one, under `action:explosion`.
-            // It was not there when the window opened, and brought back it is theirs, set up again.
-            val theirs = oldest.kind != EntityKind.CREATED && oldest.actor != null &&
-                appeared[uuid].orEmpty().any { it.actor == oldest.actor && ENTITY_ROW_ORDER.compare(it, oldest) < 0 }
-            if (theirs) continue
+            // Put there inside the window, in a row the words left out, by the player whose hand its first kept
+            // row names or by one the rollback names: a crystal the griefer set down and blew up with the next
+            // one, under `action:explosion`. It was not there when the window opened, and brought back it is
+            // theirs, set up again. Unless somebody's things went into it since: a stand wearing another's armour.
+            if (oldest.kind != EntityKind.CREATED) {
+                val put = appeared[uuid].orEmpty().filter { row ->
+                    ENTITY_ROW_ORDER.compare(row, oldest) < 0 && row.actor?.let { it == oldest.actor || named(it) } == true
+                }.minWithOrNull(ENTITY_ROW_ORDER)
+                if (put != null) {
+                    val held = ledger.holderPage(EntitySlot(uuid, 0), put.timestamp, toTs, limit = 1)
+                    if (held.complete && held.unreadable == 0 && held.entries.isEmpty()) continue
+                }
+            }
             val before = oldest.payloadBefore?.let { ledger.payload(it) }
             if (before == null && (oldest.payloadBefore != null || oldest.kind != EntityKind.CREATED)) {
                 unnamed++

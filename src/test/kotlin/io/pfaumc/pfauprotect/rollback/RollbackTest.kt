@@ -610,23 +610,38 @@ class RollbackTest : BothPlanes() {
         assertEquals(WorldBlock(world, 3, 64, 3), plan.at)
     }
 
-    // Alice set a crystal down and blew it up with the next one; Bob's frame went in the same blast. Rolled
-    // back by `action:explosion`, which leaves her placing out, the frame comes back and her crystal does not.
-    // A stand Bob set down in the window and she blew up is his, and comes back to a rollback of her.
+    // Alice set a crystal down and blew it up with the next one; Carol set one down that Alice's blast took;
+    // Bob's frame went in the same blast. Rolled back by `action:explosion`, which leaves their placings out,
+    // the frame comes back and their crystals do not. A stand Bob set down in the window and she blew up is
+    // his, and comes back; so does one she set down and Bob dressed in his armour.
     @Test
     fun `an entity its own culprit put there in the window is not brought back by a narrowed rollback`() {
+        val carol = UUID.randomUUID()
         val crystal = UUID.randomUUID()
+        val carols = UUID.randomUUID()
         val frame = UUID.randomUUID()
         val stand = UUID.randomUUID()
-        log.submit(listOf(EntityChange(3, 64, 3, EntityKind.CREATED, Cause.PLACE_ENTITY_ITEM, "minecraft:end_crystal", crystal, T0, actor = alice)))
-        log.submit(listOf(EntityChange(4, 64, 4, EntityKind.CREATED, Cause.PLACE_ENTITY_ITEM, "minecraft:armor_stand", stand, T0 + 5, actor = bob)))
-        log.submit(listOf(EntityChange(3, 64, 3, EntityKind.REMOVED, Cause.BLK_END_CRYSTAL, "minecraft:end_crystal", crystal, T0 + 10, actor = alice, before = byteArrayOf(10, 0, 0, 1))))
-        log.submit(listOf(EntityChange(3, 65, 3, EntityKind.REMOVED, Cause.BLK_END_CRYSTAL, "minecraft:item_frame", frame, T0 + 10, actor = alice, before = byteArrayOf(10, 0, 0, 2))))
-        log.submit(listOf(EntityChange(4, 64, 4, EntityKind.REMOVED, Cause.BLK_END_CRYSTAL, "minecraft:armor_stand", stand, T0 + 10, actor = alice, before = byteArrayOf(10, 0, 0, 3))))
+        val dressed = UUID.randomUUID()
+        fun created(x: Int, type: String, uuid: UUID, by: UUID) =
+            log.submit(listOf(EntityChange(x, 64, 3, EntityKind.CREATED, Cause.PLACE_ENTITY_ITEM, type, uuid, T0, actor = by)))
+        fun blown(x: Int, type: String, uuid: UUID) =
+            log.submit(listOf(EntityChange(x, 64, 3, EntityKind.REMOVED, Cause.BLK_END_CRYSTAL, type, uuid, T0 + 10, actor = alice, before = byteArrayOf(10, 0, 0, x.toByte()))))
+        created(1, "minecraft:end_crystal", crystal, alice)
+        created(2, "minecraft:end_crystal", carols, carol)
+        created(4, "minecraft:armor_stand", stand, bob)
+        created(5, "minecraft:armor_stand", dressed, alice)
+        blown(1, "minecraft:end_crystal", crystal)
+        blown(2, "minecraft:end_crystal", carols)
+        blown(3, "minecraft:item_frame", frame)
+        blown(4, "minecraft:armor_stand", stand)
+        blown(5, "minecraft:armor_stand", dressed)
         log.drain()
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(bob, 0), EntitySlot(dressed, 100), diamond, null, 1, T0 + 5, actor = bob))
+        shared.drain()
 
-        val back = positions(around(rollbackFilter(causes = Action.EXPLOSION.causes))).flatMap { it.entities }
-        assertEquals(setOf(frame, stand), back.mapTo(HashSet()) { it.uuid })
+        fun back(filter: RowFilter) = positions(around(filter)).flatMap { it.entities }.mapTo(HashSet()) { it.uuid }
+        assertEquals(setOf(carols, frame, stand, dressed), back(rollbackFilter(causes = Action.EXPLOSION.causes)))
+        assertEquals(setOf(frame, stand, dressed), back(rollbackFilter(alice, carol, causes = Action.EXPLOSION.causes)))
         val ofAlice = positions(around(rollbackFilter(alice))).flatMap { it.entities }
         assertEquals(EntityKind.CREATED, ofAlice.single { it.uuid == crystal }.oldest.kind, "unnarrowed, her placing is undone as before")
     }
