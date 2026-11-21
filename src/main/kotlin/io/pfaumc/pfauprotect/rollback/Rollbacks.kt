@@ -753,7 +753,13 @@ class ChunkRollback(
                 tally.entitiesTaken++
                 if (apply) tally.jobs += EntityJob(alive) { takeAway(alive, plan, actor) }
             }
-            EntityKind.REMOVED -> tally.entitiesAlready++
+            EntityKind.REMOVED -> {
+                tally.entitiesAlready++
+                // Back already, from an earlier rollback: a cart `action:explosion` brought back without the
+                // golem killed in it. Who sat in it is on the cart's snapshot alone, taken before the blast
+                // threw the golem out, so a golem this run brings back finds its seat through it.
+                if (apply) seats += seatsOf(plan.uuid, nbtOf(plan.before!!))
+            }
             else -> {
                 if (alive == null) return run { tally.entitiesGoneSince++ }
                 tally.entitiesReverted++
