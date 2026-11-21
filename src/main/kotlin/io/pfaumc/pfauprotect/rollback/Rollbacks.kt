@@ -962,7 +962,14 @@ class ChunkRollback(
     }
 
     private fun put(level: ServerLevel, pos: BlockPos, state: String?, payload: ByteArray?) {
-        if (state != null) level.setBlock(pos, (Bukkit.createBlockData(state) as CraftBlockData).state, PLACE_FLAGS)
+        val next = state?.let { (Bukkit.createBlockData(it) as CraftBlockData).state }
+        // A container an earlier rollback already put back and filled, reshaped again by a second one (a chest
+        // half paired otherwise): its postings were given back then and are not given again, so what it holds
+        // now stays in it. Cleared with the tag below, the store went empty.
+        val held = (level.getBlockEntity(pos) as? NmsContainer)
+            ?.takeIf { next == null || level.getBlockState(pos).block == next.block }
+            ?.let { box -> List(box.containerSize) { box.getItem(it).copy() } }
+        if (next != null) level.setBlock(pos, next, PLACE_FLAGS)
         val entity = level.getBlockEntity(pos) ?: return
         if (payload != null) {
             val tag = nbtOf(payload)
@@ -970,6 +977,7 @@ class ChunkRollback(
             // The tag still holds what the block held when the row was written, and the slot postings give
             // that back; loading it as well would hand everything out twice.
             (entity as? Clearable)?.clearContent()
+            if (held != null && entity is NmsContainer && entity.containerSize == held.size) held.forEachIndexed(entity::setItem)
             entity.setChanged()
             level.chunkSource.blockChanged(pos)
         }
