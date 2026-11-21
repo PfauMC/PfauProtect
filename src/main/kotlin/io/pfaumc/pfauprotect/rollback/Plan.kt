@@ -339,7 +339,8 @@ private class Collected(private val keeps: RowFilter) {
             else -> foreign += row
         }
         entities.filterTo(entityRows) { keeps.keeps(it) }
-        entities.filterTo(created) { it.kind == EntityKind.CREATED }
+        // A rollback's own bringing back is nobody's placing: a frame it put back and the griefer blew up again comes back.
+        entities.filterTo(created) { it.kind == EntityKind.CREATED && it.cause != Cause.ROLLBACK }
     }
 
     // What a block's own break or placing moved, the block itself and its slots, goes back with the block
