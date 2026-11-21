@@ -616,8 +616,9 @@ class RollbackReader(
             // row names or by one the rollback names: a crystal the griefer set down and blew up with the next
             // one, under `action:explosion`. It was not there when the window opened, and brought back it is
             // theirs, set up again. Unless somebody else's things went into it since: a stand wearing another's
-            // armour. The item it was put down from goes into its slot too, and is the placer's own.
-            if (oldest.kind != EntityKind.CREATED) {
+            // armour. The item it was put down from goes into its slot too, and is the placer's own. A rollback's
+            // own taking away is no blow: undoing it brings back what the operator had put down.
+            if (oldest.kind != EntityKind.CREATED && oldest.cause != Cause.ROLLBACK) {
                 val put = appeared[uuid].orEmpty().filter { row ->
                     ENTITY_ROW_ORDER.compare(row, oldest) < 0 && row.actor?.let { it == oldest.actor || named(it) } == true
                 }.minWithOrNull(ENTITY_ROW_ORDER)

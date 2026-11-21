@@ -646,6 +646,13 @@ class RollbackTest : BothPlanes() {
         assertEquals(setOf(frame, stand, dressed), back(rollbackFilter(alice, carol, causes = Action.EXPLOSION.causes)))
         val ofAlice = positions(around(rollbackFilter(alice))).flatMap { it.entities }
         assertEquals(EntityKind.CREATED, ofAlice.single { it.uuid == crystal }.oldest.kind, "unnarrowed, her placing is undone as before")
+
+        // Bob set a stand down and a rollback he ran took it away; undoing that rollback brings it back.
+        val undone = UUID.randomUUID()
+        created(6, "minecraft:armor_stand", undone, bob)
+        log.submit(listOf(EntityChange(6, 64, 3, EntityKind.REMOVED, Cause.ROLLBACK, "minecraft:armor_stand", undone, T0 + 20, actor = bob, before = byteArrayOf(10, 0, 0, 6))))
+        log.drain()
+        assertEquals(setOf(undone), back(rollbackFilter(bob, causes = Action.ROLLBACK.causes)))
     }
 
     // The saddle that fell out was put back by an earlier rollback; rolled back again, the horse has
