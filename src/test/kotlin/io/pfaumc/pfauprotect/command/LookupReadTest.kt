@@ -226,6 +226,26 @@ class LookupReadTest : BothPlanes() {
         assertTrue(rows.rows.any { it.cause == "block_drop" && it.amount == 1 }, "${rows.rows}")
     }
 
+    // The planes are marked apart: a break put back whose cobblestone nobody gave back is not one change any more,
+    // and the drop under a struck-through line would read as given back too.
+    @Test
+    fun `a drop a rollback did not give back stays a line beside the block it put back`() {
+        val at = WorldBlock(world, 10, 64, -3)
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        shared.submit(listOf(
+            Transfer(Cause.BLOCK_DROP, at, Void, stone, null, 1, T0 + 30, actor = alice),
+            Transfer(Cause.BLOCK_DROP, Void, ItemEntityRef(UUID.randomUUID()), byteArrayOf(4), null, 1, T0 + 30, actor = alice),
+        ))
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.ROLLBACK, T0 + 5000)))
+        shared.drain()
+        log.drain()
+
+        val lines = said().filter { "\n" in it }
+        assertTrue(lines.single { it.contains("\nblk_player_break}") }.let { "rolled back" in it && "items:" !in it }, "$lines")
+        assertTrue(lines.any { it.contains("on the ground") && "rolled back" !in it }, "$lines")
+        assertTrue(lines.none { it.contains("on the ground") && it.contains("block.minecraft.stone") }, "the block's own form stays folded: $lines")
+    }
+
     // A placement's item leaves the hand in the recompute pass after its row, so a break right after it is nearer in
     // time; the item belongs to the row that put the block there.
     @Test

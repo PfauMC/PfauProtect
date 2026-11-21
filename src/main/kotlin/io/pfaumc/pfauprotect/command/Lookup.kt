@@ -1320,8 +1320,9 @@ internal fun withTwins(items: List<Line>, planes: List<Line>, rolledBack: Boolea
     for (line in items) {
         val entry = line.source as? LedgerEntry ?: continue
         for ((at, came) in anchorsOf(entry)) {
-            // A placement's item leaves the hand after the row; a break right after it is the nearer row and is not its.
-            val block = blocks[at]?.filter { abs(it.timestamp - entry.timestamp) <= TWIN_MILLIS && (it.sign == "~" || (it.sign == "+") == came) }
+            // A placement's item leaves the hand after the row; a break or a switch right after it is the nearer row and is not its.
+            val placing = entry.cause == Cause.BLOCK_PLACE
+            val block = blocks[at]?.filter { abs(it.timestamp - entry.timestamp) <= TWIN_MILLIS && (if (placing) it.sign == "+" else it.sign == "~" || (it.sign == "+") == came) }
                 ?.minByOrNull { abs(it.timestamp - entry.timestamp) } ?: continue
             homes.getOrPut(entry.txId, ::HashMap).putIfAbsent(at, block)
         }
@@ -1333,6 +1334,11 @@ internal fun withTwins(items: List<Line>, planes: List<Line>, rolledBack: Boolea
         val here = homes[entry.txId] ?: return@filterNot false
         val block = anchorsOf(entry).firstNotNullOfOrNull { here[it.first] }
             ?: here.values.singleOrNull()?.takeIf { line.places.isEmpty() && spread.getValue(entry.txId) <= 1 } ?: return@filterNot false
+        // The planes are marked apart: an item a rollback did not give back stays a line of its own, unmarked, rather
+        // than hide under a block line struck through, and `rolledback:` filters it as it is. The block's own item form
+        // is the block row's change whatever its mark.
+        val own = entry.holder.selfOfBlock() && entry.counterparty.selfOfBlock()
+        if (!own && line.undone != block.undone) return@filterNot false
         block.twins += entry
         true
     }
