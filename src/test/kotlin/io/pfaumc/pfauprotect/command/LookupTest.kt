@@ -467,10 +467,11 @@ class LookupTest {
         assertTrue(command.contains("part:contents") && command.split(" ").count { it.startsWith("part:") } == 1, command)
     }
 
-    // A player who may only inspect cannot run /pp lookup, and a place in the command would let them ask about any.
+    // A player who may only inspect cannot run /pp lookup, and a place in the command would let them ask about any;
+    // the moment names the click the arrow belongs to.
     @Test
     fun `the inspector's page button turns its own page with no place in it`() {
-        assertEquals("/pp i page 2", LookupQuery(inspector = true).pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2))
+        assertEquals("/pp i page 2 42", LookupQuery(inspector = true, asOf = 42).pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2))
     }
 
     // A place token names its own world, which replaces the one the command runs in.

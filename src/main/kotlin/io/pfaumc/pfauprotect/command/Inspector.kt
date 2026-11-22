@@ -31,8 +31,8 @@ class Inspector(private val lookups: Lookups) : Listener {
     // What each player last asked about and when: a held click repeats, and each repeat was a whole answer.
     private val last = ConcurrentHashMap<UUID, Pair<Any, Long>>()
     // The place each player last clicked and the question asked of it, which /pp i page asks again at another page.
-    // ponytail: the last click only, so an arrow under an older answer pages the newest place (its heading says which);
-    // keep a few per player if that gets in the way.
+    // ponytail: the last click only; an arrow under an older answer is refused rather than paging another place, which
+    // a hidden heading would not tell apart. Keep a few per player if clicking again gets in the way.
     private val shown = ConcurrentHashMap<UUID, Pair<LookupTarget, LookupQuery>>()
 
     fun toggle(player: Player, desired: Boolean?): Boolean {
@@ -150,12 +150,16 @@ class Inspector(private val lookups: Lookups) : Listener {
 
     private fun inspect(player: Player, entity: Entity) {
         if (again(player, entity.uniqueId)) return
+        shown -= player.uniqueId
         lookups.entity(player, entity.uniqueId, typeOf(entity), lookupTargetAt(entity.location))
     }
 
-    /** Another [page] of what [player] last clicked on a block; false when there is none since they joined. */
-    fun page(player: Player, page: Int): Boolean {
-        val (target, query) = shown[player.uniqueId] ?: return false
+    /**
+     * Another [page] of the click asked at [asOf], which an arrow carries; false when that is not the player's last
+     * click on a block.
+     */
+    fun page(player: Player, page: Int, asOf: Long): Boolean {
+        val (target, query) = shown[player.uniqueId]?.takeIf { it.second.asOf == asOf } ?: return false
         lookups.run(player, target, query.copy(page = page))
         return true
     }

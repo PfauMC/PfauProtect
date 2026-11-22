@@ -483,8 +483,8 @@ data class LookupQuery(
     /** The same question about the same place, at another page. */
     fun pageCommand(target: LookupTarget, page: Int): String? {
         // The inspector's place is the one its reader clicked, kept for them: a place in the command would be a
-        // lookup anywhere for whoever may only inspect.
-        if (inspector) return "/pp i page $page"
+        // lookup anywhere for whoever may only inspect. The moment names the click, so a stale arrow is told apart.
+        if (inspector) return asOf?.let { "/pp i page $page $it" }
         // x,y,z carries no world, so a place in another world than the sender's is pinned by a token even for a
         // reader who may see coordinates; with the setting on every reader's button carries one. A token that cannot
         // be made has no button: coordinates would end up in the chat log, and a button without the pin reads where the reader stands then.

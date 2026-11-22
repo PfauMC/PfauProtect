@@ -108,7 +108,7 @@ object Texts {
         r("(.*) is not online\\.") to "$1 не в сети.",
         // Inspector, purge, status, self-checks, reconcile
         r("Only a player can use the inspector\\.") to "Инспектором может пользоваться только игрок.",
-        r("Nothing to turn the page of: click a block with the inspector first\\.") to "Листать нечего: сначала кликни по блоку инспектором.",
+        r("That answer is not your last inspection: click the block again\\.") to "Это не последний ответ инспектора: кликни по блоку ещё раз.",
         r("Purge refused: give an age of at least a day, for example 90d\\.") to "Очистка отклонена: укажи возраст не меньше дня, например 90d.",
         r("Purge refused: a rollback is running\\.") to "Очистка отклонена: идёт откат.",
         r("Purging everything older than (\\S+); this walks the whole journal\\.") to "Удаляю всё старше $1; это проход по всему журналу.",
