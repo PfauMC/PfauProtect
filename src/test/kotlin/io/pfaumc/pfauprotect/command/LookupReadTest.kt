@@ -711,6 +711,24 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.none { it.contains("event:") }, "$lines")
     }
 
+    // A player without /pp tp still clicks: the arrows and the strike are theirs, the words to type are the console's.
+    @Test
+    fun `a player who may not teleport gets the page arrows and the strike`() {
+        val chest = Container(world, 10, 64, -3, 0)
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 0), stone, null, 4, T0))
+        shared.drain()
+        val theft = shared.holderEntries(chest, 0, Long.MAX_VALUE).single()
+        shared.submit(Transfer(Cause.ROLLBACK, Void, chest, stone, null, 4, T0 + 1000, reverts = listOf(theft.ref)))
+        shared.drain()
+
+        assertTrue(said(LookupQuery(rows = 1)).last().contains("page:2"), "the console lost the words")
+        assertTrue(said().any { it.contains("(rolled back)") }, "the console lost the words")
+        val paged = said(LookupQuery(rows = 1), asker = Player::class.java)
+        assertTrue(paged.last().let { "»" in it && "page:2" !in it }, "$paged")
+        val lines = said(asker = Player::class.java)
+        assertTrue(lines.single { it.contains("\ncontainer_remove}") }.let { "{rolled back}" in it && "(rolled back)" !in it }, "$lines")
+    }
+
     // One place asks its filter of each row as it reads, as a radius does, so forty rows of another kind newer
     // than the one asked for no longer use the read up and leave it behind a cut.
     @Test

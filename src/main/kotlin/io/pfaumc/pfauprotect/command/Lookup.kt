@@ -1479,7 +1479,7 @@ internal fun showPage(
         sender.sendMessage(top.build())
         lines.forEach(sender::sendMessage)
         notes.forEach(sender::sendMessage)
-        sender.sendMessage(footer(query.page, back, forward, query.teleports, more))
+        sender.sendMessage(footer(query.page, back, forward, sender is Player, more))
         return
     }
     fun arrow(mark: String, to: Int, command: String?) = command?.let {
@@ -1532,11 +1532,12 @@ private fun legendLines(hide: Boolean, teleports: Boolean, rollbacks: Boolean): 
 
 // The rule under a page, with the page in it, the arrows that go somewhere clickable, and the last page said to be
 // the last: no count of them is kept, as that would read every row. [more] is whether rows are left past this page,
-// which a page with no command for the next one can still have. The console is told the words to type.
-private fun footer(page: Int, back: String?, forward: String?, clickable: Boolean, more: Boolean): Component {
+// which a page with no command for the next one can still have. The console is told the words to type; a player
+// gets the arrows whether or not /pp tp is theirs, as an arrow only asks the same lookup again.
+private fun footer(page: Int, back: String?, forward: String?, player: Boolean, more: Boolean): Component {
     val last = if (more) "" else tr(", the last", ", последняя")
     val said = when {
-        clickable && (back != null || forward != null) -> {
+        player && (back != null || forward != null) -> {
             fun arrow(mark: String, to: Int, command: String?) =
                 if (command != null) Ui.button(mark, command, Ui.WHO, tr("Page $to", "Стр. $to")) else Ui.text(mark, Ui.FAINT)
             Component.text().append(arrow("«", page - 1, back)).append(Ui.text(" ${tr("page", "стр.")} $page$last ", Ui.MUTED))
@@ -1898,7 +1899,6 @@ class Lookups(
             sender.sendMessage(Component.text().append(Ui.text("PfauProtect · ", Ui.FAINT)).append(placed).append(Ui.text(" — $why", Ui.MUTED)).build())
             return
         }
-        val clickable = query.teleports
         // Every line of a lookup of one place happened there, which the heading already says; a line's own mark is
         // left only where it happened somewhere else, as the other end of a movement can.
         val here = WorldBlock(target.world, target.x, target.y, target.z).takeIf { place != null && (query.radius ?: 0) == 0 }
@@ -1906,12 +1906,12 @@ class Lookups(
             val line = run.first
             var out = line.draw(run.amount, run.rows, query.hide, run.twins)
             val event = line.event?.takeIf { run.rows == 1 }
-            // Struck through for the eye, said in words for whoever cannot see the line drawn.
+            // Struck through for the eye, said in words for the console, which cannot see the line drawn.
             val back = if (line.undone) arrayOf(tr("rolled back", "откачено")) else emptyArray()
-            if (line.undone) out = if (clickable) out.decorate(TextDecoration.STRIKETHROUGH) else out.append(Ui.text("  (${back[0]})", Ui.FAINT))
+            if (line.undone) out = if (sender is Player) out.decorate(TextDecoration.STRIKETHROUGH) else out.append(Ui.text("  (${back[0]})", Ui.FAINT))
             out = when {
                 run.rows > 1 -> Ui.hover(out, *back, tr("${run.rows} in a row; #all shows each", "${run.rows} подряд; #all покажет каждое"))
-                line.undone && clickable -> Ui.hover(out, *back)
+                line.undone && sender is Player -> Ui.hover(out, *back)
                 else -> out
             }
             // A player who may roll back clicks a single event's ↶ for it; the console cannot click and is given
@@ -1928,7 +1928,7 @@ class Lookups(
             if (mark != null) out = out.append(Ui.text("  ")).append(mark)
             // First on the line, where it is found in the same place on every line and a wrap cannot leave it alone
             // on a line of its own; and outside the strike and the hover, which are the row's.
-            val spot = line.places.firstOrNull { it != here }?.let { Ui.place(it.world, it.x, it.y, it.z, clickable, query.hide) }
+            val spot = line.places.firstOrNull { it != here }?.let { Ui.place(it.world, it.x, it.y, it.z, query.teleports, query.hide) }
             val start = Component.text().append(Ui.text(" "))
             if (spot != null) start.append(spot).append(Ui.text(" "))
             start.append(out).build()
