@@ -76,7 +76,9 @@ class Inspector(private val lookups: Lookups) : Listener {
         event.isCancelled = true
         if (again(player, target.location to choice.part)) return
         // The moment is pinned here, as the page buttons of a lookup pin it: rows written since would shift every page.
-        val asked = lookupTargetAt(target) to LookupQuery(part = choice.part, inspector = true, asOf = System.currentTimeMillis())
+        // It also names the click for its arrows, so two clicks in one millisecond still get two.
+        val asOf = maxOf(System.currentTimeMillis(), (shown[player.uniqueId]?.second?.asOf ?: 0) + 1)
+        val asked = lookupTargetAt(target) to LookupQuery(part = choice.part, inspector = true, asOf = asOf)
         shown[player.uniqueId] = asked
         lookups.run(player, asked.first, asked.second)
     }
