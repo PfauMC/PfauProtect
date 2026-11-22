@@ -43,6 +43,8 @@ import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.entity.SignBlockEntity
 import net.minecraft.world.level.block.entity.SignTextSlot
 import io.pfaumc.pfauprotect.senderInto
+import org.bukkit.command.CommandSender
+import org.bukkit.entity.Player
 import org.bukkit.plugin.Plugin
 import net.kyori.adventure.text.Component as AdventureComponent
 import net.kyori.adventure.text.TextComponent
@@ -67,11 +69,12 @@ class LookupReadTest : BothPlanes() {
         // Stands in for the server's player cache, which a test has none of.
         players: Map<String, UUID> = emptyMap(),
         target: LookupTarget = LookupTarget(world, 10, 64, -3, "stone at 10 64 -3"),
+        asker: Class<out CommandSender> = CommandSender::class.java,
     ): List<String> {
         val lines = ArrayList<String>()
         val names = players.entries.associate { (name, id) -> id to name }
         Lookups(stub(Plugin::class.java), shared, logs, codec, players::get, names::get)
-            .report(senderInto(lines, ::flat), target, query)
+            .report(senderInto(lines, ::flat, asker), target, query)
         return lines
     }
 
@@ -694,6 +697,18 @@ class LookupReadTest : BothPlanes() {
 
         assertTrue(lines.any { it.contains("on the ground") }, "the item plane lost it: $lines")
         assertTrue(lines.any { it.contains("event:") }, "the block plane lost it: $lines")
+    }
+
+    // The console is given an event to type; a player who may not roll back has nothing to do with one.
+    @Test
+    fun `a player who may not roll back is not shown the event`() {
+        log.submit(listOf(BlockChange(10, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0)))
+        log.drain()
+
+        assertTrue(said().any { it.contains("event:") }, "the console lost it")
+        val lines = said(asker = Player::class.java)
+        assertTrue(lines.any { it.contains("placed") }, "$lines")
+        assertTrue(lines.none { it.contains("event:") }, "$lines")
     }
 
     // One place asks its filter of each row as it reads, as a radius does, so forty rows of another kind newer

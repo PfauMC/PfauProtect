@@ -1915,13 +1915,14 @@ class Lookups(
                 else -> out
             }
             // A player who may roll back clicks a single event's ↶ for it; the console cannot click and is given
-            // the event to type. A folded line is many events and has no one to give.
+            // the event to type. A player who may not roll back gets neither: the event is of no use to them.
+            // A folded line is many events and has no one to give.
             val mark = when {
                 event == null -> null
                 // A command typed from here must keep the world a token pinned, even for a reader of coordinates, and
                 // with the setting on carry a token for every reader: the click is logged in chat.
                 query.rollbacks -> undo(event, query.dialog, Settings.hideCoordinates || query.hide || query.atWorld != null || event.elsewhere(target.world))
-                !clickable -> event.text(query.hide || query.atWorld != null || event.elsewhere(target.world))?.let { Ui.text(it, Ui.FAINT) }
+                sender !is Player -> event.text(query.hide || query.atWorld != null || event.elsewhere(target.world))?.let { Ui.text(it, Ui.FAINT) }
                 else -> null
             }
             if (mark != null) out = out.append(Ui.text("  ")).append(mark)
