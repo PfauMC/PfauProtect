@@ -42,7 +42,8 @@ internal fun disabledPlugin(): Plugin = stub(Plugin::class.java, mapOf("isEnable
 internal fun senderInto(
     lines: MutableList<String>,
     flat: (Component) -> String = PlainTextComponentSerializer.plainText()::serialize,
-): CommandSender = Proxy.newProxyInstance(CommandSender::class.java.classLoader, arrayOf(CommandSender::class.java)) { _, method, args ->
+    type: Class<out CommandSender> = CommandSender::class.java,
+): CommandSender = Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->
     val sent = args?.singleOrNull()
     when {
         method.name != "sendMessage" -> throw UnsupportedOperationException("sender.${method.name}")
