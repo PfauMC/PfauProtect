@@ -30,6 +30,10 @@ class Inspector(private val lookups: Lookups) : Listener {
     private val enabled = ConcurrentHashMap.newKeySet<UUID>()
     // What each player last asked about and when: a held click repeats, and each repeat was a whole answer.
     private val last = ConcurrentHashMap<UUID, Pair<Any, Long>>()
+    // The place each player last clicked and the question asked of it, which /pp i page asks again at another page.
+    // ponytail: the last click only, so an arrow under an older answer pages the newest place (its heading says which);
+    // keep a few per player if that gets in the way.
+    private val shown = ConcurrentHashMap<UUID, Pair<LookupTarget, LookupQuery>>()
 
     fun toggle(player: Player, desired: Boolean?): Boolean {
         val next = desired ?: (player.uniqueId !in enabled)
@@ -71,7 +75,10 @@ class Inspector(private val lookups: Lookups) : Listener {
         val target = if (choice.inFront) block.getRelative(hit.hitBlockFace ?: return) else block
         event.isCancelled = true
         if (again(player, target.location to choice.part)) return
-        lookups.run(player, lookupTargetAt(target), LookupQuery(part = choice.part, inChat = true))
+        // The moment is pinned here, as the page buttons of a lookup pin it: rows written since would shift every page.
+        val asked = lookupTargetAt(target) to LookupQuery(part = choice.part, inspector = true, asOf = System.currentTimeMillis())
+        shown[player.uniqueId] = asked
+        lookups.run(player, asked.first, asked.second)
     }
 
     // A spectator sees through the block the camera is in, so the ray starts where it leaves that one block;
@@ -146,10 +153,18 @@ class Inspector(private val lookups: Lookups) : Listener {
         lookups.entity(player, entity.uniqueId, typeOf(entity), lookupTargetAt(entity.location))
     }
 
+    /** Another [page] of what [player] last clicked on a block; false when there is none since they joined. */
+    fun page(player: Player, page: Int): Boolean {
+        val (target, query) = shown[player.uniqueId] ?: return false
+        lookups.run(player, target, query.copy(page = page))
+        return true
+    }
+
     @EventHandler
     fun onQuit(event: PlayerQuitEvent) {
         enabled -= event.player.uniqueId
         last -= event.player.uniqueId
+        shown -= event.player.uniqueId
     }
 
 }

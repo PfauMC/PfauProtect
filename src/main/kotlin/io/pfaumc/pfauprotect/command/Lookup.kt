@@ -152,15 +152,13 @@ internal enum class Param(vararg val keys: String) {
     ASOF("asof"),
     // Which part of a place the inspector asks about, `block` or `contents`; the page buttons keep it. Not offered to type.
     PART("part"),
-    // `view:chat`: the inspector's page buttons, whose next page stays in chat like the first. Not offered to type.
-    VIEW("view"),
     ;
 
     val canonical: String get() = keys.first()
 
     companion object {
         private val byKey = entries.flatMap { param -> param.keys.map { it to param } }.toMap()
-        val prefixes = entries.filter { it != ASOF && it != PART && it != VIEW }.map { "${it.canonical}:" }
+        val prefixes = entries.filter { it != ASOF && it != PART }.map { "${it.canonical}:" }
         val help = prefixes.joinToString(" ")
         fun of(key: String): Param? = byKey[key]
     }
@@ -444,8 +442,9 @@ data class LookupQuery(
     val asOf: Long? = null,
     // Of a single place: its block, its contents, or both. A radius or a player ignores it.
     val part: Part = Part.ALL,
-    // The inspector's: every page in chat, whatever the reader chose for their lookups; a window on every click would be in the way.
-    val inChat: Boolean = false,
+    // Asked by the inspector's click: every page in chat, whatever the reader chose for their lookups, as a window on
+    // every click would be in the way; and paged through /pp i, which needs no more than the inspector does.
+    val inspector: Boolean = false,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
@@ -483,6 +482,9 @@ data class LookupQuery(
 
     /** The same question about the same place, at another page. */
     fun pageCommand(target: LookupTarget, page: Int): String? {
+        // The inspector's place is the one its reader clicked, kept for them: a place in the command would be a
+        // lookup anywhere for whoever may only inspect.
+        if (inspector) return "/pp i page $page"
         // x,y,z carries no world, so a place in another world than the sender's is pinned by a token even for a
         // reader who may see coordinates; with the setting on every reader's button carries one. A token that cannot
         // be made has no button: coordinates would end up in the chat log, and a button without the pin reads where the reader stands then.
@@ -497,12 +499,12 @@ data class LookupQuery(
     fun pageCommand(subcommand: String, page: Int, vararg pinned: String): String {
         // A bare word is a player, even one named `page`.
         val kept = words.split(' ').filter { it.isNotBlank() && it.substringBefore(':', "").lowercase() !in PAGED_AWAY }
-        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }, part.word?.let { "part:$it" }, "view:chat".takeIf { inChat }) + "page:$page").joinToString(" ")
+        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }, part.word?.let { "part:$it" }) + "page:$page").joinToString(" ")
     }
 }
 
 private const val GROUPED_READ = 4
-private val PAGED_AWAY = setOf("page", "pg", "at", "asof", "part", "view")
+private val PAGED_AWAY = setOf("page", "pg", "at", "asof", "part")
 
 /** Where a lookup asked with `at:` reads, in the world it was asked from. */
 fun LookupQuery.targetOr(fallback: LookupTarget): LookupTarget {
@@ -586,7 +588,6 @@ private val BAD_EVENT = DynamicCommandExceptionType { said("'$it' is not an even
 private val UNKNOWN_FLAG = DynamicCommandExceptionType { said("unknown flag '$it', expected #count, #sum or #all") }
 private val BAD_POSITION = DynamicCommandExceptionType { said("'$it' is not a position, expected x,y,z") }
 private val BAD_MOMENT = DynamicCommandExceptionType { said("'$it' is not a moment; the page buttons fill it in") }
-private val BAD_VIEW = DynamicCommandExceptionType { said("'$it' is not a view, expected view:chat") }
 
 private val BAD_PART = DynamicCommandExceptionType { said("'$it' is not a part, expected part:block or part:contents") }
 private val STEAL_EXCLUDED = DynamicCommandExceptionType {
@@ -697,7 +698,6 @@ fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.no
             Param.AT -> (positionOrNull(value) ?: fail(reader, BAD_POSITION, value)).let { query.copy(at = Triple(it.x, it.y, it.z), atWorld = it.world) }
             Param.ASOF -> query.copy(asOf = value.toLongOrNull()?.takeIf { it > 0 } ?: fail(reader, BAD_MOMENT, value))
             Param.PART -> query.copy(part = Part.entries.firstOrNull { it.word == value.lowercase() } ?: fail(reader, BAD_PART, value))
-            Param.VIEW -> query.copy(inChat = value.equals("chat", ignoreCase = true) || fail(reader, BAD_VIEW, value))
         }
         reader.cursor = tokenStart + token.length
     }
@@ -1079,7 +1079,7 @@ class LookupArgument(
         Param.PAGE -> listOf("2", "3")
         Param.ROLLEDBACK -> listOf("no", "yes")
         Param.AMOUNT -> listOf(">=8", ">=64", "<4")
-        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, Param.PART, Param.VIEW, null -> emptyList()
+        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, Param.PART, null -> emptyList()
     }
 }
 
@@ -1110,7 +1110,7 @@ private val EXCLUDABLE: List<String> by lazy {
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
-private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF, Param.PART, Param.VIEW)
+private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF, Param.PART)
 
 // The clicks of a window, which `verb` words "moved", and the container causes themselves: what a line between a
 // player's hands and a container may be drawn as put in or taken out.
@@ -1434,15 +1434,15 @@ internal fun pageRows(sender: CommandSender): Int =
 
 /**
  * The query as [sender] asked it, with what is read on their thread rather than off it, where the answer is
- * drawn, and with the moment it was asked. [LookupQuery.inChat] is the inspector's: chat, and the short default
+ * drawn, and with the moment it was asked. [LookupQuery.inspector] is the inspector's: chat, and the short default
  * page, as it answers every click.
  */
 internal fun LookupQuery.askedBy(sender: CommandSender): LookupQuery = copy(
     teleports = canTeleport(sender),
     hide = Places.hidden(sender),
     rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION),
-    dialog = !inChat && readsInDialog(sender),
-    rows = rows ?: pageRows(sender).takeIf { !inChat },
+    dialog = !inspector && readsInDialog(sender),
+    rows = rows ?: pageRows(sender).takeIf { !inspector },
     asOf = asOf ?: System.currentTimeMillis(),
 )
 
