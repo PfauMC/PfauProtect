@@ -443,8 +443,9 @@ data class LookupQuery(
     // Of a single place: its block, its contents, or both. A radius or a player ignores it.
     val part: Part = Part.ALL,
     // Asked by the inspector's click: every page in chat, whatever the reader chose for their lookups, as a window on
-    // every click would be in the way; and paged through /pp i, which needs no more than the inspector does.
-    val inspector: Boolean = false,
+    // every click would be in the way; and paged through /pp i, which needs no more than the inspector does. Which
+    // click it answers, so an arrow of an older one is refused; null for any other question.
+    val click: Long? = null,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
@@ -483,8 +484,8 @@ data class LookupQuery(
     /** The same question about the same place, at another page. */
     fun pageCommand(target: LookupTarget, page: Int): String? {
         // The inspector's place is the one its reader clicked, kept for them: a place in the command would be a
-        // lookup anywhere for whoever may only inspect. The moment names the click, so a stale arrow is told apart.
-        if (inspector) return asOf?.let { "/pp i page $page $it" }
+        // lookup anywhere for whoever may only inspect.
+        if (click != null) return "/pp i page $page $click"
         // x,y,z carries no world, so a place in another world than the sender's is pinned by a token even for a
         // reader who may see coordinates; with the setting on every reader's button carries one. A token that cannot
         // be made has no button: coordinates would end up in the chat log, and a button without the pin reads where the reader stands then.
@@ -1434,15 +1435,15 @@ internal fun pageRows(sender: CommandSender): Int =
 
 /**
  * The query as [sender] asked it, with what is read on their thread rather than off it, where the answer is
- * drawn, and with the moment it was asked. [LookupQuery.inspector] is the inspector's: chat, and the short default
+ * drawn, and with the moment it was asked. [LookupQuery.click] is the inspector's: chat, and the short default
  * page, as it answers every click.
  */
 internal fun LookupQuery.askedBy(sender: CommandSender): LookupQuery = copy(
     teleports = canTeleport(sender),
     hide = Places.hidden(sender),
     rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION),
-    dialog = !inspector && readsInDialog(sender),
-    rows = rows ?: pageRows(sender).takeIf { !inspector },
+    dialog = click == null && readsInDialog(sender),
+    rows = rows ?: pageRows(sender).takeIf { click == null },
     asOf = asOf ?: System.currentTimeMillis(),
 )
 

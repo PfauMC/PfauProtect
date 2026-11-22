@@ -25,6 +25,7 @@ import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.inventory.EquipmentSlot
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 class Inspector(private val lookups: Lookups) : Listener {
     private val enabled = ConcurrentHashMap.newKeySet<UUID>()
@@ -34,6 +35,9 @@ class Inspector(private val lookups: Lookups) : Listener {
     // ponytail: the last click only; an arrow under an older answer is refused rather than paging another place, which
     // a hidden heading would not tell apart. Keep a few per player if clicking again gets in the way.
     private val shown = ConcurrentHashMap<UUID, Pair<LookupTarget, LookupQuery>>()
+    // Names each click for its arrows. Started at the clock, so an arrow left in chat from before a restart names no
+    // click of this run.
+    private val clicks = AtomicLong(System.currentTimeMillis())
 
     fun toggle(player: Player, desired: Boolean?): Boolean {
         val next = desired ?: (player.uniqueId !in enabled)
@@ -76,9 +80,8 @@ class Inspector(private val lookups: Lookups) : Listener {
         event.isCancelled = true
         if (again(player, target.location to choice.part)) return
         // The moment is pinned here, as the page buttons of a lookup pin it: rows written since would shift every page.
-        // It also names the click for its arrows, so two clicks in one millisecond still get two.
-        val asOf = maxOf(System.currentTimeMillis(), (shown[player.uniqueId]?.second?.asOf ?: 0) + 1)
-        val asked = lookupTargetAt(target) to LookupQuery(part = choice.part, inspector = true, asOf = asOf)
+        val query = LookupQuery(part = choice.part, click = clicks.incrementAndGet(), asOf = System.currentTimeMillis())
+        val asked = lookupTargetAt(target) to query
         shown[player.uniqueId] = asked
         lookups.run(player, asked.first, asked.second)
     }
@@ -157,11 +160,10 @@ class Inspector(private val lookups: Lookups) : Listener {
     }
 
     /**
-     * Another [page] of the click asked at [asOf], which an arrow carries; false when that is not the player's last
-     * click on a block.
+     * Another [page] of [click], which an arrow carries; false when that is not the player's last click on a block.
      */
-    fun page(player: Player, page: Int, asOf: Long): Boolean {
-        val (target, query) = shown[player.uniqueId]?.takeIf { it.second.asOf == asOf } ?: return false
+    fun page(player: Player, page: Int, click: Long): Boolean {
+        val (target, query) = shown[player.uniqueId]?.takeIf { it.second.click == click } ?: return false
         lookups.run(player, target, query.copy(page = page))
         return true
     }

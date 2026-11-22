@@ -727,8 +727,8 @@ class PfauProtectPlugin : JavaPlugin() {
         .then(
             Commands.literal("page").then(
                 Commands.argument("page", IntegerArgumentType.integer(1)).then(
-                    Commands.argument("asof", LongArgumentType.longArg(0))
-                        .executes { inspectPage(it.source, IntegerArgumentType.getInteger(it, "page"), LongArgumentType.getLong(it, "asof")) }
+                    Commands.argument("click", LongArgumentType.longArg(0))
+                        .executes { inspectPage(it.source, IntegerArgumentType.getInteger(it, "page"), LongArgumentType.getLong(it, "click")) }
                 )
             )
         )
@@ -904,13 +904,13 @@ class PfauProtectPlugin : JavaPlugin() {
         )
     }
 
-    private fun inspectPage(source: CommandSourceStack, page: Int, asOf: Long): Int = withRunning(source) { running, sender ->
+    private fun inspectPage(source: CommandSourceStack, page: Int, click: Long): Int = withRunning(source) { running, sender ->
         val player = source.executor as? Player
         if (player == null) {
             sender.say("Only a player can use the inspector.")
             return 0
         }
-        if (!running.inspector.page(player, page, asOf)) sender.say("That answer is not your last inspection: click the block again.")
+        if (!running.inspector.page(player, page, click)) sender.say("That answer is not your last inspection: click the block again.")
     }
 
     private fun purge(source: CommandSourceStack, age: String, confirm: Boolean): Int = withRunning(source) { running, sender ->

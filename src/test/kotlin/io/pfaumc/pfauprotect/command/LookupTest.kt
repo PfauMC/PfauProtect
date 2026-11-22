@@ -468,10 +468,10 @@ class LookupTest {
     }
 
     // A player who may only inspect cannot run /pp lookup, and a place in the command would let them ask about any;
-    // the moment names the click the arrow belongs to.
+    // the arrow names its click, so an older one is refused.
     @Test
     fun `the inspector's page button turns its own page with no place in it`() {
-        assertEquals("/pp i page 2 42", LookupQuery(inspector = true, asOf = 42).pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2))
+        assertEquals("/pp i page 2 42", LookupQuery(click = 42, asOf = 7).pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2))
     }
 
     // A place token names its own world, which replaces the one the command runs in.
