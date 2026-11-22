@@ -79,8 +79,11 @@ subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]
 [chat|dialog]` and `help` (also the bare `/pp`). Permissions are declared in `build.gradle.kts` `bukkit {}`.
 A page of `lookup`, `near` or `chat` goes through `showPage` (`Lookup.kt`): a Paper dialog with the arrows as
 buttons for a player who reads in one (`lookup.dialog` in `config.yml`, overridden per player by `/pp view` and
-kept in their PDC), chat lines otherwise. The console, the inspector and the short answers stay in chat; the
-inspector's page buttons carry `view:chat` (`LookupQuery.inChat`, hidden like `asof:`) so its next pages do too.
+kept in their PDC), chat lines otherwise. The console, the inspector and the short answers stay in chat. The
+inspector keeps each player's last block click (`Inspector.shown`, with its `asOf`) and its page buttons run
+`/pp i page N <click>` (`LookupQuery.click`, a number per click), which asks it again under `pfauprotect.inspect` alone: no place
+in the command, so inspecting stays a question about a block the player clicked; an arrow of an older click is refused. A page's arrows go to every player,
+whatever `/pp tp` allows them; only ⌖ follows `query.teleports`.
 The inspector aims with its own ray (a spectator inside terrain starts it past that block) and asks `part:block` or `part:contents` of a container (`Part`, hidden like `asof:`; the page buttons keep it).
 A hit while inspecting is a question about anything but a living mob or player (`spared`): frames, paintings,
 cushions (`EntityBreakByEntityEvent`), stands, end crystals, minecarts and boats (`VehicleDamageEvent`).

@@ -467,15 +467,11 @@ class LookupTest {
         assertTrue(command.contains("part:contents") && command.split(" ").count { it.startsWith("part:") } == 1, command)
     }
 
-    // The inspector answers in chat; its next page came through /pp lookup and opened a window for a reader of them.
+    // A player who may only inspect cannot run /pp lookup, and a place in the command would let them ask about any;
+    // the arrow names its click, so an older one is refused.
     @Test
-    fun `the inspector's page button keeps its pages in chat`() {
-        val inspector = LookupQuery(inChat = true)
-        val command = inspector.pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2)!!
-        val next = parseLookupQuery(command.removePrefix("/pp l "))
-        assertTrue(next.inChat, command)
-        assertEquals(1, next.copy(words = command.removePrefix("/pp l ")).pageCommand("l", 3).split(" ").count { it.startsWith("view:") })
-        assertThrows(CommandSyntaxException::class.java) { parseLookupQuery("view:dialog") }
+    fun `the inspector's page button turns its own page with no place in it`() {
+        assertEquals("/pp i page 2 42", LookupQuery(click = 42, asOf = 7).pageCommand(LookupTarget(UUID(0, 0), 7, 64, -3, ""), 2))
     }
 
     // A place token names its own world, which replaces the one the command runs in.

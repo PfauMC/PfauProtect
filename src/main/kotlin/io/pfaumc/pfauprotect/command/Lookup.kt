@@ -152,15 +152,13 @@ internal enum class Param(vararg val keys: String) {
     ASOF("asof"),
     // Which part of a place the inspector asks about, `block` or `contents`; the page buttons keep it. Not offered to type.
     PART("part"),
-    // `view:chat`: the inspector's page buttons, whose next page stays in chat like the first. Not offered to type.
-    VIEW("view"),
     ;
 
     val canonical: String get() = keys.first()
 
     companion object {
         private val byKey = entries.flatMap { param -> param.keys.map { it to param } }.toMap()
-        val prefixes = entries.filter { it != ASOF && it != PART && it != VIEW }.map { "${it.canonical}:" }
+        val prefixes = entries.filter { it != ASOF && it != PART }.map { "${it.canonical}:" }
         val help = prefixes.joinToString(" ")
         fun of(key: String): Param? = byKey[key]
     }
@@ -444,8 +442,10 @@ data class LookupQuery(
     val asOf: Long? = null,
     // Of a single place: its block, its contents, or both. A radius or a player ignores it.
     val part: Part = Part.ALL,
-    // The inspector's: every page in chat, whatever the reader chose for their lookups; a window on every click would be in the way.
-    val inChat: Boolean = false,
+    // Asked by the inspector's click: every page in chat, whatever the reader chose for their lookups, as a window on
+    // every click would be in the way; and paged through /pp i, which needs no more than the inspector does. Which
+    // click it answers, so an arrow of an older one is refused; null for any other question.
+    val click: Long? = null,
 ) {
     val global: Boolean get() = radius == GLOBAL_RADIUS
 
@@ -483,6 +483,9 @@ data class LookupQuery(
 
     /** The same question about the same place, at another page. */
     fun pageCommand(target: LookupTarget, page: Int): String? {
+        // The inspector's place is the one its reader clicked, kept for them: a place in the command would be a
+        // lookup anywhere for whoever may only inspect.
+        if (click != null) return "/pp i page $page $click"
         // x,y,z carries no world, so a place in another world than the sender's is pinned by a token even for a
         // reader who may see coordinates; with the setting on every reader's button carries one. A token that cannot
         // be made has no button: coordinates would end up in the chat log, and a button without the pin reads where the reader stands then.
@@ -497,12 +500,12 @@ data class LookupQuery(
     fun pageCommand(subcommand: String, page: Int, vararg pinned: String): String {
         // A bare word is a player, even one named `page`.
         val kept = words.split(' ').filter { it.isNotBlank() && it.substringBefore(':', "").lowercase() !in PAGED_AWAY }
-        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }, part.word?.let { "part:$it" }, "view:chat".takeIf { inChat }) + "page:$page").joinToString(" ")
+        return (listOf("/pp", subcommand) + kept + pinned + listOfNotNull(asOf?.let { "asof:$it" }, part.word?.let { "part:$it" }) + "page:$page").joinToString(" ")
     }
 }
 
 private const val GROUPED_READ = 4
-private val PAGED_AWAY = setOf("page", "pg", "at", "asof", "part", "view")
+private val PAGED_AWAY = setOf("page", "pg", "at", "asof", "part")
 
 /** Where a lookup asked with `at:` reads, in the world it was asked from. */
 fun LookupQuery.targetOr(fallback: LookupTarget): LookupTarget {
@@ -586,7 +589,6 @@ private val BAD_EVENT = DynamicCommandExceptionType { said("'$it' is not an even
 private val UNKNOWN_FLAG = DynamicCommandExceptionType { said("unknown flag '$it', expected #count, #sum or #all") }
 private val BAD_POSITION = DynamicCommandExceptionType { said("'$it' is not a position, expected x,y,z") }
 private val BAD_MOMENT = DynamicCommandExceptionType { said("'$it' is not a moment; the page buttons fill it in") }
-private val BAD_VIEW = DynamicCommandExceptionType { said("'$it' is not a view, expected view:chat") }
 
 private val BAD_PART = DynamicCommandExceptionType { said("'$it' is not a part, expected part:block or part:contents") }
 private val STEAL_EXCLUDED = DynamicCommandExceptionType {
@@ -697,7 +699,6 @@ fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.no
             Param.AT -> (positionOrNull(value) ?: fail(reader, BAD_POSITION, value)).let { query.copy(at = Triple(it.x, it.y, it.z), atWorld = it.world) }
             Param.ASOF -> query.copy(asOf = value.toLongOrNull()?.takeIf { it > 0 } ?: fail(reader, BAD_MOMENT, value))
             Param.PART -> query.copy(part = Part.entries.firstOrNull { it.word == value.lowercase() } ?: fail(reader, BAD_PART, value))
-            Param.VIEW -> query.copy(inChat = value.equals("chat", ignoreCase = true) || fail(reader, BAD_VIEW, value))
         }
         reader.cursor = tokenStart + token.length
     }
@@ -1079,7 +1080,7 @@ class LookupArgument(
         Param.PAGE -> listOf("2", "3")
         Param.ROLLEDBACK -> listOf("no", "yes")
         Param.AMOUNT -> listOf(">=8", ">=64", "<4")
-        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, Param.PART, Param.VIEW, null -> emptyList()
+        Param.EVENT, Param.FILTER, Param.AT, Param.ASOF, Param.PART, null -> emptyList()
     }
 }
 
@@ -1110,7 +1111,7 @@ private val EXCLUDABLE: List<String> by lazy {
 
 private val REPEATABLE = setOf(Param.USER, Param.PLAYER, Param.INCLUDE, Param.EXCLUDE)
 
-private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF, Param.PART, Param.VIEW)
+private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FILTER, Param.AMOUNT, Param.ROLLEDBACK, Param.ASOF, Param.PART)
 
 // The clicks of a window, which `verb` words "moved", and the container causes themselves: what a line between a
 // player's hands and a container may be drawn as put in or taken out.
@@ -1434,15 +1435,15 @@ internal fun pageRows(sender: CommandSender): Int =
 
 /**
  * The query as [sender] asked it, with what is read on their thread rather than off it, where the answer is
- * drawn, and with the moment it was asked. [LookupQuery.inChat] is the inspector's: chat, and the short default
+ * drawn, and with the moment it was asked. [LookupQuery.click] is the inspector's: chat, and the short default
  * page, as it answers every click.
  */
 internal fun LookupQuery.askedBy(sender: CommandSender): LookupQuery = copy(
     teleports = canTeleport(sender),
     hide = Places.hidden(sender),
     rollbacks = sender is Player && sender.hasPermission(ROLLBACK_PERMISSION),
-    dialog = !inChat && readsInDialog(sender),
-    rows = rows ?: pageRows(sender).takeIf { !inChat },
+    dialog = click == null && readsInDialog(sender),
+    rows = rows ?: pageRows(sender).takeIf { click == null },
     asOf = asOf ?: System.currentTimeMillis(),
 )
 
@@ -1479,7 +1480,7 @@ internal fun showPage(
         sender.sendMessage(top.build())
         lines.forEach(sender::sendMessage)
         notes.forEach(sender::sendMessage)
-        sender.sendMessage(footer(query.page, back, forward, query.teleports, more))
+        sender.sendMessage(footer(query.page, back, forward, sender is Player, more))
         return
     }
     fun arrow(mark: String, to: Int, command: String?) = command?.let {
@@ -1532,11 +1533,12 @@ private fun legendLines(hide: Boolean, teleports: Boolean, rollbacks: Boolean): 
 
 // The rule under a page, with the page in it, the arrows that go somewhere clickable, and the last page said to be
 // the last: no count of them is kept, as that would read every row. [more] is whether rows are left past this page,
-// which a page with no command for the next one can still have. The console is told the words to type.
-private fun footer(page: Int, back: String?, forward: String?, clickable: Boolean, more: Boolean): Component {
+// which a page with no command for the next one can still have. The console is told the words to type; a player
+// gets the arrows whether or not /pp tp is theirs, as an arrow only asks the same lookup again.
+private fun footer(page: Int, back: String?, forward: String?, player: Boolean, more: Boolean): Component {
     val last = if (more) "" else tr(", the last", ", последняя")
     val said = when {
-        clickable && (back != null || forward != null) -> {
+        player && (back != null || forward != null) -> {
             fun arrow(mark: String, to: Int, command: String?) =
                 if (command != null) Ui.button(mark, command, Ui.WHO, tr("Page $to", "Стр. $to")) else Ui.text(mark, Ui.FAINT)
             Component.text().append(arrow("«", page - 1, back)).append(Ui.text(" ${tr("page", "стр.")} $page$last ", Ui.MUTED))
@@ -1898,7 +1900,6 @@ class Lookups(
             sender.sendMessage(Component.text().append(Ui.text("PfauProtect · ", Ui.FAINT)).append(placed).append(Ui.text(" — $why", Ui.MUTED)).build())
             return
         }
-        val clickable = query.teleports
         // Every line of a lookup of one place happened there, which the heading already says; a line's own mark is
         // left only where it happened somewhere else, as the other end of a movement can.
         val here = WorldBlock(target.world, target.x, target.y, target.z).takeIf { place != null && (query.radius ?: 0) == 0 }
@@ -1906,12 +1907,12 @@ class Lookups(
             val line = run.first
             var out = line.draw(run.amount, run.rows, query.hide, run.twins)
             val event = line.event?.takeIf { run.rows == 1 }
-            // Struck through for the eye, said in words for whoever cannot see the line drawn.
+            // Struck through for the eye, said in words for the console, which cannot see the line drawn.
             val back = if (line.undone) arrayOf(tr("rolled back", "откачено")) else emptyArray()
-            if (line.undone) out = if (clickable) out.decorate(TextDecoration.STRIKETHROUGH) else out.append(Ui.text("  (${back[0]})", Ui.FAINT))
+            if (line.undone) out = if (sender is Player) out.decorate(TextDecoration.STRIKETHROUGH) else out.append(Ui.text("  (${back[0]})", Ui.FAINT))
             out = when {
                 run.rows > 1 -> Ui.hover(out, *back, tr("${run.rows} in a row; #all shows each", "${run.rows} подряд; #all покажет каждое"))
-                line.undone && clickable -> Ui.hover(out, *back)
+                line.undone && sender is Player -> Ui.hover(out, *back)
                 else -> out
             }
             // A player who may roll back clicks a single event's ↶ for it; the console cannot click and is given
@@ -1928,7 +1929,7 @@ class Lookups(
             if (mark != null) out = out.append(Ui.text("  ")).append(mark)
             // First on the line, where it is found in the same place on every line and a wrap cannot leave it alone
             // on a line of its own; and outside the strike and the hover, which are the row's.
-            val spot = line.places.firstOrNull { it != here }?.let { Ui.place(it.world, it.x, it.y, it.z, clickable, query.hide) }
+            val spot = line.places.firstOrNull { it != here }?.let { Ui.place(it.world, it.x, it.y, it.z, query.teleports, query.hide) }
             val start = Component.text().append(Ui.text(" "))
             if (spot != null) start.append(spot).append(Ui.text(" "))
             start.append(out).build()

@@ -49,6 +49,8 @@ import org.bukkit.plugin.Plugin
 import net.kyori.adventure.text.Component as AdventureComponent
 import net.kyori.adventure.text.TextComponent
 import net.kyori.adventure.text.TranslatableComponent
+import net.kyori.adventure.text.event.ClickEvent
+import net.kyori.adventure.text.format.TextDecoration
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -70,11 +72,12 @@ class LookupReadTest : BothPlanes() {
         players: Map<String, UUID> = emptyMap(),
         target: LookupTarget = LookupTarget(world, 10, 64, -3, "stone at 10 64 -3"),
         asker: Class<out CommandSender> = CommandSender::class.java,
+        render: (AdventureComponent) -> String = ::flat,
     ): List<String> {
         val lines = ArrayList<String>()
         val names = players.entries.associate { (name, id) -> id to name }
         Lookups(stub(Plugin::class.java), shared, logs, codec, players::get, names::get)
-            .report(senderInto(lines, ::flat, asker), target, query)
+            .report(senderInto(lines, render, asker), target, query)
         return lines
     }
 
@@ -89,6 +92,16 @@ class LookupReadTest : BothPlanes() {
             }
             c.children().forEach(::walk)
             (c.hoverEvent()?.value() as? AdventureComponent)?.let { append("{"); walk(it); append("}") }
+        }
+        walk(component)
+    }
+
+    // [flat], then what each click runs and each strike, which [flat] leaves out.
+    private fun marked(component: AdventureComponent): String = flat(component) + buildString {
+        fun walk(c: AdventureComponent) {
+            c.clickEvent()?.takeIf { it.action() == ClickEvent.Action.RUN_COMMAND }?.let { append(" [run:${(it.payload() as ClickEvent.Payload.Text).value()}]") }
+            if (c.decoration(TextDecoration.STRIKETHROUGH) == TextDecoration.State.TRUE) append(" [strike]")
+            c.children().forEach(::walk)
         }
         walk(component)
     }
@@ -709,6 +722,24 @@ class LookupReadTest : BothPlanes() {
         val lines = said(asker = Player::class.java)
         assertTrue(lines.any { it.contains("placed") }, "$lines")
         assertTrue(lines.none { it.contains("event:") }, "$lines")
+    }
+
+    // A player without /pp tp still clicks: the arrows and the strike are theirs, the words to type are the console's.
+    @Test
+    fun `a player who may not teleport gets the page arrows and the strike`() {
+        val chest = Container(world, 10, 64, -3, 0)
+        shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(alice, 0), stone, null, 4, T0))
+        shared.drain()
+        val theft = shared.holderEntries(chest, 0, Long.MAX_VALUE).single()
+        shared.submit(Transfer(Cause.ROLLBACK, Void, chest, stone, null, 4, T0 + 1000, reverts = listOf(theft.ref)))
+        shared.drain()
+
+        assertTrue(said(LookupQuery(rows = 1)).last().contains("page:2"), "the console lost the words")
+        assertTrue(said().any { it.contains("(rolled back)") }, "the console lost the words")
+        val paged = said(LookupQuery(rows = 1), asker = Player::class.java, render = ::marked)
+        assertTrue(paged.last().let { "»" in it && Regex("\\[run:/pp l [^]]* page:2]") in it && "older rows" !in it }, "$paged")
+        val lines = said(asker = Player::class.java, render = ::marked)
+        assertTrue(lines.single { it.contains("\ncontainer_remove}") }.let { "[strike]" in it && "(rolled back)" !in it }, "$lines")
     }
 
     // One place asks its filter of each row as it reads, as a radius does, so forty rows of another kind newer

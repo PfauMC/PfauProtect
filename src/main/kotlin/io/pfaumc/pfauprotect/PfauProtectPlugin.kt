@@ -723,6 +723,15 @@ class PfauProtectPlugin : JavaPlugin() {
         .executes { inspect(it.source, null) }
         .then(Commands.literal("on").executes { inspect(it.source, true) })
         .then(Commands.literal("off").executes { inspect(it.source, false) })
+        // What the inspector's page arrows run; a link's target, so it is not in help.
+        .then(
+            Commands.literal("page").then(
+                Commands.argument("page", IntegerArgumentType.integer(1)).then(
+                    Commands.argument("click", LongArgumentType.longArg(0))
+                        .executes { inspectPage(it.source, IntegerArgumentType.getInteger(it, "page"), LongArgumentType.getLong(it, "click")) }
+                )
+            )
+        )
 
     // The scheduled passes run minutes apart, too slow to wait on by hand; this runs them now, to the end.
     private fun verifyNode(literal: String) = gated(literal, VERIFY_PERMISSION)
@@ -893,6 +902,15 @@ class PfauProtectPlugin : JavaPlugin() {
             ), Ui.GAINED)
             else Ui.text(tr("Inspector off", "Инспектор выключен"), Ui.MUTED)
         )
+    }
+
+    private fun inspectPage(source: CommandSourceStack, page: Int, click: Long): Int = withRunning(source) { running, sender ->
+        val player = source.executor as? Player
+        if (player == null) {
+            sender.say("Only a player can use the inspector.")
+            return 0
+        }
+        if (!running.inspector.page(player, page, click)) sender.say("That answer is not your last inspection: click the block again.")
     }
 
     private fun purge(source: CommandSourceStack, age: String, confirm: Boolean): Int = withRunning(source) { running, sender ->

@@ -25,11 +25,20 @@ import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.inventory.EquipmentSlot
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ThreadLocalRandom
+import java.util.concurrent.atomic.AtomicLong
 
 class Inspector(private val lookups: Lookups) : Listener {
     private val enabled = ConcurrentHashMap.newKeySet<UUID>()
     // What each player last asked about and when: a held click repeats, and each repeat was a whole answer.
     private val last = ConcurrentHashMap<UUID, Pair<Any, Long>>()
+    // The place each player last clicked and the question asked of it, which /pp i page asks again at another page.
+    // ponytail: the last click only; an arrow under an older answer is refused rather than paging another place, which
+    // a hidden heading would not tell apart. Keep a few per player if clicking again gets in the way.
+    private val shown = ConcurrentHashMap<UUID, Pair<LookupTarget, LookupQuery>>()
+    // Names each click for its arrows. Started at random rather than at zero or the clock, so an arrow left in chat
+    // from before a restart names no click of this run, whatever the clock did.
+    private val clicks = AtomicLong(ThreadLocalRandom.current().nextLong(Long.MAX_VALUE / 2))
 
     fun toggle(player: Player, desired: Boolean?): Boolean {
         val next = desired ?: (player.uniqueId !in enabled)
@@ -71,7 +80,11 @@ class Inspector(private val lookups: Lookups) : Listener {
         val target = if (choice.inFront) block.getRelative(hit.hitBlockFace ?: return) else block
         event.isCancelled = true
         if (again(player, target.location to choice.part)) return
-        lookups.run(player, lookupTargetAt(target), LookupQuery(part = choice.part, inChat = true))
+        // The moment is pinned here, as the page buttons of a lookup pin it: rows written since would shift every page.
+        val query = LookupQuery(part = choice.part, click = clicks.incrementAndGet(), asOf = System.currentTimeMillis())
+        val asked = lookupTargetAt(target) to query
+        shown[player.uniqueId] = asked
+        lookups.run(player, asked.first, asked.second)
     }
 
     // A spectator sees through the block the camera is in, so the ray starts where it leaves that one block;
@@ -143,13 +156,24 @@ class Inspector(private val lookups: Lookups) : Listener {
 
     private fun inspect(player: Player, entity: Entity) {
         if (again(player, entity.uniqueId)) return
+        shown -= player.uniqueId
         lookups.entity(player, entity.uniqueId, typeOf(entity), lookupTargetAt(entity.location))
+    }
+
+    /**
+     * Another [page] of [click], which an arrow carries; false when that is not the player's last click on a block.
+     */
+    fun page(player: Player, page: Int, click: Long): Boolean {
+        val (target, query) = shown[player.uniqueId]?.takeIf { it.second.click == click } ?: return false
+        lookups.run(player, target, query.copy(page = page))
+        return true
     }
 
     @EventHandler
     fun onQuit(event: PlayerQuitEvent) {
         enabled -= event.player.uniqueId
         last -= event.player.uniqueId
+        shown -= event.player.uniqueId
     }
 
 }
