@@ -25,6 +25,7 @@ import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.inventory.EquipmentSlot
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.atomic.AtomicLong
 
 class Inspector(private val lookups: Lookups) : Listener {
@@ -35,9 +36,9 @@ class Inspector(private val lookups: Lookups) : Listener {
     // ponytail: the last click only; an arrow under an older answer is refused rather than paging another place, which
     // a hidden heading would not tell apart. Keep a few per player if clicking again gets in the way.
     private val shown = ConcurrentHashMap<UUID, Pair<LookupTarget, LookupQuery>>()
-    // Names each click for its arrows. Started at the clock, so an arrow left in chat from before a restart names no
-    // click of this run.
-    private val clicks = AtomicLong(System.currentTimeMillis())
+    // Names each click for its arrows. Started at random rather than at zero or the clock, so an arrow left in chat
+    // from before a restart names no click of this run, whatever the clock did.
+    private val clicks = AtomicLong(ThreadLocalRandom.current().nextLong(Long.MAX_VALUE / 2))
 
     fun toggle(player: Player, desired: Boolean?): Boolean {
         val next = desired ?: (player.uniqueId !in enabled)
