@@ -175,7 +175,11 @@ class CoreProtectImport(
             val page = source.page(name, columns, after, limit, read)
             if (page.rows.isEmpty()) {
                 if (!page.broken) break
-                val next = source.skipFrom(name, after) ?: break
+                val next = source.skipFrom(name, after)
+                if (next == null) {
+                    LOGGER.warning("CoreProtect import: $name does not read past row $after; the rest of it is not imported")
+                    break
+                }
                 // A row that reads by itself but not in a page is stepped over alone, or the walk would stand still.
                 val past = maxOf(next, after + 1)
                 counts.add("$name unreadable", past - after)

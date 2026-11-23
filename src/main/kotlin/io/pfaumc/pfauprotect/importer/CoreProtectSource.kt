@@ -58,28 +58,31 @@ internal class CoreProtectSource(file: Path, copy: Boolean) : AutoCloseable {
         }
 
     /**
-     * How far past [after] a damaged stretch of [table] goes: the new `after`, the last position known not to read,
-     * or null when nothing past it reads at all. Damage is walked a row at a time, which finds the first row that
-     * reads exactly; past [LINEAR_PROBES] rows of it the steps double, and the answer is only the last damaged
-     * position a step landed on, so the walk after it goes on a row at a time again. A step past the table's end
-     * goes back to a row at a time from the damage. Readable rows in between can be lost only inside a stretch
-     * longer than [LINEAR_PROBES] rows, and only past its first damaged ones.
+     * How far past [after] a damaged stretch of [table] goes: the new `after`, the last of the positions right past
+     * [after] that were each tried and do not read, or null when the walk should stop there. Every position up to the
+     * answer is tried, so no readable row is ever stepped over. One call tries at most [LINEAR_PROBES] of them; when
+     * all of those are damaged it goes on only if a doubling look further on, up to [MAX_STEP], finds a row that
+     * reads. Otherwise (a damaged end of the table, as a copy taken during writes has) it answers null, and the rest
+     * of the table waits for a better copy.
      */
     fun skipFrom(table: String, after: Long): Long? {
         var broken = after
-        var step = 1L
-        while (true) {
-            val at = broken + step
-            if (at - after > MAX_STEP) return null
-            when (probe(table, at)) {
-                null -> if (step == 1L) return null else step = 1
-                BROKEN -> {
-                    broken = at
-                    if (broken - after > LINEAR_PROBES) step = minOf(step * 2, MAX_STEP)
-                }
+        while (broken - after < LINEAR_PROBES) {
+            when (probe(table, broken + 1)) {
+                null -> return null
+                BROKEN -> broken++
                 else -> return broken
             }
         }
+        var step = 1L
+        while (step <= MAX_STEP) {
+            when (probe(table, broken + step)) {
+                null -> return null
+                BROKEN -> step *= 2
+                else -> return broken
+            }
+        }
+        return null
     }
 
     // The first rowid at or past `from`: null when there is none, BROKEN when the way there does not read.

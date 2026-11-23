@@ -157,7 +157,8 @@ rows come first, as they are older; that is also why nothing after the start of 
 written straight into the bases (`BlockLog.importEvents`, `RocksItemLog.importTransfers`, `ChatLog.importLines`),
 with no clamping, no watchers and no API veto. Numbered from the source, a run stopped and started again rewrites the
 same keys with the same bytes; the last rowid of each table is kept in the ledger's meta (`import:coreprotect:<table>`),
-and a run goes on from there. A page SQLite cannot read is stepped over and counted (`<table> unreadable`); the import
+and a run goes on from there. A page SQLite cannot read is stepped over and counted (`<table> unreadable`), every row of it tried on its own;
+when thousands of rows in a row fail and nothing further on reads (a copy's damaged end), the table stops there. The import
 waits while the live writers hold a tenth of their backlog limit and stops below 20 GiB of free disk.
 
 ## `/pp lookup` and `/pp purge` semantics
