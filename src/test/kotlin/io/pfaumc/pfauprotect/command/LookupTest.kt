@@ -227,9 +227,10 @@ class LookupTest {
 
     @Test
     fun `actions map onto the causes the capture emits`() {
-        // A throw out of a chest's window is a withdrawal too, and so is what CoreProtect saw taken.
-        val deposits = setOf(Cause.CONTAINER_ADD, Cause.CP_CONTAINER_ADD)
-        val withdrawals = setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW, Cause.CP_CONTAINER_REMOVE)
+        // A throw out of a chest's window is a withdrawal too, and so is what CoreProtect saw taken; the clicks are read
+        // to be told apart by their ends.
+        val deposits = setOf(Cause.CONTAINER_ADD, Cause.CP_CONTAINER_ADD) + BOXED
+        val withdrawals = setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW, Cause.CP_CONTAINER_REMOVE) + BOXED
         assertEquals(deposits + withdrawals, parseLookupQuery("a:container").causes)
         assertEquals(deposits, parseLookupQuery("a:+container").causes)
         assertEquals(withdrawals, parseLookupQuery("a:-container").causes)
@@ -276,7 +277,7 @@ class LookupTest {
     @Test
     fun `keys are case insensitive but values keep their case`() {
         assertEquals(listOf("Steve"), parseLookupQuery("U:Steve").users)
-        assertEquals(setOf(Cause.CONTAINER_ADD, Cause.CP_CONTAINER_ADD), parseLookupQuery("A:DEPOSIT").causes)
+        assertEquals(setOf(Cause.CONTAINER_ADD, Cause.CP_CONTAINER_ADD) + BOXED, parseLookupQuery("A:DEPOSIT").causes)
     }
 
     // The point of parsing off the caller's reader is that the game underlines the token at fault, so

@@ -203,6 +203,16 @@ class BlockDestructionRulesTest {
         assertFalse(liquidDestroys(Blocks.OAK_DOOR.defaultBlockState()))
     }
 
+    // A bucket emptied into a slab notes water there; what then runs out of the slab is looked up as water, or the
+    // chain finds nobody and the torch it washes away is nobody's.
+    @Test
+    fun `what runs out of a waterlogged block is its water`() {
+        val slab = Blocks.OAK_SLAB.defaultBlockState().setValue(BlockStateProperties.WATERLOGGED, true)
+        assertEquals(SOURCE_WATER, liquidOf(slab))
+        assertEquals("minecraft:water[level=3]", liquidOf(Blocks.WATER.defaultBlockState().setValue(BlockStateProperties.LEVEL, 3)))
+        assertEquals("minecraft:oak_slab[type=bottom,waterlogged=false]", liquidOf(Blocks.OAK_SLAB.defaultBlockState()))
+    }
+
     // A state that backs no item must answer with none, or the position is credited with what nobody
     // made; any other block must answer with one, or its credit is stranded where no self-check looks.
     // A waterlogged block leaves its water behind and is gone all the same; a crop a stage on, or grass
