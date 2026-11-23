@@ -325,6 +325,14 @@ internal fun spreadCause(after: String): Cause = when (blockNameOf(after)) {
  *
  * A position already holding a fluid is a level changing rather than anything being destroyed.
  */
+/**
+ * What runs out of a block, as the notes of the chain name it: a waterlogged slab lets out water, and the bucket
+ * that filled it noted water there, not a slab.
+ */
+internal fun liquidOf(state: NmsBlockState): String =
+    if (state.block is LiquidBlock || state.fluidState.isEmpty) state.asBlockData().asString
+    else state.fluidState.createLegacyBlock().asBlockData().asString
+
 internal fun liquidDestroys(state: NmsBlockState): Boolean =
     !state.isAir &&
         state.fluidState.isEmpty &&
@@ -1261,7 +1269,7 @@ class BlockDestructionListener(
         // A dragon egg struck or used jumps elsewhere, and this is its only announcement. It is a move:
         // the egg leaves one position and arrives in the other, and the item it stands for goes along.
         if (from.type == Material.DRAGON_EGG) return eggJumped(from, to)
-        val by = attribution.carriedTo(positionOf(to), from.blockData.asString)
+        val by = attribution.carriedTo(positionOf(to), liquidOf((from as CraftBlock).blockState))
         if (!liquidDestroys((to as CraftBlock).blockState)) {
             // Only a flow somebody let out: the world's own springs are no story to tell.
             if (to.type.isAir && by != null && by.culprit() != null) flowed(to, by)
@@ -1306,7 +1314,9 @@ class BlockDestructionListener(
      */
     private fun pouredBy(liquid: Block): Attributed? {
         val at = positionOf(liquid)
-        val standing = liquid.blockData.asString
+        // ponytail: a waterlogged block is asked of its note alone; the journal and the walk to the sources know only
+        // liquid blocks, so water let out of one past the note's window is nobody's.
+        val standing = liquidOf((liquid as CraftBlock).blockState)
         attribution.placerAt(at, standing)?.let { return it }
         // Its own flow row first: lava that ran far from its bucket is past any walk back to the source.
         val found = attribution.journalPlacerAt(at, standing, FLOWING_CAUSES)
