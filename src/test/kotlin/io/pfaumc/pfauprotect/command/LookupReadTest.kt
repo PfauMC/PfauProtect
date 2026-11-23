@@ -191,6 +191,24 @@ class LookupReadTest : BothPlanes() {
         assertTrue(block.any { it.contains("\nblk_player_place}") && it.contains("items:") }, "$block")
     }
 
+    // A double chest files each slot under the half it belongs to; clicked on either half, it is one chest.
+    @Test
+    fun `the contents of a double chest are read from both halves`() {
+        val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), Container(world, 10, 64, -3, 0), diamond, null, 3, T0))
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 1), Container(world, 11, 64, -3, 0), diamond, null, 5, T0 + 1))
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 2), Container(world, 10, 64, -2, 0), diamond, null, 7, T0 + 2))
+        shared.drain()
+
+        val half = said(LookupQuery(part = Part.CONTENTS))
+        assertTrue(half.any { "×3" in it } && half.none { "×5" in it }, "$half")
+        val twin = LookupTarget(world, 10, 64, -3, "chest at 10 64 -3", twin = WorldBlock(world, 11, 64, -3))
+        val both = said(LookupQuery(part = Part.CONTENTS), target = twin)
+        assertTrue(both.any { "×3" in it } && both.any { "×5" in it }, "$both")
+        assertTrue(both.none { "×7" in it }, "a chest beside it is another chest: $both")
+        assertTrue(said(LookupQuery(part = Part.BLOCK), target = twin).none { "×5" in it })
+    }
+
     @Test
     fun `a position answers with both planes in the order things happened`() {
         val at = WorldBlock(world, 10, 64, -3)
@@ -598,6 +616,27 @@ class LookupReadTest : BothPlanes() {
         }
         val dropped = said(parseLookupQuery("action:drop radius:3"))
         assertTrue(dropped.any { "×5" in it } && dropped.any { "×7" in it }, "$dropped")
+    }
+
+    // A shift-click into a chest is filed as the click and a hotbar key over a chest's slot as the swap; both are as much
+    // a deposit and a withdrawal as a click with the cursor, and a theft is no less one for being done by a key.
+    @Test
+    fun `a click filed as itself is a deposit or a withdrawal by which end the chest is`() {
+        log.submit(listOf(BlockChange(12, 64, -3, AIR, "minecraft:chest", Cause.BLK_PLAYER_PLACE, T0, actor = bob)))
+        log.drain()
+        val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
+        shared.submit(Transfer(Cause.QUICK_MOVE, PlayerInv(alice, 0), Container(world, 12, 64, -3, 1), diamond, null, 3, T0 + 10))
+        shared.submit(Transfer(Cause.HOTBAR_SWAP, Container(world, 12, 64, -3, 2), PlayerInv(alice, 1), diamond, null, 5, T0 + 20))
+        shared.drain()
+
+        for ((asked, put, taken) in listOf(
+            Triple("action:+container", true, false), Triple("action:-container", false, true),
+            Triple("action:steal", false, true), Triple("action:container", true, true),
+        )) {
+            val lines = said(parseLookupQuery("$asked radius:3"))
+            assertEquals(put, lines.any { "×3" in it }, "$asked: $lines")
+            assertEquals(taken, lines.any { "×5" in it }, "$asked: $lines")
+        }
     }
 
     // A throw out of somebody's chest names the thrower only as its actor, and a player's lookup without a radius

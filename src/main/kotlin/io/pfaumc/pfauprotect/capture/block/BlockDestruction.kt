@@ -317,6 +317,14 @@ internal fun spreadCause(after: String): Cause = when (blockNameOf(after)) {
 }
 
 /**
+ * What runs out of a block, as the notes of the chain name it: a waterlogged slab lets out water, and the bucket
+ * that filled it noted water there, not a slab.
+ */
+internal fun liquidOf(state: NmsBlockState): String =
+    if (state.block is LiquidBlock || state.fluidState.isEmpty) state.asBlockData().asString
+    else state.fluidState.createLegacyBlock().asBlockData().asString
+
+/**
  * Whether the liquid about to arrive destroys what stands in the position or merely runs past it.
  * This is the server's own rule, and without it every block water ever ran over would be booked as a
  * loss: `FlowingFluid.spreadTo` hands the position to `beforeDestroyingBlock` only where it holds a
@@ -1261,7 +1269,7 @@ class BlockDestructionListener(
         // A dragon egg struck or used jumps elsewhere, and this is its only announcement. It is a move:
         // the egg leaves one position and arrives in the other, and the item it stands for goes along.
         if (from.type == Material.DRAGON_EGG) return eggJumped(from, to)
-        val by = attribution.carriedTo(positionOf(to), from.blockData.asString)
+        val by = attribution.carriedTo(positionOf(to), liquidOf((from as CraftBlock).blockState))
         if (!liquidDestroys((to as CraftBlock).blockState)) {
             // Only a flow somebody let out: the world's own springs are no story to tell.
             if (to.type.isAir && by != null && by.culprit() != null) flowed(to, by)
@@ -1306,7 +1314,9 @@ class BlockDestructionListener(
      */
     private fun pouredBy(liquid: Block): Attributed? {
         val at = positionOf(liquid)
-        val standing = liquid.blockData.asString
+        // ponytail: a waterlogged block is asked of its note alone; the journal and the walk to the sources know only
+        // liquid blocks, so water let out of one past the note's window is nobody's.
+        val standing = liquidOf((liquid as CraftBlock).blockState)
         attribution.placerAt(at, standing)?.let { return it }
         // Its own flow row first: lava that ran far from its bucket is past any walk back to the source.
         val found = attribution.journalPlacerAt(at, standing, FLOWING_CAUSES)
@@ -1474,7 +1484,10 @@ class BlockDestructionListener(
         val blocks = event.blocks
         val sites = sitesOf(blocks)
         val timestamp = System.currentTimeMillis()
+        // A tree that grew on its own is whoever planted it: the sapling still stands while the event runs,
+        // and it was planted hours before, long past any note, so the journal is asked once per tree.
         val by = event.player?.witnessed()
+            ?: event.location.block.let { attribution.planterAt(positionOf(it), it.blockData.asString) }
         // Settled on the global region, a tick later; filing reads the world, so it goes to the tree's own.
         val at = blocks.firstOrNull()?.location
         growing.claim(blocks) {

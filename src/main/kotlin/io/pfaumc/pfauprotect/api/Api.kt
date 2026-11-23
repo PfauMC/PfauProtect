@@ -13,7 +13,9 @@ import io.pfaumc.pfauprotect.command.LookupQuery
 import io.pfaumc.pfauprotect.command.LookupTarget
 import io.pfaumc.pfauprotect.command.Lookups
 import io.pfaumc.pfauprotect.command.chatActionsOf
+import io.pfaumc.pfauprotect.command.Part
 import io.pfaumc.pfauprotect.command.chatPlayers
+import io.pfaumc.pfauprotect.command.chestTwinOf
 import io.pfaumc.pfauprotect.command.lookupTargetAt
 import io.pfaumc.pfauprotect.command.parseLookupQuery
 import io.pfaumc.pfauprotect.command.readChat
@@ -33,12 +35,15 @@ import org.bukkit.block.Block
 import org.bukkit.block.data.BlockData
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
+import org.bukkit.plugin.IllegalPluginAccessException
 import org.bukkit.plugin.Plugin
 import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
@@ -115,8 +120,33 @@ internal class Api(
         val parsed = queryOf(request.words, request.since, request.until).copy(hide = hidden(access))
         val query = if (here && parsed.global && !GLOBAL_WORD.containsMatchIn(request.words)) parsed.copy(radius = null) else parsed
         val world = request.world ?: query.atWorld ?: query.event?.world?.takeIf { query.at == null } ?: refuse("A lookup needs a world.")
-        val target = query.targetOr(LookupTarget(world, request.x, request.y, request.z, "${request.x} ${request.y} ${request.z}"))
+        val asked = query.targetOr(LookupTarget(world, request.x, request.y, request.z, "${request.x} ${request.y} ${request.z}"))
+        val target = if (query.part != Part.BLOCK && query.radius == null) withTwin(asked) else asked
         lookups.pageOf(lookups.find(target, query), query)
+    }
+
+    /**
+     * The other half of a double chest standing at [target], asked where it stands. A chunk not in memory is not
+     * loaded for it: that chest is read one half alone.
+     */
+    private fun withTwin(target: LookupTarget): LookupTarget {
+        // The tests' stub plugin has no server, whatever the annotation says: no world to ask there.
+        @Suppress("USELESS_ELVIS")
+        val server: org.bukkit.Server = plugin.server ?: return target
+        val world = server.getWorld(target.world) ?: return target
+        val found = CompletableFuture<LookupTarget>()
+        // A plugin going down refuses the task, and a lagging region may not get to it: either way one half is read.
+        return try {
+            server.regionScheduler.execute(plugin, world, target.x shr 4, target.z shr 4) {
+                val loaded = world.isChunkLoaded(target.x shr 4, target.z shr 4)
+                found.complete(if (loaded) target.copy(twin = chestTwinOf(world.getBlockAt(target.x, target.y, target.z))) else target)
+            }
+            found.get(TWIN_SECONDS, TimeUnit.SECONDS)
+        } catch (_: TimeoutException) {
+            target
+        } catch (_: IllegalPluginAccessException) {
+            target
+        }
     }
 
     fun actorActionsAs(request: LookupRequest, access: Access?): CompletableFuture<LookupPage> = off {
@@ -237,6 +267,9 @@ internal class Api(
 private val NONE = PreviewResult("none")
 
 private const val THREADS = 4
+
+// A region task waits behind at most a tick or two of a lagging region; past that the lookup reads one half.
+private const val TWIN_SECONDS = 2L
 
 // Longer than any read the walk budgets let through: a three-day window over a warehouse reads for minutes.
 private const val READ_MILLIS = 30 * 60_000L
