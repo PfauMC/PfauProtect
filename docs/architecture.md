@@ -63,7 +63,7 @@ data is written first so a block row never points at nothing.
 
 **Attribution (`Attribution.kt`, plus `SpawnOrigins`/`EntityOrigins`).** Attribution climbs a ladder: direct
 source, then in-memory trackers, then the ledger. Anything that was not observed directly is `INFERRED`, except a
-player who was only nearby, which is `NEARBY`. A tree that grew on its own is whoever planted the sapling (tracker,
+player who was only nearby, which is `NEARBY`. A tree that grew on its own is whoever planted the sapling or last fed it bone meal (tracker,
 then one journal read per tree). Liquid running out of a waterlogged block is looked up by its liquid
 (`liquidOf`): the bucket that filled it noted water there. Rows are
 never rewritten after the fact.
@@ -191,7 +191,8 @@ victim, so `p:` finds them, while `u:` still names only what the victim did.
   filed as `QUICK_MOVE`, a hotbar key over a chest's slot as `HOTBAR_SWAP`.
 - A container's contents without a radius (the inspector, `part:contents`) are read from both halves of a double
   chest: each slot is filed under the half it belongs to. The other half (`LookupTarget.twin`) is what stands there
-  when asked; the API asks the chest's region, and a chunk not in memory is read one half alone.
+  when asked; the API asks the chest's region for any radius-less read but `part:block`, and a chunk not in memory
+  is read one half alone.
 - A holder read (`Storage.holderPage`) takes the lookup's `RowFilter` as it reads, as a radius does, so its count
   is of rows asked for: filtered afterwards, a busy player's newest rows used the read up and an older match behind
   them was answered as nothing. `HOLDER_STEPS` bounds the walk and a cut read says so.
