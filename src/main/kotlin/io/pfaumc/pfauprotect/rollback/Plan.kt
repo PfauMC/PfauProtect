@@ -339,7 +339,9 @@ private class Collected(private val keeps: RowFilter) {
             passable(row) -> nature += row
             else -> foreign += row
         }
-        entities.filterTo(entityRows) { keeps.keeps(it) }
+        // A kill CoreProtect knew of came with no NBT to bring the mob back from: it is there to be looked up,
+        // and a rollback over it goes on with the rest rather than refusing, or counting, a row it could never undo.
+        entities.filterTo(entityRows) { keeps.keeps(it) && it.cause != Cause.CP_ENTITY_KILLED }
         // A rollback's own bringing back is nobody's placing: a frame it put back and the griefer blew up again comes back.
         entities.filterTo(created) { it.kind == EntityKind.CREATED && it.cause != Cause.ROLLBACK }
     }
@@ -601,9 +603,7 @@ class RollbackReader(
         val entities = HashMap<WorldBlock, MutableList<EntityPlan>>()
         val dropped = HashMap<WorldBlock, MutableList<UUID>>()
         val deaths = ArrayList<EntityRow>()
-        // A kill CoreProtect knew of came with no NBT to bring the mob back from: it is there to be looked up,
-        // and a rollback over it goes on with the rest rather than refusing for a row it could never undo.
-        val (stories, marks) = entityRows.filter { it.cause != Cause.CP_ENTITY_KILLED }.partition { it.kind in STORIES }
+        val (stories, marks) = entityRows.partition { it.kind in STORIES }
         for (row in marks) {
             when (row.kind) {
                 EntityKind.DROPPED -> dropped.getOrPut(WorldBlock(world, row.x, row.y, row.z)) { ArrayList() } += row.drops

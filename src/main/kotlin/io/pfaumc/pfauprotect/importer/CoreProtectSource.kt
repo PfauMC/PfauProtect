@@ -60,22 +60,28 @@ internal class CoreProtectSource(file: Path, copy: Boolean) : AutoCloseable {
     /**
      * Where [table] reads again after a damaged page past [after]: the new `after` (one below the first rowid that
      * reads), or null when nothing past it reads at all. Steps out doubling until a row answers, then halves back to
-     * the first place that does; what lies between was in the pages that did not read.
+     * the first place that does; what lies between was in the pages that did not read. A step that overshoots the
+     * table's end starts doubling again from the last damaged place, so rows between it and the end are not lost.
      */
     fun skipFrom(table: String, after: Long): Long? {
+        var base = after
         var step = 1L
         var found: Long? = null
-        while (step <= MAX_STEP) {
-            when (val probe = probe(table, after + step)) {
-                null -> return null
-                BROKEN -> step *= 2
-                else -> {
-                    found = after + step
-                    break
+        while (found == null) {
+            when (probe(table, base + step)) {
+                null -> {
+                    if (step == 1L) return null
+                    base += step / 2
+                    step = 1
                 }
+                BROKEN -> {
+                    if (step >= MAX_STEP) return null
+                    step *= 2
+                }
+                else -> found = base + step
             }
         }
-        var high = found ?: return null
+        var high: Long = found
         var low = after + 1
         while (low < high) {
             val middle = low + (high - low) / 2

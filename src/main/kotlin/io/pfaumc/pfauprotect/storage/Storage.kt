@@ -161,6 +161,8 @@ private val BY_ACTOR_CF = "by_actor".toByteArray()
 // withdrawals, which face the void.
 private val ACTOR_INDEXED = setOf(Cause.CONTAINER_THROW, Cause.CP_CONTAINER_ADD, Cause.CP_CONTAINER_REMOVE)
 
+private val IMPORTED_MOVES = setOf(Cause.CP_CONTAINER_ADD, Cause.CP_CONTAINER_REMOVE)
+
 // An actor-time entry: the player's number, the time, then the posting's `entries` key.
 private const val ACTOR_HEAD_SIZE = 12
 
@@ -1125,7 +1127,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                 db.forEachRow(entriesCf) { key, value ->
                     val entry = EntryCodec.decodeOrNull(key, value, registries)
                     if (entry != null && entry.timestamp < cutoff && form(entry.itemFormId) != null) {
-                        held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
+                        // CoreProtect's deposits and withdrawals face the void, without what hoppers and loot put in:
+                        // added up, they would make up a balance nobody held.
+                        if (entry.cause !in IMPORTED_MOVES) held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
                         deleted++
                         if (!dryRun) {
                             batch.delete(entriesCf, key)
@@ -1585,15 +1589,51 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
      * writer hands out, so these sort before its rows wherever the transaction number orders them, and taken
      * from the source, so writing the same movements again lands on the same keys with the same bytes.
      */
-    fun importTransfers(transfers: List<Pair<Long, Transfer>>) = dbLock.read {
+    // Under the writer's lock: a form the import interns while the writer holds a batch would be filed with a counter
+    // that batch then writes back over. Synced, because the mark that says how far an import got is. A movement that
+    // cannot be written is dropped and counted, as the writer drops one, so one bad row cannot stop an import for good.
+    fun importTransfers(transfers: List<Pair<Long, Transfer>>): Int = dbLock.read {
         check(!closed) { "the ledger is closed" }
-        WriteBatch().use { batch ->
-            for ((txId, transfer) in transfers) {
-                require(txId < 0) { "imported transactions are numbered below the writer's" }
-                writeTransaction(batch, listOf(transfer), txId)
+        holdingWriter {
+            var dropped = 0
+            WriteBatch().use { batch ->
+                for ((txId, transfer) in transfers) {
+                    require(txId < 0) { "imported transactions are numbered below the writer's" }
+                    batch.setSavePoint()
+                    try {
+                        writeTransaction(batch, listOf(transfer), txId)
+                    } catch (failure: Exception) {
+                        if (failure.isIoError()) throw failure
+                        batch.rollbackToSavePoint()
+                        dropped++
+                    }
+                }
+                db.write(syncWriteOptions, batch)
             }
-            db.write(writeOptions, batch)
+            dropped
         }
+    }
+
+    /** Runs [body] while the writer holds no batch: what it interns is filed with counters nothing writes back over. */
+    internal fun <T> holdingWriter(body: () -> T): T = writing.withLock(body)
+
+    /**
+     * When this journal began, as near as it can still tell: the time of its oldest transaction of more than one
+     * posting. An import may bring over only what is older. Null for a journal with none.
+     */
+    fun journalStart(): Long? = dbLock.read {
+        check(!closed) { "the ledger is closed" }
+        db.newIterator(txCf).use { iter ->
+            // Imported numbers are negative and sort after every one the writer handed out.
+            iter.seekToFirst()
+            while (iter.isValid && ByteReader(iter.key()).longBE() >= 0) {
+                val key = unpackKeys(iter.value()).firstOrNull()
+                val entry = key?.let { k -> db.get(entriesCf, k)?.let { EntryCodec.decodeOrNull(k, it, registries) } }
+                if (entry != null) return entry.timestamp
+                iter.next()
+            }
+        }
+        null
     }
 
     /** How far an import got through a source, by the name it gave it; 0 for one never begun. */

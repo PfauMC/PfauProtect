@@ -135,7 +135,8 @@ class ChatLog(dir: Path) : AutoCloseable {
                 require(seq >= 0) { "a sequence is kept positive" }
                 batch.put(keyOf(line.timestamp, seq), encode(line))
             }
-            WriteOptions().use { db.write(it, batch) }
+            // Synced, as the mark that says how far an import got is.
+            WriteOptions().setSync(true).use { db.write(it, batch) }
         }
     }
 

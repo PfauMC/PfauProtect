@@ -1,6 +1,8 @@
 package io.pfaumc.pfauprotect.importer
 
+import io.pfaumc.pfauprotect.Settings
 import io.pfaumc.pfauprotect.capture.block.payloadOf
+import io.pfaumc.pfauprotect.capture.shown
 import io.pfaumc.pfauprotect.model.Cause
 import io.pfaumc.pfauprotect.model.Container
 import io.pfaumc.pfauprotect.model.EntityKind
@@ -105,6 +107,7 @@ class CoreProtectImport(
     private lateinit var materials: Map<Int, String>
     private lateinit var properties: Map<Int, String>
     private lateinit var entities: Map<Int, String>
+    private var origin = 0L
 
     fun run() {
         outcome = try {
@@ -115,6 +118,11 @@ class CoreProtectImport(
                 materials = source.all("co_material_map", "id, material") { it.getInt(1) to it.getString(2) }
                 properties = source.all("co_blockdata_map", "id, data") { it.getInt(1) to it.getString(2) }
                 entities = source.all("co_entity_map", "id, entity") { it.getInt(1) to it.getString(2) }
+                // A world with no base here would see its rows passed over while the marks moved past them for good.
+                val missing = worlds.values.filter { name -> worldOf(name)?.let(logOf) == null }
+                check(missing.isEmpty()) { "CoreProtect's worlds ${missing.joinToString()} are not loaded here" }
+                // The marks belong to this database: another one starts from its own beginning.
+                origin = source.one("SELECT time FROM co_version ORDER BY rowid LIMIT 1", emptyList()) { it.getLong(1) } ?: 0
                 importBlocks()
                 importSigns()
                 importContainers()
@@ -146,7 +154,8 @@ class CoreProtectImport(
      */
     private fun <T : CpRow> walk(name: String, columns: String, read: (ResultSet) -> T, write: (List<T>, Boolean) -> Long?) {
         table = name
-        var after = ledger.importMark(markOf(name))
+        val mark = markOf(origin, name)
+        var after = ledger.importMark(mark)
         while (!stopping) {
             if (freeBytes() < MIN_FREE_BYTES) {
                 stopping = true
@@ -164,17 +173,24 @@ class CoreProtectImport(
                 counts.add("$name unreadable", past - after)
                 LOGGER.warning("CoreProtect import: $name rows ${after + 1}..$past do not read and were skipped")
                 after = past
-                ledger.setImportMark(markOf(name), after)
+                ledger.setImportMark(mark, after)
                 continue
             }
-            val ended = page.rows.any { it.time * 1000 >= until + LATE_MILLIS }
-            val kept = page.rows.filter { it.time * 1000 < until }
-            counts.add("$name after until", (page.rows.size - kept.size).toLong())
+            // The table ends at its first row past `until`, and the mark stops short of it: a later import with a later
+            // `until` starts there, grouping the rows as this one would have. A row CoreProtect filed a moment late,
+            // older than `until` but behind that first one, is left to such a later import.
+            val end = page.rows.indexOfFirst { it.time * 1000 >= until }
+            val ended = end >= 0
+            val kept = if (ended) page.rows.subList(0, end) else page.rows
             val last = ended || page.broken || page.rows.size < PAGE
             val took = write(kept, last)
-            // Rows past `until` the write never saw are taken all the same; what it held back is read again.
-            after = if (took == null || took == kept.lastOrNull()?.rowid) page.rows.last().rowid else took
-            ledger.setImportMark(markOf(name), after)
+            // What the write held back is read again.
+            after = when {
+                took != null && took != kept.lastOrNull()?.rowid -> took
+                ended -> page.rows[end].rowid - 1
+                else -> page.rows.last().rowid
+            }
+            ledger.setImportMark(mark, after)
             if (ended) break
         }
         at = after
@@ -233,7 +249,7 @@ class CoreProtectImport(
                 counts.add("co_block world not loaded", events.sumOf { it.second.size }.toLong())
                 continue
             }
-            log.importEvents(events)
+            counts.add("co_block not written", log.importEvents(events).toLong())
             for ((_, changes) in events) {
                 counts.add("blocks", changes.count { it is BlockChange }.toLong())
                 counts.add("kills", changes.count { it is EntityChange }.toLong())
@@ -288,7 +304,7 @@ class CoreProtectImport(
                         BlockChange(
                             row.x, row.y, row.z, state, leftBehind(state), causeOf(user, BREAK),
                             timestamp = row.time * 1000, actor = actor,
-                            payloadBefore = if (isSign(state)) signTextAt(row.wid, row.x, row.y, row.z, row.time, Long.MAX_VALUE, state) else null,
+                            payloadBefore = if (isSign(state)) signTextAt(row.wid, row.x, row.y, row.z, row.time + SIGN_BREAK_SECONDS, Long.MAX_VALUE, state, broken = true) else null,
                         )
                     } else {
                         BlockChange(row.x, row.y, row.z, AIR, state, causeOf(user, PLACE), timestamp = row.time * 1000, actor = actor)
@@ -371,7 +387,7 @@ class CoreProtectImport(
                 counts.add("co_sign no sign block")
                 continue
             }
-            val before = signTextAt(row.wid, row.x, row.y, row.z, row.time, row.rowid, state)
+            val before = signTextAt(row.wid, row.x, row.y, row.z, row.time, row.rowid, state, broken = false)
             val change = BlockChange(
                 row.x, row.y, row.z, state, state, Cause.BLK_CP_SIGN, timestamp = row.time * 1000,
                 actor = user?.takeIf { !it.agent }?.uuid, payloadBefore = before, payloadAfter = after,
@@ -381,7 +397,7 @@ class CoreProtectImport(
         for ((world, events) in byWorld) {
             val log = logOf(world)
             if (log == null) counts.add("co_sign world not loaded", events.size.toLong())
-            else log.importEvents(events).also { counts.add("signs", events.size.toLong()) }
+            else counts.add("co_sign not written", log.importEvents(events).toLong()).also { counts.add("signs", events.size.toLong()) }
         }
         null
     }
@@ -392,12 +408,16 @@ class CoreProtectImport(
         listOf(row.wid, row.x, row.z, row.y, row.time),
     ) { stateOf(it.getInt(1), it.getBytes(2)?.toString(Charsets.UTF_8)) }?.takeIf(::isSign)
 
-    // The text a sign at a position had at a moment, from the newest sign row before it; null when it had none.
-    private fun signTextAt(wid: Int, x: Int, y: Int, z: Int, time: Long, beforeRowid: Long, state: String): ByteArray? = source.one(
+    /**
+     * The text a sign at a position had at a moment, from the newest sign row before it; null when it had none. A
+     * sign's break row is CoreProtect's snapshot of its text as it broke, filed a few seconds early: for a [broken]
+     * sign that is the text, for an edit it means the sign before was gone.
+     */
+    private fun signTextAt(wid: Int, x: Int, y: Int, z: Int, time: Long, beforeRowid: Long, state: String, broken: Boolean): ByteArray? = source.one(
         "SELECT rowid, $SIGN_COLUMNS FROM co_sign WHERE wid = ? AND x = ? AND z = ? AND y = ? AND time <= ? AND rowid < ? ORDER BY time DESC, rowid DESC LIMIT 1",
         listOf(wid, x, z, y, time, beforeRowid),
         ::readSign,
-    )?.takeIf { it.action != 0 }?.let { signPayload(state, it) }
+    )?.takeIf { broken || it.action != 0 }?.let { signPayload(state, it) }
 
     private fun signPayload(state: String, row: CpSign): ByteArray? {
         val blockState = parsed(state) ?: return null
@@ -460,13 +480,14 @@ class CoreProtectImport(
                 continue
             }
             val stack = row.metadata?.let { runCatching { meta(it, bare) }.getOrNull() ?: bare.also { counts.add("item meta lost") } } ?: bare
+            if (stack !== bare && !ItemStack.isSameItemSameComponents(stack, bare)) counts.add("items with meta")
             val encoded = codec.encode(stack)
             val box = Container(world, row.x, row.y, row.z, 0)
             val (cause, from, to) = if (row.action == 1) Triple(Cause.CP_CONTAINER_ADD, Void, box) else Triple(Cause.CP_CONTAINER_REMOVE, box, Void)
             transfers += idOf(CONTAINER_TAG, row.time, row.rowid) to
                 Transfer(cause, from, to, encoded.form, encoded.damage, row.amount, row.time * 1000, actor = player)
         }
-        ledger.importTransfers(transfers)
+        counts.add("co_container not written", ledger.importTransfers(transfers).toLong())
         counts.add("container rows", transfers.size.toLong())
         null
     }
@@ -503,7 +524,12 @@ class CoreProtectImport(
     private fun writeLines(name: String, rows: List<Pair<CpLine, ChatKind>>, tag: Int) {
         val lines = rows.mapNotNull { (row, kind) ->
             val player = player(row.user) ?: return@mapNotNull null.also { counts.add("$name not a player") }
-            val text = if (kind == ChatKind.CP_JOIN || kind == ChatKind.CP_QUIT) "" else row.text
+            val text = when (kind) {
+                ChatKind.CP_JOIN, ChatKind.CP_QUIT -> ""
+                // A login carries a password, as it does when the capture takes it.
+                ChatKind.CP_COMMAND -> shown(row.text, Settings.hiddenCommands)
+                else -> row.text
+            }
             ChatLine(row.time * 1000, kind, player, text, worlds[row.wid].orEmpty(), row.x, row.y, row.z) to sequenceOf(tag, row.rowid)
         }
         chat.importLines(lines)
@@ -521,8 +547,6 @@ class CoreProtectImport(
     companion object {
         private const val PAGE = 10_000
 
-        // CoreProtect writes in batches, so a row a little older may still come after the first one past `until`.
-        private const val LATE_MILLIS = 60_000L
         private const val BUSY_WAIT_MILLIS = 500L
         private const val MIN_FREE_BYTES = 20L shl 30
 
@@ -538,6 +562,9 @@ class CoreProtectImport(
         private const val SESSION_TAG = 2
 
         private const val AIR = "minecraft:air"
+
+        // How far before the block's break CoreProtect may file the snapshot of a sign's text (`SignTextLogger`).
+        private const val SIGN_BREAK_SECONDS = 5L
 
         private const val SIGN_COLUMNS =
             "time, user, wid, x, y, z, action, color, color_secondary, data, waxed, line_1, line_2, line_3, line_4, line_5, line_6, line_7, line_8"
@@ -567,7 +594,8 @@ class CoreProtectImport(
         // A chat line's sequence within its millisecond: positive, as the chat log keeps them, and one per source row.
         internal fun sequenceOf(tag: Int, rowid: Long): Int = (tag shl 28) or (rowid and 0x0FFFFFFF).toInt()
 
-        internal fun markOf(table: String) = "coreprotect:$table"
+        // CoreProtect stamps its database with the time it made it, which tells one database from another.
+        internal fun markOf(origin: Long, table: String) = "coreprotect:$origin:$table"
 
         /**
          * The state CoreProtect wrote as a material and its properties, written the way this journal writes one

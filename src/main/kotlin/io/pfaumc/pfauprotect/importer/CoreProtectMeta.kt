@@ -25,8 +25,9 @@ internal fun coreProtectMeta(metadata: ByteArray, stack: ItemStack): ItemStack {
         input.setObjectInputFilter(ALLOWED)
         input.readObject() as? List<*>
     } ?: return stack
+    // An item with no meta of its own has only CoreProtect's own notes there: a stand's slot, a frame's facing.
     @Suppress("UNCHECKED_CAST")
-    val fields = (lists.firstOrNull() as? List<*>)?.firstOrNull() as? Map<String, Any?> ?: return stack
+    val fields = ((lists.firstOrNull() as? List<*>)?.firstOrNull() as? Map<String, Any?>)?.takeIf { "meta-type" in it } ?: return stack
     val meta = ConfigurationSerialization.deserializeObject(fields, ConfigurationSerialization.getClassByAlias("ItemMeta")!!) as? ItemMeta
         ?: return stack
     val bukkit = CraftItemStack.asBukkitCopy(stack)

@@ -439,24 +439,41 @@ class BlockLog(
      * told, so none is clamped; numbered below every number the writer hands out, they also sort before its
      * rows wherever the event number orders them; and numbered from the source, writing the same rows again
      * lands on the same keys with the same bytes. Nobody watches them and no plugin is asked: they happened
-     * before either was there. A position touched more often in one event than an ordinal holds is cut.
+     * before either was there. Interned under the ledger writer's lock (see `RocksItemLog.importTransfers`) and
+     * synced, as the mark that says how far an import got is. A change that cannot be written is dropped, as the
+     * writer drops one, and so is a position touched more often in one event than an ordinal holds: the answer
+     * is how many.
      */
-    fun importEvents(events: List<Pair<Long, List<WorldChange>>>) = dbLock.read {
+    fun importEvents(events: List<Pair<Long, List<WorldChange>>>): Int = dbLock.read {
         check(!closed) { "the block log is closed" }
-        WriteBatch().use { batch ->
-            for ((eventId, changes) in events) {
-                require(eventId < 0) { "imported events are numbered below the writer's" }
-                val seen = HashMap<Triple<Int, Int, Int>, Int>()
-                for (change in changes) {
-                    val ordinal = seen.merge(Triple(change.x, change.y, change.z), 0) { old, _ -> old + 1 }!!
-                    if (ordinal > BlockCodec.MAX_ORDINAL) continue
-                    when (change) {
-                        is BlockChange -> putChange(batch, change, eventId, ordinal, change.timestamp)
-                        is EntityChange -> writeEntity(batch, change, eventId, ordinal)
+        shared.holdingWriter {
+            var dropped = 0
+            WriteBatch().use { batch ->
+                for ((eventId, changes) in events) {
+                    require(eventId < 0) { "imported events are numbered below the writer's" }
+                    val seen = HashMap<Triple<Int, Int, Int>, Int>()
+                    for (change in changes) {
+                        val ordinal = seen.merge(Triple(change.x, change.y, change.z), 0) { old, _ -> old + 1 }!!
+                        if (ordinal > BlockCodec.MAX_ORDINAL) {
+                            dropped++
+                            continue
+                        }
+                        batch.setSavePoint()
+                        try {
+                            when (change) {
+                                is BlockChange -> putChange(batch, change, eventId, ordinal, change.timestamp)
+                                is EntityChange -> writeEntity(batch, change, eventId, ordinal)
+                            }
+                        } catch (failure: Exception) {
+                            if (failure.isIoError()) throw failure
+                            batch.rollbackToSavePoint()
+                            dropped++
+                        }
                     }
                 }
+                WriteOptions().setSync(true).use { db.write(it, batch) }
             }
-            db.write(writeOptions, batch)
+            dropped
         }
     }
 

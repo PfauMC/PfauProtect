@@ -990,6 +990,12 @@ class PfauProtectPlugin : JavaPlugin() {
             sender.say("Import refused: until is a moment such as 2026-10-14T06:00:00Z.")
             return 0
         }
+        // Everything from where this journal begins is in it already; brought over again it would be here twice.
+        val start = running.ledger.journalStart()
+        if (start != null && moment > start) {
+            sender.say("Import refused: this journal begins at ${Instant.ofEpochMilli(start)}; until may not be later.")
+            return 0
+        }
         if (from != "copy" && from != "live") {
             sender.say("Import refused: say copy for a copy of the file, live for the file CoreProtect writes.")
             return 0

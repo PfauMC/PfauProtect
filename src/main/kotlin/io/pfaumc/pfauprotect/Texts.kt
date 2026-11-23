@@ -121,6 +121,7 @@ object Texts {
         r("An import is already running; /pp import status tells how far it got\\.") to "Импорт уже идёт; '/pp import status' покажет, докуда он дошёл.",
         r("Import refused: until is a moment such as 2026-10-14T06:00:00Z\\.") to "Импорт отклонён: 'until' – это момент, например 2026-10-14T06:00:00Z.",
         r("Import refused: say copy for a copy of the file, live for the file CoreProtect writes\\.") to "Импорт отклонён: укажи 'copy' для копии файла или 'live' для файла, в который пишет CoreProtect.",
+        r("Import refused: this journal begins at (\\S+); until may not be later\\.") to "Импорт отклонён: этот журнал начинается в $1; 'until' не может быть позже.",
         r("Import refused: there is no file (.+)\\.") to "Импорт отклонён: файла $1 нет.",
         r("Importing CoreProtect history older than (\\S+) from (.+); /pp import status tells how far it got\\.") to "Импортирую историю CoreProtect старше $1 из $2; '/pp import status' покажет, докуда дошло.",
         r("No import was started since the server started\\.") to "С запуска сервера импорт не начинался.",

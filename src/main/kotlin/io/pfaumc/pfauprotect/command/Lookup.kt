@@ -2105,7 +2105,7 @@ class Lookups(
         val chest = ((entry.holder as? Container) ?: (entry.counterparty as? Container))?.copy(slot = 0) ?: return false
         val placer = placers.getOrPut(chest) {
             val rows = blocks.get(chest.world)?.at(chest.x, chest.y, chest.z, 0, Long.MAX_VALUE, limit = PLACER_READ, reverse = true).orEmpty()
-            val placed = rows.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE }
+            val placed = rows.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE || it.cause == Cause.BLK_CP_PLACE }
             Placer(placed != null || rows.size < PLACER_READ, placed?.actor)
         }
         if (!placer.known) return false
