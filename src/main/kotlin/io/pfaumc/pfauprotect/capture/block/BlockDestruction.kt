@@ -1474,7 +1474,10 @@ class BlockDestructionListener(
         val blocks = event.blocks
         val sites = sitesOf(blocks)
         val timestamp = System.currentTimeMillis()
+        // A tree that grew on its own is whoever planted it: the sapling still stands while the event runs,
+        // and it was planted hours before, long past any note, so the journal is asked once per tree.
         val by = event.player?.witnessed()
+            ?: event.location.block.let { attribution.placerOrJournal(positionOf(it), it.blockData.asString) }
         // Settled on the global region, a tick later; filing reads the world, so it goes to the tree's own.
         val at = blocks.firstOrNull()?.location
         growing.claim(blocks) {
