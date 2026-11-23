@@ -42,7 +42,7 @@
     "name": "container_history",
     "title": "Container history",
     "annotations": {"readOnlyHint": true, "openWorldHint": false},
-    "description": "Who put what into a container and who took it out. Without a radius it reads the container at x/y/z itself (both halves of a double chest are two positions); with a radius, every container row around the point. `steal` keeps only withdrawals by somebody other than whoever placed the container: the likely thieves. Rows are those of lookup: action added (put in) or removed (taken out), actor, thing, amount, slot.",
+    "description": "Who put what into a container and who took it out. Without a radius it reads the container at x/y/z itself, both halves of a double chest standing there (a chunk not in memory: that half alone); with a radius, every container row around the point. `steal` keeps only withdrawals by somebody other than whoever placed the container: the likely thieves. Rows are those of lookup: action added (put in) or removed (taken out), actor, thing, amount, slot.",
     "inputSchema": {
       "type": "object",
       "properties": {

@@ -33,7 +33,9 @@ import io.pfaumc.pfauprotect.storage.Box
 import io.pfaumc.pfauprotect.storage.Steps
 import io.pfaumc.pfauprotect.storage.EntityRow
 import io.pfaumc.pfauprotect.capture.entity.TRANSFORMED
+import io.pfaumc.pfauprotect.capture.block.connectedChestPos
 import io.pfaumc.pfauprotect.model.EntityKind
+import org.bukkit.craftbukkit.block.CraftBlock
 import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.model.BLOCK_CAUSES
 import io.pfaumc.pfauprotect.model.Cause
@@ -567,8 +569,17 @@ data class EventRef(val id: Long, val x: Int, val y: Int, val z: Int, val at: Lo
     }
 }
 
-// `block` is what stood there when asked, for the header to name it.
-data class LookupTarget(val world: UUID, val x: Int, val y: Int, val z: Int, val label: String, val block: String? = null)
+// `block` is what stood there when asked, for the header to name it. `twin` is the other half of a double chest
+// standing there: each slot is filed under the half it belongs to, so the contents of one half are half the chest's.
+data class LookupTarget(
+    val world: UUID,
+    val x: Int,
+    val y: Int,
+    val z: Int,
+    val label: String,
+    val block: String? = null,
+    val twin: WorldBlock? = null,
+)
 
 fun lookupTargetAt(block: Block) = LookupTarget(
     block.world.uid,
@@ -577,7 +588,15 @@ fun lookupTargetAt(block: Block) = LookupTarget(
     block.z,
     "${block.type.name.lowercase()} at ${block.x} ${block.y} ${block.z}",
     block.type.key.toString(),
+    chestTwinOf(block),
 )
+
+/** The other half of the double chest [block] is, read on its region thread; null for anything else. */
+fun chestTwinOf(block: Block): WorldBlock? {
+    val craft = block as? CraftBlock ?: return null
+    val at = connectedChestPos(craft.position, craft.blockState) ?: return null
+    return WorldBlock(block.world.uid, at.x, at.y, at.z)
+}
 
 // Where the command was run from rather than what it was pointed at. The console, a command block and
 // `/execute positioned` all have a position and no line of sight, and neither does a player looking
@@ -2081,7 +2100,11 @@ class Lookups(
     private fun read(target: LookupTarget, query: LookupQuery, steps: Steps): EntryPage {
         val fromTs = query.fromTs()
         val toTs = query.toTs()
-        val radius = query.radius ?: return holderRows(holdersAt(target.world, target.x, target.y, target.z, query.part), fromTs, toTs, query)
+        val radius = query.radius ?: return holderRows(
+            holdersAt(target.world, target.x, target.y, target.z, query.part) +
+                listOfNotNull(target.twin?.takeIf { query.part != Part.BLOCK }?.let { Container(it.world, it.x, it.y, it.z, 0) }),
+            fromTs, toTs, query,
+        )
         val keeps = rowFilter(query)
         return ledger.boxPage(target.world, target.box(radius), fromTs, toTs, boxWanted(query), steps, keeps::keeps)
     }

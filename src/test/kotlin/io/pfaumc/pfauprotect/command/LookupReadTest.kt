@@ -191,6 +191,24 @@ class LookupReadTest : BothPlanes() {
         assertTrue(block.any { it.contains("\nblk_player_place}") && it.contains("items:") }, "$block")
     }
 
+    // A double chest files each slot under the half it belongs to; clicked on either half, it is one chest.
+    @Test
+    fun `the contents of a double chest are read from both halves`() {
+        val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 0), Container(world, 10, 64, -3, 0), diamond, null, 3, T0))
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 1), Container(world, 11, 64, -3, 0), diamond, null, 5, T0 + 1))
+        shared.submit(Transfer(Cause.CONTAINER_ADD, PlayerInv(alice, 2), Container(world, 10, 64, -2, 0), diamond, null, 7, T0 + 2))
+        shared.drain()
+
+        val half = said(LookupQuery(part = Part.CONTENTS))
+        assertTrue(half.any { "×3" in it } && half.none { "×5" in it }, "$half")
+        val twin = LookupTarget(world, 10, 64, -3, "chest at 10 64 -3", twin = WorldBlock(world, 11, 64, -3))
+        val both = said(LookupQuery(part = Part.CONTENTS), target = twin)
+        assertTrue(both.any { "×3" in it } && both.any { "×5" in it }, "$both")
+        assertTrue(both.none { "×7" in it }, "a chest beside it is another chest: $both")
+        assertTrue(said(LookupQuery(part = Part.BLOCK), target = twin).none { "×5" in it })
+    }
+
     @Test
     fun `a position answers with both planes in the order things happened`() {
         val at = WorldBlock(world, 10, 64, -3)
