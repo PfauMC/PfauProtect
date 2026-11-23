@@ -227,14 +227,14 @@ class LookupTest {
 
     @Test
     fun `actions map onto the causes the capture emits`() {
-        // A throw out of a chest's window is a withdrawal too.
-        assertEquals(setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW), parseLookupQuery("a:container").causes)
-        assertEquals(setOf(Cause.CONTAINER_ADD), parseLookupQuery("a:+container").causes)
-        assertEquals(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW), parseLookupQuery("a:-container").causes)
-        assertEquals(setOf(Cause.CONTAINER_ADD), parseLookupQuery("a:deposit").causes)
-        assertEquals(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW), parseLookupQuery("a:withdraw").causes)
+        // A throw out of a chest's window is a withdrawal too, and the clicks are read to be told apart by their ends.
+        assertEquals(setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW) + BOXED, parseLookupQuery("a:container").causes)
+        assertEquals(setOf(Cause.CONTAINER_ADD) + BOXED, parseLookupQuery("a:+container").causes)
+        assertEquals(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW) + BOXED, parseLookupQuery("a:-container").causes)
+        assertEquals(setOf(Cause.CONTAINER_ADD) + BOXED, parseLookupQuery("a:deposit").causes)
+        assertEquals(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW) + BOXED, parseLookupQuery("a:withdraw").causes)
         assertEquals(
-            setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW),
+            setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW) + BOXED,
             parseLookupQuery("a:+container,-container").causes,
         )
         val explosion = parseLookupQuery("a:explosion").causes!!
@@ -277,7 +277,7 @@ class LookupTest {
     @Test
     fun `keys are case insensitive but values keep their case`() {
         assertEquals(listOf("Steve"), parseLookupQuery("U:Steve").users)
-        assertEquals(setOf(Cause.CONTAINER_ADD), parseLookupQuery("A:DEPOSIT").causes)
+        assertEquals(setOf(Cause.CONTAINER_ADD) + BOXED, parseLookupQuery("A:DEPOSIT").causes)
     }
 
     // The point of parsing off the caller's reader is that the game underlines the token at fault, so

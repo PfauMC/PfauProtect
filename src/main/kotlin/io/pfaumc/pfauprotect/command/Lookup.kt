@@ -285,6 +285,25 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
             else -> emptySet()
         }
 
+    /**
+     * Which ways a click in a window counts for it ([boxedInto]: true put in, false taken out). A shift-click, a
+     * hotbar key or a double-click is filed as the click, and is a deposit or a withdrawal all the same.
+     */
+    val boxed: Set<Boolean>
+        get() = when (this) {
+            CONTAINER -> setOf(true, false)
+            ADD -> setOf(true)
+            REMOVE, STEAL -> setOf(false)
+            else -> emptySet()
+        }
+
+    /** The causes a query reads for it: its own, and every click where clicks count. */
+    val reads: Set<Cause>
+        get() = if (boxed.isEmpty()) causes else causes + BOXED
+
+    /** Whether it takes this item row: by its cause, or as a click that went the way it asks. */
+    fun takes(entry: LedgerEntry): Boolean = entry.cause in causes || boxedInto(entry)?.let { it in boxed } == true
+
     companion object {
         private val byKey = entries.flatMap { action -> action.keys.map { it to action } }.toMap()
         val names = entries.map { it.keys.first() }
@@ -676,7 +695,7 @@ fun parseLookupQuery(reader: StringReader, now: ZonedDateTime = ZonedDateTime.no
             Param.ACTION -> {
                 val named = actions(reader, valueStart, value, chat)
                 query.copy(
-                    causes = (query.causes ?: emptySet()) + named.flatMap { it.causes },
+                    causes = (query.causes ?: emptySet()) + named.flatMap { it.reads },
                     kinds = query.kinds + named.flatMap { it.kinds },
                     steal = query.steal || Action.STEAL in named,
                     actions = query.actions + values(value),
@@ -923,10 +942,10 @@ internal class RowFilter(
     private val all = query.all
     private val amount = query.amount
     internal val event = query.event?.id
-    // Read only when some group joins actions with `&` or names a crossing, which a cause cannot tell:
-    // otherwise `causes` and `kinds` already say it all.
+    // Read only when some group joins actions with `&`, names a crossing or counts clicks one way, which a cause
+    // cannot tell: otherwise `causes` and `kinds` already say it all.
     private val actions = query.actions.map { group -> allOf(group).mapNotNull { Action.of(it.lowercase()) } }
-        .takeIf { groups -> groups.any { it.size > 1 || it.any { action -> action.crossing != null } } }
+        .takeIf { groups -> groups.any { it.size > 1 || it.any { action -> action.crossing != null || action.boxed.isNotEmpty() } } }
     private val included = query.included.map { group -> allOf(group).map(::normalizeItem) }
     private val excluded = query.excluded.map { group ->
         allOf(group).map { word ->
@@ -950,7 +969,7 @@ internal class RowFilter(
         if (!caused(entry.cause)) return false
         if (amount != null && abs(entry.qty) !in amount) return false
         if (plain) return true
-        val acts = { action: Action -> action.crossing?.let { crosses(entry, it, isPlayer) } ?: (entry.cause in action.causes) }
+        val acts = { action: Action -> action.crossing?.let { crosses(entry, it, isPlayer) } ?: action.takes(entry) }
         return about(Seen(setOf(itemKey(ledger, entry.itemFormId)), acts) { player, _ -> namesUser(entry, setOf(player)) })
     }
 
@@ -1115,10 +1134,25 @@ private val ANSWER_ONLY = setOf(Param.PLAYER, Param.LIMIT, Param.PAGE, Param.FIL
 
 // The clicks of a window, which `verb` words "moved", and the container causes themselves: what a line between a
 // player's hands and a container may be drawn as put in or taken out.
-private val BOXED = setOf(
+internal val BOXED = setOf(
     Cause.CURSOR_PLACE, Cause.CURSOR_TAKE, Cause.CURSOR_SWAP, Cause.QUICK_MOVE, Cause.HOTBAR_SWAP, Cause.OFFHAND_SWAP,
     Cause.COLLECT_ALL, Cause.QUICK_CRAFT_DISTRIBUTE, Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE,
 )
+
+/**
+ * Which way such a click took the item between a player's hands and a container: true put in, false taken out,
+ * null for any other row. A shift-click into a chest is filed as the click, not as a deposit.
+ */
+internal fun boxedInto(entry: LedgerEntry): Boolean? {
+    if (entry.cause !in BOXED) return null
+    val (from, to) = if (entry.qty > 0) entry.counterparty to entry.holder else entry.holder to entry.counterparty
+    fun hands(holder: Holder) = holder is PlayerInv || holder is PlayerEquip || holder is PlayerCursor
+    return when {
+        to is Container && hands(from) -> true
+        from is Container && hands(to) -> false
+        else -> null
+    }
+}
 
 // One line of an answer, from either plane, so the two read in the order things happened. `same` is what
 // a run of lines folds on: who did what to which thing, which way. `amount` is what a folded line adds
@@ -2074,7 +2108,7 @@ class Lookups(
         val rest = if (query.steal) withoutSteal(query)?.let(::rowFilter) else null
         val placers = HashMap<Container, Placer>()
         return entries.filter {
-            keeps.keeps(it) && (!query.steal || it.cause !in Action.REMOVE.causes || rest?.keeps(it) == true || stolen(it, placers))
+            keeps.keeps(it) && (!query.steal || !Action.REMOVE.takes(it) || rest?.keeps(it) == true || stolen(it, placers))
         }
     }
 
@@ -2083,7 +2117,7 @@ class Lookups(
         val groups = query.actions.filter { group -> allOf(group).none { Action.of(it.lowercase()) == Action.STEAL } }
         if (groups.isEmpty()) return null
         val named = groups.flatMap(::allOf).mapNotNull { Action.of(it.lowercase()) }
-        return query.copy(causes = named.flatMap { it.causes }.toSet(), kinds = named.flatMap { it.kinds }.toSet(), actions = groups, steal = false)
+        return query.copy(causes = named.flatMap { it.reads }.toSet(), kinds = named.flatMap { it.kinds }.toSet(), actions = groups, steal = false)
     }
 
     // Who put a container down; `known` false when the read stopped before it reached the placement.
@@ -2093,7 +2127,7 @@ class Lookups(
     // position whose placement lies past the read says nothing either way, and its withdrawals are not
     // counted as theft: the owner's own would be.
     private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, Placer>): Boolean {
-        if (entry.cause !in Action.REMOVE.causes) return false
+        if (!Action.REMOVE.takes(entry)) return false
         // Either half of the withdrawal: a place reads the container's, a player's actions their own slots'.
         val chest = ((entry.holder as? Container) ?: (entry.counterparty as? Container))?.copy(slot = 0) ?: return false
         val placer = placers.getOrPut(chest) {
@@ -2184,18 +2218,16 @@ class Lookups(
         // Between a player's hands and a container, whichever click did it, the line says only which way, as
         // CoreProtect's added and removed do: the player is already named before it and the container by its
         // place, and the click waits on the hover. Anything else keeps both of its ends.
-        val boxed = entry.cause in BOXED && (to is Container && hands(from) || from is Container && hands(to))
-        val worded = when {
-            !boxed -> entry.cause
-            to is Container -> Cause.CONTAINER_ADD
-            else -> Cause.CONTAINER_REMOVE
+        val into = boxedInto(entry)
+        val worded = when (into) {
+            null -> entry.cause
+            true -> Cause.CONTAINER_ADD
+            false -> Cause.CONTAINER_REMOVE
         }
         val act = act(if (gained) "+" else "-", entry.cause, *inPlace, worded = worded)
-        val flow = if (boxed) null else Component.text().append(holder(from, hide)).append(Ui.text(" → ", Ui.FAINT)).append(holder(to, hide)).build()
+        val flow = if (into != null) null else Component.text().append(holder(from, hide)).append(Ui.text(" → ", Ui.FAINT)).append(holder(to, hide)).build()
         return row(Ui.ago(entry.timestamp), who(who, entry.confidence), act, item(entry.itemFormId, amount), flow)
     }
-
-    private fun hands(holder: Holder) = holder is PlayerInv || holder is PlayerEquip || holder is PlayerCursor
 
     /** [to] is set only when a block turned into another one, rather than appearing, going or changing state. */
     private class BlockChange(val sign: String, val from: String, val to: String? = null)
