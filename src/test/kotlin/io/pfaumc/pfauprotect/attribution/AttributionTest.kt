@@ -185,6 +185,25 @@ class AttributionTest : BothPlanes() {
         assertEquals(bob, attribution.journalPlacerAt(here, STONE)?.actor)
     }
 
+    // A tree that grows on its own hours later is whoever planted the sapling, or fed it bone meal that only moved
+    // it a stage on; a sapling of the world's own is nobody's.
+    @Test
+    fun `a grown sapling answers to its planter or its last feeder`() {
+        val planted = at(10, 64, 10)
+        journalled(planted, AIR, "minecraft:oak_sapling[stage=0]", alice)
+        assertEquals(Attributed(alice, Confidence.INFERRED), attribution.planterAt(planted, "minecraft:oak_sapling[stage=1]"))
+
+        val fed = at(12, 64, 10)
+        journalled(fed, AIR, "minecraft:oak_sapling[stage=0]", alice)
+        journalled(fed, "minecraft:oak_sapling[stage=0]", "minecraft:oak_sapling[stage=1]", bob, T0 + 1, Cause.BLK_BONEMEAL)
+        assertNull(attribution.journalPlacerAt(fed, "minecraft:oak_sapling[stage=1]"))
+        assertEquals(bob, attribution.planterAt(fed, "minecraft:oak_sapling[stage=1]")?.actor)
+
+        val wild = at(14, 64, 10)
+        journalled(wild, AIR, "minecraft:oak_sapling[stage=0]", null, cause = Cause.BLK_COMMAND)
+        assertNull(attribution.planterAt(wild, "minecraft:oak_sapling[stage=1]"))
+    }
+
     @Test
     fun `a variant of the same block still matches itself`() {
         val here = at(10, 64, 10)

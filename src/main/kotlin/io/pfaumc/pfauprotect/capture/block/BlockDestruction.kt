@@ -317,6 +317,14 @@ internal fun spreadCause(after: String): Cause = when (blockNameOf(after)) {
 }
 
 /**
+ * What runs out of a block, as the notes of the chain name it: a waterlogged slab lets out water, and the bucket
+ * that filled it noted water there, not a slab.
+ */
+internal fun liquidOf(state: NmsBlockState): String =
+    if (state.block is LiquidBlock || state.fluidState.isEmpty) state.asBlockData().asString
+    else state.fluidState.createLegacyBlock().asBlockData().asString
+
+/**
  * Whether the liquid about to arrive destroys what stands in the position or merely runs past it.
  * This is the server's own rule, and without it every block water ever ran over would be booked as a
  * loss: `FlowingFluid.spreadTo` hands the position to `beforeDestroyingBlock` only where it holds a
@@ -325,14 +333,6 @@ internal fun spreadCause(after: String): Cause = when (blockNameOf(after)) {
  *
  * A position already holding a fluid is a level changing rather than anything being destroyed.
  */
-/**
- * What runs out of a block, as the notes of the chain name it: a waterlogged slab lets out water, and the bucket
- * that filled it noted water there, not a slab.
- */
-internal fun liquidOf(state: NmsBlockState): String =
-    if (state.block is LiquidBlock || state.fluidState.isEmpty) state.asBlockData().asString
-    else state.fluidState.createLegacyBlock().asBlockData().asString
-
 internal fun liquidDestroys(state: NmsBlockState): Boolean =
     !state.isAir &&
         state.fluidState.isEmpty &&
@@ -1487,7 +1487,7 @@ class BlockDestructionListener(
         // A tree that grew on its own is whoever planted it: the sapling still stands while the event runs,
         // and it was planted hours before, long past any note, so the journal is asked once per tree.
         val by = event.player?.witnessed()
-            ?: event.location.block.let { attribution.placerOrJournal(positionOf(it), it.blockData.asString) }
+            ?: event.location.block.let { attribution.planterAt(positionOf(it), it.blockData.asString) }
         // Settled on the global region, a tick later; filing reads the world, so it goes to the tree's own.
         val at = blocks.firstOrNull()?.location
         growing.claim(blocks) {

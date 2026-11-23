@@ -198,6 +198,20 @@ class Attribution(
     }
 
     /**
+     * Who planted the sapling standing here, or fed it last: bone meal that only moved it a stage on is a row of the
+     * same block before and after, which [journalPlacerAt] refuses, and the tree that grows out of it later is the
+     * feeder's. One journal read, on the region thread, per tree.
+     */
+    fun planterAt(at: WorldBlock, standing: String): Attributed? {
+        placerAt(at, standing)?.let { return it }
+        val row = newestRowAt(at) ?: return null
+        if (row.cause !in PLACING_CAUSES) return null
+        val after = registries.keyOf(RegistryNamespace.BLOCK_STATE, row.stateAfter) ?: return null
+        if (blockNameOf(after) != blockNameOf(standing)) return null
+        return journalActorOf(row)
+    }
+
+    /**
      * Who put down the thing standing here, by the tracker and then the journal. `renote` copies a
      * journal find back into the tracker, so the chain that carries on from this position has a fresh
      * note to find.
