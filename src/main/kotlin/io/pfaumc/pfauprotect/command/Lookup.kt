@@ -262,7 +262,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
     ),
     PICKUP(setOf(Cause.PICKUP, Cause.PROJ_PICKUP, Cause.ITEM_PICKUP_BY_MOB, Cause.ITEM_PICKUP_BY_MOB_INV), "pickup", "picked", "pickups"),
     // What a player took out of a container somebody else put down.
-    STEAL(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW), "steal", "stolen", "theft"),
+    STEAL(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW, Cause.CP_CONTAINER_REMOVE), "steal", "stolen", "theft"),
     HOPPER(
         setOf(
             Cause.HOPPER_PULL_CONTAINER, Cause.HOPPER_PULL_GROUND, Cause.HOPPER_PUSH, Cause.HOPPER_MINECART_PULL,
@@ -1205,7 +1205,10 @@ internal val CHAT_ACTIONS: Map<Action, (ChatLine) -> Boolean> = linkedMapOf(
     Action.BOOK to { line -> line.kind == ChatKind.BOOK },
     Action.GLOBAL to { line -> line.kind == ChatKind.CHAT_GLOBAL },
     Action.LOCAL to { line -> line.kind == ChatKind.CHAT_LOCAL },
+    Action.COREPROTECT to { line -> line.kind in COREPROTECT_KINDS },
 )
+
+private val COREPROTECT_KINDS = setOf(ChatKind.CP_CHAT, ChatKind.CP_COMMAND, ChatKind.CP_JOIN, ChatKind.CP_QUIT)
 
 // The halves of chat, which no plane has rows of: a lookup is not offered them.
 private val CHAT_ONLY = setOf(Action.GLOBAL, Action.LOCAL)

@@ -66,7 +66,7 @@ class LookupTest {
             CommandContext<Any>(Any(), "", emptyMap(), null, null, emptyList(), StringRange.at(0), null, null, false),
             SuggestionsBuilder(typed, 0),
         ).get().list.map { it.text }
-        assertEquals(setOf("pvp", "book", "global", "local"), offered("a:").toSet())
+        assertEquals(setOf("pvp", "book", "global", "local", "coreprotect"), offered("a:").toSet())
         // A half of chat has no rows in either plane: a lookup or a rollback refuses it, /pp chat takes it.
         assertEquals("local", LookupArgument(chat = true).parse(StringReader("a:local t:1h")).actions.single())
         for (argument in listOf(LookupArgument(), LookupArgument(rollback = true))) {

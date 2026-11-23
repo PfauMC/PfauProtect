@@ -17,7 +17,7 @@ import java.sql.SQLException
  */
 internal class CoreProtectSource(file: Path, copy: Boolean) : AutoCloseable {
     private val connection: Connection = DriverManager.getConnection(
-        "jdbc:sqlite:file:${uriPath(file)}?mode=ro" + if (copy) "&immutable=1" else "",
+        "jdbc:sqlite:file://${uriPath(file)}?mode=ro" + if (copy) "&immutable=1" else "",
     )
 
     class Page<T>(val rows: List<T>, val broken: Boolean)
@@ -58,37 +58,28 @@ internal class CoreProtectSource(file: Path, copy: Boolean) : AutoCloseable {
         }
 
     /**
-     * Where [table] reads again after a damaged page past [after]: the new `after` (one below the first rowid that
-     * reads), or null when nothing past it reads at all. Steps out doubling until a row answers, then halves back to
-     * the first place that does; what lies between was in the pages that did not read. A step that overshoots the
-     * table's end starts doubling again from the last damaged place, so rows between it and the end are not lost.
+     * How far past [after] a damaged stretch of [table] goes: the new `after`, the last position known not to read,
+     * or null when nothing past it reads at all. Damage is walked a row at a time, which finds the first row that
+     * reads exactly; past [LINEAR_PROBES] rows of it the steps double, and the answer is only the last damaged
+     * position a step landed on, so the walk after it goes on a row at a time again. A step past the table's end
+     * goes back to a row at a time from the damage. Readable rows in between can be lost only inside a stretch
+     * longer than [LINEAR_PROBES] rows, and only past its first damaged ones.
      */
     fun skipFrom(table: String, after: Long): Long? {
-        var base = after
+        var broken = after
         var step = 1L
-        var found: Long? = null
-        while (found == null) {
-            when (probe(table, base + step)) {
-                null -> {
-                    if (step == 1L) return null
-                    base += step / 2
-                    step = 1
-                }
+        while (true) {
+            val at = broken + step
+            if (at - after > MAX_STEP) return null
+            when (probe(table, at)) {
+                null -> if (step == 1L) return null else step = 1
                 BROKEN -> {
-                    if (step >= MAX_STEP) return null
-                    step *= 2
+                    broken = at
+                    if (broken - after > LINEAR_PROBES) step = minOf(step * 2, MAX_STEP)
                 }
-                else -> found = base + step
+                else -> return broken
             }
         }
-        var high: Long = found
-        var low = after + 1
-        while (low < high) {
-            val middle = low + (high - low) / 2
-            val probe = probe(table, middle)
-            if (probe != null && probe != BROKEN) high = middle else low = middle + 1
-        }
-        return high - 1
     }
 
     // The first rowid at or past `from`: null when there is none, BROKEN when the way there does not read.
@@ -109,12 +100,13 @@ internal class CoreProtectSource(file: Path, copy: Boolean) : AutoCloseable {
     private companion object {
         const val BROKEN = Long.MIN_VALUE
         const val MAX_STEP = 1L shl 40
+        const val LINEAR_PROBES = 4096L
 
         // SQLITE_CORRUPT and its extended codes; any other failure is not a page to step over.
         fun SQLException.corrupt(): Boolean =
             errorCode and 0xFF == 11 || message?.contains("malformed") == true
 
-        fun uriPath(file: Path): String = file.toAbsolutePath().toString().replace('\\', '/')
-            .replace("%", "%25").replace(" ", "%20").replace("?", "%3f").replace("#", "%23")
+        // The platform's own file URI, percent-encoded: SQLite reads `file:///D:/x` and `file:///data/x` alike.
+        fun uriPath(file: Path): String = file.toAbsolutePath().toUri().rawPath
     }
 }

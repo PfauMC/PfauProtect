@@ -442,12 +442,12 @@ class BlockLog(
      * before either was there. Interned under the ledger writer's lock (see `RocksItemLog.importTransfers`) and
      * synced, as the mark that says how far an import got is. A change that cannot be written is dropped, as the
      * writer drops one, and so is a position touched more often in one event than an ordinal holds: the answer
-     * is how many.
+     * is those changes.
      */
-    fun importEvents(events: List<Pair<Long, List<WorldChange>>>): Int = dbLock.read {
+    fun importEvents(events: List<Pair<Long, List<WorldChange>>>): List<WorldChange> = dbLock.read {
         check(!closed) { "the block log is closed" }
         shared.holdingWriter {
-            var dropped = 0
+            val dropped = ArrayList<WorldChange>()
             WriteBatch().use { batch ->
                 for ((eventId, changes) in events) {
                     require(eventId < 0) { "imported events are numbered below the writer's" }
@@ -455,7 +455,7 @@ class BlockLog(
                     for (change in changes) {
                         val ordinal = seen.merge(Triple(change.x, change.y, change.z), 0) { old, _ -> old + 1 }!!
                         if (ordinal > BlockCodec.MAX_ORDINAL) {
-                            dropped++
+                            dropped += change
                             continue
                         }
                         batch.setSavePoint()
@@ -467,7 +467,7 @@ class BlockLog(
                         } catch (failure: Exception) {
                             if (failure.isIoError()) throw failure
                             batch.rollbackToSavePoint()
-                            dropped++
+                            dropped += change
                         }
                     }
                 }
