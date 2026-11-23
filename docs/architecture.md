@@ -75,7 +75,7 @@ never rewritten after the fact.
 
 **Commands.** `/pfauprotect` (alias `/pp`) is registered through Brigadier (`LifecycleEvents.COMMANDS`), with
 subcommands `lookup|l`, `near|n`, `inspect|i`, `reconcile|r`, `verify|v [recent]`, `rollback|rb`, `apply`,
-`cancel`, `chat`, `status`, `debug [on|off]` (`Debug.kt`: what the reads walked and kept, into the server log), `purge <age> [confirm]`, `tp <x y z> [world]` (what a line's ⌖ runs), `view
+`cancel`, `chat`, `status`, `import` (console only, see below), `debug [on|off]` (`Debug.kt`: what the reads walked and kept, into the server log), `purge <age> [confirm]`, `tp <x y z> [world]` (what a line's ⌖ runs), `view
 [chat|dialog]` and `help` (also the bare `/pp`). Permissions are declared in `build.gradle.kts` `bukkit {}`.
 A page of `lookup`, `near` or `chat` goes through `showPage` (`Lookup.kt`): a Paper dialog with the arrows as
 buttons for a player who reads in one (`lookup.dialog` in `config.yml`, overridden per player by `/pp view` and
@@ -136,6 +136,29 @@ changed back, returned to where they stood), and a player killed by the one roll
 them. Every player death is an entity row; one with no player behind it (fall, lava, mob) has cause `player_died`
 and no actor, and only `action:-inventory` gives its loss back. A death and a popped totem are also indexed in `by_actor` under the
 victim, so `p:` finds them, while `u:` still names only what the victim did.
+
+**CoreProtect import (`importer/`).** `/pp import coreprotect "<until>" copy|live <file>` (the console only;
+`/pp import status`, `/pp import stop`) brings a CoreProtect SQLite database's history over on a thread of its own
+(`pfauprotect-import`), everything older than `until`, which is where this journal begins, so no row is here twice.
+`copy` opens a copy immutable; `live` opens the file a running CoreProtect writes, read-only in short statements
+(CoreProtect's SQLite runs in WAL mode, so the reader never holds its writer up). What comes over, under causes of its
+own: blocks a player placed or broke (`BLK_CP_PLACE`, `BLK_CP_BREAK`; a break and a place of one second and position,
+CoreProtect's replace, are one row), what CoreProtect's `#` agents did, with no actor (`BLK_CP_EXPLOSION`,
+`BLK_CP_FIRE`, `BLK_CP_PISTON`, `BLK_CP_OTHER`), a sign's text (`BLK_CP_SIGN`, the sign's NBT made from its lines; a
+broken sign's row carries its last text), kills (`CP_ENTITY_KILLED`, no NBT, so a rollback walks past them), a
+player's deposits and withdrawals (`CP_CONTAINER_ADD`, `CP_CONTAINER_REMOVE`: the container against `Void` with the
+player as the actor, indexed in the ledger's `by_actor`, so no player's balance moves), and chat, commands, joins and
+quits (`ChatKind.CP_*`). Left out: what the world does by itself (`#water`, `#lava`, `#vine`, `#decay` and the like),
+clicks, ender chests, drops and pickups, entity containers, and what hoppers, droppers and dispensers moved.
+`action:coreprotect` (`cp`) names every imported cause; `e:coreprotect` leaves them out. One user's rows of one second
+in one world are one event. Event and transaction numbers are negative (`CoreProtectImport.idOf`: time, table, rowid),
+below every number a writer hands out, so wherever a rollback or a confiscation orders rows by that number the imported
+rows come first, as they are older; that is also why nothing after the start of this journal may be imported. They are
+written straight into the bases (`BlockLog.importEvents`, `RocksItemLog.importTransfers`, `ChatLog.importLines`),
+with no clamping, no watchers and no API veto. Numbered from the source, a run stopped and started again rewrites the
+same keys with the same bytes; the last rowid of each table is kept in the ledger's meta (`import:coreprotect:<table>`),
+and a run goes on from there. A page SQLite cannot read is stepped over and counted (`<table> unreadable`); the import
+waits while the live writers hold a tenth of their backlog limit and stops below 20 GiB of free disk.
 
 ## `/pp lookup` and `/pp purge` semantics
 

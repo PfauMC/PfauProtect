@@ -37,6 +37,7 @@ import io.pfaumc.pfauprotect.model.EntityKind
 import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.model.BLOCK_CAUSES
 import io.pfaumc.pfauprotect.model.Cause
+import io.pfaumc.pfauprotect.model.COREPROTECT_CAUSES
 import io.pfaumc.pfauprotect.model.ENTITY_PLANE_CAUSES
 import io.pfaumc.pfauprotect.model.block
 import io.pfaumc.pfauprotect.rollback.quiet
@@ -175,11 +176,11 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
     ITEM_REMOVE(INVENTORY_CAUSES, "-item", "-items", "item-", "items-", crossing = Crossing(inward = false, outward = true, containers = false)),
 
     CONTAINER(
-        setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW),
+        setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW, Cause.CP_CONTAINER_ADD, Cause.CP_CONTAINER_REMOVE),
         "container", "chest", "transaction", "transactions",
     ),
-    ADD(setOf(Cause.CONTAINER_ADD), "+container", "deposit", "deposits", "deposited"),
-    REMOVE(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW), "-container", "withdraw", "withdraws", "withdrew"),
+    ADD(setOf(Cause.CONTAINER_ADD, Cause.CP_CONTAINER_ADD), "+container", "deposit", "deposits", "deposited"),
+    REMOVE(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW, Cause.CP_CONTAINER_REMOVE), "-container", "withdraw", "withdraws", "withdrew"),
     LOOT(setOf(Cause.LOOT_GENERATE), "loot", "loot_generate"),
 
     // One filter over every station rather than one per station: an investigator asks what became of
@@ -191,21 +192,21 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
     // A cause is only worth offering as a filter once something actually writes it: an empty answer
     // from a filter that sounds certain reads as "nothing happened there".
     BLOCK(BLOCK_CAUSES, "block", "blocks"),
-    BLOCK_PLACE(setOf(Cause.BLK_PLAYER_PLACE), "+block", "placed", "built"),
-    BLOCK_BREAK(setOf(Cause.BLK_PLAYER_BREAK), "-block", "broke", "mined"),
+    BLOCK_PLACE(setOf(Cause.BLK_PLAYER_PLACE, Cause.BLK_CP_PLACE), "+block", "placed", "built"),
+    BLOCK_BREAK(setOf(Cause.BLK_PLAYER_BREAK, Cause.BLK_CP_BREAK), "-block", "broke", "mined"),
     EXPLOSION(
         setOf(
             Cause.BLK_TNT, Cause.BLK_CREEPER, Cause.BLK_BED_EXPLOSION,
-            Cause.BLK_RESPAWN_ANCHOR, Cause.BLK_END_CRYSTAL, Cause.BLK_EXPLOSION,
+            Cause.BLK_RESPAWN_ANCHOR, Cause.BLK_END_CRYSTAL, Cause.BLK_EXPLOSION, Cause.BLK_CP_EXPLOSION,
         ),
         "explosion", "explosions", "tnt", "creeper",
     ),
-    FIRE(setOf(Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD, Cause.BLK_FIREBALL), "fire", "burn", "burnt"),
+    FIRE(setOf(Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD, Cause.BLK_FIREBALL, Cause.BLK_CP_FIRE), "fire", "burn", "burnt"),
     LIQUID(
         setOf(Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM, Cause.BLK_LIQUID_FLOW, Cause.BLK_BUCKET, Cause.BLK_SPONGE),
         "liquid", "water", "lava", "bucket",
     ),
-    PISTON(setOf(Cause.BLK_PISTON_EXTEND, Cause.BLK_PISTON_RETRACT), "piston", "pistons"),
+    PISTON(setOf(Cause.BLK_PISTON_EXTEND, Cause.BLK_PISTON_RETRACT, Cause.BLK_CP_PISTON), "piston", "pistons"),
     GRAVITY(setOf(Cause.BLK_FALL_START, Cause.BLK_FALL_LAND), "gravity", "fall", "falling"),
     NATURE(
         setOf(
@@ -223,7 +224,7 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
     ),
     DISPENSER(setOf(Cause.BLK_DISPENSER), "dispenser", "dispensers"),
     PORTAL(setOf(Cause.BLK_PORTAL_CREATE, Cause.BLK_PORTAL_DESTROY), "portal", "portals"),
-    SIGN(setOf(Cause.BLK_SIGN_EDIT), "sign", "signs", "edit"),
+    SIGN(setOf(Cause.BLK_SIGN_EDIT, Cause.BLK_CP_SIGN), "sign", "signs", "edit"),
     // A book written in or signed: its item rows in a lookup, and in /pp chat what was written.
     BOOK(setOf(Cause.BOOK_EDIT, Cause.BOOK_SIGN), "book", "books"),
     // The two halves of chat, for /pp chat alone: no plane has rows of them.
@@ -236,7 +237,10 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
 
     // The entity plane: what died, what a player brought into the world, and everything done to an entity.
     KILL(
-        setOf(Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.PLAYER_KILLED, Cause.PLAYER_DIED, Cause.MOB_TRANSFORM, Cause.BUCKET_CAPTURE_MOB),
+        setOf(
+            Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.PLAYER_KILLED, Cause.PLAYER_DIED, Cause.MOB_TRANSFORM, Cause.BUCKET_CAPTURE_MOB,
+            Cause.CP_ENTITY_KILLED,
+        ),
         "kill", "kills", "killed", "death", "deaths",
     ),
     // A fight between players: the kill and the totem it cost in a lookup, and in /pp chat every hit that led to it.
@@ -266,6 +270,9 @@ internal enum class Action(val causes: Set<Cause>, vararg val keys: String, val 
         ),
         "hopper", "hoppers",
     ),
+
+    // Rows brought over from CoreProtect, older than the plugin: to see only them, or with `e:` to leave them out.
+    COREPROTECT(COREPROTECT_CAUSES, "coreprotect", "cp"),
 
     // What a rollback did, in both planes. Naming it is also the only way to roll a rollback back.
     ROLLBACK(setOf(Cause.ROLLBACK), "rollback", "rollbacks", "undo"),

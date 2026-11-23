@@ -433,6 +433,33 @@ class BlockLog(
         if (!closed) progress.drain()
     }
 
+    /**
+     * Rows brought over from another journal (`importer/`), each event under the number its importer gave
+     * it, written at once rather than through the writer. They are all older than anything this base was
+     * told, so none is clamped; numbered below every number the writer hands out, they also sort before its
+     * rows wherever the event number orders them; and numbered from the source, writing the same rows again
+     * lands on the same keys with the same bytes. Nobody watches them and no plugin is asked: they happened
+     * before either was there. A position touched more often in one event than an ordinal holds is cut.
+     */
+    fun importEvents(events: List<Pair<Long, List<WorldChange>>>) = dbLock.read {
+        check(!closed) { "the block log is closed" }
+        WriteBatch().use { batch ->
+            for ((eventId, changes) in events) {
+                require(eventId < 0) { "imported events are numbered below the writer's" }
+                val seen = HashMap<Triple<Int, Int, Int>, Int>()
+                for (change in changes) {
+                    val ordinal = seen.merge(Triple(change.x, change.y, change.z), 0) { old, _ -> old + 1 }!!
+                    if (ordinal > BlockCodec.MAX_ORDINAL) continue
+                    when (change) {
+                        is BlockChange -> putChange(batch, change, eventId, ordinal, change.timestamp)
+                        is EntityChange -> writeEntity(batch, change, eventId, ordinal)
+                    }
+                }
+            }
+            db.write(writeOptions, batch)
+        }
+    }
+
     fun at(
         x: Int,
         y: Int,
@@ -753,12 +780,6 @@ class BlockLog(
         ordinal: Int,
         batchTs: MutableMap<Triple<Int, Int, Int>, Long>,
     ) {
-        val before = requireNotNull(change.before) { "the block at ${change.x} ${change.y} ${change.z} was changed from nothing known" }
-        val after = requireNotNull(change.after) { "the block at ${change.x} ${change.y} ${change.z} was changed into nothing known" }
-        val stateBefore = shared.registries.idForKey(RegistryNamespace.BLOCK_STATE, before)
-        val stateAfter = shared.registries.idForKey(RegistryNamespace.BLOCK_STATE, after)
-        val payloadBefore = change.payloadBefore?.let { shared.payloads.idOf(it) }
-        val payloadAfter = change.payloadAfter?.let { shared.payloads.idOf(it) }
         // Key order is time order, so a row filed late must not sort behind its position's newest.
         // `lastTs` is the fast path, and it is persisted so a clock stepped back cannot skip the
         // check after a restart.
@@ -768,7 +789,18 @@ class BlockLog(
         } else {
             maxOf(change.timestamp, batchTs[here] ?: newestTsAt(change.x, change.y, change.z))
         }
+        putChange(batch, change, eventId, ordinal, ts)
         lastTs = maxOf(lastTs, ts)
+        batchTs[here] = ts
+    }
+
+    private fun putChange(batch: WriteBatch, change: BlockChange, eventId: Long, ordinal: Int, ts: Long) {
+        val before = requireNotNull(change.before) { "the block at ${change.x} ${change.y} ${change.z} was changed from nothing known" }
+        val after = requireNotNull(change.after) { "the block at ${change.x} ${change.y} ${change.z} was changed into nothing known" }
+        val stateBefore = shared.registries.idForKey(RegistryNamespace.BLOCK_STATE, before)
+        val stateAfter = shared.registries.idForKey(RegistryNamespace.BLOCK_STATE, after)
+        val payloadBefore = change.payloadBefore?.let { shared.payloads.idOf(it) }
+        val payloadAfter = change.payloadAfter?.let { shared.payloads.idOf(it) }
         val row = BlockRow(
             x = change.x,
             y = change.y,
@@ -790,7 +822,6 @@ class BlockLog(
         // In the same batch as the row, so the index never names a row that is not there or misses one.
         indexActor(batch, change.actor, key)
         batch.put(byChunkCf, chunkKey(key, BLOCK_PLANE), NOTHING)
-        batchTs[here] = ts
     }
 
     // The time is in the key, so a position whose newest row does not decode still bounds what may

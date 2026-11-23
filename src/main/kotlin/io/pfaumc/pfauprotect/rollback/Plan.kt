@@ -58,6 +58,7 @@ private val STORIES = setOf(EntityKind.REMOVED, EntityKind.CREATED, EntityKind.C
 private val NATURE = setOf(
     Cause.BLK_GROW, Cause.BLK_FADE, Cause.BLK_FORM, Cause.BLK_LEAF_DECAY, Cause.BLK_SCULK,
     Cause.BLK_FIRE_BURN, Cause.BLK_FIRE_SPREAD, Cause.BLK_FIREBALL, Cause.BLK_LIQUID_DESTROY, Cause.BLK_LIQUID_FORM,
+    Cause.BLK_CP_FIRE,
 )
 
 // A storm's fire is nature too, for all that it names the bolt.
@@ -600,7 +601,9 @@ class RollbackReader(
         val entities = HashMap<WorldBlock, MutableList<EntityPlan>>()
         val dropped = HashMap<WorldBlock, MutableList<UUID>>()
         val deaths = ArrayList<EntityRow>()
-        val (stories, marks) = entityRows.partition { it.kind in STORIES }
+        // A kill CoreProtect knew of came with no NBT to bring the mob back from: it is there to be looked up,
+        // and a rollback over it goes on with the rest rather than refusing for a row it could never undo.
+        val (stories, marks) = entityRows.filter { it.cause != Cause.CP_ENTITY_KILLED }.partition { it.kind in STORIES }
         for (row in marks) {
             when (row.kind) {
                 EntityKind.DROPPED -> dropped.getOrPut(WorldBlock(world, row.x, row.y, row.z)) { ArrayList() } += row.drops

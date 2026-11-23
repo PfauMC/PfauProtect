@@ -117,6 +117,17 @@ object Texts {
             "Удалено строк: предметов $1, блоков $2, сущностей $3, чата $4; записано начальных остатков: $5.",
         r("A purge would delete (\\d+) item rows, (\\d+) block rows, (\\d+) entity rows, (\\d+) chat lines; (\\d+) opening balances to write\\. /pp purge (\\S+) confirm runs it\\.") to
             "Очистка удалит строк: предметов $1, блоков $2, сущностей $3, чата $4; запишет начальных остатков: $5. /pp purge $6 confirm запустит её.",
+        // CoreProtect import
+        r("An import is already running; /pp import status tells how far it got\\.") to "Импорт уже идёт; '/pp import status' покажет, докуда он дошёл.",
+        r("Import refused: until is a moment such as 2026-10-14T06:00:00Z\\.") to "Импорт отклонён: 'until' – это момент, например 2026-10-14T06:00:00Z.",
+        r("Import refused: say copy for a copy of the file, live for the file CoreProtect writes\\.") to "Импорт отклонён: укажи 'copy' для копии файла или 'live' для файла, в который пишет CoreProtect.",
+        r("Import refused: there is no file (.+)\\.") to "Импорт отклонён: файла $1 нет.",
+        r("Importing CoreProtect history older than (\\S+) from (.+); /pp import status tells how far it got\\.") to "Импортирую историю CoreProtect старше $1 из $2; '/pp import status' покажет, докуда дошло.",
+        r("No import was started since the server started\\.") to "С запуска сервера импорт не начинался.",
+        r("Import (.+), table (\\S*) at row (-?\\d+)\\.") to "Импорт: $1, таблица $2, строка $3.",
+        r("Import counts: (.*)") to "Счётчики импорта: $1",
+        r("No import is running\\.") to "Импорт не идёт.",
+        r("The import stops after the page it is on; running it again goes on from there\\.") to "Импорт остановится после текущей страницы; повторный запуск продолжит с этого места.",
         r("The purge failed; the server log has the details\\.") to "Очистка не удалась; подробности в логе сервера.",
         r("The chat lookup failed; the server log has the details\\.") to "Поиск по чату не удался; подробности в логе сервера.",
         r("The status failed; the server log has the details\\.") to "Состояние не удалось получить; подробности в логе сервера.",

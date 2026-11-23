@@ -82,6 +82,16 @@ enum class Cause(val id: Int) {
     // A player died with no player behind it: a fall, lava, a mob, `/kill`.
     PLAYER_DIED(0xA9),
 
+    // Rows brought over from a CoreProtect database (`importer/`), all older than this plugin's own: the
+    // cause is the only mark that a row was not seen here. A player's place and break, CoreProtect's
+    // `#tnt`-like agents by kind (no actor: CoreProtect never knew who lit it), and a sign's text.
+    BLK_CP_PLACE(0xAA),
+    BLK_CP_BREAK(0xAB),
+    BLK_CP_EXPLOSION(0xAC),
+    BLK_CP_FIRE(0xAD),
+    BLK_CP_PISTON(0xAE),
+    BLK_CP_OTHER(0xAF),
+
     ITEM_SPAWN(0x20),
     ITEM_MERGE(0x21),
     ITEM_DESPAWN(0x22),
@@ -120,6 +130,12 @@ enum class Cause(val id: Int) {
     // Q or Ctrl+Q over a slot of a block's or another entity's container in its window: thrown straight out of
     // the container, a withdrawal that never passed through the player's hands.
     CONTAINER_THROW(0xB5),
+    // More of CoreProtect's: a sign's text, a player's deposit and withdrawal (the container against the
+    // void, the player only as the actor), and a kill, which comes with no NBT and so is never brought back.
+    BLK_CP_SIGN(0xB6),
+    CP_CONTAINER_ADD(0xB7),
+    CP_CONTAINER_REMOVE(0xB8),
+    CP_ENTITY_KILLED(0xB9),
 
     CRAFT_CONSUME(0x40),
     CRAFT_RESULT(0x41),
@@ -294,12 +310,16 @@ enum class Cause(val id: Int) {
 // The block plane's whole range, so a filter can name it without listing every cause: 0xCA..0xEF, and
 // the block causes that were numbered outside it.
 val BLOCK_CAUSES: Set<Cause> = Cause.entries.filter { it.id in 0xCA..0xEF }.toSet() +
-    setOf(Cause.BLK_SIGN_EDIT, Cause.BLK_SHAPE, Cause.BLK_FIREBALL, Cause.BLK_LIQUID_FLOW, Cause.BLK_PLUGIN)
+    setOf(Cause.BLK_SIGN_EDIT, Cause.BLK_SHAPE, Cause.BLK_FIREBALL, Cause.BLK_LIQUID_FLOW, Cause.BLK_PLUGIN) +
+    Cause.entries.filter { it.name.startsWith("BLK_CP_") }
+
+// Every cause an import from CoreProtect writes, for `action:coreprotect`.
+val COREPROTECT_CAUSES: Set<Cause> = Cause.entries.filter { it.name.startsWith("BLK_CP_") || it.name.startsWith("CP_") }.toSet()
 
 // What the entity plane writes, some of it shared with an item row of the same event.
 val ENTITY_PLANE_CAUSES: Set<Cause> = setOf(
     Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.ENTITY_CHANGED, Cause.ENTITY_LED, Cause.MOB_BRED,
     Cause.PLAYER_KILLED, Cause.MOB_TRANSFORM, Cause.SPAWN_EGG_USE, Cause.BUCKET_CAPTURE_MOB,
     Cause.BUCKET_RELEASE_MOB, Cause.PLACE_ENTITY_ITEM, Cause.TOTEM_CONSUME,
-    Cause.PLAYER_DIED,
+    Cause.PLAYER_DIED, Cause.CP_ENTITY_KILLED,
 )
