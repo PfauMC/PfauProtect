@@ -35,6 +35,7 @@ import org.bukkit.block.Block
 import org.bukkit.block.data.BlockData
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
+import org.bukkit.plugin.IllegalPluginAccessException
 import org.bukkit.plugin.Plugin
 import java.util.Collections
 import java.util.UUID
@@ -120,7 +121,7 @@ internal class Api(
         val query = if (here && parsed.global && !GLOBAL_WORD.containsMatchIn(request.words)) parsed.copy(radius = null) else parsed
         val world = request.world ?: query.atWorld ?: query.event?.world?.takeIf { query.at == null } ?: refuse("A lookup needs a world.")
         val asked = query.targetOr(LookupTarget(world, request.x, request.y, request.z, "${request.x} ${request.y} ${request.z}"))
-        val target = if (query.part == Part.CONTENTS && query.radius == null) withTwin(asked) else asked
+        val target = if (query.part != Part.BLOCK && query.radius == null) withTwin(asked) else asked
         lookups.pageOf(lookups.find(target, query), query)
     }
 
@@ -129,15 +130,21 @@ internal class Api(
      * loaded for it: that chest is read one half alone.
      */
     private fun withTwin(target: LookupTarget): LookupTarget {
-        val world = plugin.server.getWorld(target.world) ?: return target
+        // The tests' stub plugin has no server, whatever the annotation says: no world to ask there.
+        @Suppress("USELESS_ELVIS")
+        val server: org.bukkit.Server = plugin.server ?: return target
+        val world = server.getWorld(target.world) ?: return target
         val found = CompletableFuture<LookupTarget>()
-        plugin.server.regionScheduler.execute(plugin, world, target.x shr 4, target.z shr 4) {
-            val loaded = world.isChunkLoaded(target.x shr 4, target.z shr 4)
-            found.complete(if (loaded) target.copy(twin = chestTwinOf(world.getBlockAt(target.x, target.y, target.z))) else target)
-        }
+        // A plugin going down refuses the task, and a lagging region may not get to it: either way one half is read.
         return try {
+            server.regionScheduler.execute(plugin, world, target.x shr 4, target.z shr 4) {
+                val loaded = world.isChunkLoaded(target.x shr 4, target.z shr 4)
+                found.complete(if (loaded) target.copy(twin = chestTwinOf(world.getBlockAt(target.x, target.y, target.z))) else target)
+            }
             found.get(TWIN_SECONDS, TimeUnit.SECONDS)
         } catch (_: TimeoutException) {
+            target
+        } catch (_: IllegalPluginAccessException) {
             target
         }
     }
@@ -261,8 +268,8 @@ private val NONE = PreviewResult("none")
 
 private const val THREADS = 4
 
-// A region task waits behind at most a tick or two of a lagging region.
-private const val TWIN_SECONDS = 5L
+// A region task waits behind at most a tick or two of a lagging region; past that the lookup reads one half.
+private const val TWIN_SECONDS = 2L
 
 // Longer than any read the walk budgets let through: a three-day window over a warehouse reads for minutes.
 private const val READ_MILLIS = 30 * 60_000L
