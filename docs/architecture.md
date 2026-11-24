@@ -132,7 +132,9 @@ edits old ones. Dynamite a blast or a fire took is not put back (`primed`, `Plan
 what lit it, it would go off a second time; the crater around it is. A rollback's own rows are only rolled back when `action:rollback` names them, which is also how a
 rollback is undone. What it put back is then taken back from whoever carried it off (`Confiscation.kt`): from an
 online player through an `Intent`, from an offline one at their next join, from a pile still lying where it lies.
-`radius:global` with `user:` finds a player's positions through `by_actor` and their own item rows. Entities go
+`radius:global` with `user:` finds a player's positions through `by_actor` and their own item rows. A lookup with
+`user:` and a radius walks the box; when that walk runs out of steps (a busy base, a grief weeks old) before the page is
+full, it reads the same as `radius:global`, cut to the box (an index entry outside it is skipped by its key). Entities go
 back to what their oldest row in the window says they were (brought back from NBT with the same UUID, taken away,
 changed back, returned to where they stood), and a player killed by the one rolled back gets back what fell out of
 them. Every player death is an entity row; one with no player behind it (fall, lava, mob) has cause `player_died`

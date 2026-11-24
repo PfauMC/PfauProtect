@@ -639,6 +639,25 @@ class LookupReadTest : BothPlanes() {
         }
     }
 
+    // A player's lookup in a radius read everyone's history there newest first: on a busy base the walk ran out of
+    // steps on the others' newer rows and answered nothing about a grief three weeks old. It reads the player's own.
+    @Test
+    fun `a player's lookup in a radius finds their old rows behind a busy area`() {
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        // More rows of Bob's in the box than a walk of it may step over: an entry and its row are two steps each.
+        (0 until 130_000).chunked(10_000).forEach { part ->
+            log.submit(part.map { BlockChange(10 + it % 30, 64 + it / 30 % 20, -3 + it / 600 % 30, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 1 + it, actor = bob) })
+        }
+        log.drain()
+        // Rows of Alice's outside the box are no part of the answer.
+        log.submit(listOf(BlockChange(500, 64, 500, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 5, actor = alice)))
+        log.drain()
+
+        val lines = said(LookupQuery(users = listOf("Alice"), radius = 40, all = true), players = mapOf("Alice" to alice, "Bob" to bob))
+        assertTrue(lines.any { "10 64 -3" in it && "blk_player_break" in it }, "$lines")
+        assertTrue(lines.none { "500 64 500" in it || "stopped" in it }, "$lines")
+    }
+
     // A throw out of somebody's chest names the thrower only as its actor, and a player's lookup without a radius
     // reads their own slots and the places of their blocks: the actor index is what leads it to the throw.
     @Test

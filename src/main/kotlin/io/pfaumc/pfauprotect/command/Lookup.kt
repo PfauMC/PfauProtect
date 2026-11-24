@@ -1229,7 +1229,15 @@ internal fun folded(lines: List<Line>, all: Boolean): List<Folded> {
 }
 
 /** What a lookup found, before it is drawn: its lines, whether the read saw them all, its heading, a word aside. */
-internal class Found(val lines: List<Line>, val complete: Boolean, val where: Component, val note: String? = null, val horizon: Long = Long.MIN_VALUE)
+// `walkedOut`: a box's read of the players' index ran out of its steps, which a deeper read would too.
+internal class Found(
+    val lines: List<Line>,
+    val complete: Boolean,
+    val where: Component,
+    val note: String? = null,
+    val horizon: Long = Long.MIN_VALUE,
+    val walkedOut: Boolean = false,
+)
 
 internal fun refuse(reason: String): Nothing = throw PfauProtectException(PfauProtectException.REFUSED, reason)
 
@@ -1685,6 +1693,12 @@ class Lookups(
             if (blocks.get(target.world) == null) refuse("This world's block log is not open.")
             return byUsers(listOf(target.world), query, users)
         }
+        // The coordinates come after, set apart by the heading.
+        val place = when {
+            query.radius != null -> Ui.text(tr("radius ${query.radius} around", "радиус ${query.radius} вокруг"))
+            target.block != null -> Ui.block(target.block)
+            else -> Ui.text(tr("place", "место"))
+        }
         val steps = Steps(BOX_STEPS)
         val page = read(target, query, steps)
         val items = itemLines(page.entries, query)
@@ -1695,19 +1709,22 @@ class Lookups(
             "  ${page.entries.size} postings (complete ${page.complete}), ${items.size} item and ${changes.size} block lines " +
                 "(complete $planesComplete), steps ${steps.used} of $BOX_STEPS${if (steps.ranOut) " (ran out)" else ""}"
         }
-        // The coordinates come after, set apart by the heading.
-        val place = when {
-            query.radius != null -> Ui.text(tr("radius ${query.radius} around", "радиус ${query.radius} вокруг"))
-            target.block != null -> Ui.block(target.block)
-            else -> Ui.text(tr("place", "место"))
-        }
         val where = if (query.radius == null && query.part == Part.CONTENTS) {
             Component.text().append(place).append(Ui.text(tr(", contents", ", содержимое"), Ui.MUTED)).build()
         } else {
             place
         }
         val note = "This world's block log is not open.".takeIf { blocks.get(target.world) == null }
-        return Found(withTwins(items, changes, query.rolledBack) + changes, page.complete && planesComplete && !steps.ranOut, where, note)
+        val lines = withTwins(items, changes, query.rolledBack) + changes
+        // A walk of everyone's history in the box runs out of steps on a busy base long before it reaches a grief
+        // weeks old; the players' own index, cut to the box, reaches it. Only then: a player busy elsewhere has
+        // more index to step over than a quiet box has rows.
+        val short = query.count || folded(shownOf(lines, query), query.all).size <= query.limit * query.page
+        if (steps.ranOut && short && users.isNotEmpty() && query.radius != null && note == null) {
+            Debug.log { "  the box walk ran out; reading ${query.users} by their own index, cut to the box" }
+            return byUsers(listOf(target.world), query, users, target.box(query.radius), where)
+        }
+        return Found(lines, page.complete && planesComplete && !steps.ranOut, where, note)
     }
 
     /**
@@ -1728,12 +1745,18 @@ class Lookups(
      * the next page's cut: whole minutes went missing between pages. So the lines end where the first source
      * stopped, and the read goes deeper until they fill the page or the walk runs out, as [readChat] does.
      */
-    private fun byUsers(worlds: List<UUID>, query: LookupQuery, users: Set<UUID>): Found {
-        val heading = Ui.text(tr("everything by ${query.users.joinToString(", ")}", "всё от ${query.users.joinToString(", ")}"))
-        // One row past the page, which is how the answer knows there is a next one.
-        var depth = minOf(query.wanted + 1, GLOBAL_WALK)
+    private fun byUsers(
+        worlds: List<UUID>,
+        query: LookupQuery,
+        users: Set<UUID>,
+        box: Box? = null,
+        heading: Component = Ui.text(tr("everything by ${query.users.joinToString(", ")}", "всё от ${query.users.joinToString(", ")}")),
+    ): Found {
+        // One row past the page, which is how the answer knows there is a next one. A count in a box counts as far
+        // as the box walk it stands in for did.
+        var depth = minOf(if (box != null && query.count) query.fetch else query.wanted + 1, GLOBAL_WALK)
         while (true) {
-            val found = worlds.mapNotNull { findEverywhere(it, query, users, depth) }
+            val found = worlds.mapNotNull { findEverywhere(it, query, users, depth, box) }
             val all = found.flatMap { it.lines }.distinctBy { line -> (line.source as? LedgerEntry)?.ref ?: line }
             val read = found.isNotEmpty() && found.size == worlds.size && found.all { it.complete }
             val horizon = found.maxOfOrNull { it.horizon } ?: Long.MIN_VALUE
@@ -1743,7 +1766,8 @@ class Lookups(
             if (!query.count && folded(shownOf(lines, query), query.all).size > query.limit * query.page) return Found(lines, read, heading)
             // A count is of what the read saw; at the walk's end the lines are left uncut, and the answer says it is
             // not whole.
-            if (query.count || depth >= GLOBAL_WALK) return Found(all, false, heading)
+            // An index walk that ran out of its steps runs out at the same row deeper down.
+            if (query.count || depth >= GLOBAL_WALK || found.any { it.walkedOut }) return Found(all, false, heading)
             depth = minOf(depth * 4, GLOBAL_WALK)
         }
     }
@@ -1754,14 +1778,18 @@ class Lookups(
      * former. The rest of each place's history is read only to see what a rollback has since given back. Item
      * rows with no position (eating, crafting, rows from before drops had a spot) have no world, so they show
      * in the answer of each world. [Found.horizon] is the newest row at which one of the reads stopped short.
+     * With a [box], only what happened inside it, and an item row with no place is in no box.
      */
-    private fun findEverywhere(world: UUID, query: LookupQuery, users: Set<UUID>, depth: Int): Found? {
+    private fun findEverywhere(world: UUID, query: LookupQuery, users: Set<UUID>, depth: Int, box: Box? = null): Found? {
         val log = blocks.get(world) ?: return null
         val fromTs = query.fromTs()
         val toTs = query.toTs()
         val keeps = rowFilter(query)
+        fun inBox(at: WorldBlock?) = box == null || at != null && at.world == world && box.holds(at.x, at.y, at.z)
         // One past the depth, which tells a read that stopped short from one that came to exactly that many rows.
-        val own = users.map { log.byActor(it, fromTs, toTs, depth + 1, GLOBAL_WALK, keeps::keeps, keeps::keeps) }
+        // Stepping over the rows outside a box costs a key each, and a player busy elsewhere has many of them.
+        val walk = if (box == null) GLOBAL_WALK else BOX_STEPS
+        val own = users.map { log.byActor(it, fromTs, toTs, depth + 1, walk, keeps::keeps, box, keeps::keeps) }
         // What they put in or took out names them on their own slots; what fell out of a container they broke
         // names them only as its actor, on the container, so the places of their rows are read too.
         // Drops, pickups and eating have no position at all, so they are kept when they left a player's own
@@ -1769,11 +1797,13 @@ class Lookups(
         fun own(holder: Holder) = (holder as? PlayerHolder)?.uuid ?: (holder as? EntitySlot)?.uuid?.takeIf { it in users }
         // The item reads go deeper with the block read, or a long folded run of item rows would hold the cut still.
         val itemDepth = maxOf(query.fetch, depth)
-        val slots = users.flatMap { ownHolders(it) }.map { holderRows(listOf(it), fromTs, toTs, query, itemDepth) }
+        val slots = users.flatMap { ownHolders(it) }.map { holder ->
+            holderRows(listOf(holder), fromTs, toTs, query, itemDepth) { inBox(it.spot ?: it.counterparty.block) }
+        }
         // A throw straight out of somebody's container touches none of their slots and names them only as its actor.
         // This world's only, as the read goes: another world's throws would use the read up.
         val thrown = users.map { user ->
-            ledger.actorPage(user, fromTs, toTs, itemDepth, { (it.spot ?: it.holder.block)?.world == world && keeps.keeps(it) }, HOLDER_STEPS)
+            ledger.actorPage(user, fromTs, toTs, itemDepth, { at -> (at.spot ?: at.holder.block).let { it?.world == world && inBox(it) } && keeps.keeps(at) }, HOLDER_STEPS)
         }
         // A read that stopped short having kept nothing says nothing of where it stopped; its `complete` tells that.
         fun stoppedAt(times: List<Long>, short: Boolean) = if (short) times.minOrNull() ?: Long.MIN_VALUE else Long.MIN_VALUE
@@ -1797,7 +1827,7 @@ class Lookups(
         val traded = (slots.flatMap { it.entries } + thrown.flatMap { it.entries }).filter {
             // A drop or pickup from this version on says where it happened; the world decides, as for a block.
             val at = it.spot ?: it.counterparty.block
-            if (at != null) at.world == world else own(it.counterparty).let { mine -> mine == null || mine != own(it.holder) }
+            if (at != null) at.world == world && inBox(at) else box == null && own(it.counterparty).let { mine -> mine == null || mine != own(it.holder) }
         }
         // A block put down drops nothing, so only the places they changed otherwise are read for what fell out.
         val broken = placesOf(rows, { Triple(it.x, it.y, it.z) }, { it.timestamp }) { it.cause != Cause.BLK_PLAYER_PLACE }
@@ -1810,7 +1840,10 @@ class Lookups(
         val planes = planeLines(world, rows, entities, keeps, undoes, entityUndoes)
         val lines = withTwins(entryLines(wholeTransactions(ledger, items)), planes, query.rolledBack) + planes
         val complete = own.all { it.complete } && slots.all { it.complete } && thrown.all { it.complete } && undoesComplete
-        return Found(lines, complete, Ui.text(""), horizon = maxOf(horizon, stoppedAt(items.map { it.timestamp }, items.size < kept.size)))
+        return Found(
+            lines, complete, Ui.text(""), horizon = maxOf(horizon, stoppedAt(items.map { it.timestamp }, items.size < kept.size)),
+            walkedOut = box != null && own.any { !it.complete },
+        )
     }
 
     // The rollback rows at each place from the moment given to [toTs]: they mark the rows there, and are not shown.
@@ -2128,9 +2161,16 @@ class Lookups(
         WorldBlock(world, x, y, z).takeIf { part != Part.CONTENTS },
     )
 
-    private fun holderRows(holders: List<Holder>, fromTs: Long, toTs: Long, query: LookupQuery, limit: Int = query.fetch): EntryPage {
+    private fun holderRows(
+        holders: List<Holder>,
+        fromTs: Long,
+        toTs: Long,
+        query: LookupQuery,
+        limit: Int = query.fetch,
+        also: (LedgerEntry) -> Boolean = { true },
+    ): EntryPage {
         val keeps = rowFilter(query)
-        val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = limit, keep = keeps::keeps, steps = HOLDER_STEPS) }
+        val pages = holders.map { ledger.holderPage(it, fromTs, toTs, reverse = true, limit = limit, keep = { entry -> keeps.keeps(entry) && also(entry) }, steps = HOLDER_STEPS) }
         return EntryPage(pages.flatMap { it.entries }, pages.all { it.complete })
     }
 

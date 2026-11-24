@@ -349,7 +349,8 @@ class BlockLog(
     /**
      * An actor's own rows in the window, newest first, each read by the key its index entry holds rather
      * than with the rest of its position's history. Stops once `wanted` rows were kept, or `budget` index
-     * entries were walked, which leaves the answer incomplete.
+     * entries were walked, which leaves the answer incomplete. An entry standing outside [box] is stepped
+     * over by its key alone, the position being in it, without its row read.
      */
     fun byActor(
         actor: UUID,
@@ -358,6 +359,7 @@ class BlockLog(
         wanted: Int,
         budget: Int,
         keepBlock: (BlockRow) -> Boolean,
+        box: Box? = null,
         keepEntity: (EntityRow) -> Boolean,
     ): ActorRows = dbLock.read {
         val number = shared.registries.lookupUuid(RegistryNamespace.PLAYER, actor)
@@ -374,6 +376,10 @@ class BlockLog(
             if (walked++ >= budget) {
                 complete = false
                 return@forEachUnder false
+            }
+            if (box != null) {
+                val (x, y, z) = Zcode.decode(key, ACTOR_KEY_SIZE - Zcode.SIZE)
+                if (!box.holds(x, y, z)) return@forEachUnder true
             }
             // Which plane the row is in the entry does not say; a block row is far the likelier.
             val row = rowKeyOf(key)
