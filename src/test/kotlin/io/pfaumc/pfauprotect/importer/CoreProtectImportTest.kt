@@ -25,9 +25,11 @@ import io.pfaumc.pfauprotect.storage.RegistryNamespace
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
+import java.io.ByteArrayOutputStream
 import java.io.RandomAccessFile
 import java.nio.file.Path
 import java.sql.Connection
@@ -112,6 +114,18 @@ class CoreProtectImportTest : BothPlanes() {
     // What Alice put into a chest and took out of it faces the void, so it never counts towards what she holds; the
     // sign she wrote on carries its text, and so does its break, from the snapshot CoreProtect took of it a second
     // early; her chat is marked as CoreProtect's, and her login keeps no password.
+    @Test
+    fun `meta Bukkit cannot read is thrown, to be counted as lost`() {
+        // As a running server has it: through this alias Bukkit's own reader would log the failure and answer null.
+        org.bukkit.configuration.serialization.ConfigurationSerialization.registerClass(
+            org.bukkit.craftbukkit.inventory.SerializableMeta::class.java,
+        )
+        val bytes = ByteArrayOutputStream().also { out ->
+            org.bukkit.util.io.BukkitObjectOutputStream(out).use { it.writeObject(listOf(listOf(mapOf("meta-type" to "NO_SUCH_META")))) }
+        }.toByteArray()
+        assertThrows(Throwable::class.java) { coreProtectMeta(bytes, net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.STONE)) }
+    }
+
     @Test
     fun `containers, a sign's text and chat come over`() {
         val db = fixture { c ->

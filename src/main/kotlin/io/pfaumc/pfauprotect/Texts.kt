@@ -183,7 +183,8 @@ object Texts {
 
     private val WORDS: List<Pair<Regex, String>> = listOf(
         r(" slot ") to " слот ",
-        r("container ") to "контейнер ",
+        // Not inside a CoreProtect table's name: the import's counts name them as they are.
+        r("\\bcontainer ") to "контейнер ",
         r(" from ") to " из ",
         r(" to ") to " в ",
         r(" at ($PLACE)") to " в $1",
