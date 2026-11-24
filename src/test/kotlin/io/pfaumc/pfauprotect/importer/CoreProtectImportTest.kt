@@ -131,6 +131,10 @@ class CoreProtectImportTest : BothPlanes() {
             c.createStatement().execute(
                 "INSERT INTO co_sign VALUES (${t + 4}, $ALICE, 1, 8, 64, 8, 1, 1908001, 1908001, 1, 0, 0, 'late', '', '', '', NULL, NULL, NULL, NULL)",
             )
+            // A second later only the new sign stands, and the text is its.
+            c.createStatement().execute(
+                "INSERT INTO co_sign VALUES (${t + 5}, $ALICE, 1, 8, 64, 8, 1, 1908001, 1908001, 1, 0, 0, 'after', '', '', '', NULL, NULL, NULL, NULL)",
+            )
             c.createStatement().execute("INSERT INTO co_chat VALUES ($t, $ALICE, 1, 0, 64, 0, 'hi all')")
             c.createStatement().execute("INSERT INTO co_command VALUES ($t, $ALICE, 1, 0, 64, 0, '/login secret')")
             c.createStatement().execute("INSERT INTO co_session VALUES ($t, $ALICE, 1, 0, 64, 0, 1)")
@@ -146,7 +150,8 @@ class CoreProtectImportTest : BothPlanes() {
         assertTrue(shared.slotBalances(ownHolders(alice), Long.MAX_VALUE).values.all { it.isEmpty() })
 
         val signRows = log.at(8, 64, 8, 0, Long.MAX_VALUE, 10, reverse = false)
-        assertEquals(listOf(Cause.BLK_CP_PLACE, Cause.BLK_CP_SIGN, Cause.BLK_CP_PLACE), signRows.map { it.cause })
+        assertEquals(listOf(Cause.BLK_CP_PLACE, Cause.BLK_CP_SIGN, Cause.BLK_CP_PLACE, Cause.BLK_CP_SIGN), signRows.map { it.cause })
+        assertTrue("after" in nbtOf(shared.payload(signRows[3].payloadAfter!!)!!).toString())
         val sign = signRows[1]
         val text = nbtOf(shared.payload(sign.payloadAfter!!)!!).toString()
         assertTrue("hello" in text && "there" in text, text)

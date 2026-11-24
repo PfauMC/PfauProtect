@@ -433,12 +433,13 @@ class CoreProtectImport(
     /**
      * The sign a text went on, as the newest block row of its position up to then names it: a placement. A break in
      * the same second leaves no way to tell whether the text came first, and a text written after it would stand the
-     * sign up again, or land on a sign put there after the break; so within a second a break wins over a placement,
-     * and the break keeps the text as what was there before it.
+     * sign up again, or land on a sign put there after the break; so within the text's own second a break wins over a
+     * placement, and the break keeps the text as what was there before it. In an earlier second the newest row wins.
      */
     private fun standingSign(row: CpSign): String? = source.one(
-        "SELECT type, blockdata, action FROM co_block WHERE wid = ? AND x = ? AND z = ? AND y = ? AND time <= ? AND action IN (0, 1) ORDER BY time DESC, action, rowid DESC LIMIT 1",
-        listOf(row.wid, row.x, row.z, row.y, row.time),
+        "SELECT type, blockdata, action FROM co_block WHERE wid = ? AND x = ? AND z = ? AND y = ? AND time <= ? AND action IN (0, 1) " +
+            "ORDER BY time DESC, CASE WHEN time = ? THEN action ELSE 0 END, rowid DESC LIMIT 1",
+        listOf(row.wid, row.x, row.z, row.y, row.time, row.time),
     ) { if (it.getInt(3) == PLACE) stateOf(it.getInt(1), it.getBytes(2)?.toString(Charsets.UTF_8)) else null }?.takeIf(::isSign)
 
     /**
