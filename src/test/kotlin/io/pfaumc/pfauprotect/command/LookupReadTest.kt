@@ -682,6 +682,29 @@ class LookupReadTest : BothPlanes() {
         assertTrue(lines.none { "500 64 500" in it }, "$lines")
     }
 
+    // Busy elsewhere past the index's walk, Alice's placement in the box is a block line only the box walk has, with
+    // the place's end of the move in its hover; her slots give the index the other end. The move is told once.
+    @Test
+    fun `a placement both reads meet by its two ends is told once`() {
+        (0 until 130_000).chunked(10_000).forEach { part ->
+            log.submit(part.map { BlockChange(10 + it % 30, 64 + it / 30 % 20, -3 + it / 600 % 30, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 1 + it, actor = bob) })
+        }
+        log.submit(listOf(BlockChange(13, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 200_000, actor = alice)))
+        log.drain()
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 1), WorldBlock(world, 13, 64, -3), stone, null, 1, T0 + 200_010, actor = alice))
+        shared.drain()
+        (0 until 260_000).chunked(10_000).forEach { part ->
+            log.submit(part.map { BlockChange(500 + it % 100, 64, 500 + it / 100 % 100, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 300_000 + it, actor = alice) })
+        }
+        log.drain()
+
+        val lookups = Lookups(stub(Plugin::class.java), shared, logs, codec, mapOf("Alice" to alice, "Bob" to bob)::get) { null }
+        val query = LookupQuery(users = listOf("Alice"), radius = 40, all = true)
+        val rows = lookups.pageOf(lookups.find(LookupTarget(world, 10, 64, -3, "here"), query), query).rows
+        assertEquals(1, rows.count { it.cause == "block_place" }, "$rows")
+        assertEquals(1, rows.count { it.cause == "blk_player_place" }, "$rows")
+    }
+
     // A throw out of somebody's chest names the thrower only as its actor, and a player's lookup without a radius
     // reads their own slots and the places of their blocks: the actor index is what leads it to the throw.
     @Test

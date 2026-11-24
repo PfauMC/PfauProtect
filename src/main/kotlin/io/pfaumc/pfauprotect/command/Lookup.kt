@@ -1729,13 +1729,17 @@ class Lookups(
             // A block line both found keeps what fell out of it in either: the index reads a place's drops only so deep.
             val mine = own.lines.associateBy(::rowOfLine)
             val shown = own.lines.flatMapTo(HashSet<Any>()) { line -> line.twins.map(::moveOf) + rowOfLine(line) }
+            // A line only the walk found keeps only what the index's answer does not already show, as a line or in a hover.
             val added = lines.filter { line ->
-                val same = mine[rowOfLine(line)] ?: return@filter rowOfLine(line) !in shown
-                line.twins.filter { moveOf(it) !in shown }.forEach { twin ->
-                    same.twins += twin
-                    shown += moveOf(twin)
+                val same = mine[rowOfLine(line)]
+                if (same == null && !shown.add(rowOfLine(line))) return@filter false
+                val fresh = line.twins.filter { shown.add(moveOf(it)) }
+                if (same != null) {
+                    same.twins += fresh
+                    return@filter false
                 }
-                false
+                line.twins.retainAll(fresh.toSet())
+                true
             }
             return Found(own.lines + added, false, where)
         }
