@@ -1726,8 +1726,18 @@ class Lookups(
             // The walk's lines stay beside the index's: it reads item rows that name a player only as their actor,
             // which no index of theirs holds, and the index read runs out too for a player busy elsewhere. Rows of
             // that kind past where the walk stopped are not read, so the answer is not whole.
-            val seen = own.lines.mapTo(HashSet(), ::rowOfLine)
-            return Found(own.lines + lines.filter { rowOfLine(it) !in seen }, false, where)
+            // A block line both found keeps what fell out of it in either: the index reads a place's drops only so deep.
+            val mine = own.lines.associateBy(::rowOfLine)
+            val shown = own.lines.flatMapTo(HashSet<Any>()) { line -> line.twins.map { it.ref } + rowOfLine(line) }
+            val added = lines.filter { line ->
+                val same = mine[rowOfLine(line)] ?: return@filter rowOfLine(line) !in shown
+                line.twins.filter { it.ref !in shown }.forEach { twin ->
+                    same.twins += twin
+                    shown += twin.ref
+                }
+                false
+            }
+            return Found(own.lines + added, false, where)
         }
         return Found(lines, page.complete && planesComplete && !steps.ranOut, where, note)
     }

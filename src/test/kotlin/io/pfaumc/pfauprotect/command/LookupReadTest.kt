@@ -655,11 +655,22 @@ class LookupReadTest : BothPlanes() {
         // An item row naming her only as its actor is in no index of hers; the walk of the box, newest first, met it.
         val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
         shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, Container(world, 12, 64, -3, 0), ItemEntityRef(UUID.randomUUID()), diamond, null, 2, T0 + 200_000, actor = alice))
+        // A recent break the walk met with what fell out of it. The index reaches a drop only through the place's newest
+        // rows, and Bob's bury it.
+        log.submit(listOf(BlockChange(11, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 300_000, actor = alice)))
+        log.drain()
+        val at = WorldBlock(world, 11, 64, -3)
+        shared.submit(listOf(
+            Transfer(Cause.BLOCK_DROP, at, Void, stone, null, 1, T0 + 300_030, actor = alice),
+            Transfer(Cause.BLOCK_DROP, Void, ItemEntityRef(UUID.randomUUID()), byteArrayOf(4), null, 1, T0 + 300_030, actor = alice),
+        ))
+        repeat(40) { shared.submit(Transfer(Cause.BLOCK_DROP, at, Void, stone, null, 1, T0 + 300_100 + it, actor = bob)) }
         shared.drain()
 
         val lines = said(LookupQuery(users = listOf("Alice"), radius = 40, all = true), players = mapOf("Alice" to alice, "Bob" to bob))
         assertTrue(lines.any { "10 64 -3" in it && "blk_player_break" in it }, "$lines")
         assertTrue(lines.any { "item.minecraft.diamond" in it }, "$lines")
+        assertTrue(lines.single { "11 64 -3" in it && "blk_player_break" in it }.contains("items:"), "$lines")
         assertTrue(lines.none { "500 64 500" in it }, "$lines")
     }
 
