@@ -665,12 +665,20 @@ class LookupReadTest : BothPlanes() {
             Transfer(Cause.BLOCK_DROP, Void, ItemEntityRef(UUID.randomUUID()), byteArrayOf(4), null, 1, T0 + 300_030, actor = alice),
         ))
         repeat(40) { shared.submit(Transfer(Cause.BLOCK_DROP, at, Void, stone, null, 1, T0 + 300_100 + it, actor = bob)) }
+        // A placement both reads meet, each by its own end: the place's posting and the one in her slots.
+        log.submit(listOf(BlockChange(13, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 400_000, actor = alice)))
+        log.drain()
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 1), WorldBlock(world, 13, 64, -3), stone, null, 1, T0 + 400_010, actor = alice))
         shared.drain()
 
         val lines = said(LookupQuery(users = listOf("Alice"), radius = 40, all = true), players = mapOf("Alice" to alice, "Bob" to bob))
         assertTrue(lines.any { "10 64 -3" in it && "blk_player_break" in it }, "$lines")
         assertTrue(lines.any { "item.minecraft.diamond" in it }, "$lines")
         assertTrue(lines.single { "11 64 -3" in it && "blk_player_break" in it }.contains("items:"), "$lines")
+        val lookups = Lookups(stub(Plugin::class.java), shared, logs, codec, mapOf("Alice" to alice, "Bob" to bob)::get) { null }
+        val query = LookupQuery(users = listOf("Alice"), radius = 40, all = true)
+        val rows = lookups.pageOf(lookups.find(LookupTarget(world, 10, 64, -3, "here"), query), query).rows
+        assertEquals(1, rows.count { it.cause == "block_place" }, "$rows")
         assertTrue(lines.none { "500 64 500" in it }, "$lines")
     }
 

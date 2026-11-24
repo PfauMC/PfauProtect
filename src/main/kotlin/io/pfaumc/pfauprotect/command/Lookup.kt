@@ -1728,12 +1728,12 @@ class Lookups(
             // that kind past where the walk stopped are not read, so the answer is not whole.
             // A block line both found keeps what fell out of it in either: the index reads a place's drops only so deep.
             val mine = own.lines.associateBy(::rowOfLine)
-            val shown = own.lines.flatMapTo(HashSet<Any>()) { line -> line.twins.map { it.ref } + rowOfLine(line) }
+            val shown = own.lines.flatMapTo(HashSet<Any>()) { line -> line.twins.map(::moveOf) + rowOfLine(line) }
             val added = lines.filter { line ->
                 val same = mine[rowOfLine(line)] ?: return@filter rowOfLine(line) !in shown
-                line.twins.filter { it.ref !in shown }.forEach { twin ->
+                line.twins.filter { moveOf(it) !in shown }.forEach { twin ->
                     same.twins += twin
-                    shown += twin.ref
+                    shown += moveOf(twin)
                 }
                 false
             }
@@ -1745,11 +1745,14 @@ class Lookups(
     // Which stored row a line was drawn from, the same however many reads met it; a row's payload is an array, which
     // equals no other read's copy.
     private fun rowOfLine(line: Line): Any = when (val row = line.source) {
-        is LedgerEntry -> row.ref
+        is LedgerEntry -> moveOf(row)
         is BlockRow -> listOf(0, row.x, row.y, row.z, row.timestamp, row.eventId, row.ordinal)
         is EntityRow -> listOf(1, row.x, row.y, row.z, row.timestamp, row.eventId, row.ordinal)
         else -> line
     }
+
+    // A movement, whichever of its two postings a read met: the place reads one end, the player's slots the other.
+    private fun moveOf(entry: LedgerEntry): Any = listOf(entry.txId, setOf(entry.holder, entry.counterparty), entry.itemFormId, abs(entry.qty))
 
     /**
      * What the named players did in every world whose log is open, as [findEverywhere] reads one. An item row with
