@@ -117,7 +117,8 @@ class CoreProtectImportTest : BothPlanes() {
                 "INSERT INTO co_sign VALUES (${t + 3}, $ALICE, 1, 8, 64, 8, 0, 1908001, 1908001, 1, 0, 0, 'hello', 'there', '', '', NULL, NULL, NULL, NULL)",
             )
             block(c, 2, t + 4, ALICE, 8, 64, 8, "minecraft:oak_sign", action = 0)
-            // Written in the second it broke: whether before or after the break is unknown, so it is not imported.
+            // Written in the second it broke and another went up: on which of the two is unknown, so it is not imported.
+            block(c, 3, t + 4, ALICE, 8, 64, 8, "minecraft:oak_sign", action = 1)
             c.createStatement().execute(
                 "INSERT INTO co_sign VALUES (${t + 4}, $ALICE, 1, 8, 64, 8, 1, 1908001, 1908001, 1, 0, 0, 'late', '', '', '', NULL, NULL, NULL, NULL)",
             )
@@ -136,7 +137,7 @@ class CoreProtectImportTest : BothPlanes() {
         assertTrue(shared.slotBalances(ownHolders(alice), Long.MAX_VALUE).values.all { it.isEmpty() })
 
         val signRows = log.at(8, 64, 8, 0, Long.MAX_VALUE, 10, reverse = false)
-        assertEquals(listOf(Cause.BLK_CP_PLACE, Cause.BLK_CP_SIGN, Cause.BLK_CP_BREAK), signRows.map { it.cause })
+        assertEquals(listOf(Cause.BLK_CP_PLACE, Cause.BLK_CP_SIGN, Cause.BLK_CP_PLACE), signRows.map { it.cause })
         val sign = signRows[1]
         val text = nbtOf(shared.payload(sign.payloadAfter!!)!!).toString()
         assertTrue("hello" in text && "there" in text, text)
