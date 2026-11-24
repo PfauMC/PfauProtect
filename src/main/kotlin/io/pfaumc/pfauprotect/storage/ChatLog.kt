@@ -4,6 +4,8 @@ import io.pfaumc.pfauprotect.model.Confidence
 import io.pfaumc.pfauprotect.model.idIndex
 import org.rocksdb.Options
 import org.rocksdb.RocksDB
+import org.rocksdb.WriteBatch
+import org.rocksdb.WriteOptions
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
@@ -23,9 +25,11 @@ enum class ChatKind(val id: Int) {
     // TOTEM is the hit a totem took instead of a death: the same fields as a hit. BOOK is a book written in or
     // signed, its `text` a [BookEdit]. CHAT_LOCAL and CHAT_GLOBAL are chat where it has the two halves; CHAT is
     // chat with no half known, as everything was before them.
-    CHAT(0), COMMAND(1), JOIN(2), QUIT(3), HIT(4), TOTEM(5), BOOK(6), CHAT_LOCAL(7), CHAT_GLOBAL(8);
+    // The CP_ kinds are lines brought over from CoreProtect (`importer/`), kept apart so nobody takes them for ours.
+    CHAT(0), COMMAND(1), JOIN(2), QUIT(3), HIT(4), TOTEM(5), BOOK(6), CHAT_LOCAL(7), CHAT_GLOBAL(8),
+    CP_CHAT(9), CP_COMMAND(10), CP_JOIN(11), CP_QUIT(12);
 
-    val said: Boolean get() = this == CHAT || this == CHAT_LOCAL || this == CHAT_GLOBAL
+    val said: Boolean get() = this == CHAT || this == CHAT_LOCAL || this == CHAT_GLOBAL || this == CP_CHAT
 
     val struck: Boolean get() = this == HIT || this == TOTEM
 
@@ -117,6 +121,23 @@ class ChatLog(dir: Path) : AutoCloseable {
     fun submit(line: ChatLine) {
         val key = keyOf(line.timestamp, sequence.getAndIncrement())
         runCatching { writer.execute { dbLock.read { if (!closed) db.put(key, encode(line)) } } }
+    }
+
+    /**
+     * Lines brought over from another log, each with its own sequence: the import picks it from where the line
+     * came from, so writing the same lines again lands on the same keys instead of beside them. Written at once,
+     * not through the writer, and only for times older than anything this log has seen.
+     */
+    fun importLines(lines: List<Pair<ChatLine, Int>>) = dbLock.read {
+        check(!closed) { "the chat log is closed" }
+        WriteBatch().use { batch ->
+            for ((line, seq) in lines) {
+                require(seq >= 0) { "a sequence is kept positive" }
+                batch.put(keyOf(line.timestamp, seq), encode(line))
+            }
+            // Synced, as the mark that says how far an import got is.
+            WriteOptions().setSync(true).use { db.write(it, batch) }
+        }
     }
 
     /** Lines from `fromTs` to `toTs`, newest first, those the filter keeps, at most `limit`. */

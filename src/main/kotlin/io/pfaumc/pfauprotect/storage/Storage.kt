@@ -157,8 +157,11 @@ private val BY_CHUNK_CF = "by_chunk".toByteArray()
 private val BY_ACTOR_CF = "by_actor".toByteArray()
 
 // Rows that name their player only as the actor, with none of the player's own slots at either end, so the player's
-// holders never lead to them: a throw straight out of somebody's container.
-private val ACTOR_INDEXED = setOf(Cause.CONTAINER_THROW)
+// holders never lead to them: a throw straight out of somebody's container, and CoreProtect's deposits and
+// withdrawals, which face the void.
+private val ACTOR_INDEXED = setOf(Cause.CONTAINER_THROW, Cause.CP_CONTAINER_ADD, Cause.CP_CONTAINER_REMOVE)
+
+private val IMPORTED_MOVES = setOf(Cause.CP_CONTAINER_ADD, Cause.CP_CONTAINER_REMOVE)
 
 // An actor-time entry: the player's number, the time, then the posting's `entries` key.
 private const val ACTOR_HEAD_SIZE = 12
@@ -992,7 +995,8 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
     // The actor-time entry of a row [ACTOR_INDEXED] holds, on the side it left, so each movement has one.
     private fun actorKey(key: ByteArray, entry: LedgerEntry, ids: IdResolver): ByteArray? {
         val actor = entry.actor ?: return null
-        if (entry.cause !in ACTOR_INDEXED || entry.qty >= 0) return null
+        // A deposit out of the void has no side it left, so its one posting is the one indexed.
+        if (entry.cause !in ACTOR_INDEXED || entry.qty >= 0 && entry.cause != Cause.CP_CONTAINER_ADD) return null
         return actorIndexKey(ids.id(RegistryNamespace.PLAYER, actor), entry.timestamp, key)
     }
 
@@ -1123,7 +1127,9 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
                 db.forEachRow(entriesCf) { key, value ->
                     val entry = EntryCodec.decodeOrNull(key, value, registries)
                     if (entry != null && entry.timestamp < cutoff && form(entry.itemFormId) != null) {
-                        held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
+                        // CoreProtect's deposits and withdrawals face the void, without what hoppers and loot put in:
+                        // added up, they would make up a balance nobody held.
+                        if (entry.cause !in IMPORTED_MOVES) held.merge(Triple(entry.holder, entry.itemFormId, entry.damage), entry.qty, Int::plus)
                         deleted++
                         if (!dryRun) {
                             batch.delete(entriesCf, key)
@@ -1577,9 +1583,72 @@ class RocksItemLog(dir: Path) : AutoCloseable, RegistryStore, PlacedForms {
         return pieces
     }
 
-    private fun writeTransaction(batch: WriteBatch, transaction: List<Transfer>) {
-        val txId = nextTxId++
-        batch.put(metaCf, META_TX_ID, longBytes(nextTxId))
+    /**
+     * Movements brought over from another journal (`importer/`), one transaction each under the number its
+     * importer gave it, written at once rather than through the writer. The numbers are below every one the
+     * writer hands out, so these sort before its rows wherever the transaction number orders them, and taken
+     * from the source, so writing the same movements again lands on the same keys with the same bytes.
+     */
+    // Under the writer's lock: a form the import interns while the writer holds a batch would be filed with a counter
+    // that batch then writes back over. Synced, because the mark that says how far an import got is. A movement that
+    // cannot be written is dropped and counted, as the writer drops one, so one bad row cannot stop an import for good.
+    fun importTransfers(transfers: List<Pair<Long, Transfer>>): Int = dbLock.read {
+        check(!closed) { "the ledger is closed" }
+        holdingWriter {
+            var dropped = 0
+            WriteBatch().use { batch ->
+                for ((txId, transfer) in transfers) {
+                    require(txId < 0) { "imported transactions are numbered below the writer's" }
+                    batch.setSavePoint()
+                    try {
+                        writeTransaction(batch, listOf(transfer), txId)
+                    } catch (failure: Exception) {
+                        if (failure.isIoError()) throw failure
+                        batch.rollbackToSavePoint()
+                        dropped++
+                    }
+                }
+                db.write(syncWriteOptions, batch)
+            }
+            dropped
+        }
+    }
+
+    /** Runs [body] while the writer holds no batch: what it interns is filed with counters nothing writes back over. */
+    internal fun <T> holdingWriter(body: () -> T): T = writing.withLock(body)
+
+    /**
+     * When this journal began, as near as it can still tell: the time of its oldest transaction of more than one
+     * posting. An import may bring over only what is older. Null for a journal with none.
+     */
+    fun journalStart(): Long? = dbLock.read {
+        check(!closed) { "the ledger is closed" }
+        db.newIterator(txCf).use { iter ->
+            // Imported numbers are negative and sort after every one the writer handed out.
+            iter.seekToFirst()
+            while (iter.isValid && ByteReader(iter.key()).longBE() >= 0) {
+                val key = unpackKeys(iter.value()).firstOrNull()
+                val entry = key?.let { k -> db.get(entriesCf, k)?.let { EntryCodec.decodeOrNull(k, it, registries) } }
+                if (entry != null) return entry.timestamp
+                iter.next()
+            }
+        }
+        null
+    }
+
+    /** How far an import got through a source, by the name it gave it; 0 for one never begun. */
+    fun importMark(name: String): Long = dbLock.read {
+        check(!closed) { "the ledger is closed" }
+        db.get(metaCf, importMarkKey(name))?.let { ByteReader(it).longBE() } ?: 0
+    }
+
+    fun setImportMark(name: String, mark: Long) = writeSynced { it.put(metaCf, importMarkKey(name), longBytes(mark)) }
+
+    private fun importMarkKey(name: String) = "import:$name".toByteArray()
+
+    private fun writeTransaction(batch: WriteBatch, transaction: List<Transfer>, given: Long? = null) {
+        val txId = given ?: nextTxId++
+        if (given == null) batch.put(metaCf, META_TX_ID, longBytes(nextTxId))
         val keys = ArrayList<ByteArray>(transaction.size * 2)
         for (transfer in transaction) {
             val itemFormId = forms.idOf(transfer.form)

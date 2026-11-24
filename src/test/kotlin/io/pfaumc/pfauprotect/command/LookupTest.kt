@@ -66,7 +66,7 @@ class LookupTest {
             CommandContext<Any>(Any(), "", emptyMap(), null, null, emptyList(), StringRange.at(0), null, null, false),
             SuggestionsBuilder(typed, 0),
         ).get().list.map { it.text }
-        assertEquals(setOf("pvp", "book", "global", "local"), offered("a:").toSet())
+        assertEquals(setOf("pvp", "book", "global", "local", "coreprotect"), offered("a:").toSet())
         // A half of chat has no rows in either plane: a lookup or a rollback refuses it, /pp chat takes it.
         assertEquals("local", LookupArgument(chat = true).parse(StringReader("a:local t:1h")).actions.single())
         for (argument in listOf(LookupArgument(), LookupArgument(rollback = true))) {
@@ -227,16 +227,16 @@ class LookupTest {
 
     @Test
     fun `actions map onto the causes the capture emits`() {
-        // A throw out of a chest's window is a withdrawal too, and the clicks are read to be told apart by their ends.
-        assertEquals(setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW) + BOXED, parseLookupQuery("a:container").causes)
-        assertEquals(setOf(Cause.CONTAINER_ADD) + BOXED, parseLookupQuery("a:+container").causes)
-        assertEquals(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW) + BOXED, parseLookupQuery("a:-container").causes)
-        assertEquals(setOf(Cause.CONTAINER_ADD) + BOXED, parseLookupQuery("a:deposit").causes)
-        assertEquals(setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW) + BOXED, parseLookupQuery("a:withdraw").causes)
-        assertEquals(
-            setOf(Cause.CONTAINER_ADD, Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW) + BOXED,
-            parseLookupQuery("a:+container,-container").causes,
-        )
+        // A throw out of a chest's window is a withdrawal too, and so is what CoreProtect saw taken; the clicks are read
+        // to be told apart by their ends.
+        val deposits = setOf(Cause.CONTAINER_ADD, Cause.CP_CONTAINER_ADD) + BOXED
+        val withdrawals = setOf(Cause.CONTAINER_REMOVE, Cause.CONTAINER_THROW, Cause.CP_CONTAINER_REMOVE) + BOXED
+        assertEquals(deposits + withdrawals, parseLookupQuery("a:container").causes)
+        assertEquals(deposits, parseLookupQuery("a:+container").causes)
+        assertEquals(withdrawals, parseLookupQuery("a:-container").causes)
+        assertEquals(deposits, parseLookupQuery("a:deposit").causes)
+        assertEquals(withdrawals, parseLookupQuery("a:withdraw").causes)
+        assertEquals(deposits + withdrawals, parseLookupQuery("a:+container,-container").causes)
         val explosion = parseLookupQuery("a:explosion").causes!!
         assertTrue(explosion.containsAll(listOf(Cause.BLK_TNT, Cause.BLK_CREEPER)), "$explosion")
         assertTrue(Cause.BLK_FIRE_BURN !in explosion && Cause.BLK_PLAYER_BREAK !in explosion, "$explosion")
@@ -277,7 +277,7 @@ class LookupTest {
     @Test
     fun `keys are case insensitive but values keep their case`() {
         assertEquals(listOf("Steve"), parseLookupQuery("U:Steve").users)
-        assertEquals(setOf(Cause.CONTAINER_ADD) + BOXED, parseLookupQuery("A:DEPOSIT").causes)
+        assertEquals(setOf(Cause.CONTAINER_ADD, Cause.CP_CONTAINER_ADD) + BOXED, parseLookupQuery("A:DEPOSIT").causes)
     }
 
     // The point of parsing off the caller's reader is that the game underlines the token at fault, so
@@ -314,7 +314,8 @@ class LookupTest {
     @Test
     fun `no filter mixes the two planes`() {
         for (action in Action.entries) {
-            if (action == Action.BLOCK) continue
+            // Both name a whole plane or more on purpose: every block row, every row CoreProtect left.
+            if (action == Action.BLOCK || action == Action.COREPROTECT) continue
             val block = action.causes.count { it in Action.BLOCK.causes }
             assertTrue(
                 block == 0 || block == action.causes.size,

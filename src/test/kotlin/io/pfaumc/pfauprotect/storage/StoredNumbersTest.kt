@@ -73,6 +73,12 @@ class StoredNumbersTest {
                 "BRUSHABLE_REVEAL" to 0xA7,
                 "CONTAINER_NAMED" to 0xA8,
                 "PLAYER_DIED" to 0xA9,
+                "BLK_CP_PLACE" to 0xAA,
+                "BLK_CP_BREAK" to 0xAB,
+                "BLK_CP_EXPLOSION" to 0xAC,
+                "BLK_CP_FIRE" to 0xAD,
+                "BLK_CP_PISTON" to 0xAE,
+                "BLK_CP_OTHER" to 0xAF,
                 "ITEM_SPAWN" to 0x20,
                 "ITEM_MERGE" to 0x21,
                 "ITEM_DESPAWN" to 0x22,
@@ -105,6 +111,10 @@ class StoredNumbersTest {
                 "BOOK_EDIT" to 0xB3,
                 "RECIPE_BOOK_FILL" to 0xB4,
                 "CONTAINER_THROW" to 0xB5,
+                "BLK_CP_SIGN" to 0xB6,
+                "CP_CONTAINER_ADD" to 0xB7,
+                "CP_CONTAINER_REMOVE" to 0xB8,
+                "CP_ENTITY_KILLED" to 0xB9,
                 "CRAFT_CONSUME" to 0x40,
                 "CRAFT_RESULT" to 0x41,
                 "CRAFT_REMAINDER" to 0x42,
@@ -273,7 +283,8 @@ class StoredNumbersTest {
             EntityKind.entries.associate { it.name to it.id },
         )
         assertEquals(
-            mapOf("CHAT" to 0, "COMMAND" to 1, "JOIN" to 2, "QUIT" to 3, "HIT" to 4, "TOTEM" to 5, "BOOK" to 6, "CHAT_LOCAL" to 7, "CHAT_GLOBAL" to 8),
+            mapOf("CHAT" to 0, "COMMAND" to 1, "JOIN" to 2, "QUIT" to 3, "HIT" to 4, "TOTEM" to 5, "BOOK" to 6, "CHAT_LOCAL" to 7, "CHAT_GLOBAL" to 8,
+                "CP_CHAT" to 9, "CP_COMMAND" to 10, "CP_JOIN" to 11, "CP_QUIT" to 12),
             ChatKind.entries.associate { it.name to it.id },
         )
         assertEquals(

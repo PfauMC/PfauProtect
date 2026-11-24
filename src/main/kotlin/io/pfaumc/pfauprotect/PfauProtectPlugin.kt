@@ -26,6 +26,7 @@ import io.pfaumc.pfauprotect.capture.block.PistonCycles
 import io.papermc.paper.command.brigadier.ApiMirrorRootNode
 import io.pfaumc.pfauprotect.capture.block.CommandBrackets
 import io.pfaumc.pfauprotect.capture.entity.EntityCapture
+import io.pfaumc.pfauprotect.storage.BLOCK_BACKLOG_LIMIT
 import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockLogs
 import io.pfaumc.pfauprotect.storage.BookEdit
@@ -50,6 +51,7 @@ import io.pfaumc.pfauprotect.command.Inspector
 import io.pfaumc.pfauprotect.command.chatPlayers
 import io.pfaumc.pfauprotect.command.readChat
 import io.pfaumc.pfauprotect.storage.ItemFormCodec
+import io.pfaumc.pfauprotect.storage.LEDGER_BACKLOG_LIMIT
 import io.pfaumc.pfauprotect.capture.item.ItemUseListener
 import io.pfaumc.pfauprotect.command.LookupArgument
 import io.pfaumc.pfauprotect.command.LookupQuery
@@ -115,8 +117,11 @@ import org.bukkit.event.world.WorldUnloadEvent
 import org.bukkit.persistence.PersistentDataType
 import org.bukkit.plugin.ServicePriority
 import org.bukkit.plugin.java.JavaPlugin
+import io.pfaumc.pfauprotect.importer.CoreProtectImport
+import io.pfaumc.pfauprotect.importer.coreProtectMeta
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Instant
 import java.util.Collections
 import java.util.Locale
 import java.util.UUID
@@ -182,6 +187,9 @@ private val HELP = listOf(
 
 // The youngest history a purge may delete: a day, so a rollback of today always has its rows.
 private const val PURGE_MIN_SECONDS = 86_400L
+
+// How long a shutdown waits for an import to put down the page it is writing.
+private const val IMPORT_STOP_MILLIS = 60_000L
 
 // A pass of each self-check is bounded so it cannot walk a years-old journal in one go, and a run
 // that stops on that bound says so: a check that quietly covered a fraction of the store reads as a
@@ -261,6 +269,8 @@ private class Running(
     var mcp: McpServer? = null,
     var tokens: Tokens? = null,
     var api: Api? = null,
+    // The one CoreProtect import of this run, if one was started, with the thread that runs it.
+    var cpImport: Pair<CoreProtectImport, Thread>? = null,
 ) {
     fun drainAll() {
         ledger.drain()
@@ -449,6 +459,13 @@ class PfauProtectPlugin : JavaPlugin() {
             closeReporting("the metrics endpoint") { running.metrics?.close() }
             closeReporting("the MCP add-on") { running.mcp?.close() }
             closeReporting("the API's threads") { running.api?.close() }
+            // It writes into the bases straight, so it has to be off them before they close; its marks let it go on later.
+            closeReporting("the CoreProtect import") {
+                running.cpImport?.let { (job, thread) ->
+                    job.stop()
+                    thread.join(IMPORT_STOP_MILLIS)
+                }
+            }
             closeReporting("the world block bases") { running.blocks.close() }
             closeReporting("the ledger") { running.ledger.close() }
             closeReporting("the chat log") { running.chat.close() }
@@ -633,6 +650,26 @@ class PfauProtectPlugin : JavaPlugin() {
                     )
             )
             root.then(gated("status", STATUS_PERMISSION).executes { status(it.source) })
+            // The console's alone: it names a file on the server's disk and runs for hours.
+            root.then(
+                Commands.literal("import").requires { it.sender is ConsoleCommandSender }
+                    .then(Commands.literal("status").executes { importStatus(it.source) })
+                    .then(Commands.literal("stop").executes { importStop(it.source) })
+                    .then(
+                        Commands.literal("coreprotect").then(
+                            Commands.argument("until", StringArgumentType.string()).then(
+                                Commands.argument("source", StringArgumentType.word()).then(
+                                    Commands.argument("file", StringArgumentType.greedyString()).executes {
+                                        importStart(
+                                            it.source, StringArgumentType.getString(it, "until"),
+                                            StringArgumentType.getString(it, "source"), StringArgumentType.getString(it, "file"),
+                                        )
+                                    }
+                                )
+                            )
+                        )
+                    )
+            )
             root.then(
                 gated("mcp", MCP_PERMISSION)
                     .then(Commands.literal("token").executes { mcpToken(it.source, revoke = false) })
@@ -943,6 +980,73 @@ class PfauProtectPlugin : JavaPlugin() {
         }
     }
 
+    private fun importStart(source: CommandSourceStack, until: String, from: String, path: String): Int = withRunning(source) { running, sender ->
+        if (running.cpImport?.second?.isAlive == true) {
+            sender.say("An import is already running; /pp import status tells how far it got.")
+            return 0
+        }
+        val moment = runCatching { Instant.parse(until).toEpochMilli() }.getOrNull()
+        if (moment == null) {
+            sender.say("Import refused: until is a moment such as 2026-10-14T06:00:00Z.")
+            return 0
+        }
+        // Everything from where this journal begins is in it already; brought over again it would be here twice.
+        val start = running.ledger.journalStart()
+        if (start != null && moment > start) {
+            sender.say("Import refused: this journal begins at ${Instant.ofEpochMilli(start)}; until may not be later.")
+            return 0
+        }
+        if (from != "copy" && from != "live") {
+            sender.say("Import refused: say copy for a copy of the file, live for the file CoreProtect writes.")
+            return 0
+        }
+        val file = Path.of(path)
+        if (!Files.isRegularFile(file)) {
+            sender.say("Import refused: there is no file $path.")
+            return 0
+        }
+        val job = CoreProtectImport(
+            file, copy = from == "copy", until = moment, ledger = running.ledger,
+            worldOf = { name -> server.getWorld(name)?.uid },
+            logOf = { running.blocks.get(it) },
+            chat = running.chat,
+            registries = MinecraftServer.getServer().registryAccess(),
+            codec = running.codec,
+            meta = ::coreProtectMeta,
+            // A tenth of what the writers may hold before they drop: the live journal comes first, without stalling
+            // the import on every moment a writer has a batch in hand.
+            busy = {
+                running.ledger.backlog > LEDGER_BACKLOG_LIMIT / 10 ||
+                    running.blocks.worlds.any { (running.blocks.get(it)?.backlog ?: 0) > BLOCK_BACKLOG_LIMIT / 10 }
+            },
+            freeBytes = { Files.getFileStore(dataFolder.toPath()).usableSpace },
+        )
+        running.cpImport = job to Thread(job::run, "pfauprotect-import").apply {
+            isDaemon = true
+            start()
+        }
+        sender.say("Importing CoreProtect history older than $until from $path; /pp import status tells how far it got.")
+    }
+
+    private fun importStatus(source: CommandSourceStack): Int = withRunning(source) { running, sender ->
+        val (job, thread) = running.cpImport ?: run {
+            sender.say("No import was started since the server started.")
+            return 0
+        }
+        val state = job.outcome ?: if (thread.isAlive) "running" else "ended"
+        sender.say("Import $state, table ${job.table} at row ${job.at}.")
+        sender.say("Import counts: ${job.counts}")
+    }
+
+    private fun importStop(source: CommandSourceStack): Int = withRunning(source) { running, sender ->
+        val job = running.cpImport?.first?.takeIf { running.cpImport?.second?.isAlive == true } ?: run {
+            sender.say("No import is running.")
+            return 0
+        }
+        job.stop()
+        sender.say("The import stops after the page it is on; running it again goes on from there.")
+    }
+
     private fun forgetChat(chat: ChatLog) {
         val days = Settings.chatKeepDays.takeIf { it > 0 } ?: return
         val lines = chat.purgeBefore(System.currentTimeMillis() - days * 86_400_000L, dryRun = false)
@@ -1011,6 +1115,11 @@ class PfauProtectPlugin : JavaPlugin() {
                     ChatKind.QUIT -> Ui.text(tr(" left", " · выход"), Ui.MUTED)
                     ChatKind.HIT, ChatKind.TOTEM -> hitOf(run)
                     ChatKind.BOOK -> bookOf(line.text)
+                    // Brought over from CoreProtect, which knew no halves of chat: marked, so nobody takes them for ours.
+                    ChatKind.CP_CHAT -> half(" CP", Ui.MUTED, tr("chat, from CoreProtect", "чат, из CoreProtect"), line.text)
+                    ChatKind.CP_COMMAND -> Component.text().append(cpMark()).append(Ui.text(" " + if (asked.hide) Places.redactTeleport(line.text) else line.text, Ui.CHANGED)).build()
+                    ChatKind.CP_JOIN -> Component.text().append(cpMark()).append(Ui.text(tr(" joined", " · вход"), Ui.GAINED)).build()
+                    ChatKind.CP_QUIT -> Component.text().append(cpMark()).append(Ui.text(tr(" left", " · выход"), Ui.MUTED)).build()
                 }
                 // A run reads at its first hit: who started is what it is looked up for. The place goes first, as on
                 // a lookup's lines.
@@ -1029,6 +1138,8 @@ class PfauProtectPlugin : JavaPlugin() {
     }
 
     // " G: text": the half of chat a line was said in, named on the hover.
+    private fun cpMark(): Component = Ui.hover(Ui.text(" CP", Ui.MUTED), tr("from CoreProtect", "из CoreProtect"))
+
     private fun half(mark: String, color: TextColor, name: String, text: String): Component =
         Component.text().append(Ui.hover(Ui.text(mark, color), name)).append(Ui.text(": $text")).build()
 
