@@ -23,6 +23,7 @@ class TextsTest {
         Settings.language = "ru"
         assertTranslatedKeeping(line, "32", "minecraft:diamond", "Test2")
         assertTranslatedKeeping("Nothing to roll back: 5 blocks around 1 2 3.", "5", "1 2 3")
+        assertTranslatedKeeping("Import counts: {co_container not a player=3, co_container rows=2}", "co_container not a player", "co_container rows")
     }
 
     @Test

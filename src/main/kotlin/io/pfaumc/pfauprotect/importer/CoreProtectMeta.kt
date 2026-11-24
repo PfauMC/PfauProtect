@@ -1,8 +1,8 @@
 package io.pfaumc.pfauprotect.importer
 
 import net.minecraft.world.item.ItemStack
-import org.bukkit.configuration.serialization.ConfigurationSerialization
 import org.bukkit.craftbukkit.inventory.CraftItemStack
+import org.bukkit.craftbukkit.inventory.SerializableMeta
 import org.bukkit.inventory.meta.ItemMeta
 import org.bukkit.util.io.BukkitObjectInputStream
 import java.io.ByteArrayInputStream
@@ -28,8 +28,9 @@ internal fun coreProtectMeta(metadata: ByteArray, stack: ItemStack): ItemStack {
     // An item with no meta of its own has only CoreProtect's own notes there: a stand's slot, a frame's facing.
     @Suppress("UNCHECKED_CAST")
     val fields = ((lists.firstOrNull() as? List<*>)?.firstOrNull() as? Map<String, Any?>)?.takeIf { "meta-type" in it } ?: return stack
-    val meta = ConfigurationSerialization.deserializeObject(fields, ConfigurationSerialization.getClassByAlias("ItemMeta")!!) as? ItemMeta
-        ?: return stack
+    // Called straight rather than through ConfigurationSerialization, which logs a stack trace for every meta of an
+    // older shape (a decorated pot's sherds as a list) and answers null: thrown, it is counted as lost meta instead.
+    val meta = SerializableMeta.deserialize(fields)
     val bukkit = CraftItemStack.asBukkitCopy(stack)
     bukkit.itemMeta = meta
     return CraftItemStack.asNMSCopy(bukkit)

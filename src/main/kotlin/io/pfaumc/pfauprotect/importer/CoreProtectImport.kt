@@ -530,7 +530,7 @@ class CoreProtectImport(
         }
         val dropped = ledger.importTransfers(transfers).toLong()
         counts.add("co_container not written", dropped)
-        counts.add("container rows", transfers.size - dropped)
+        counts.add("co_container rows", transfers.size - dropped)
         null
     }
 
