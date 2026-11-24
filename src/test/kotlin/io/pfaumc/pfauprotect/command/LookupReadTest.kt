@@ -652,10 +652,15 @@ class LookupReadTest : BothPlanes() {
         // Rows of Alice's outside the box are no part of the answer.
         log.submit(listOf(BlockChange(500, 64, 500, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 5, actor = alice)))
         log.drain()
+        // An item row naming her only as its actor is in no index of hers; the walk of the box, newest first, met it.
+        val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
+        shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, Container(world, 12, 64, -3, 0), ItemEntityRef(UUID.randomUUID()), diamond, null, 2, T0 + 200_000, actor = alice))
+        shared.drain()
 
         val lines = said(LookupQuery(users = listOf("Alice"), radius = 40, all = true), players = mapOf("Alice" to alice, "Bob" to bob))
         assertTrue(lines.any { "10 64 -3" in it && "blk_player_break" in it }, "$lines")
-        assertTrue(lines.none { "500 64 500" in it || "stopped" in it }, "$lines")
+        assertTrue(lines.any { "item.minecraft.diamond" in it }, "$lines")
+        assertTrue(lines.none { "500 64 500" in it }, "$lines")
     }
 
     // A throw out of somebody's chest names the thrower only as its actor, and a player's lookup without a radius

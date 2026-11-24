@@ -1723,11 +1723,22 @@ class Lookups(
         if (steps.ranOut && short && users.isNotEmpty() && query.radius != null && note == null) {
             Debug.log { "  the box walk ran out; reading ${query.users} by their own index, cut to the box" }
             val own = byUsers(listOf(target.world), query, users, target.box(query.radius), where)
-            // The index read runs out too for a player busy elsewhere, and then may have fewer of their rows here than
-            // the box walk did; the walk's answer, which says it is not whole either, is kept then.
-            if (own.lines.size >= lines.size) return own
+            // The walk's lines stay beside the index's: it reads item rows that name a player only as their actor,
+            // which no index of theirs holds, and the index read runs out too for a player busy elsewhere. Rows of
+            // that kind past where the walk stopped are not read, so the answer is not whole.
+            val seen = own.lines.mapTo(HashSet(), ::rowOfLine)
+            return Found(own.lines + lines.filter { rowOfLine(it) !in seen }, false, where)
         }
         return Found(lines, page.complete && planesComplete && !steps.ranOut, where, note)
+    }
+
+    // Which stored row a line was drawn from, the same however many reads met it; a row's payload is an array, which
+    // equals no other read's copy.
+    private fun rowOfLine(line: Line): Any = when (val row = line.source) {
+        is LedgerEntry -> row.ref
+        is BlockRow -> listOf(0, row.x, row.y, row.z, row.timestamp, row.eventId, row.ordinal)
+        is EntityRow -> listOf(1, row.x, row.y, row.z, row.timestamp, row.eventId, row.ordinal)
+        else -> line
     }
 
     /**
