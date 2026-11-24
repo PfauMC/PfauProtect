@@ -332,7 +332,9 @@ internal inline fun RocksDB.forEachUnder(
 internal fun timeAt(key: ByteArray, offset: Int): Long = ByteReader(key).also { it.bytes(offset) }.longBE()
 
 /** A box of block positions, both ends included. */
-data class Box(val minX: Int, val maxX: Int, val minY: Int, val maxY: Int, val minZ: Int, val maxZ: Int)
+data class Box(val minX: Int, val maxX: Int, val minY: Int, val maxY: Int, val minZ: Int, val maxZ: Int) {
+    fun holds(x: Int, y: Int, z: Int) = x in minX..maxX && y in minY..maxY && z in minZ..maxZ
+}
 
 /** The newest rows a walk of a box found, newest first; not `complete` when it may have left some out. */
 data class BoxPage<T>(val rows: List<T>, val complete: Boolean)

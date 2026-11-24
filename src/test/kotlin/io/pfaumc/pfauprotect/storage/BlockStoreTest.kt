@@ -319,9 +319,9 @@ class BlockStoreTest : BothPlanes() {
         log.submit(listOf(EntityChange(5, 64, 7, EntityKind.PLAYER_DIED, Cause.PLAYER_KILLED, "minecraft:player", alice, T0 + 1, actor = bob)))
         log.drain()
 
-        val found = log.byActor(alice, 0, Long.MAX_VALUE, 10, 100, { true }, { true })
+        val found = log.byActor(alice, 0, Long.MAX_VALUE, 10, 100, { true }) { true }
         assertEquals(setOf(Cause.PLAYER_DIED, Cause.PLAYER_KILLED), found.entities.map { it.cause }.toSet())
-        assertEquals(1, log.byActor(bob, 0, Long.MAX_VALUE, 10, 100, { true }, { true }).entities.size)
+        assertEquals(1, log.byActor(bob, 0, Long.MAX_VALUE, 10, 100, { true }) { true }.entities.size)
         val filter = RowFilter(shared, LookupQuery(), listOf(setOf(alice)))
         assertTrue(found.entities.none(filter::keeps))
     }

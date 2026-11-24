@@ -639,6 +639,72 @@ class LookupReadTest : BothPlanes() {
         }
     }
 
+    // A player's lookup in a radius read everyone's history there newest first: on a busy base the walk ran out of
+    // steps on the others' newer rows and answered nothing about a grief three weeks old. It reads the player's own.
+    @Test
+    fun `a player's lookup in a radius finds their old rows behind a busy area`() {
+        log.submit(listOf(BlockChange(10, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0, actor = alice)))
+        // More rows of Bob's in the box than a walk of it may step over: an entry and its row are two steps each.
+        (0 until 130_000).chunked(10_000).forEach { part ->
+            log.submit(part.map { BlockChange(10 + it % 30, 64 + it / 30 % 20, -3 + it / 600 % 30, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 1 + it, actor = bob) })
+        }
+        log.drain()
+        // Rows of Alice's outside the box are no part of the answer.
+        log.submit(listOf(BlockChange(500, 64, 500, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 5, actor = alice)))
+        log.drain()
+        // An item row naming her only as its actor is in no index of hers; the walk of the box, newest first, met it.
+        val diamond = codec.encode(NmsItemStack(Items.DIAMOND)).form
+        shared.submit(Transfer(Cause.CONTAINER_BREAK_DROP, Container(world, 12, 64, -3, 0), ItemEntityRef(UUID.randomUUID()), diamond, null, 2, T0 + 200_000, actor = alice))
+        // A recent break the walk met with what fell out of it. The index reaches a drop only through the place's newest
+        // rows, and Bob's bury it.
+        log.submit(listOf(BlockChange(11, 64, -3, STONE, AIR, Cause.BLK_PLAYER_BREAK, T0 + 300_000, actor = alice)))
+        log.drain()
+        val at = WorldBlock(world, 11, 64, -3)
+        shared.submit(listOf(
+            Transfer(Cause.BLOCK_DROP, at, Void, stone, null, 1, T0 + 300_030, actor = alice),
+            Transfer(Cause.BLOCK_DROP, Void, ItemEntityRef(UUID.randomUUID()), byteArrayOf(4), null, 1, T0 + 300_030, actor = alice),
+        ))
+        repeat(40) { shared.submit(Transfer(Cause.BLOCK_DROP, at, Void, stone, null, 1, T0 + 300_100 + it, actor = bob)) }
+        // A placement both reads meet, each by its own end: the place's posting and the one in her slots.
+        log.submit(listOf(BlockChange(13, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 400_000, actor = alice)))
+        log.drain()
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 1), WorldBlock(world, 13, 64, -3), stone, null, 1, T0 + 400_010, actor = alice))
+        shared.drain()
+
+        val lines = said(LookupQuery(users = listOf("Alice"), radius = 40, all = true), players = mapOf("Alice" to alice, "Bob" to bob))
+        assertTrue(lines.any { "10 64 -3" in it && "blk_player_break" in it }, "$lines")
+        assertTrue(lines.any { "item.minecraft.diamond" in it }, "$lines")
+        assertTrue(lines.single { "11 64 -3" in it && "blk_player_break" in it }.contains("items:"), "$lines")
+        val lookups = Lookups(stub(Plugin::class.java), shared, logs, codec, mapOf("Alice" to alice, "Bob" to bob)::get) { null }
+        val query = LookupQuery(users = listOf("Alice"), radius = 40, all = true)
+        val rows = lookups.pageOf(lookups.find(LookupTarget(world, 10, 64, -3, "here"), query), query).rows
+        assertEquals(1, rows.count { it.cause == "block_place" }, "$rows")
+        assertTrue(lines.none { "500 64 500" in it }, "$lines")
+    }
+
+    // Busy elsewhere past the index's walk, Alice's placement in the box is a block line only the box walk has, with
+    // the place's end of the move in its hover; her slots give the index the other end. The move is told once.
+    @Test
+    fun `a placement both reads meet by its two ends is told once`() {
+        (0 until 130_000).chunked(10_000).forEach { part ->
+            log.submit(part.map { BlockChange(10 + it % 30, 64 + it / 30 % 20, -3 + it / 600 % 30, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 1 + it, actor = bob) })
+        }
+        log.submit(listOf(BlockChange(13, 64, -3, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 200_000, actor = alice)))
+        log.drain()
+        shared.submit(Transfer(Cause.BLOCK_PLACE, PlayerInv(alice, 1), WorldBlock(world, 13, 64, -3), stone, null, 1, T0 + 200_010, actor = alice))
+        shared.drain()
+        (0 until 260_000).chunked(10_000).forEach { part ->
+            log.submit(part.map { BlockChange(500 + it % 100, 64, 500 + it / 100 % 100, AIR, STONE, Cause.BLK_PLAYER_PLACE, T0 + 300_000 + it, actor = alice) })
+        }
+        log.drain()
+
+        val lookups = Lookups(stub(Plugin::class.java), shared, logs, codec, mapOf("Alice" to alice, "Bob" to bob)::get) { null }
+        val query = LookupQuery(users = listOf("Alice"), radius = 40, all = true)
+        val rows = lookups.pageOf(lookups.find(LookupTarget(world, 10, 64, -3, "here"), query), query).rows
+        assertEquals(1, rows.count { it.cause == "block_place" }, "$rows")
+        assertEquals(1, rows.count { it.cause == "blk_player_place" }, "$rows")
+    }
+
     // A throw out of somebody's chest names the thrower only as its actor, and a player's lookup without a radius
     // reads their own slots and the places of their blocks: the actor index is what leads it to the throw.
     @Test
