@@ -113,10 +113,11 @@ class ApiTest : BothPlanes() {
         assertEquals(PfauProtectException.REFUSED, api().lookup(at("t:1h", since = T0), null).refusal().code)
     }
 
-    // Bob took from Alice's chest; Alice taking from her own is no theft.
+    // Bob took from Alice's chest; Alice taking from her own is no theft, though Bob put his own there later.
     @Test
     fun `steal keeps only withdrawals from a chest somebody else placed`() {
         log.submit(listOf(BlockChange(1, 64, 1, AIR, "minecraft:chest", Cause.BLK_PLAYER_PLACE, T0, actor = alice)))
+        log.submit(listOf(BlockChange(1, 64, 1, AIR, "minecraft:chest", Cause.BLK_PLAYER_PLACE, T0 + 3_000, actor = bob)))
         log.drain()
         val chest = Container(world, 1, 64, 1, 4)
         shared.submit(Transfer(Cause.CONTAINER_REMOVE, chest, PlayerInv(bob, 0), form, null, 2, T0 + 1_000, actor = bob))

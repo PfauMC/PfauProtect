@@ -90,7 +90,7 @@ class CoreProtectImportTest : BothPlanes() {
         val replaced = planned.chunks.flatMap { it.positions }.single { it.at.x == 1 }
         assertEquals(STONE, settle(AIR, replaced.steps).back?.before)
 
-        shared.setImportMark(CoreProtectImport.markOf(ORIGIN, "co_block"), 0)
+        shared.setImportMark(CoreProtectImport.markOf(shared.importMark(CoreProtectImport.ORIGIN_MARK), "co_block"), 0)
         importOf(db).run()
         assertEquals(2, log.at(1, 64, 1, 0, Long.MAX_VALUE, 10, reverse = false).size)
         assertEquals(1, log.entitiesAt(6, 64, 1, 0, Long.MAX_VALUE, 10).rows.size)
@@ -117,6 +117,10 @@ class CoreProtectImportTest : BothPlanes() {
                 "INSERT INTO co_sign VALUES (${t + 3}, $ALICE, 1, 8, 64, 8, 0, 1908001, 1908001, 1, 0, 0, 'hello', 'there', '', '', NULL, NULL, NULL, NULL)",
             )
             block(c, 2, t + 4, ALICE, 8, 64, 8, "minecraft:oak_sign", action = 0)
+            // Written in the second it broke: whether before or after the break is unknown, so it is not imported.
+            c.createStatement().execute(
+                "INSERT INTO co_sign VALUES (${t + 4}, $ALICE, 1, 8, 64, 8, 1, 1908001, 1908001, 1, 0, 0, 'late', '', '', '', NULL, NULL, NULL, NULL)",
+            )
             c.createStatement().execute("INSERT INTO co_chat VALUES ($t, $ALICE, 1, 0, 64, 0, 'hi all')")
             c.createStatement().execute("INSERT INTO co_command VALUES ($t, $ALICE, 1, 0, 64, 0, '/login secret')")
             c.createStatement().execute("INSERT INTO co_session VALUES ($t, $ALICE, 1, 0, 64, 0, 1)")

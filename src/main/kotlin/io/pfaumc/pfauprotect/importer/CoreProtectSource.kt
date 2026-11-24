@@ -61,9 +61,10 @@ internal class CoreProtectSource(file: Path, copy: Boolean) : AutoCloseable {
      * How far past [after] a damaged stretch of [table] goes: the new `after`, the last of the positions right past
      * [after] that were each tried and do not read, or null when the walk should stop there. Every position up to the
      * answer is tried, so no readable row is ever stepped over. One call tries at most [LINEAR_PROBES] of them; when
-     * all of those are damaged it goes on only if a doubling look further on, up to [MAX_STEP], finds a row that
-     * reads. Otherwise (a damaged end of the table, as a copy taken during writes has) it answers null, and the rest
-     * of the table waits for a better copy.
+     * all of those are damaged, a doubling look further on, up to [MAX_STEP], decides whether the next call goes on:
+     * it does when the look finds a row that reads, and when it finds the table's end, which bounds the walk by the
+     * table's own rowids. When every look up to [MAX_STEP] is damaged (the end of a copy taken during writes) the
+     * answer is null, and the rest of the table waits for a better copy.
      */
     fun skipFrom(table: String, after: Long): Long? {
         var broken = after
@@ -77,7 +78,7 @@ internal class CoreProtectSource(file: Path, copy: Boolean) : AutoCloseable {
         var step = 1L
         while (step <= MAX_STEP) {
             when (probe(table, broken + step)) {
-                null -> return null
+                null -> return broken
                 BROKEN -> step *= 2
                 else -> return broken
             }

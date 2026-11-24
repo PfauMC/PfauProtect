@@ -158,9 +158,11 @@ below every number a writer hands out, so wherever a rollback or a confiscation 
 rows come first, as they are older; that is also why nothing after the start of this journal may be imported. They are
 written straight into the bases (`BlockLog.importEvents`, `RocksItemLog.importTransfers`, `ChatLog.importLines`),
 with no clamping, no watchers and no API veto. Numbered from the source, a run stopped and started again rewrites the
-same keys with the same bytes; the last rowid of each table is kept in the ledger's meta (`import:coreprotect:<table>`),
-and a run goes on from there. A page SQLite cannot read is stepped over and counted (`<table> unreadable`), every row of it tried on its own;
-when thousands of rows in a row fail and nothing further on reads (a copy's damaged end), the table stops there. The import
+same keys with the same bytes; the last rowid of each table is kept in the ledger's meta (`import:coreprotect:<origin>:<table>`),
+and a run goes on from there. `<origin>` is the source's stamp (its `co_version` second and a hash of its first
+block row), also kept alone under `import:coreprotect`: a journal takes one source database and refuses another. A page SQLite cannot read is stepped over and counted (`<table> unreadable`), every row of it tried on its own;
+when thousands of rows in a row fail and nothing further on reads (a copy's damaged end), the table stops there with
+its mark unmoved, counted as `<table> stopped on damage` and logged, and the rest of the run goes on. The import
 waits while the live writers hold a tenth of their backlog limit and stops below 20 GiB of free disk.
 
 ## `/pp lookup` and `/pp purge` semantics

@@ -2139,7 +2139,7 @@ class Lookups(
         // `steal` is one element of the list like any other: a row another element takes stays, stolen or not.
         // It takes withdrawals only, so any other row `keeps` let through came from another element.
         val rest = if (query.steal) withoutSteal(query)?.let(::rowFilter) else null
-        val placers = HashMap<Container, Placer>()
+        val placers = HashMap<Container, Placements>()
         return entries.filter {
             keeps.keeps(it) && (!query.steal || !Action.REMOVE.takes(it) || rest?.keeps(it) == true || stolen(it, placers))
         }
@@ -2153,25 +2153,26 @@ class Lookups(
         return query.copy(causes = named.flatMap { it.reads }.toSet(), kinds = named.flatMap { it.kinds }.toSet(), actions = groups, steal = false)
     }
 
-    // Who put a container down; `known` false when the read stopped before it reached the placement.
-    private class Placer(val known: Boolean, val player: UUID?)
+    // A container position's newest block rows, newest first; `complete` when they are all there are.
+    private class Placements(val rows: List<BlockRow>, val complete: Boolean)
 
-    // Taken out of a container somebody else put down, or one nobody did: a chest of the world's own. A busy
-    // position whose placement lies past the read says nothing either way, and its withdrawals are not
+    // Taken out of a container somebody else had put down by then, or one nobody did: a chest of the world's own.
+    // A busy position whose placement lies past the read says nothing either way, and its withdrawals are not
     // counted as theft: the owner's own would be.
-    private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, Placer>): Boolean {
+    private fun stolen(entry: LedgerEntry, placers: MutableMap<Container, Placements>): Boolean {
         if (!Action.REMOVE.takes(entry)) return false
         // Either half of the withdrawal: a place reads the container's, a player's actions their own slots'.
         val chest = ((entry.holder as? Container) ?: (entry.counterparty as? Container))?.copy(slot = 0) ?: return false
-        val placer = placers.getOrPut(chest) {
+        val read = placers.getOrPut(chest) {
             val rows = blocks.get(chest.world)?.at(chest.x, chest.y, chest.z, 0, Long.MAX_VALUE, limit = PLACER_READ, reverse = true).orEmpty()
-            val placed = rows.firstOrNull { it.cause == Cause.BLK_PLAYER_PLACE || it.cause == Cause.BLK_CP_PLACE }
-            Placer(placed != null || rows.size < PLACER_READ, placed?.actor)
+            Placements(rows, rows.size < PLACER_READ)
         }
-        if (!placer.known) return false
+        // Whoever put it down last before the withdrawal: a chest replaced later is somebody else's only from then on.
+        val placed = read.rows.firstOrNull { it.timestamp <= entry.timestamp && (it.cause == Cause.BLK_PLAYER_PLACE || it.cause == Cause.BLK_CP_PLACE) }
+        if (placed == null && !read.complete) return false
         // A withdrawal names whoever took it as where it went rather than as its actor.
         val taker = entry.actor ?: playerOf(entry.counterparty) ?: playerOf(entry.holder) ?: return false
-        return taker != placer.player
+        return taker != placed?.actor
     }
 
     // `exclude:` takes items and players in one list, so a name that is a player is a player excluded.

@@ -121,10 +121,16 @@ class CoreProtectImport(
                 // A world with no base here would see its rows passed over while the marks moved past them for good.
                 val missing = worlds.values.filter { name -> worldOf(name)?.let(logOf) == null }
                 check(missing.isEmpty()) { "CoreProtect's worlds ${missing.joinToString()} are not loaded here" }
-                // The marks belong to this database: another one starts from its own beginning.
-                origin = checkNotNull(source.one("SELECT time FROM co_version ORDER BY rowid LIMIT 1", emptyList()) { it.getLong(1) }) {
+                // The marks belong to this database: another one starts from its own beginning. Its creation second
+                // and its first block row, which CoreProtect never rewrites, tell it from another and stay the same in
+                // a backup of it.
+                val created = checkNotNull(source.one("SELECT time FROM co_version ORDER BY rowid LIMIT 1", emptyList()) { it.getLong(1) }) {
                     "co_version does not read, so this database cannot be told from another"
                 }
+                val first = source.one("SELECT time, user, wid, x, y, z FROM co_block ORDER BY rowid LIMIT 1", emptyList()) {
+                    (1..6).map(it::getLong).hashCode()
+                } ?: 0
+                origin = (created shl 32) or (first.toLong() and 0xFFFFFFFFL)
                 // Imported keys are numbered from the source's rowids, which a second database would repeat: one per journal.
                 val before = ledger.importMark(ORIGIN_MARK)
                 check(before == 0L || before == origin) { "this journal already holds an import from another CoreProtect database" }
@@ -177,6 +183,7 @@ class CoreProtectImport(
                 if (!page.broken) break
                 val next = source.skipFrom(name, after)
                 if (next == null) {
+                    counts.add("$name stopped on damage")
                     LOGGER.warning("CoreProtect import: $name does not read past row $after; the rest of it is not imported")
                     break
                 }
@@ -212,6 +219,17 @@ class CoreProtectImport(
         }
         at = after
     }
+
+    /**
+     * The world of a CoreProtect world id, null for an id `co_world` does not know. A world loaded at the start and
+     * gone since fails the import: its rows would be passed over while the mark moved past them for good.
+     */
+    private fun worldAt(wid: Int): UUID? {
+        val name = worlds[wid] ?: return null
+        return checkNotNull(worldOf(name)) { "world $name was unloaded during the import" }
+    }
+
+    private fun logAt(world: UUID): BlockLog = checkNotNull(logOf(world)) { "world $world was unloaded during the import" }
 
     private fun userOf(id: Int): CpUser? = users[id]
 
@@ -253,21 +271,16 @@ class CoreProtectImport(
         val byWorld = HashMap<UUID, MutableList<Pair<Long, List<WorldChange>>>>()
         for (group in done) {
             val first = group.first()
-            val world = worlds[first.wid]?.let(worldOf)
+            val world = worldAt(first.wid)
             if (world == null) {
-                counts.add("co_block world not loaded", group.size.toLong())
+                counts.add("co_block unknown world", group.size.toLong())
                 continue
             }
             val changes = changesOf(group)
             if (changes.isNotEmpty()) byWorld.getOrPut(world) { ArrayList() } += idOf(BLOCK_TAG, first.time, first.rowid) to changes
         }
         for ((world, events) in byWorld) {
-            val log = logOf(world)
-            if (log == null) {
-                counts.add("co_block world not loaded", events.sumOf { it.second.size }.toLong())
-                continue
-            }
-            val dropped = log.importEvents(events)
+            val dropped = logAt(world).importEvents(events)
             counts.add("co_block not written", dropped.size.toLong())
             val written = events.flatMap { it.second }
             counts.add("blocks", (written.count { it is BlockChange } - dropped.count { it is BlockChange }).toLong())
@@ -394,9 +407,9 @@ class CoreProtectImport(
             // A break is the block row's; its text goes on that row as what was there before.
             if (row.action == 0) continue
             val user = userOf(row.user)
-            val world = worlds[row.wid]?.let(worldOf)
+            val world = worldAt(row.wid)
             if (world == null) {
-                counts.add("co_sign world not loaded")
+                counts.add("co_sign unknown world")
                 continue
             }
             val state = standingSign(row)
@@ -413,21 +426,22 @@ class CoreProtectImport(
             byWorld.getOrPut(world) { ArrayList() } += idOf(SIGN_TAG, row.time, row.rowid) to listOf(change)
         }
         for ((world, events) in byWorld) {
-            val log = logOf(world)
-            if (log == null) counts.add("co_sign world not loaded", events.size.toLong())
-            else log.importEvents(events).size.toLong().let { dropped ->
-                counts.add("co_sign not written", dropped)
-                counts.add("signs", events.size - dropped)
-            }
+            val dropped = logAt(world).importEvents(events).size.toLong()
+            counts.add("co_sign not written", dropped)
+            counts.add("signs", events.size - dropped)
         }
         null
     }
 
-    // The sign a text went on, as the newest block row of its position up to then names it.
+    /**
+     * The sign a text went on, as the newest block row of its position up to then names it: a placement. A break in
+     * the same second leaves no way to tell whether the text came first, and a text written after it would stand the
+     * sign up again; the break keeps the text as what was there before it.
+     */
     private fun standingSign(row: CpSign): String? = source.one(
-        "SELECT type, blockdata FROM co_block WHERE wid = ? AND x = ? AND z = ? AND y = ? AND time <= ? AND action IN (0, 1) ORDER BY time DESC, rowid DESC LIMIT 1",
+        "SELECT type, blockdata, action FROM co_block WHERE wid = ? AND x = ? AND z = ? AND y = ? AND time <= ? AND action IN (0, 1) ORDER BY time DESC, rowid DESC LIMIT 1",
         listOf(row.wid, row.x, row.z, row.y, row.time),
-    ) { stateOf(it.getInt(1), it.getBytes(2)?.toString(Charsets.UTF_8)) }?.takeIf(::isSign)
+    ) { if (it.getInt(3) == PLACE) stateOf(it.getInt(1), it.getBytes(2)?.toString(Charsets.UTF_8)) else null }?.takeIf(::isSign)
 
     /**
      * The text a sign at a position had at a moment, from the newest sign row before it; null when it had none. A
@@ -495,7 +509,7 @@ class CoreProtectImport(
                 counts.add("co_container not a player")
                 continue
             }
-            val world = worlds[row.wid]?.let(worldOf)
+            val world = worldAt(row.wid)
             val item = materials[row.type]?.let(Identifier::tryParse)?.let { BuiltInRegistries.ITEM.getOptional(it).orElse(null) }
             if (world == null || item == null || row.amount <= 0) {
                 counts.add("co_container unknown world or item")
@@ -625,7 +639,7 @@ class CoreProtectImport(
         // CoreProtect stamps its database with the time it made it, which tells one database from another.
         internal fun markOf(origin: Long, table: String) = "coreprotect:$origin:$table"
 
-        private const val ORIGIN_MARK = "coreprotect"
+        internal const val ORIGIN_MARK = "coreprotect"
 
         // What a write answers when its page held only part of one event: read it again, larger.
         private const val MORE = Long.MIN_VALUE
