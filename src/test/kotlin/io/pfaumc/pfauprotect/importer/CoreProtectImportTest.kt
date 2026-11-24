@@ -98,6 +98,15 @@ class CoreProtectImportTest : BothPlanes() {
         // A later `until` goes on from where the first one stopped, and takes what lay past it.
         importOf(db, until = (t + 3000) * 1000).run()
         assertEquals(Cause.BLK_CP_PLACE, log.at(7, 64, 1, 0, Long.MAX_VALUE, 10, reverse = false).single().cause)
+
+        // Another database, its rowids the same, is refused before it writes a row.
+        DriverManager.getConnection("jdbc:sqlite:$db").use { c ->
+            c.createStatement().execute("UPDATE co_version SET time = ${ORIGIN + 1}")
+            block(c, 9, t + 4, ALICE, 3, 64, 3, "minecraft:stone", action = 1)
+        }
+        val other = importOf(db, until = (t + 9000) * 1000).also { it.run() }
+        assertTrue(other.outcome.orEmpty().let { it.startsWith("failed") && "another CoreProtect database" in it }, other.outcome)
+        assertTrue(log.at(3, 64, 3, 0, Long.MAX_VALUE, 10, reverse = false).isEmpty())
     }
 
     // What Alice put into a chest and took out of it faces the void, so it never counts towards what she holds; the

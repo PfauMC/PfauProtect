@@ -121,16 +121,13 @@ class CoreProtectImport(
                 // A world with no base here would see its rows passed over while the marks moved past them for good.
                 val missing = worlds.values.filter { name -> worldOf(name)?.let(logOf) == null }
                 check(missing.isEmpty()) { "CoreProtect's worlds ${missing.joinToString()} are not loaded here" }
-                // The marks belong to this database: another one starts from its own beginning. Its creation second
-                // and its first block row, which CoreProtect never rewrites, tell it from another and stay the same in
-                // a backup of it.
-                val created = checkNotNull(source.one("SELECT time FROM co_version ORDER BY rowid LIMIT 1", emptyList()) { it.getLong(1) }) {
+                // The marks belong to this database: another one starts from its own beginning. Its creation second is
+                // the one thing of it that neither a backup nor `/co purge` changes; a copy of it that went on apart
+                // shares it, and every row up to the copy too, so nothing in the file could tell those apart.
+                // ponytail: two databases made in the same second pass as one; an operator's own stamp if that happens.
+                origin = checkNotNull(source.one("SELECT time FROM co_version ORDER BY rowid LIMIT 1", emptyList()) { it.getLong(1) }) {
                     "co_version does not read, so this database cannot be told from another"
                 }
-                val first = source.one("SELECT time, user, wid, x, y, z FROM co_block ORDER BY rowid LIMIT 1", emptyList()) {
-                    (1..6).map(it::getLong).hashCode()
-                } ?: 0
-                origin = (created shl 32) or (first.toLong() and 0xFFFFFFFFL)
                 // Imported keys are numbered from the source's rowids, which a second database would repeat: one per journal.
                 val before = ledger.importMark(ORIGIN_MARK)
                 check(before == 0L || before == origin) { "this journal already holds an import from another CoreProtect database" }
