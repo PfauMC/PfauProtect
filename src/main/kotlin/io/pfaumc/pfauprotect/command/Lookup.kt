@@ -1722,7 +1722,10 @@ class Lookups(
         val short = query.count || folded(shownOf(lines, query), query.all).size <= query.limit * query.page
         if (steps.ranOut && short && users.isNotEmpty() && query.radius != null && note == null) {
             Debug.log { "  the box walk ran out; reading ${query.users} by their own index, cut to the box" }
-            return byUsers(listOf(target.world), query, users, target.box(query.radius), where)
+            val own = byUsers(listOf(target.world), query, users, target.box(query.radius), where)
+            // The index read runs out too for a player busy elsewhere, and then may have fewer of their rows here than
+            // the box walk did; the walk's answer, which says it is not whole either, is kept then.
+            if (own.lines.size >= lines.size) return own
         }
         return Found(lines, page.complete && planesComplete && !steps.ranOut, where, note)
     }
@@ -1813,7 +1816,8 @@ class Lookups(
         )
         // Uncut here: a count and an answer at the walk's end show every row read, and byUsers cuts the page.
         val rows = own.flatMap { it.blocks }
-        val entities = own.flatMap { it.entities }
+        // A death is filed under its killer and its victim, so `u:A&B` reads the one row from both indexes.
+        val entities = own.flatMap { it.entities }.distinctBy { listOf(it.x, it.y, it.z, it.timestamp, it.eventId, it.ordinal) }
         // Each place once, from the oldest of their rows there, for every row read rather than the page's: a line
         // an earlier page had and a later read left out shifts every run after it, and the page cut with them.
         fun <T> placesOf(found: List<T>, at: (T) -> Triple<Int, Int, Int>, ts: (T) -> Long, of: (T) -> Boolean = { true }) =
