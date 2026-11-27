@@ -620,8 +620,9 @@ class EntityCapture(
         // A knot's face is its own block, so the wall asked above is the fence.
         val by = culprit.by
         if (hanging is LeashHitch && by != null) {
-            // A lead holds within ten blocks.
-            for (mob in hanging.getNearbyEntities(10.0, 10.0, 10.0)) {
+            // ponytail: a lead snaps past 12 blocks; a server that raised Paper's max-leash-distance past 16 loses
+            // the farthest mobs here, read the setting if one ever does.
+            for (mob in hanging.getNearbyEntities(16.0, 16.0, 16.0)) {
                 if ((mob as? Leashable)?.takeIf { it.isLeashed }?.leashHolder == hanging) untied(mob, by)
             }
         }

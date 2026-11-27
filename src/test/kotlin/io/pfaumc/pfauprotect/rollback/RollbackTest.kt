@@ -542,7 +542,15 @@ class RollbackTest : BothPlanes() {
         log.submit(listOf(EntityChange(4, 64, 3, EntityKind.CHANGED, Cause.ENTITY_HURT, "minecraft:wolf", struck, T0, actor = alice, before = at(20f), after = at(17f))))
         log.drain()
 
+        val untied = UUID.randomUUID()
+        log.submit(listOf(EntityChange(5, 64, 3, EntityKind.CHANGED, Cause.ENTITY_HURT, "minecraft:cow", untied, T0, actor = alice, before = at(10f), after = at(7f))))
+        log.submit(listOf(EntityChange(5, 64, 3, EntityKind.MOVED, Cause.ENTITY_UNTIED, "minecraft:cow", untied, T0 + 5, actor = alice, before = at(7f))))
+        log.drain()
+
         val plans = positions(around(rollbackFilter(alice))).flatMap { it.entities }.associateBy { it.uuid }
+        // Struck and then let go from its fence: led back and tied up by the untying, healed by the blow.
+        assertEquals(Cause.ENTITY_UNTIED, plans.getValue(untied).oldest.cause)
+        assertEquals(10f, plans.getValue(untied).health)
         assertEquals(40f, plans.getValue(renamed).health)
         assertFalse(plans.getValue(renamed).healOnly)
         assertEquals(20f, plans.getValue(struck).health)

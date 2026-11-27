@@ -620,7 +620,11 @@ class RollbackReader(
         }
         val appeared = created.groupBy { it.uuid }
         for ((uuid, story) in stories.groupBy { it.uuid }) {
-            val oldest = story.minWith(ENTITY_ROW_ORDER)
+            // A blow only says what its health was: a mob struck and then led off or untied goes back by the
+            // row that moved it, its health by the blow's own. One that went is brought back from the first row.
+            val oldest = story.takeIf { s -> s.none { it.kind == EntityKind.REMOVED } }
+                ?.filter { it.cause != Cause.ENTITY_HURT }?.minWithOrNull(ENTITY_ROW_ORDER)
+                ?: story.minWith(ENTITY_ROW_ORDER)
             // Put there inside the window, in a row the words left out, by the player whose hand its first kept
             // row names or by one the rollback names: a crystal the griefer set down and blew up with the next
             // one, under `action:explosion`. It was not there when the window opened, and brought back it is
