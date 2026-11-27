@@ -127,6 +127,9 @@ tasks.test {
     val work = layout.buildDirectory.dir("test-work")
     workingDir(work)
     doFirst { work.get().asFile.mkdirs() }
+    // One fork ran the suite in ~5 min on a loaded dev machine, four in ~2. Each fork pays the ~20 s
+    // registry bootstrap once, so more than four buys little.
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4)
     systemProperty("pfauprotect.sources", layout.projectDirectory.dir("src/main/kotlin").asFile.absolutePath)
 }
 

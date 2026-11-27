@@ -79,6 +79,9 @@ class MetricsEndpoint(
         throw failure
     }
 
+    /** The port bound, the free one picked for port 0. */
+    val port: Int get() = server.port
+
     override fun close() {
         server.close()
         readings.forEach(Metrics.registry::unregister)
