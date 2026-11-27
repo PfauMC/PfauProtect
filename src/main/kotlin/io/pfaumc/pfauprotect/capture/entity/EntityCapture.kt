@@ -118,7 +118,7 @@ private const val SWEEP_MILLIS = 1_000L
 // running behind, whose fifteen seconds of ticks take longer on the clock this is measured by.
 private const val BURN_MILLIS = 20_000L
 
-// A fight is many blows: one row stands for a striker's blows on one mob until they leave it alone this long.
+// A fight is many blows: one row stands for a striker's blows on one mob for this long.
 private const val HURT_MILLIS = 60_000L
 
 // The ways of dying that a place deals out, and that a player changing the place can therefore be behind.
@@ -276,7 +276,7 @@ class EntityCapture(
     private val alight = ConcurrentHashMap<UUID, Pair<Attributed, Long>>()
     private val alightSwept = AtomicLong()
 
-    // A striker's last blow on a pet or a named mob, keyed by the two.
+    // When a striker's blows on a pet or a named mob were last written, keyed by the two.
     private val hurt = ConcurrentHashMap<Pair<UUID, UUID>, Long>()
     private val hurtSwept = AtomicLong()
 
@@ -333,12 +333,13 @@ class EntityCapture(
         if (striker == LIGHTNING || striker == owner || (owner == null && victim.customName() == null)) return
         val now = System.currentTimeMillis()
         if (hurt.size > SEEN_CAP && sweepDue(hurtSwept, now)) hurt.values.removeIf { now - it > HURT_MILLIS }
-        val last = hurt.put(striker to victim.uniqueId, now)
-        if (last != null && now - last < HURT_MILLIS) return
+        val key = striker to victim.uniqueId
+        if (hurt[key]?.let { now - it < HURT_MILLIS } == true) return
         val log = logs.get(victim.world.uid) ?: return
         touch(victim)
         // Read before the blow lands: the event comes first.
         val before = snapshotOf(victim) ?: return
+        hurt[key] = now
         val block = victim.location.block
         laterOn(victim, { changedSince(log, victim, block, before, by, now, always = true, cause = Cause.ENTITY_HURT) }) {}
     }
@@ -448,7 +449,8 @@ class EntityCapture(
         }
     }
 
-    // Let go from a fence by a player's hand: shears, or a click on the mob or on its knot.
+    // Let go from a fence by a player's hand: shears, or a click on the mob. A click on the knot takes its mobs
+    // onto the player's own lead instead, and is led away.
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     fun onUnleash(event: EntityUnleashEvent) {
         val player = (event as? PlayerUnleashEntityEvent)?.player ?: return
@@ -615,14 +617,12 @@ class EntityCapture(
             else -> Culprit(Cause.ENTITY_BROKEN, null)
         }
         // A knot is nothing of its own, but what stood tied to it goes free with it.
-        if (hanging is LeashHitch) {
-            val by = if (remover != null || event.cause != HangingBreakEvent.RemoveCause.PHYSICS) culprit.by else {
-                val fence = positionOf(hanging.location.block)
-                attribution.removerAt(fence) ?: attribution.journalRemoverAt(fence)
-            }
+        // A knot's face is its own block, so the wall asked above is the fence.
+        val by = culprit.by
+        if (hanging is LeashHitch && by != null) {
             // A lead holds within ten blocks.
-            if (by != null) for (mob in hanging.getNearbyEntities(10.0, 10.0, 10.0)) {
-                if ((mob as? Leashable)?.leashHolder == hanging) untied(mob, by)
+            for (mob in hanging.getNearbyEntities(10.0, 10.0, 10.0)) {
+                if ((mob as? Leashable)?.takeIf { it.isLeashed }?.leashHolder == hanging) untied(mob, by)
             }
         }
         removed(hanging, culprit)

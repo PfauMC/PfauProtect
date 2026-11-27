@@ -3,6 +3,7 @@ package io.pfaumc.pfauprotect.rollback
 import io.pfaumc.pfauprotect.attribution.AIRS
 import io.pfaumc.pfauprotect.attribution.LIQUIDS
 import io.pfaumc.pfauprotect.attribution.blockNameOf
+import io.pfaumc.pfauprotect.capture.entity.nbtOf
 import io.pfaumc.pfauprotect.attribution.flowing
 import io.pfaumc.pfauprotect.capture.block.BlockDestructionListener
 import io.pfaumc.pfauprotect.capture.block.FIRES
@@ -239,8 +240,11 @@ class EntityPlan(
     val drops: List<UUID>,
     val removed: Boolean,
     val bucket: Bucketed?,
-    // Struck within the window: its health goes back too, which a hand's change otherwise leaves as it is.
-    val hurt: Boolean = false,
+    // Struck within the window: the health it had before the first blow, which goes back too; a hand's change
+    // otherwise leaves health as it is. `healOnly`: struck and nothing else, so nothing but health goes back –
+    // not what its owner did to it since.
+    val health: Float? = null,
+    val healOnly: Boolean = false,
 ) {
     val uuid: UUID get() = oldest.uuid
     val type: String get() = oldest.type
@@ -652,13 +656,16 @@ class RollbackReader(
             }
             val at = WorldBlock(world, oldest.x, oldest.y, oldest.z)
             val removals = story.filter { it.kind == EntityKind.REMOVED }
+            val firstBlow = story.filter { it.cause == Cause.ENTITY_HURT }.minWithOrNull(ENTITY_ROW_ORDER)
+            val health = firstBlow?.payloadBefore?.let { ledger.payload(it) }?.let { nbtOf(it).getFloatOr("Health", 0f) }
+            val healOnly = story.all { it.cause == Cause.ENTITY_HURT }
             // What fell out of it when it went, and what a hand took off it in passing: shorn wool.
             entities.getOrPut(at) { ArrayList() } +=
                 EntityPlan(
-                    at, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty(),
+                    at, oldest, before, if (healOnly) emptyList() else slots, story.flatMap { it.drops }, removals.isNotEmpty(),
                     // Changed or led first and bucketed after: the bucket is the removal's, not the first row's.
                     bucketOf(ledger, removals.maxByOrNull { it.eventId } ?: oldest),
-                    story.any { it.cause == Cause.ENTITY_HURT },
+                    health, healOnly,
                 )
         }
         if (unnamed > 0) return unreadable(unnamed)

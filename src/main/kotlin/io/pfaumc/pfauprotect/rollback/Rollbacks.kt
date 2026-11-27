@@ -845,7 +845,12 @@ class ChunkRollback(
         val now = snapshotOf(handle) ?: return
         val before = nbtOf(plan.before!!)
         // Set only once the rest is loaded: the load puts back health as `now` read it.
-        val heal = healthBack(entity, plan, before)
+        val heal = healthBack(entity, plan)
+        if (plan.healOnly) {
+            heal?.let { (entity as LivingEntity).health = it }
+            filed(plan, EntityKind.CHANGED, actor, before = now, after = snapshotOf(handle))
+            return
+        }
         if (plan.oldest.kind == EntityKind.MOVED) {
             heal?.let { (entity as LivingEntity).health = it }
             entity.leaveVehicle()
@@ -880,13 +885,15 @@ class ChunkRollback(
     private fun asItWas(entity: Entity, plan: EntityPlan, home: World): Boolean {
         if (!entity.isValid) return true
         val before = nbtOf(plan.before!!)
-        if (healthBack(entity, plan, before) != null) return false
+        if (healthBack(entity, plan) != null) return false
+        if (plan.healOnly) return true
         if (plan.oldest.kind == EntityKind.MOVED) {
             val pos = homeOf(before, home)
             // A player aboard is never in the snapshot, so one still riding it is not as it was.
             val seated = listOfNotNull(entity.vehicle?.let { entity.uniqueId to it.uniqueId }) + entity.passengers.map { it.uniqueId to entity.uniqueId }
             val tied = ((entity as CraftEntity).handle as? NmsLeashable)?.leashHolder
-            val knot = knotOf(before)
+            // A fence that is gone cannot be tied to again, and a mob let go there is as it can be.
+            val knot = knotOf(before)?.takeIf { fenceAt(entity, it) }
             val leashed = if (knot == null) tied != null else (tied as? LeashFenceKnotEntity)?.pos != knot
             if (pos == null || entity.world != home || seated.toSet() != seatsOf(entity.uniqueId, before).toSet() || leashed) return false
             val at = entity.location
@@ -897,9 +904,9 @@ class ChunkRollback(
     }
 
     // The health a struck mob had before the blows, where it has less now; health is otherwise left as it is.
-    private fun healthBack(entity: Entity, plan: EntityPlan, before: CompoundTag): Double? {
-        val living = entity.takeIf { plan.hurt } as? LivingEntity ?: return null
-        val was = before.getFloatOr("Health", 0f).toDouble().coerceAtMost(living.getAttribute(Attribute.MAX_HEALTH)?.value ?: 0.0)
+    private fun healthBack(entity: Entity, plan: EntityPlan): Double? {
+        val living = entity as? LivingEntity ?: return null
+        val was = (plan.health ?: return null).toDouble().coerceAtMost(living.getAttribute(Attribute.MAX_HEALTH)?.value ?: 0.0)
         return was.takeIf { it > living.health + 0.01 }
     }
 
@@ -911,10 +918,14 @@ class ChunkRollback(
     private fun tieBack(entity: Entity, fence: BlockPos) {
         val handle = (entity as CraftEntity).handle
         val level = handle.level() as? ServerLevel ?: return
-        if (handle !is NmsLeashable || !Bukkit.isOwnedByCurrentRegion(entity.world, fence.x shr 4, fence.z shr 4)) return
-        if (!level.getBlockState(fence).`is`(BlockTags.FENCES)) return
+        if (handle !is NmsLeashable || !fenceAt(entity, fence)) return
         handle.setLeashedTo(LeashFenceKnotEntity.getOrCreateKnot(level, fence), true)
     }
+
+    // Read only where this thread owns it.
+    private fun fenceAt(entity: Entity, fence: BlockPos): Boolean =
+        Bukkit.isOwnedByCurrentRegion(entity.world, fence.x shr 4, fence.z shr 4) &&
+            ((entity as CraftEntity).handle.level().getBlockState(fence).`is`(BlockTags.FENCES))
 
     private fun homeOf(tag: CompoundTag, world: World): Location? {
         val pos = tag.getListOrEmpty("Pos")
