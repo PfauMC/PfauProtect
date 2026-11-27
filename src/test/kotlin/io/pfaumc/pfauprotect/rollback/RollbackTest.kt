@@ -528,6 +528,19 @@ class RollbackTest : BothPlanes() {
         assertTrue(plan.slots.isEmpty(), "${plan.slots}")
     }
 
+    // Health is left as it is for a hand's change; a mob struck after it was renamed gets both back.
+    @Test
+    fun `a pet struck after another change is healed by the rollback`() {
+        val wolf = UUID.randomUUID()
+        log.submit(listOf(EntityChange(3, 64, 3, EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:wolf", wolf, T0, actor = alice, before = byteArrayOf(10, 0, 0, 1), after = byteArrayOf(10, 0, 0, 2))))
+        log.submit(listOf(EntityChange(3, 64, 3, EntityKind.CHANGED, Cause.ENTITY_HURT, "minecraft:wolf", wolf, T0 + 5, actor = alice, before = byteArrayOf(10, 0, 0, 2), after = byteArrayOf(10, 0, 0, 3))))
+        log.drain()
+
+        val plan = positions(around(rollbackFilter(alice))).flatMap { it.entities }.single()
+        assertEquals(Cause.ENTITY_CHANGED, plan.oldest.cause)
+        assertTrue(plan.hurt)
+    }
+
     // A rollback undone and then both rolled back together by `action:rollback`: the blocks of the two
     // cancel out, so the slots have to as well. Skipping the first rollback's posting because the undo
     // gave it back would empty the chest the blocks leave standing.

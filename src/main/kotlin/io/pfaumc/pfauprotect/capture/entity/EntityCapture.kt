@@ -115,6 +115,9 @@ private const val SWEEP_MILLIS = 1_000L
 // running behind, whose fifteen seconds of ticks take longer on the clock this is measured by.
 private const val BURN_MILLIS = 20_000L
 
+// A fight is many blows: one row stands for a striker's blows on one mob until they leave it alone this long.
+private const val HURT_MILLIS = 60_000L
+
 // The ways of dying that a place deals out, and that a player changing the place can therefore be behind.
 private val BY_PLACE = setOf(
     DamageCause.FALL, DamageCause.DROWNING, DamageCause.DRYOUT, DamageCause.SUFFOCATION, DamageCause.FREEZE,
@@ -270,6 +273,10 @@ class EntityCapture(
     private val alight = ConcurrentHashMap<UUID, Pair<Attributed, Long>>()
     private val alightSwept = AtomicLong()
 
+    // A striker's last blow on a pet or a named mob, keyed by the two.
+    private val hurt = ConcurrentHashMap<Pair<UUID, UUID>, Long>()
+    private val hurtSwept = AtomicLong()
+
     // One reading of an entity a player is handling at a time: a click raises two events on an armour stand.
     private val handling = ConcurrentHashMap.newKeySet<UUID>()
 
@@ -309,6 +316,31 @@ class EntityCapture(
     }
 
     /**
+     * A blow somebody else's pet or a named mob lived through, on whoever dealt it, with the mob as it was
+     * before: a rollback heals it back. A blow that kills is the death's to write. Its own owner and a wild
+     * mob nobody named are nobody's grief.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onHurt(event: EntityDamageByEntityEvent) {
+        val victim = event.entity as? LivingEntity ?: return
+        if (victim is Player || event.finalDamage <= 0 || event.finalDamage >= victim.health) return
+        val by = byEntity(event.damager, Cause.ENTITY_HURT).by ?: return
+        val striker = by.culprit() ?: return
+        val owner = (victim as? Tameable)?.owner?.uniqueId
+        if (striker == LIGHTNING || striker == owner || (owner == null && victim.customName() == null)) return
+        val now = System.currentTimeMillis()
+        if (hurt.size > SEEN_CAP && sweepDue(hurtSwept, now)) hurt.values.removeIf { now - it > HURT_MILLIS }
+        val last = hurt.put(striker to victim.uniqueId, now)
+        if (last != null && now - last < HURT_MILLIS) return
+        val log = logs.get(victim.world.uid) ?: return
+        touch(victim)
+        // Read before the blow lands: the event comes first.
+        val before = snapshotOf(victim) ?: return
+        val block = victim.location.block
+        laterOn(victim, { changedSince(log, victim, block, before, by, now, always = true, cause = Cause.ENTITY_HURT) }) {}
+    }
+
+    /**
      * The entity read again after a player's hand, written as changed on that player when anything besides
      * what changes by itself differs from `before`. Killed by the hand, it is a removal and the death
      * writes it. `drops` is asked only once the row is sure to be written. `always` writes the row even
@@ -322,6 +354,7 @@ class EntityCapture(
         by: Attributed,
         timestamp: Long = System.currentTimeMillis(),
         always: Boolean = false,
+        cause: Cause = Cause.ENTITY_CHANGED,
         drops: () -> List<UUID> = { emptyList() },
     ) {
         if (!always && !entity.isValid) return
@@ -329,7 +362,7 @@ class EntityCapture(
         if (!always && !changedBetween(before, after)) return
         log.submit(
             EntityChange(
-                at.x, at.y, at.z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, typeOf(entity), entity.uniqueId,
+                at.x, at.y, at.z, EntityKind.CHANGED, cause, typeOf(entity), entity.uniqueId,
                 timestamp, by.confidence, by.culprit(), before = before, after = after, drops = drops(),
             )
         )

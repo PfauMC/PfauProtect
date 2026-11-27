@@ -77,6 +77,7 @@ import net.minecraft.tags.BlockTags
 import org.bukkit.Location
 import net.minecraft.world.phys.AABB
 import org.bukkit.World
+import org.bukkit.attribute.Attribute
 import org.bukkit.craftbukkit.entity.CraftEntity
 import org.bukkit.entity.Entity
 import org.bukkit.entity.LivingEntity
@@ -840,6 +841,7 @@ class ChunkRollback(
         val handle = (entity as CraftEntity).handle
         val now = snapshotOf(handle) ?: return
         val before = nbtOf(plan.before!!)
+        healthBack(entity, plan, before)?.let { (entity as LivingEntity).health = it }
         if (plan.oldest.kind == EntityKind.MOVED) {
             entity.leaveVehicle()
             // The one who rode it off gets off here; a teleport would carry them back along with it.
@@ -867,6 +869,7 @@ class ChunkRollback(
     private fun asItWas(entity: Entity, plan: EntityPlan, home: World): Boolean {
         if (!entity.isValid) return true
         val before = nbtOf(plan.before!!)
+        if (healthBack(entity, plan, before) != null) return false
         if (plan.oldest.kind == EntityKind.MOVED) {
             val pos = homeOf(before, home)
             // A player aboard is never in the snapshot, so one still riding it is not as it was.
@@ -877,6 +880,13 @@ class ChunkRollback(
         }
         val now = snapshotOf(entity) ?: return true
         return !changedBetween(plan.before, now)
+    }
+
+    // The health a struck mob had before the blows, where it has less now; health is otherwise left as it is.
+    private fun healthBack(entity: Entity, plan: EntityPlan, before: CompoundTag): Double? {
+        val living = entity.takeIf { plan.hurt } as? LivingEntity ?: return null
+        val was = before.getFloatOr("Health", 0f).toDouble().coerceAtMost(living.getAttribute(Attribute.MAX_HEALTH)?.value ?: 0.0)
+        return was.takeIf { it > living.health + 0.01 }
     }
 
     private fun homeOf(tag: CompoundTag, world: World): Location? {

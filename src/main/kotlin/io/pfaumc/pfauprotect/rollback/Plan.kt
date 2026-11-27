@@ -239,6 +239,8 @@ class EntityPlan(
     val drops: List<UUID>,
     val removed: Boolean,
     val bucket: Bucketed?,
+    // Struck within the window: its health goes back too, which a hand's change otherwise leaves as it is.
+    val hurt: Boolean = false,
 ) {
     val uuid: UUID get() = oldest.uuid
     val type: String get() = oldest.type
@@ -656,6 +658,7 @@ class RollbackReader(
                     at, oldest, before, slots, story.flatMap { it.drops }, removals.isNotEmpty(),
                     // Changed or led first and bucketed after: the bucket is the removal's, not the first row's.
                     bucketOf(ledger, removals.maxByOrNull { it.eventId } ?: oldest),
+                    story.any { it.cause == Cause.ENTITY_HURT },
                 )
         }
         if (unnamed > 0) return unreadable(unnamed)
