@@ -10,7 +10,7 @@ Packages under `io.pfaumc.pfauprotect`; tests sit in the package of the code the
 | `storage` | both RocksDB stores, codecs, registries, item forms |
 | `capture.item` | item movements: windows and the recompute pass, intents, entities, commands |
 | `capture.block` | block changes, mechanisms, `TickCoalescer` |
-| `capture.entity` | the entity plane's capture: entities removed (full NBT), created, changed or led away by a player, players killed |
+| `capture.entity` | the entity plane's capture: entities removed (full NBT), created, changed, hurt (pets and named mobs), led away or untied from a fence by a player, players killed |
 | `attribution` | the culprit ladder, entity origins, redstone energy (phase 5.7) |
 | `check` | plane sync and reconciliation |
 | `command` | `/pp lookup` and inspect |

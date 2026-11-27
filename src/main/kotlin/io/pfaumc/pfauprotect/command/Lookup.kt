@@ -2422,8 +2422,8 @@ class Lookups(
             when (row.kind) {
                 EntityKind.REMOVED -> tr("gone", "исчезновение")
                 EntityKind.CREATED -> tr("brought in", "появление")
-                EntityKind.CHANGED -> tr("changed", "изменение")
-                EntityKind.MOVED -> tr("led away", "увод")
+                EntityKind.CHANGED -> if (row.cause == Cause.ENTITY_HURT) tr("hurt", "ранение") else tr("changed", "изменение")
+                EntityKind.MOVED -> if (row.cause == Cause.ENTITY_UNTIED) tr("untied", "отвязка") else tr("led away", "увод")
                 EntityKind.TOTEM_POPPED -> tr("a totem took the death", "тотем спас от смерти")
                 else -> null
             },

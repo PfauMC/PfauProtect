@@ -220,6 +220,13 @@ enum class Cause(val id: Int) {
     CROSSBOW_LOAD(0x84),
     CROSSBOW_SHOOT(0x85),
 
+    // A player's blow somebody else's pet or a named mob lived through: the mob as it was before, so a
+    // rollback heals it back.
+    ENTITY_HURT(0x86),
+    // A mob let go from a fence by a player: untied, or its knot or the fence broken. The mob as it stood
+    // tied, so a rollback leads it back and ties it up again.
+    ENTITY_UNTIED(0x87),
+
     // The block plane shares this dictionary but names something else: not the interaction that moved
     // an item, but the agent that changed a block. What changed is already in the row's two state
     // fields, so nothing here is a verb.
@@ -318,7 +325,8 @@ val COREPROTECT_CAUSES: Set<Cause> = Cause.entries.filter { it.name.startsWith("
 
 // What the entity plane writes, some of it shared with an item row of the same event.
 val ENTITY_PLANE_CAUSES: Set<Cause> = setOf(
-    Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.ENTITY_CHANGED, Cause.ENTITY_LED, Cause.MOB_BRED,
+    Cause.ENTITY_KILLED, Cause.ENTITY_BROKEN, Cause.ENTITY_CHANGED, Cause.ENTITY_LED, Cause.ENTITY_HURT, Cause.ENTITY_UNTIED,
+    Cause.MOB_BRED,
     Cause.PLAYER_KILLED, Cause.MOB_TRANSFORM, Cause.SPAWN_EGG_USE, Cause.BUCKET_CAPTURE_MOB,
     Cause.BUCKET_RELEASE_MOB, Cause.PLACE_ENTITY_ITEM, Cause.TOTEM_CONSUME,
     Cause.PLAYER_DIED, Cause.CP_ENTITY_KILLED,

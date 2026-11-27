@@ -60,6 +60,7 @@ import org.bukkit.entity.EnderCrystal
 import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.Hanging
+import io.papermc.paper.entity.Leashable
 import org.bukkit.entity.LeashHitch
 import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Minecart
@@ -80,7 +81,9 @@ import org.bukkit.event.player.PlayerBucketEmptyEvent
 import org.bukkit.event.player.PlayerBucketEntityEvent
 import org.bukkit.event.player.PlayerInteractAtEntityEvent
 import org.bukkit.event.player.PlayerInteractEntityEvent
+import org.bukkit.event.entity.EntityUnleashEvent
 import org.bukkit.event.entity.PlayerLeashEntityEvent
+import org.bukkit.event.player.PlayerUnleashEntityEvent
 import org.bukkit.event.entity.EntityMountEvent
 import io.papermc.paper.event.player.PlayerItemFrameChangeEvent
 import org.bukkit.event.player.PlayerArmorStandManipulateEvent
@@ -114,6 +117,9 @@ private const val SWEEP_MILLIS = 1_000L
 // Lava sets a mob burning for fifteen seconds after it climbs out; the rest is slack for a server
 // running behind, whose fifteen seconds of ticks take longer on the clock this is measured by.
 private const val BURN_MILLIS = 20_000L
+
+// A fight is many blows: one row stands for a striker's blows on one mob for this long.
+private const val HURT_MILLIS = 60_000L
 
 // The ways of dying that a place deals out, and that a player changing the place can therefore be behind.
 private val BY_PLACE = setOf(
@@ -270,6 +276,10 @@ class EntityCapture(
     private val alight = ConcurrentHashMap<UUID, Pair<Attributed, Long>>()
     private val alightSwept = AtomicLong()
 
+    // When a striker's blows on a pet or a named mob were last written, keyed by the two.
+    private val hurt = ConcurrentHashMap<Pair<UUID, UUID>, Long>()
+    private val hurtSwept = AtomicLong()
+
     // One reading of an entity a player is handling at a time: a click raises two events on an armour stand.
     private val handling = ConcurrentHashMap.newKeySet<UUID>()
 
@@ -306,6 +316,39 @@ class EntityCapture(
             // be taken back from whoever picked it up.
             changedSince(log, entity, block, before, player.witnessed()) { origins.droppedFor(entity.uniqueId) }
         }) { handling.remove(entity.uniqueId) }
+    }
+
+    /**
+     * A blow somebody else's pet or a named mob lived through, on whoever dealt it, with the mob as it was
+     * before: a rollback heals it back. A blow that kills is the death's to write. Its own owner and a wild
+     * mob nobody named are nobody's grief.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onHurt(event: EntityDamageByEntityEvent) {
+        val victim = event.entity as? LivingEntity ?: return
+        if (victim is Player || event.finalDamage <= 0 || event.finalDamage >= victim.health) return
+        val by = byEntity(event.damager, Cause.ENTITY_HURT).by ?: return
+        val striker = by.culprit() ?: return
+        val owner = (victim as? Tameable)?.owner?.uniqueId
+        if (striker == LIGHTNING || striker == owner || (owner == null && victim.customName() == null)) return
+        val now = System.currentTimeMillis()
+        if (hurt.size > SEEN_CAP && sweepDue(hurtSwept, now)) hurt.values.removeIf { now - it > HURT_MILLIS }
+        val key = striker to victim.uniqueId
+        if (hurt[key]?.let { now - it < HURT_MILLIS } == true) return
+        val log = logs.get(victim.world.uid) ?: return
+        touch(victim)
+        // Read before the blow lands: the event comes first. Written now, not a tick on: only the health before
+        // is wanted, and a mob killed by the next blow in the same tick still had this one dealt to it.
+        val before = snapshotOf(victim) ?: return
+        val block = victim.location.block
+        val written = log.submit(
+            EntityChange(
+                block.x, block.y, block.z, EntityKind.CHANGED, Cause.ENTITY_HURT, typeOf(victim), victim.uniqueId,
+                now, by.confidence, striker, before = before,
+            )
+        )
+        // Only a written row stands for the next minute of blows.
+        if (written) hurt[key] = now
     }
 
     /**
@@ -410,6 +453,35 @@ class EntityCapture(
             }
             rider is LivingEntity -> mount.passengers.filterIsInstance<Player>().firstOrNull()?.let { led(rider, it) }
         }
+    }
+
+    // Let go from a fence by a player's hand: shears, or a click on the mob. A click on the knot takes its mobs
+    // onto the player's own lead instead, and is led away.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onUnleash(event: EntityUnleashEvent) {
+        val player = (event as? PlayerUnleashEntityEvent)?.player ?: return
+        untied(event.entity, player.witnessed())
+    }
+
+    /**
+     * A mob let go from the fence it stood tied to, on whoever let it go, with the mob as it stood tied: a
+     * rollback leads it back and ties it up again. Letting one's own pet go is nobody's grief.
+     */
+    private fun untied(entity: Entity, by: Attributed) {
+        val leashed = entity as? Leashable ?: return
+        if (!leashed.isLeashed || leashed.leashHolder !is LeashHitch) return
+        val actor = by.culprit() ?: return
+        if ((entity as? Tameable)?.owner?.uniqueId == actor) return
+        touch(entity)
+        val log = logs.get(entity.world.uid) ?: return
+        val before = snapshotOf(entity) ?: return
+        val block = entity.location.block
+        log.submit(
+            EntityChange(
+                block.x, block.y, block.z, EntityKind.MOVED, Cause.ENTITY_UNTIED, typeOf(entity), entity.uniqueId,
+                confidence = by.confidence, actor = actor, before = before,
+            )
+        )
     }
 
     private fun led(entity: Entity, player: Player) {
@@ -549,6 +621,16 @@ class EntityCapture(
                 Culprit(Cause.ENTITY_BROKEN, attribution.removerAt(wall) ?: attribution.journalRemoverAt(wall))
             }
             else -> Culprit(Cause.ENTITY_BROKEN, null)
+        }
+        // A knot is nothing of its own, but what stood tied to it goes free with it.
+        // A knot's face is its own block, so the wall asked above is the fence.
+        val by = culprit.by
+        if (hanging is LeashHitch && by != null) {
+            // ponytail: a lead snaps past 12 blocks; a server that raised Paper's max-leash-distance past 16 loses
+            // the farthest mobs here, read the setting if one ever does.
+            for (mob in hanging.getNearbyEntities(16.0, 16.0, 16.0)) {
+                if ((mob as? Leashable)?.takeIf { it.isLeashed }?.leashHolder == hanging) untied(mob, by)
+            }
         }
         removed(hanging, culprit)
     }

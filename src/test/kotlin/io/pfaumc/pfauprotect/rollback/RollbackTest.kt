@@ -43,6 +43,8 @@ import io.pfaumc.pfauprotect.storage.BlockChange
 import io.pfaumc.pfauprotect.storage.BlockRow
 import io.pfaumc.pfauprotect.storage.BlockCodec
 import io.pfaumc.pfauprotect.storage.rawPut
+import io.pfaumc.pfauprotect.capture.entity.bytesOf
+import net.minecraft.nbt.CompoundTag
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -526,6 +528,33 @@ class RollbackTest : BothPlanes() {
 
         val plan = positions(around(rollbackFilter(alice))).flatMap { it.entities }.single()
         assertTrue(plan.slots.isEmpty(), "${plan.slots}")
+    }
+
+    // Health is left as it is for a hand's change. Struck after a rename, the wolf gets both back, health as
+    // it was before the blow; struck and nothing else, only its health goes back, not what its owner did since.
+    @Test
+    fun `a struck pet gets back the health it had before the first blow`() {
+        fun at(health: Float) = bytesOf(CompoundTag().apply { putFloat("Health", health) })
+        val renamed = UUID.randomUUID()
+        val struck = UUID.randomUUID()
+        log.submit(listOf(EntityChange(3, 64, 3, EntityKind.CHANGED, Cause.ENTITY_CHANGED, "minecraft:wolf", renamed, T0, actor = alice, before = at(30f), after = at(30f))))
+        log.submit(listOf(EntityChange(3, 64, 3, EntityKind.CHANGED, Cause.ENTITY_HURT, "minecraft:wolf", renamed, T0 + 5, actor = alice, before = at(40f), after = at(37f))))
+        log.submit(listOf(EntityChange(4, 64, 3, EntityKind.CHANGED, Cause.ENTITY_HURT, "minecraft:wolf", struck, T0, actor = alice, before = at(20f), after = at(17f))))
+        log.drain()
+
+        val untied = UUID.randomUUID()
+        log.submit(listOf(EntityChange(5, 64, 3, EntityKind.CHANGED, Cause.ENTITY_HURT, "minecraft:cow", untied, T0, actor = alice, before = at(10f), after = at(7f))))
+        log.submit(listOf(EntityChange(5, 64, 3, EntityKind.MOVED, Cause.ENTITY_UNTIED, "minecraft:cow", untied, T0 + 5, actor = alice, before = at(7f))))
+        log.drain()
+
+        val plans = positions(around(rollbackFilter(alice))).flatMap { it.entities }.associateBy { it.uuid }
+        // Struck and then let go from its fence: led back and tied up by the untying, healed by the blow.
+        assertEquals(Cause.ENTITY_UNTIED, plans.getValue(untied).oldest.cause)
+        assertEquals(10f, plans.getValue(untied).health)
+        assertEquals(40f, plans.getValue(renamed).health)
+        assertFalse(plans.getValue(renamed).healOnly)
+        assertEquals(20f, plans.getValue(struck).health)
+        assertTrue(plans.getValue(struck).healOnly)
     }
 
     // A rollback undone and then both rolled back together by `action:rollback`: the blocks of the two
