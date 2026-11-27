@@ -19,6 +19,9 @@ import net.minecraft.world.level.WorldDataConfiguration
 import org.junit.jupiter.api.extension.ExtensionContext
 import org.junit.jupiter.api.extension.TestInstanceFactoryContext
 import org.junit.jupiter.api.extension.TestInstancePreConstructCallback
+import java.nio.channels.FileChannel
+import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 
 // Item prototype components are bound by a datapack load, not by Bootstrap, and without them every
 // ItemStack constructor throws.
@@ -27,7 +30,12 @@ object ServerRegistries {
 
     private fun load(): RegistryAccess {
         SharedConstants.tryDetectVersion()
-        Bootstrap.bootStrap()
+        // Test forks share one working directory and the bootstrap writes config/canvas-server.yml in it:
+        // one fork at a time, or another reads a half-written file and every test in it fails.
+        FileChannel.open(Path.of("bootstrap.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE).use {
+            it.lock()
+            Bootstrap.bootStrap()
+        }
         Bootstrap.validate()
         installGlobalConfiguration()
 
