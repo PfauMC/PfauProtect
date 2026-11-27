@@ -844,8 +844,10 @@ class ChunkRollback(
         val handle = (entity as CraftEntity).handle
         val now = snapshotOf(handle) ?: return
         val before = nbtOf(plan.before!!)
-        healthBack(entity, plan, before)?.let { (entity as LivingEntity).health = it }
+        // Set only once the rest is loaded: the load puts back health as `now` read it.
+        val heal = healthBack(entity, plan, before)
         if (plan.oldest.kind == EntityKind.MOVED) {
+            heal?.let { (entity as LivingEntity).health = it }
             entity.leaveVehicle()
             // The one who rode it off gets off here; a teleport would carry them back along with it.
             entity.eject()
@@ -868,6 +870,7 @@ class ChunkRollback(
         for (key in wanted.keySet()) if (key !in VOLATILE) merged.put(key, wanted.get(key)!!.copy())
         for (key in merged.keySet().toList()) if (key !in VOLATILE && !wanted.contains(key)) merged.remove(key)
         handle.load(TagValueInput.create(ProblemReporter.DISCARDING, handle.registryAccess(), merged))
+        heal?.let { (entity as LivingEntity).health = it }
         slotsBack(plan, actor, tally)
         filed(plan, EntityKind.CHANGED, actor, before = now, after = snapshotOf(handle))
     }
