@@ -337,11 +337,18 @@ class EntityCapture(
         if (hurt[key]?.let { now - it < HURT_MILLIS } == true) return
         val log = logs.get(victim.world.uid) ?: return
         touch(victim)
-        // Read before the blow lands: the event comes first.
+        // Read before the blow lands: the event comes first. Written now, not a tick on: only the health before
+        // is wanted, and a mob killed by the next blow in the same tick still had this one dealt to it.
         val before = snapshotOf(victim) ?: return
-        hurt[key] = now
         val block = victim.location.block
-        laterOn(victim, { changedSince(log, victim, block, before, by, now, always = true, cause = Cause.ENTITY_HURT) }) {}
+        val written = log.submit(
+            EntityChange(
+                block.x, block.y, block.z, EntityKind.CHANGED, Cause.ENTITY_HURT, typeOf(victim), victim.uniqueId,
+                now, by.confidence, striker, before = before,
+            )
+        )
+        // Only a written row stands for the next minute of blows.
+        if (written) hurt[key] = now
     }
 
     /**
@@ -358,7 +365,6 @@ class EntityCapture(
         by: Attributed,
         timestamp: Long = System.currentTimeMillis(),
         always: Boolean = false,
-        cause: Cause = Cause.ENTITY_CHANGED,
         drops: () -> List<UUID> = { emptyList() },
     ) {
         if (!always && !entity.isValid) return
@@ -366,7 +372,7 @@ class EntityCapture(
         if (!always && !changedBetween(before, after)) return
         log.submit(
             EntityChange(
-                at.x, at.y, at.z, EntityKind.CHANGED, cause, typeOf(entity), entity.uniqueId,
+                at.x, at.y, at.z, EntityKind.CHANGED, Cause.ENTITY_CHANGED, typeOf(entity), entity.uniqueId,
                 timestamp, by.confidence, by.culprit(), before = before, after = after, drops = drops(),
             )
         )
