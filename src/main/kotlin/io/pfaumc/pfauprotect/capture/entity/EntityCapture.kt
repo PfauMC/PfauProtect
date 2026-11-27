@@ -60,6 +60,7 @@ import org.bukkit.entity.EnderCrystal
 import org.bukkit.entity.Entity
 import org.bukkit.entity.EntityType
 import org.bukkit.entity.Hanging
+import io.papermc.paper.entity.Leashable
 import org.bukkit.entity.LeashHitch
 import org.bukkit.entity.LivingEntity
 import org.bukkit.entity.Minecart
@@ -80,7 +81,9 @@ import org.bukkit.event.player.PlayerBucketEmptyEvent
 import org.bukkit.event.player.PlayerBucketEntityEvent
 import org.bukkit.event.player.PlayerInteractAtEntityEvent
 import org.bukkit.event.player.PlayerInteractEntityEvent
+import org.bukkit.event.entity.EntityUnleashEvent
 import org.bukkit.event.entity.PlayerLeashEntityEvent
+import org.bukkit.event.player.PlayerUnleashEntityEvent
 import org.bukkit.event.entity.EntityMountEvent
 import io.papermc.paper.event.player.PlayerItemFrameChangeEvent
 import org.bukkit.event.player.PlayerArmorStandManipulateEvent
@@ -445,6 +448,34 @@ class EntityCapture(
         }
     }
 
+    // Let go from a fence by a player's hand: shears, or a click on the mob or on its knot.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    fun onUnleash(event: EntityUnleashEvent) {
+        val player = (event as? PlayerUnleashEntityEvent)?.player ?: return
+        untied(event.entity, player.witnessed())
+    }
+
+    /**
+     * A mob let go from the fence it stood tied to, on whoever let it go, with the mob as it stood tied: a
+     * rollback leads it back and ties it up again. Letting one's own pet go is nobody's grief.
+     */
+    private fun untied(entity: Entity, by: Attributed) {
+        val leashed = entity as? Leashable ?: return
+        if (!leashed.isLeashed || leashed.leashHolder !is LeashHitch) return
+        val actor = by.culprit() ?: return
+        if ((entity as? Tameable)?.owner?.uniqueId == actor) return
+        touch(entity)
+        val log = logs.get(entity.world.uid) ?: return
+        val before = snapshotOf(entity) ?: return
+        val block = entity.location.block
+        log.submit(
+            EntityChange(
+                block.x, block.y, block.z, EntityKind.MOVED, Cause.ENTITY_UNTIED, typeOf(entity), entity.uniqueId,
+                confidence = by.confidence, actor = actor, before = before,
+            )
+        )
+    }
+
     private fun led(entity: Entity, player: Player) {
         if (entity is Player) return
         touch(entity)
@@ -582,6 +613,17 @@ class EntityCapture(
                 Culprit(Cause.ENTITY_BROKEN, attribution.removerAt(wall) ?: attribution.journalRemoverAt(wall))
             }
             else -> Culprit(Cause.ENTITY_BROKEN, null)
+        }
+        // A knot is nothing of its own, but what stood tied to it goes free with it.
+        if (hanging is LeashHitch) {
+            val by = if (remover != null || event.cause != HangingBreakEvent.RemoveCause.PHYSICS) culprit.by else {
+                val fence = positionOf(hanging.location.block)
+                attribution.removerAt(fence) ?: attribution.journalRemoverAt(fence)
+            }
+            // A lead holds within ten blocks.
+            if (by != null) for (mob in hanging.getNearbyEntities(10.0, 10.0, 10.0)) {
+                if ((mob as? Leashable)?.leashHolder == hanging) untied(mob, by)
+            }
         }
         removed(hanging, culprit)
     }

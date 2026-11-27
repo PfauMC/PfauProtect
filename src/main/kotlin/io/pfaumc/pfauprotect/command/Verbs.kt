@@ -34,6 +34,7 @@ internal fun verb(cause: Cause): Component = when (cause) {
     ENTITY_CHANGED -> w("changed", "изменение")
     ENTITY_LED -> w("led away", "увод")
     ENTITY_HURT -> w("hurt", "ранение")
+    ENTITY_UNTIED -> w("untied", "отвязка")
     PLAYER_KILLED -> w("killed a player", "убийство игрока")
     PLAYER_DIED -> w("player died", "смерть игрока")
     BLK_LIQUID_FLOW -> w("flowed", "растекание")

@@ -192,6 +192,7 @@ class StoredNumbersTest {
                 "CROSSBOW_LOAD" to 0x84,
                 "CROSSBOW_SHOOT" to 0x85,
                 "ENTITY_HURT" to 0x86,
+                "ENTITY_UNTIED" to 0x87,
                 "BLK_PLAYER_PLACE" to 0xD0,
                 "BLK_PLAYER_BREAK" to 0xD1,
                 "BLK_TNT" to 0xD2,
